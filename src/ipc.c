@@ -24,6 +24,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Maximum number of arguments a valid CLI invocation can send.              */
+#define IPC_MAX_ARGS      256
+/* Buffer size for a single-line IPC reply; no valid reply approaches this.  */
+#define IPC_REPLY_BUF_SIZE 512
+
 /* ---------------------------------------------------------------------------
  * ipc_socket_path() — the per-user socket both sides agree on.  One instance
  * per user is the unit "a running Blue Notes"; the path lives in the user's
@@ -410,7 +415,7 @@ static void
 ipc_handle_run(OnApp *app, GInputStream *in, GOutputStream *out)
 {
     gssize nargs = stream_read_uint_line(in);
-    if (nargs < 0 || nargs > 256)    /* sanity bound                        */
+    if (nargs < 0 || nargs > IPC_MAX_ARGS)
         return;
 
     /* Rebuild an argv the dispatcher understands: argv[0] is a placeholder
@@ -430,7 +435,16 @@ ipc_handle_run(OnApp *app, GInputStream *in, GOutputStream *out)
     gssize slen = bad ? -1 : stream_read_uint_line(in);
     gchar *stdin_data = (slen >= 0) ? stream_read_blob(in, (gsize)slen) : NULL;
 
-    if (!bad && stdin_data != NULL) {
+    if (!bad && slen >= 0 && stdin_data == NULL) {
+        /* stdin blob too large (> IPC_MAX_BLOB) or unreadable — send an
+         * error response so the client doesn't see a silent connection
+         * close and misreport the exit code as 2 with no message.        */
+        const gchar *errmsg =
+            "error: stdin payload too large or unreadable\n";
+        stream_write_all(out, "2\n", 2);
+        stream_write_blob(out, "", 0);
+        stream_write_blob(out, errmsg, strlen(errmsg));
+    } else if (!bad && stdin_data != NULL) {
         int argc = (int)nargs + 1;
         const gchar *sd = on_cli_command_reads_stdin(argc, argv)
                           ? stdin_data : NULL;
@@ -609,7 +623,7 @@ on_ipc_try_remote(const gchar *command, gchar **reply_out)
     g_free(wire);
 
     GString *reply = g_string_new(NULL);
-    gchar    buf[512];               /* reply is a single short line         */
+    gchar    buf[IPC_REPLY_BUF_SIZE];
     for (;;) {
         gssize got = g_socket_receive(sock, buf, sizeof buf, NULL, NULL);
         if (got <= 0)

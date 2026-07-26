@@ -199,10 +199,11 @@ note_buffer_save(OnDatabase *db, gint64 id, GtkTextBuffer *buffer)
     gchar *body = on_note_extract_text(blob, blob_len);
     gboolean ok = on_db_note_save(db, id, title, blob, blob_len, body);
     /* CLI saves are rare enough to sync the '!' action-item mirror
-     * unconditionally (the editor compares against its last set instead). */
+     * unconditionally (the editor compares against its last set instead).
+     * Propagate failure so callers can report it.                        */
     if (ok) {
         GList *actions = on_note_extract_actions(blob, blob_len);
-        on_db_note_set_actions(db, id, actions);
+        ok = on_db_note_set_actions(db, id, actions);
         on_db_action_list_free(actions);
     }
     g_free(body);
@@ -565,10 +566,18 @@ cmd_set_note(OnDatabase *db, const gchar *id_str, const gchar *content)
 
     int rc = 0;                      /* process exit code                   */
     if (note_buffer_save(db, meta->id, buffer)) {
-        on_db_note_set_tags(db, meta->id, NULL);   /* plain text: no tags   */
-        gchar *title = on_buffer_first_line(buffer);
-        printf("set note %" G_GINT64_FORMAT "\t%s\n", meta->id, title);
-        g_free(title);
+        /* plain text: clear any tag links from the previous content; check
+         * the result so a failed sync isn't silently reported as success. */
+        if (!on_db_note_set_tags(db, meta->id, NULL)) {
+            fprintf(stderr,
+                    "error: could not clear tags for note %"
+                    G_GINT64_FORMAT "\n", meta->id);
+            rc = 2;
+        } else {
+            gchar *title = on_buffer_first_line(buffer);
+            printf("set note %" G_GINT64_FORMAT "\t%s\n", meta->id, title);
+            g_free(title);
+        }
     } else {
         fprintf(stderr, "error: could not save note %" G_GINT64_FORMAT "\n",
                 meta->id);

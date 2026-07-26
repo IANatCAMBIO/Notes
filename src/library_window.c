@@ -190,6 +190,7 @@ typedef struct {
     gint          ai_throbber_step;    /* animation frame counter              */
     GtkPaned     *notes_paned;         /* vertical paned: stack / AI pane      */
     gboolean      ai_running;          /* TRUE while subprocess is in flight   */
+    GCancellable *ai_cancel;           /* cancels the in-flight subprocess     */
 } OnLibrary;
 
 /* How long a status-bar event message stays before fading out.              */
@@ -470,9 +471,6 @@ refresh_sidebar(OnLibrary *lw)
     SbExpandCtx ectx = {
         lw, g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                   g_free, NULL) };
-    GtkTreeIter first;               /* is the model populated at all?      */
-    gboolean first_build = !gtk_tree_model_get_iter_first(
-        GTK_TREE_MODEL(lw->sidebar_store), &first);
     gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
                            sb_expand_capture, &ectx);
 
@@ -639,10 +637,9 @@ refresh_sidebar(OnLibrary *lw)
     g_hash_table_destroy(note_counts);
     g_hash_table_destroy(tag_counts);
 
-    /* Only the very first population expands everything; every later
-     * rebuild restores the captured expansion state in the walk below.     */
-    if (first_build)
-        gtk_tree_view_expand_all(lw->sidebar);
+    /* Every rebuild (including the first) restores the captured expansion
+     * state in the walk below; first launch has nothing captured so all
+     * folders stay collapsed.                                               */
 
     /* Restore the previous selection, falling back to "All Notes".  The
      * populating guard stays up through the restore: the select_iter
@@ -793,8 +790,12 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     body = (nl != NULL) ? nl + 1 : "";
     while (*body == '\n')
         body++;                      /* don't lead the card with blanks     */
-    gchar *body_cut = g_utf8_substring(
-        body, 0, MIN(g_utf8_strlen(body, -1), 300));
+    /* Walk at most 300 UTF-8 codepoints — avoids a full g_utf8_strlen scan
+     * of the whole body followed by a second g_utf8_substring walk.       */
+    const gchar *p = body;
+    gint n = 0;
+    while (*p && n < 300) { p = g_utf8_next_char(p); n++; }
+    gchar *body_cut = g_strndup(body, (gsize)(p - body));
 
     /* Render at the display's scale factor so the card is pixel-sharp.     */
     gint sf = gtk_widget_get_scale_factor(lw->window);
@@ -2300,8 +2301,13 @@ delete_notes_permanently(OnLibrary *lw, GArray *ids)
     if (!ok)
         return;
 
-    close_editors_for_ids(lw, (const gint64 *)ids->data, ids->len);
-    on_db_notes_delete(lw->app->db, (const gint64 *)ids->data, ids->len);
+    const gint64 *note_ids = (const gint64 *)ids->data;
+    close_editors_for_ids(lw, note_ids, ids->len);
+    on_db_notes_delete(lw->app->db, note_ids, ids->len);
+    /* Evict deleted entries from the thumbnail cache so their surfaces
+     * are freed now rather than held until the window closes.             */
+    for (gsize i = 0; i < ids->len; i++)
+        g_hash_table_remove(lw->thumb_cache, &note_ids[i]);
     refresh_all(lw);                 /* tag list/counts may have changed    */
 }
 
@@ -2378,9 +2384,13 @@ on_empty_trash(GtkWidget *widget, gpointer user_data)
         return;
 
     /* Close editors for every note the purge will take with it —
-     * including notes inside trashed folder subtrees.                      */
+     * including notes inside trashed folder subtrees.  Evict from the
+     * thumbnail cache at the same time so the surfaces are freed now.     */
     GArray *ids = on_db_trash_note_ids(lw->app->db);
-    close_editors_for_ids(lw, (const gint64 *)ids->data, ids->len);
+    const gint64 *note_ids = (const gint64 *)ids->data;
+    close_editors_for_ids(lw, note_ids, ids->len);
+    for (gsize i = 0; i < ids->len; i++)
+        g_hash_table_remove(lw->thumb_cache, &note_ids[i]);
     g_array_free(ids, TRUE);
 
     if (on_db_trash_empty(lw->app->db)) {
@@ -3445,7 +3455,8 @@ library_notify_status(OnApp *app, const gchar *message)
 
 /* AiJobData — context passed to the subprocess completion callback.         */
 typedef struct {
-    OnLibrary *lw;
+    OnLibrary    *lw;
+    GCancellable *cancellable;   /* owned ref; unrefed in the callback       */
 } AiJobData;
 
 /* ai_throbber_tick() — g_timeout_add callback: cycle the status-bar dots
@@ -3480,18 +3491,30 @@ static void
 on_ai_subprocess_done(GObject *source, GAsyncResult *result,
                       gpointer user_data)
 {
-    AiJobData     *job    = user_data;  /* context (heap-allocated)           */
-    OnLibrary     *lw     = job->lw;
+    AiJobData    *job       = user_data;
+    OnLibrary    *lw        = job->lw;
+    gboolean      cancelled = g_cancellable_is_cancelled(job->cancellable);
+    g_object_unref(job->cancellable);
     g_free(job);
-
-    lw->ai_running = FALSE;
-    ai_throbber_stop(lw);
-    on_app_status(lw->app, "Summary generation complete");
 
     GBytes  *out   = NULL;             /* stdout bytes from the subprocess    */
     GError  *error = NULL;
     g_subprocess_communicate_finish(G_SUBPROCESS(source),
                                     result, &out, NULL, &error);
+
+    /* When the library window was destroyed while the subprocess was
+     * running, library_free() cancelled the GCancellable and freed lw.
+     * Clean up the result and return without touching lw.                  */
+    if (cancelled) {
+        if (out   != NULL) g_bytes_unref(out);
+        if (error != NULL) g_error_free(error);
+        return;
+    }
+
+    lw->ai_running = FALSE;
+    ai_throbber_stop(lw);
+    g_clear_object(&lw->ai_cancel);
+    on_app_status(lw->app, "Summary generation complete");
 
     GtkTextBuffer *buf =               /* the pane's text buffer              */
         gtk_text_view_get_buffer(GTK_TEXT_VIEW(lw->ai_text));
@@ -3517,23 +3540,47 @@ on_ai_subprocess_done(GObject *source, GAsyncResult *result,
 /* run_ai_summary() — collect note content for the current selection, build
  * the prompt (project or normal mode), spawn the configured AI command,
  * and show the output asynchronously.                                        */
+/* ai_fail() — show msg in the AI pane, stop the throbber.  Call before
+ * any resources are allocated so the caller can return immediately.         */
+static void
+ai_fail(GtkTextBuffer *buf, OnLibrary *lw, const gchar *msg)
+{
+    gtk_text_buffer_set_text(buf, msg, -1);
+    ai_throbber_stop(lw);
+}
+
 static void
 run_ai_summary(OnLibrary *lw)
 {
     GtkTextBuffer *buf =               /* the pane's text buffer              */
         gtk_text_view_get_buffer(GTK_TEXT_VIEW(lw->ai_text));
 
-/* Macro: show an error in the pane, stop the throbber, and return.          */
-#define AI_FAIL(msg) \
-    do { \
-        gtk_text_buffer_set_text(buf, (msg), -1); \
-        ai_throbber_stop(lw); \
-        return; \
-    } while (0)
+    if (lw->app->ai_command == NULL || *lw->app->ai_command == '\0') {
+        ai_fail(buf, lw, "No AI command configured. Please set one in "
+                         "File \xe2\x86\x92 Settings \xe2\x86\x92 AI Features.");
+        return;
+    }
 
-    if (lw->app->ai_command == NULL || *lw->app->ai_command == '\0')
-        AI_FAIL("No AI command configured. Please set one in File \xe2\x86\x92"
-                " Settings \xe2\x86\x92 AI Features.");
+    /* Reject views where summarization doesn't make sense before loading
+     * any notes — keeps all early exits before the expensive allocations.   */
+    if (lw->sel_kind == SB_KIND_TRASH ||
+        lw->sel_kind == SB_KIND_TRASH_FOLDER ||
+        lw->sel_kind == SB_KIND_ACTIONS) {
+        ai_fail(buf, lw, "Select a folder, tag, or All Notes to summarize.");
+        return;
+    }
+
+    /* Validate the per-folder AI mode before allocating anything.           */
+    gint ai_mode = (lw->sel_kind == SB_KIND_FOLDER)
+        ? on_db_folder_get_ai_mode(lw->app->db, lw->sel_id)
+        : ON_AI_MODE_NORMAL;
+    if (ai_mode == ON_AI_MODE_CUSTOM &&
+            (lw->app->ai_custom_prompt == NULL ||
+             *lw->app->ai_custom_prompt == '\0')) {
+        ai_fail(buf, lw, "No custom AI prompt configured. Set one in "
+                         "File \xe2\x86\x92 Settings \xe2\x86\x92 AI Features.");
+        return;
+    }
 
     GList *notes;
     if (lw->sel_kind == SB_KIND_TAG)
@@ -3542,36 +3589,25 @@ run_ai_summary(OnLibrary *lw)
         notes = on_db_note_list_pinned(lw->app->db);
     else if (lw->sel_kind == SB_KIND_ALL)
         notes = on_db_note_list_recent(lw->app->db);
-    else if (lw->sel_kind == SB_KIND_TRASH ||
-             lw->sel_kind == SB_KIND_TRASH_FOLDER ||
-             lw->sel_kind == SB_KIND_ACTIONS)
-        AI_FAIL("Select a folder, tag, or All Notes to summarize.");
     else
         notes = on_db_note_list(lw->app->db, lw->sel_id);
 
-    if (notes == NULL)
-        AI_FAIL("No notes to summarize.");
+    if (notes == NULL) {
+        ai_fail(buf, lw, "No notes to summarize.");
+        return;
+    }
 
     GList      *all_actions = on_db_action_list(lw->app->db);
     GHashTable *body_map    = on_db_note_body_map(lw->app->db);
     GString    *prompt      = g_string_new(NULL);
 
-    /* Use the folder's per-folder AI mode; fall back to Normal for non-folder
-     * selections (All Notes, tags, Pinned).                                  */
-    gint ai_mode = (lw->sel_kind == SB_KIND_FOLDER)
-        ? on_db_folder_get_ai_mode(lw->app->db, lw->sel_id)
-        : ON_AI_MODE_NORMAL;
-
+    /* Build the prompt header based on the folder's AI mode.               */
     if (ai_mode == ON_AI_MODE_PROJECT) {
         g_string_append(prompt,
             "This series of notes chronologically details the progress of a "
             "project. Provide me a summary of them all especially focusing on "
             "the current state and any remaining action items.\n\n");
     } else if (ai_mode == ON_AI_MODE_CUSTOM) {
-        if (lw->app->ai_custom_prompt == NULL ||
-                *lw->app->ai_custom_prompt == '\0')
-            AI_FAIL("No custom AI prompt configured. Set one in "
-                    "File \xe2\x86\x92 Settings \xe2\x86\x92 AI Features.");
         g_string_append(prompt, lw->app->ai_custom_prompt);
         g_string_append(prompt, "\n\n");
     } else {
@@ -3660,7 +3696,6 @@ run_ai_summary(OnLibrary *lw)
         ai_throbber_stop(lw);
         return;
     }
-#undef AI_FAIL
 
     lw->ai_running = TRUE;
 
@@ -3668,10 +3703,12 @@ run_ai_summary(OnLibrary *lw)
     gchar *pstr        = g_string_free(prompt, FALSE);
     GBytes *stdin_bytes = g_bytes_new_take(pstr, plen);
 
-    AiJobData *job = g_new(AiJobData, 1);
-    job->lw = lw;
+    AiJobData *job        = g_new(AiJobData, 1);
+    job->lw               = lw;
+    job->cancellable      = g_cancellable_new();
+    lw->ai_cancel         = g_object_ref(job->cancellable);
 
-    g_subprocess_communicate_async(proc, stdin_bytes, NULL,
+    g_subprocess_communicate_async(proc, stdin_bytes, job->cancellable,
                                    on_ai_subprocess_done, job);
     g_bytes_unref(stdin_bytes);
     g_object_unref(proc);
@@ -4653,6 +4690,13 @@ library_free(gpointer data)
     OnLibrary *lw = data;
     if (lw->status_timeout != 0)
         g_source_remove(lw->status_timeout);
+    /* Cancel any in-flight AI subprocess before freeing lw.  The
+     * GCancellable keeps the callback safe after the pointer is gone.    */
+    ai_throbber_stop(lw);
+    if (lw->ai_cancel != NULL) {
+        g_cancellable_cancel(lw->ai_cancel);
+        g_clear_object(&lw->ai_cancel);
+    }
     thumb_pending_clear(lw);
     g_hash_table_destroy(lw->thumb_cache);
     if (lw->notes_press_path != NULL)
@@ -4722,54 +4766,13 @@ on_sidebar_fit_to_content(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
-GtkWidget *
-on_library_window_create(OnApp *app)
+/* ---------------------------------------------------------------------------
+ * library_build_sidebar() — build lw->sidebar (GtkTreeView) and
+ * lw->sidebar_box (its scroll container), ready to be packed into the paned.
+ * ------------------------------------------------------------------------- */
+static void
+library_build_sidebar(OnLibrary *lw)
 {
-    OnLibrary *lw = g_new0(OnLibrary, 1);
-    lw->app      = app;
-    lw->sel_kind = SB_KIND_ROOT;
-    lw->sel_id   = 0;
-    lw->sel_name = g_strdup("Notes");
-    lw->thumb_cache = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                            g_free, thumb_entry_free);
-
-    /* --- window (standard titlebar, no HeaderBar) ------------------------*/
-    lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Blue Notes - Library");
-    gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
-    gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
-    g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,
-                           library_free);
-
-    app->library_window       = lw->window;
-    app->notify_notes_changed = library_notify_notes_changed;
-    app->notify_note_saved    = library_notify_note_saved;
-    app->notify_status        = library_notify_status;
-    app->notify_ai_changed    = library_notify_ai_changed;
-
-    g_signal_connect(lw->window, "key-press-event",
-                     G_CALLBACK(on_library_key_press), lw);
-
-    /* --- models -----------------------------------------------------------*/
-    lw->sidebar_store = gtk_tree_store_new(SB_N_COLS,
-                                           G_TYPE_INT,     /* SB_KIND      */
-                                           G_TYPE_INT64,   /* SB_ID        */
-                                           G_TYPE_STRING,  /* SB_NAME      */
-                                           G_TYPE_STRING); /* SB_RAW       */
-    lw->notes_store = gtk_list_store_new(
-        NL_N_COLS,
-        G_TYPE_INT64,                    /* NL_ID                          */
-        G_TYPE_STRING,                   /* NL_TITLE                       */
-        G_TYPE_STRING,                   /* NL_MODIFIED                    */
-        CAIRO_GOBJECT_TYPE_SURFACE,      /* NL_THUMB                       */
-        G_TYPE_INT64,                    /* NL_UPDATED                     */
-        G_TYPE_STRING,                   /* NL_PATH                        */
-        G_TYPE_STRING,                   /* NL_CREATED                     */
-        G_TYPE_INT64);                   /* NL_CREATED_RAW                 */
-    g_signal_connect(lw->notes_store, "row-deleted",
-                     G_CALLBACK(on_notes_row_deleted), lw);
-
-    /* --- sidebar -----------------------------------------------------------*/
     lw->sidebar = GTK_TREE_VIEW(
         gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->sidebar_store)));
     gtk_tree_view_set_headers_visible(lw->sidebar, FALSE);
@@ -4868,8 +4871,16 @@ on_library_window_create(OnApp *app)
     gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_scroll,
                        TRUE, TRUE, 0);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
+}
 
-    /* --- notes list view ---------------------------------------------------*/
+/* ---------------------------------------------------------------------------
+ * library_build_notes_list() — build lw->notes_list (GtkTreeView) with its
+ * four columns, sort functions, column layout, and DnD; returns the scroll
+ * container ready to be added to the notes stack.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+library_build_notes_list(OnLibrary *lw)
+{
     lw->notes_list = GTK_TREE_VIEW(
         gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
     /* No GTK type-ahead popup (auto-picked search column, see quirk 16).  */
@@ -5044,8 +5055,16 @@ on_library_window_create(OnApp *app)
         GTK_SCROLLED_WINDOW(list_scroll), FALSE);
     gtk_container_add(GTK_CONTAINER(list_scroll),
                       GTK_WIDGET(lw->notes_list));
+    return list_scroll;
+}
 
-    /* --- notes grid view ---------------------------------------------------*/
+/* ---------------------------------------------------------------------------
+ * library_build_notes_grid() — build lw->notes_grid (GtkIconView) with its
+ * HiDPI thumbnail + title cell layout and DnD; returns the scroll container.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+library_build_notes_grid(OnLibrary *lw)
+{
     lw->notes_grid = GTK_ICON_VIEW(
         gtk_icon_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
     {
@@ -5094,8 +5113,17 @@ on_library_window_create(OnApp *app)
         GTK_SCROLLED_WINDOW(grid_scroll), FALSE);
     gtk_container_add(GTK_CONTAINER(grid_scroll),
                       GTK_WIDGET(lw->notes_grid));
+    return grid_scroll;
+}
 
-    /* --- action items view (third stack child) -----------------------------*/
+/* ---------------------------------------------------------------------------
+ * library_build_actions_view() — build lw->actions_store and lw->actions_view
+ * with their three columns, sort functions, and column layout; returns the
+ * scroll container ready to be added to the notes stack.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+library_build_actions_view(OnLibrary *lw)
+{
     lw->actions_store = gtk_list_store_new(AL_N_COLS,
                                            G_TYPE_INT64,   /* AL_NOTE_ID   */
                                            G_TYPE_INT,     /* AL_ORD       */
@@ -5194,14 +5222,37 @@ on_library_window_create(OnApp *app)
         GTK_SCROLLED_WINDOW(actions_scroll), FALSE);
     gtk_container_add(GTK_CONTAINER(actions_scroll),
                       GTK_WIDGET(lw->actions_view));
+    return actions_scroll;
+}
 
-    /* --- stack: list <-> grid <-> action items ------------------------------*/
+/* ---------------------------------------------------------------------------
+ * library_build_notes_pane() — build the three note views (list, grid,
+ * actions) and assemble them into lw->stack, ready to be packed into the
+ * notes paned.
+ * ------------------------------------------------------------------------- */
+static void
+library_build_notes_pane(OnLibrary *lw)
+{
+    GtkWidget *list_scroll    = library_build_notes_list(lw);
+    GtkWidget *grid_scroll    = library_build_notes_grid(lw);
+    GtkWidget *actions_scroll = library_build_actions_view(lw);
+
+    /* --- stack: list <-> grid <-> action items ----------------------------*/
     lw->stack = gtk_stack_new();
-    gtk_stack_add_named(GTK_STACK(lw->stack), list_scroll, "list");
-    gtk_stack_add_named(GTK_STACK(lw->stack), grid_scroll, "grid");
+    gtk_stack_add_named(GTK_STACK(lw->stack), list_scroll,    "list");
+    gtk_stack_add_named(GTK_STACK(lw->stack), grid_scroll,    "grid");
     gtk_stack_add_named(GTK_STACK(lw->stack), actions_scroll, "actions");
     gtk_stack_set_visible_child_name(GTK_STACK(lw->stack), "list");
+}
 
+/* ---------------------------------------------------------------------------
+ * library_build_status_bar() — build the status bar with lw->status_path
+ * (left) and lw->status_event in lw->status_revealer (right); returns the
+ * assembled box widget.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+library_build_status_bar(OnLibrary *lw)
+{
     /* --- status bar: selection path (left) + latest event (right) ----------*/
     lw->status_path = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(lw->status_path), 0.0);
@@ -5238,10 +5289,71 @@ on_library_window_create(OnApp *app)
     on_app_widget_add_css(lw->status_path,  "label { font-size: 85%; }");
     on_app_widget_add_css(lw->status_event, "label { font-size: 85%; }");
 
+    return status_bar;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_library_window_create() — build and show the library window.
+ * Creates the OnLibrary state, models, and sub-panes via the builder helpers
+ * above, assembles the layout, and triggers the initial data load.
+ * ------------------------------------------------------------------------- */
+GtkWidget *
+on_library_window_create(OnApp *app)
+{
+    OnLibrary *lw = g_new0(OnLibrary, 1);
+    lw->app      = app;
+    lw->sel_kind = SB_KIND_ROOT;
+    lw->sel_id   = 0;
+    lw->sel_name = g_strdup("Notes");
+    lw->thumb_cache = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                            g_free, thumb_entry_free);
+
+    /* --- window (standard titlebar, no HeaderBar) ------------------------*/
+    lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Blue Notes - Library");
+    gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
+    gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
+    g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,
+                           library_free);
+
+    app->library_window       = lw->window;
+    app->notify_notes_changed = library_notify_notes_changed;
+    app->notify_note_saved    = library_notify_note_saved;
+    app->notify_status        = library_notify_status;
+    app->notify_ai_changed    = library_notify_ai_changed;
+
+    g_signal_connect(lw->window, "key-press-event",
+                     G_CALLBACK(on_library_key_press), lw);
+
+    /* --- models -----------------------------------------------------------*/
+    lw->sidebar_store = gtk_tree_store_new(SB_N_COLS,
+                                           G_TYPE_INT,     /* SB_KIND      */
+                                           G_TYPE_INT64,   /* SB_ID        */
+                                           G_TYPE_STRING,  /* SB_NAME      */
+                                           G_TYPE_STRING); /* SB_RAW       */
+    lw->notes_store = gtk_list_store_new(
+        NL_N_COLS,
+        G_TYPE_INT64,                    /* NL_ID                          */
+        G_TYPE_STRING,                   /* NL_TITLE                       */
+        G_TYPE_STRING,                   /* NL_MODIFIED                    */
+        CAIRO_GOBJECT_TYPE_SURFACE,      /* NL_THUMB                       */
+        G_TYPE_INT64,                    /* NL_UPDATED                     */
+        G_TYPE_STRING,                   /* NL_PATH                        */
+        G_TYPE_STRING,                   /* NL_CREATED                     */
+        G_TYPE_INT64);                   /* NL_CREATED_RAW                 */
+    g_signal_connect(lw->notes_store, "row-deleted",
+                     G_CALLBACK(on_notes_row_deleted), lw);
+
+    /* --- panes + status bar -----------------------------------------------*/
+    library_build_sidebar(lw);           /* sets lw->sidebar, lw->sidebar_box */
+    library_build_notes_pane(lw);        /* sets lw->notes_list, lw->notes_grid,
+                                          * lw->actions_view, lw->stack       */
+    GtkWidget *status_bar = library_build_status_bar(lw);
+
     /* --- assemble -----------------------------------------------------------*/
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     lw->sidebar_paned = paned;
-    gtk_paned_pack1(GTK_PANED(paned), sidebar_box, FALSE, FALSE);
+    gtk_paned_pack1(GTK_PANED(paned), lw->sidebar_box, FALSE, FALSE);
     lw->ai_pane = build_ai_pane(lw);
     /* Vertical paned so the user can drag the divider between the notes list
      * and the AI summary pane.  GtkPaned collapses the divider automatically

@@ -212,7 +212,7 @@ on_db_open(const gchar *path_override)
 
     /* Wait out short write locks instead of failing instantly — e.g. a
      * CLI command landing while the GUI is mid-autosave.                   */
-    sqlite3_busy_timeout(db->handle, 5000);
+    sqlite3_busy_timeout(db->handle, ON_DB_BUSY_TIMEOUT_MS);
 
     if (!exec_simple(db, SCHEMA_SQL)) {
         on_db_close(db);
@@ -269,14 +269,21 @@ on_db_backup_to(OnDatabase *db, const gchar *dest_path)
         return FALSE;
     }
 
-    /* The online backup API snapshots a live database safely.              */
+    /* The online backup API snapshots a live database safely.  Step with
+     * -1 to copy all pages in one call; retry on transient SQLITE_BUSY
+     * (a concurrent CLI write may briefly hold the read lock).            */
     sqlite3_backup *backup =
         sqlite3_backup_init(dest, "main", db->handle, "main");
     gboolean ok = FALSE;             /* overall success                     */
     if (backup != NULL) {
-        sqlite3_backup_step(backup, -1);     /* copy everything             */
+        int rc, tries = 0;
+        do {
+            rc = sqlite3_backup_step(backup, -1);
+            if ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && tries++ < 5)
+                g_usleep(200 * 1000);    /* 200 ms between retries          */
+        } while ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && tries < 5);
         sqlite3_backup_finish(backup);
-        ok = sqlite3_errcode(dest) == SQLITE_OK;
+        ok = (rc == SQLITE_DONE);
     }
     if (!ok)
         g_warning("db: backup to %s failed: %s",
@@ -403,7 +410,7 @@ on_db_folder_move(OnDatabase *db, gint64 id, gint64 parent_id)
      * holds a corrupt cycle; it turns a hang into a refusal.                */
     gint64 p = parent_id;                /* ancestor cursor                 */
     for (gint depth = 0; p != 0; depth++) {
-        if (p == id || depth > 1000)
+        if (p == id || depth > ON_DB_FOLDER_CYCLE_DEPTH_LIMIT)
             return FALSE;
         p = folder_parent_of(db, p);
     }
@@ -453,7 +460,10 @@ reorder_rows(OnDatabase *db, const char *sql, const gint64 *ids, gsize n)
         sqlite3_reset(stmt);
     }
     sqlite3_finalize(stmt);
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -467,12 +477,18 @@ on_db_folder_reorder(OnDatabase *db, const gint64 *folder_ids, gsize n)
 gboolean
 on_db_folder_delete(OnDatabase *db, gint64 id)
 {
+    if (!exec_simple(db, "BEGIN IMMEDIATE"))
+        return FALSE;
     sqlite3_stmt *stmt = prepare(db, "DELETE FROM folders WHERE id=?");
     if (stmt != NULL)
         sqlite3_bind_int64(stmt, 1, id);
     gboolean ok = stmt_done(db, stmt);
     if (ok)
-        exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
+        ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -538,7 +554,7 @@ on_db_note_create(OnDatabase *db, gint64 folder_id)
     sqlite3_stmt *stmt = prepare(db,
         "INSERT INTO notes (folder_id, title, sort_order, created_at, "
         "                   updated_at) "
-        "VALUES (?, 'New Note', "
+        "VALUES (?, '" ON_DEFAULT_NOTE_TITLE "', "
         "  COALESCE((SELECT MAX(sort_order)+1 FROM notes "
         "            WHERE folder_id IS ?), 0), "
         "  strftime('%s','now'), strftime('%s','now'))");
@@ -579,7 +595,10 @@ on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n)
 
     if (ok)
         ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -612,7 +631,10 @@ on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
         sqlite3_reset(stmt);
     }
     sqlite3_finalize(stmt);
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -979,7 +1001,10 @@ on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
     if (ok)
         ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
 
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -1053,7 +1078,10 @@ on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
             sqlite3_finalize(stmt);
     }
 
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -1176,7 +1204,10 @@ on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n)
     }
     if (stmt != NULL)
         sqlite3_finalize(stmt);
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -1305,7 +1336,10 @@ on_db_trash_empty(OnDatabase *db)
             "folder_id IN (SELECT id FROM trash_folder_ids)") &&
         exec_simple(db, "DELETE FROM folders WHERE trashed=1") &&
         exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    exec_simple(db, ok ? "COMMIT" : "ROLLBACK");
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
     return ok;
 }
 
@@ -1458,7 +1492,7 @@ on_db_folder_path_map(OnDatabase *db)
         GString *path = g_string_new(r->name);
         gint64 cur   = r->parent;    /* ancestor cursor                     */
         gint   depth = 0;            /* cap guards a corrupt cycle          */
-        while (cur != 0 && depth++ < 128) {
+        while (cur != 0 && depth++ < ON_DB_FOLDER_PATH_DEPTH_LIMIT) {
             FolderRow *p = g_hash_table_lookup(rows, &cur);
             if (p == NULL)
                 break;
@@ -1484,7 +1518,7 @@ on_db_folder_path(OnDatabase *db, gint64 folder_id)
     gint64   cur  = folder_id;           /* current folder in the walk      */
     gint     depth = 0;                  /* levels walked so far            */
 
-    while (cur > 0 && depth++ < 128) {
+    while (cur > 0 && depth++ < ON_DB_FOLDER_PATH_DEPTH_LIMIT) {
         sqlite3_stmt *stmt = prepare(db,
             "SELECT name, COALESCE(parent_id,0) FROM folders WHERE id=?");
         if (stmt == NULL)

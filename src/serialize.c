@@ -22,6 +22,9 @@
  * such blobs remained in the database.)                                     */
 static const guint8 BNBF_MAGIC[4] = { 'B', 'N', 'B', 'F' };
 
+/* Maximum character count for a title derived from a note's first line.     */
+#define ON_TITLE_MAX_CHARS 80
+
 /* magic_ok() — does this blob start with the BNBF magic?                    */
 static gboolean
 magic_ok(const guint8 *data, gsize len)
@@ -659,6 +662,41 @@ on_anchor_get_image(GtkTextChildAnchor *anchor, gint *display_width)
     return g_object_get_data(G_OBJECT(anchor), "on-original");
 }
 
+/* ---------------------------------------------------------------------------
+ * read_table_record() — parse a TABLE record body from a BNBF stream.
+ *   data    — blob start.
+ *   len     — blob length.
+ *   pos     — read cursor; advanced past the whole record on success.
+ *   version — BNBF version (tflags only present in version >= 4).
+ *   collect — if non-NULL, each cell's text is appended here followed by
+ *             a space; if NULL the cells are skipped silently.
+ * Returns FALSE if the record is truncated or malformed (caller should
+ * break its record loop).
+ * ------------------------------------------------------------------------- */
+static gboolean
+read_table_record(const guint8 *data, gsize len, gsize *pos,
+                  guint32 version, GString *collect)
+{
+    guint32 tflags = 0, rows, cols;
+    if (version >= 4 && !get_u32(data, len, pos, &tflags))
+        return FALSE;
+    if (!get_u32(data, len, pos, &rows) ||
+        !get_u32(data, len, pos, &cols) ||
+        rows == 0 || cols == 0 || rows > 1024 || cols > 1024)
+        return FALSE;               /* same clamp as the full deserializer     */
+    for (guint32 i = 0; i < rows * cols; i++) {
+        guint32 n;
+        if (!get_u32(data, len, pos, &n) || *pos + n > len)
+            return FALSE;
+        if (collect != NULL) {
+            g_string_append_len(collect, (const gchar *)data + *pos, n);
+            g_string_append_c(collect, ' ');
+        }
+        *pos += n;
+    }
+    return TRUE;
+}
+
 gchar *
 on_note_extract_text(const guint8 *data, gsize len)
 {
@@ -692,25 +730,7 @@ on_note_extract_text(const guint8 *data, gsize len)
                 break;
             pos += n;                /* skip the PNG payload                */
         } else if (rec == REC_TABLE) {
-            guint32 tflags = 0, rows, cols;
-            if (version >= 4 && !get_u32(data, len, &pos, &tflags))
-                break;
-            if (!get_u32(data, len, &pos, &rows) ||
-                !get_u32(data, len, &pos, &cols) ||
-                rows == 0 || cols == 0 || rows > 1024 || cols > 1024)
-                break;               /* same clamp as the deserializer      */
-            gboolean bad = FALSE;    /* truncated cell encountered          */
-            for (guint32 i = 0; i < rows * cols && !bad; i++) {
-                guint32 n;
-                if (!get_u32(data, len, &pos, &n) || pos + n > len) {
-                    bad = TRUE;
-                    break;
-                }
-                g_string_append_len(out, (const gchar *)data + pos, n);
-                g_string_append_c(out, ' ');
-                pos += n;
-            }
-            if (bad)
+            if (!read_table_record(data, len, &pos, version, out))
                 break;
         } else if (rec == REC_CHECK) {
             if (pos >= len)
@@ -874,23 +894,7 @@ on_note_extract_actions(const guint8 *data, gsize len)
             pos += n;                /* skip the PNG payload                */
             s.at_start = FALSE;      /* the object occupies the first slot  */
         } else if (rec == REC_TABLE) {
-            guint32 tflags = 0, rows, cols;
-            if (version >= 4 && !get_u32(data, len, &pos, &tflags))
-                break;
-            if (!get_u32(data, len, &pos, &rows) ||
-                !get_u32(data, len, &pos, &cols) ||
-                rows == 0 || cols == 0 || rows > 1024 || cols > 1024)
-                break;               /* same clamp as the deserializer      */
-            gboolean bad = FALSE;    /* truncated cell encountered          */
-            for (guint32 i = 0; i < rows * cols && !bad; i++) {
-                guint32 n;
-                if (!get_u32(data, len, &pos, &n) || pos + n > len) {
-                    bad = TRUE;
-                    break;
-                }
-                pos += n;            /* cell text is not line text          */
-            }
-            if (bad)
+            if (!read_table_record(data, len, &pos, version, NULL))
                 break;
             s.at_start = FALSE;
         } else if (rec == REC_CHECK) {
@@ -929,11 +933,11 @@ on_buffer_first_line(GtkTextBuffer *buffer)
 
     if (*text == '\0') {
         g_free(text);
-        return g_strdup("New Note");
+        return g_strdup(ON_DEFAULT_NOTE_TITLE);
     }
     /* Keep titles a sane length for the list views.                        */
-    if (g_utf8_strlen(text, -1) > 80) {
-        gchar *cut = g_utf8_substring(text, 0, 80);
+    if (g_utf8_strlen(text, -1) > ON_TITLE_MAX_CHARS) {
+        gchar *cut = g_utf8_substring(text, 0, ON_TITLE_MAX_CHARS);
         g_free(text);
         return cut;
     }

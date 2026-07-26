@@ -37,6 +37,24 @@
 #include <sqlite3.h>
 
 /* ---------------------------------------------------------------------------
+ * DB constants
+ * ------------------------------------------------------------------------- */
+/* Milliseconds to wait for a write lock before failing — long enough to ride
+ * out a CLI command landing while the GUI is mid-autosave.                  */
+#define ON_DB_BUSY_TIMEOUT_MS          5000
+
+/* Default title used for a newly created note and as the fallback when the
+ * first-line extraction returns empty text.                                  */
+#define ON_DEFAULT_NOTE_TITLE          "New Note"
+
+/* Maximum depth walked when building a folder path string.  A corrupt cycle
+ * in the parent_id chain (hand-edited DB) would otherwise spin forever.     */
+#define ON_DB_FOLDER_PATH_DEPTH_LIMIT  128
+
+/* Maximum depth checked when validating a folder move for cycles.           */
+#define ON_DB_FOLDER_CYCLE_DEPTH_LIMIT 1000
+
+/* ---------------------------------------------------------------------------
  * OnDatabase — an open handle to the notes database.
  *
  * Fields:

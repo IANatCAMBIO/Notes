@@ -87,6 +87,20 @@
  *   show_done_actions — whether the library's Action Items view lists
  *                    completed (struck-through) items too; persisted as
  *                    the "show_done_actions" setting (default on).
+ *   ai_enabled     — master switch for AI features (Summary toolbar button
+ *                    visible only when TRUE); persisted as "ai_enabled".
+ *   ai_command     — shell command invoked to run the AI model (owned
+ *                    string); set via File → Settings → AI Features.
+ *   ai_custom_prompt — prompt text used for folders in Custom AI mode;
+ *                    set via File → Settings → AI Features (owned string).
+ *   notify_ai_changed — callback that shows or hides the AI toolbar button
+ *                    when ai_enabled changes.
+ *   db_transient   — TRUE when the database that is currently open was
+ *                    chosen interactively at launch (not the configured
+ *                    default); used to decide whether to persist the path.
+ *   touch_css      — GtkCssProvider that hides the touch drag handles and
+ *                    magnifier (applied when touch assistance is disabled);
+ *                    NULL when touch assistance is shown.
  * ------------------------------------------------------------------------- */
 
 /* Which family a toolbar belongs to — each has its own style setting.       */

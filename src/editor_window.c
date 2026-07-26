@@ -2433,6 +2433,8 @@ on_tag_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
     /* Capture is over; the tag styling was applied above.                  */
     gtk_text_buffer_delete_mark(ed->buffer, ed->tag_start);
     ed->tag_start = NULL;
+    on_db_tag_list_free(ed->tag_choices);
+    ed->tag_choices = NULL;
     tag_popup_hide(ed);
     ed->tags_modified = TRUE;        /* a tag was created                   */
     editor_queue_autosave(ed);
@@ -4308,6 +4310,185 @@ on_editor_rebuild_toolbars_all(OnApp *app)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_build_view() — create ed->view and ed->buffer, add all editor-only
+ * GtkTextTags, and configure the view's margins and wrapping.  Called before
+ * loading content so the tags exist when the deserializer applies them.
+ * ------------------------------------------------------------------------- */
+static void
+editor_build_view(OnEditor *ed)
+{
+    ed->view   = GTK_TEXT_VIEW(gtk_text_view_new());
+    ed->buffer = gtk_text_view_get_buffer(ed->view);
+    g_object_ref(ed->buffer);        /* keep alive for the final save       */
+    on_buffer_ensure_tags(ed->buffer);
+
+    /* Editor-only highlight for in-note search matches (never appears in
+     * the serializer's flag table, so it is ignored on save).              */
+    gtk_text_buffer_create_tag(ed->buffer, "on-search-hit",
+                               "background", "#ffec8b", NULL);
+    /* Editor-only padding around color-emoji glyphs (see is_emoji_char).   */
+    gtk_text_buffer_create_tag(ed->buffer, "on-emoji",
+                               "letter-spacing", 5 * PANGO_SCALE, NULL);
+    /* Editor-only: drop each task checkbox a few px so its box centers on
+     * the text beside it — anchored children sit with their bottom on the
+     * baseline, which parks the box's center above the text's (see
+     * attach_checkbox_widget).  Never serialized.                          */
+    gtk_text_buffer_create_tag(ed->buffer, "on-check-drop",
+                               "rise", -3 * PANGO_SCALE, NULL);
+    /* Editor-only tint for '!' action lines — blue, mirroring the tags'
+     * orange.  Priority 0 so a #tag span inside an action line keeps its
+     * own color.  Never serialized.                                        */
+    GtkTextTag *action_tag = gtk_text_buffer_create_tag(
+        ed->buffer, "on-action",
+        "foreground", "#1a5fb4",
+        "weight",     PANGO_WEIGHT_SEMIBOLD,
+        NULL);
+    gtk_text_tag_set_priority(action_tag, 0);
+
+    gtk_text_view_set_editable(ed->view, TRUE);
+    gtk_text_view_set_wrap_mode(ed->view, GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(ed->view, 16);
+    gtk_text_view_set_right_margin(ed->view, 16);
+    gtk_text_view_set_top_margin(ed->view, 12);
+    /* Roughly one text line of bottom margin: typing on the LAST line
+     * (where there is no further content to scroll ahead to) still
+     * leaves a line-sized gap below the caret.                             */
+    gtk_text_view_set_bottom_margin(ed->view, 20);
+    gtk_text_view_set_pixels_above_lines(ed->view, 2);
+    if (ed->app->code_line_numbers)
+        editor_apply_line_numbers(ed);
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_load_content() — load the stored BNBF blob into ed->buffer,
+ * re-apply derived tags (emoji padding, action-line tint), and initialise
+ * ed->last_actions and the undo baseline.  Signals must NOT be connected
+ * yet — loading would otherwise trigger autosave.
+ * ------------------------------------------------------------------------- */
+static void
+editor_load_content(OnEditor *ed)
+{
+    gsize   blob_len = 0;
+    guint8 *blob = on_db_note_load(ed->app->db, ed->note_id, &blob_len);
+    if (blob != NULL) {
+        ed->internal_change++;
+        on_note_deserialize(ed->buffer, blob, blob_len);
+        editor_attach_image_widgets(ed);
+        /* Re-apply derived tags — both are editor-only, never stored.      */
+        tag_emoji_in_range(ed, 0,
+                           gtk_text_buffer_get_char_count(ed->buffer));
+        action_retag_lines(ed, 0,
+                           gtk_text_buffer_get_char_count(ed->buffer));
+        ed->internal_change--;
+        /* Snapshot the action set; editor_save only rewrites when it drifts. */
+        ed->last_actions = on_note_extract_actions(blob, blob_len);
+        g_free(blob);
+    }
+    /* A brand-new (empty) note gets its first line auto-styled as H1.      */
+    ed->auto_h1 = ed->app->first_line_h1 &&
+                  gtk_text_buffer_get_char_count(ed->buffer) == 0;
+
+    ed->undo_stack   = g_ptr_array_new();
+    ed->redo_stack   = g_ptr_array_new();
+    ed->undo_current = undo_snapshot_capture(ed);
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_build_layout() — assemble the toolbar, text-view scroll, and status
+ * bar into a vertical box and add it to ed->window.
+ * ------------------------------------------------------------------------- */
+static void
+editor_build_layout(OnEditor *ed)
+{
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    ed->toolbar_box = vbox;
+    ed->toolbar     = build_toolbar(ed);
+    gtk_box_pack_start(GTK_BOX(vbox), ed->toolbar, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 0);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_AUTOMATIC,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll),
+                                              FALSE);
+    gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(ed->view));
+    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    /* --- status bar: note location (left), note id (right) -------------- */
+    ed->status_path = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(ed->status_path), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(ed->status_path),
+                            PANGO_ELLIPSIZE_MIDDLE);
+    on_app_widget_add_css(ed->status_path, "label { font-size: 85%; }");
+
+    /* Note id — no-show-all: its updater owns visibility
+     * (statusbar_note_id setting, default off).                            */
+    ed->status_note_id = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(ed->status_note_id), 1.0);
+    on_app_widget_add_css(ed->status_note_id, "label { font-size: 85%; }");
+    gtk_widget_set_no_show_all(ed->status_note_id, TRUE);
+
+    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_margin_start(status_bar, 8);
+    gtk_widget_set_margin_end(status_bar, 8);
+    gtk_widget_set_margin_top(status_bar, 3);
+    gtk_widget_set_margin_bottom(status_bar, 3);
+    gtk_box_pack_start(GTK_BOX(status_bar), ed->status_path,  TRUE,  TRUE,  0);
+    gtk_box_pack_end(GTK_BOX(status_bar),   ed->status_note_id, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
+    editor_status_update(ed);
+
+    gtk_container_add(GTK_CONTAINER(ed->window), vbox);
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_connect_signals() — connect all buffer/view/window signals.  Called
+ * after content is loaded so that loading never triggers autosave handlers.
+ * ------------------------------------------------------------------------- */
+static void
+editor_connect_signals(OnEditor *ed)
+{
+    g_signal_connect(ed->buffer, "insert-text",
+                     G_CALLBACK(on_buffer_insert_text_before), ed);
+    g_signal_connect_after(ed->buffer, "insert-text",
+                           G_CALLBACK(on_buffer_insert_text_after), ed);
+    g_signal_connect(ed->buffer, "delete-range",
+                     G_CALLBACK(on_buffer_delete_range_before), ed);
+    g_signal_connect_after(ed->buffer, "delete-range",
+                           G_CALLBACK(on_buffer_delete_range_after), ed);
+    g_signal_connect(ed->buffer, "changed",
+                     G_CALLBACK(on_buffer_changed), ed);
+    g_signal_connect(ed->buffer, "notify::cursor-position",
+                     G_CALLBACK(on_cursor_moved), ed);
+    g_signal_connect(ed->view, "key-press-event",
+                     G_CALLBACK(on_view_key_press), ed);
+    g_signal_connect(ed->view, "paste-clipboard",
+                     G_CALLBACK(on_paste_clipboard), ed);
+    g_signal_connect(ed->view, "button-press-event",
+                     G_CALLBACK(on_view_button_press), ed);
+    g_signal_connect(ed->view, "populate-popup",
+                     G_CALLBACK(on_view_populate_popup), ed);
+    g_signal_connect(ed->view, "size-allocate",
+                     G_CALLBACK(on_view_size_allocate), ed);
+    g_signal_connect_after(ed->view, "draw",
+                           G_CALLBACK(on_view_draw), ed);
+    g_signal_connect(ed->window, "destroy",
+                     G_CALLBACK(on_editor_destroy), ed);
+    g_signal_connect(ed->window, "focus-in-event",
+                     G_CALLBACK(on_editor_focus_in), ed);
+
+    /* Give existing code blocks their floating copy buttons.               */
+    code_buttons_queue_rebuild(ed);
+}
+
+/* ---------------------------------------------------------------------------
  * editor_window_open_full() — shared implementation behind the two public
  * open functions.  `search_term` (may be NULL) pre-populates the in-note
  * search box and jumps to the first match, so a note opened from the library
@@ -4368,160 +4549,10 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
         g_free(wtitle);
     }
 
-    /* --- text view ------------------------------------------------------ */
-    ed->view = GTK_TEXT_VIEW(gtk_text_view_new());
-    ed->buffer = gtk_text_view_get_buffer(ed->view);
-    g_object_ref(ed->buffer);        /* keep alive for the final save       */
-    on_buffer_ensure_tags(ed->buffer);
-    /* Editor-only highlight for in-note search matches (never appears in
-     * the serializer's flag table, so it is ignored on save).              */
-    gtk_text_buffer_create_tag(ed->buffer, "on-search-hit",
-                               "background", "#ffec8b", NULL);
-    /* Editor-only padding around color-emoji glyphs (see is_emoji_char).   */
-    gtk_text_buffer_create_tag(ed->buffer, "on-emoji",
-                               "letter-spacing", 5 * PANGO_SCALE, NULL);
-    /* Editor-only: drop each task checkbox a few px so its box centers on
-     * the text beside it — anchored children sit with their bottom on the
-     * baseline, which parks the box's center above the text's (see
-     * attach_checkbox_widget).  Never serialized.                          */
-    gtk_text_buffer_create_tag(ed->buffer, "on-check-drop",
-                               "rise", -3 * PANGO_SCALE, NULL);
-    /* Editor-only tint for '!' action lines (see the action items
-     * section) — blue, mirroring the tags' orange.  Lowest priority so a
-     * #tag span inside an action line keeps its own color.                 */
-    GtkTextTag *action_tag = gtk_text_buffer_create_tag(
-        ed->buffer, "on-action",
-        "foreground", "#1a5fb4",
-        "weight",     PANGO_WEIGHT_SEMIBOLD,
-        NULL);
-    gtk_text_tag_set_priority(action_tag, 0);
-
-    gtk_text_view_set_editable(ed->view, TRUE);
-    gtk_text_view_set_wrap_mode(ed->view, GTK_WRAP_WORD_CHAR);
-    gtk_text_view_set_left_margin(ed->view, 16);
-    gtk_text_view_set_right_margin(ed->view, 16);
-    gtk_text_view_set_top_margin(ed->view, 12);
-    /* Roughly one text line of bottom margin: typing on the LAST line
-     * (where there is no further content to scroll ahead to) still
-     * leaves a line-sized gap below the caret.                             */
-    gtk_text_view_set_bottom_margin(ed->view, 20);
-    gtk_text_view_set_pixels_above_lines(ed->view, 2);
-    if (app->code_line_numbers)
-        editor_apply_line_numbers(ed);
-
-    /* --- load content ---------------------------------------------------- */
-    gsize   blob_len = 0;            /* stored BNBF blob size               */
-    guint8 *blob = on_db_note_load(app->db, note_id, &blob_len);
-    if (blob != NULL) {
-        ed->internal_change++;
-        on_note_deserialize(ed->buffer, blob, blob_len);
-        editor_attach_image_widgets(ed);
-        /* Re-apply the (unserialized) emoji padding and the action-line
-         * tint to loaded content — both are derived, never stored.         */
-        tag_emoji_in_range(ed, 0,
-                           gtk_text_buffer_get_char_count(ed->buffer));
-        action_retag_lines(ed, 0,
-                           gtk_text_buffer_get_char_count(ed->buffer));
-        ed->internal_change--;
-        /* The loaded blob defines the action set already in the table —
-         * editor_save only rewrites rows when the set drifts from this.    */
-        ed->last_actions = on_note_extract_actions(blob, blob_len);
-        g_free(blob);
-    }
-    /* A brand-new (empty) note gets its first line auto-styled as H1
-     * when the option is enabled.                                          */
-    ed->auto_h1 = app->first_line_h1 &&
-                  gtk_text_buffer_get_char_count(ed->buffer) == 0;
-
-    /* Undo history starts at the loaded state.                             */
-    ed->undo_stack   = g_ptr_array_new();
-    ed->redo_stack   = g_ptr_array_new();
-    ed->undo_current = undo_snapshot_capture(ed);
-
-    /* --- layout ----------------------------------------------------------*/
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    ed->toolbar_box = vbox;
-    ed->toolbar     = build_toolbar(ed);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->toolbar, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
-
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-                                   GTK_POLICY_AUTOMATIC,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll),
-                                              FALSE);
-    gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(ed->view));
-    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
-
-    /* --- status bar: note location (bottom left), library-style ---------- */
-    ed->status_path = gtk_label_new(NULL);
-    gtk_label_set_xalign(GTK_LABEL(ed->status_path), 0.0);
-    gtk_label_set_ellipsize(GTK_LABEL(ed->status_path),
-                            PANGO_ELLIPSIZE_MIDDLE);
-
-    /* A step smaller than the UI font, like the library's labels.          */
-    on_app_widget_add_css(ed->status_path, "label { font-size: 85%; }");
-
-    /* Note id (bottom right) — no-show-all: only its updater decides
-     * whether it is visible (the statusbar_note_id setting, default off). */
-    ed->status_note_id = gtk_label_new(NULL);
-    gtk_label_set_xalign(GTK_LABEL(ed->status_note_id), 1.0);
-    on_app_widget_add_css(ed->status_note_id, "label { font-size: 85%; }");
-    gtk_widget_set_no_show_all(ed->status_note_id, TRUE);
-
-    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_widget_set_margin_start(status_bar, 8);
-    gtk_widget_set_margin_end(status_bar, 8);
-    gtk_widget_set_margin_top(status_bar, 3);
-    gtk_widget_set_margin_bottom(status_bar, 3);
-    gtk_box_pack_start(GTK_BOX(status_bar), ed->status_path,
-                       TRUE, TRUE, 0);
-    gtk_box_pack_end(GTK_BOX(status_bar), ed->status_note_id,
-                     FALSE, FALSE, 0);
-
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
-    editor_status_update(ed);
-
-    gtk_container_add(GTK_CONTAINER(ed->window), vbox);
-
-    /* --- signals (connected after load so loading doesn't autosave) ----- */
-    g_signal_connect(ed->buffer, "insert-text",
-                     G_CALLBACK(on_buffer_insert_text_before), ed);
-    g_signal_connect_after(ed->buffer, "insert-text",
-                           G_CALLBACK(on_buffer_insert_text_after), ed);
-    g_signal_connect(ed->buffer, "delete-range",
-                     G_CALLBACK(on_buffer_delete_range_before), ed);
-    g_signal_connect_after(ed->buffer, "delete-range",
-                           G_CALLBACK(on_buffer_delete_range_after), ed);
-    g_signal_connect(ed->buffer, "changed",
-                     G_CALLBACK(on_buffer_changed), ed);
-    g_signal_connect(ed->buffer, "notify::cursor-position",
-                     G_CALLBACK(on_cursor_moved), ed);
-    g_signal_connect(ed->view, "key-press-event",
-                     G_CALLBACK(on_view_key_press), ed);
-    g_signal_connect(ed->view, "paste-clipboard",
-                     G_CALLBACK(on_paste_clipboard), ed);
-    g_signal_connect(ed->view, "button-press-event",
-                     G_CALLBACK(on_view_button_press), ed);
-    g_signal_connect(ed->view, "populate-popup",
-                     G_CALLBACK(on_view_populate_popup), ed);
-    g_signal_connect(ed->view, "size-allocate",
-                     G_CALLBACK(on_view_size_allocate), ed);
-    g_signal_connect_after(ed->view, "draw",
-                           G_CALLBACK(on_view_draw), ed);
-    g_signal_connect(ed->window, "destroy",
-                     G_CALLBACK(on_editor_destroy), ed);
-    g_signal_connect(ed->window, "focus-in-event",
-                     G_CALLBACK(on_editor_focus_in), ed);
-
-    /* Give existing code blocks their floating copy buttons.               */
-    code_buttons_queue_rebuild(ed);
+    editor_build_view(ed);
+    editor_load_content(ed);
+    editor_build_layout(ed);
+    editor_connect_signals(ed);
 
     /* Register in the open-editors table (key freed by the table), and
      * stash the editor state on its window for cross-module access.        */

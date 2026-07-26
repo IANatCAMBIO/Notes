@@ -495,6 +495,27 @@ sees the new flags.
 - The GUI can be launched in background for the user with
   `./blue_notes & disown` after `pkill -f "./blue_notes"`.
 
+## Common task patterns
+
+When making a targeted change, start by reading the files in the "Read" column,
+then change the files in the "Change" column.
+
+| Task | Read first | Change |
+|---|---|---|
+| Add a note field (metadata) | `db.h`, `db.c` | `db.h`, `db.c` (schema + ALTER migration) |
+| Add a note field (content/format) | `serialize.h`, `serialize.c` | `serialize.h`, `serialize.c`, `editor_window.c` |
+| Add a new sidebar row or section | `library_window.c` (`SB_KIND_*`, `refresh_sidebar`) | `library_window.c`, `app.h` |
+| Add a new CLI command | `cli.h` (synopsis), `cli.c` (`cmd_*`, `on_cli_dispatch_db`) | `cli.h`, `cli.c` |
+| Add a new toolbar button | `app.c` (`on_app_tool_item_new`), target window .c | `app.h` (if new kind), target window .c |
+| Add a new ini setting | `app.h` (`OnApp` struct + block comment), `app.c` (`on_app_config_init`) | `app.h`, `app.c`, `settings_window.c` |
+| Add a new DB column | `db.c` (schema + ALTER migration section around line 223) | `db.h`, `db.c` |
+| Modify the BNBF format | `serialize.h` (format spec), `serialize.c` | `serialize.h`, `serialize.c` (bump `BNBF_VERSION`, add new `REC_*`) |
+| Change editor window layout | `editor_window.c` (`editor_build_layout`, `editor_build_view`) | `editor_window.c` |
+| Change library window layout | `library_window.c` (builder functions: `library_build_*`) | `library_window.c` |
+| Change AI summary behaviour | `library_window.c` (`run_ai_summary`, `build_ai_pane`) | `library_window.c` |
+| Modify export output | `export.c` | `export.c` |
+| Modify search behaviour | `search_window.c` | `search_window.c` |
+
 ## Conventions
 
 - Every function gets a banner comment: purpose, params, return; comment

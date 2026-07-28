@@ -46,9 +46,9 @@ sees the new flags.
 | `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering |
 | `src/serialize.[ch]` | BNBF binary format ⇄ GtkTextBuffer; image anchors; shared GtkTextTag set (`on_buffer_ensure_tags`) |
 | `src/editor_window.[ch]` | WYSIWYG editor: inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, debounced autosave |
-| `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area \| Search … About), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
+| `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area \| Search … About), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
 | `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options |
-| `src/settings_window.[ch]` | Toolbar styles, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
+| `src/settings_window.[ch]` | Toolbar styles, list density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
 | `src/export.[ch]` | HTML + Markdown export (all notes mirroring folder tree, or single note) |
 | `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/done/undone/due` (items addressed `NOTEID:ORD`; done/due rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the offscreen path); `note new/append/set` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`) |
 | `icons/` | custom PNG toolbar icons + `vinyl.png` app logo (window icon, About button/dialog), loaded by basename; see icons/README.md |
@@ -148,7 +148,13 @@ sees the new flags.
   unusable: columns cache resized/requested widths that override it
   (never shrinking back), and ellipsizing renderers report a ~3-char
   minimum so ellipsized columns collapse instead of fitting.  Manual
-  resize grips come back when it's off). The old DB settings table is
+  resize grips come back when it's off),
+  `list_density_comfortable` (`1|0`, default 1 — Comfortable list
+  density: tall rows with a bold title and a small dimmed preview of the
+  first body-text line after the title, rendered via `notes_title_cell_func`
+  using Pango alpha rather than a fixed colour so the preview stays
+  readable on the selection highlight; applies live via
+  `notify_notes_changed`). The old DB settings table is
   GONE (dropped from the schema and the live DB 2026-07); all
   preferences live in the ini.
 - **Custom DB location** (shared-folder support) lives in the CONFIG
@@ -157,8 +163,9 @@ sees the new flags.
   any config read — main() calls it first thing), never in the DB.
   `on_app_switch_database()` switches live: closes all editors (flushing
   saves), swaps the handle, copies the current file to the target if no
-  blue_notes.db exists there, persists, refreshes the library. Failure
-  reverts to the old DB. If the configured DB can't be opened at
+  blue_notes.db exists there (or overwrites it at the user's choice);
+  either way the original file is deleted on success, persists, refreshes
+  the library. Failure reverts to the old DB. If the configured DB can't be opened at
   startup, main.c ERRORS OUT — deliberately NO fallback to the default
   location: a silent fallback once made a user's notes "disappear" and
   strands writes in the wrong file (the trigger was a relaunch racing
@@ -214,7 +221,7 @@ sees the new flags.
   then, light otherwise); CLI saves sync unconditionally; a one-time
   backfill for pre-feature notes is gated by `PRAGMA user_version`
   (`on_app_actions_backfill`, run after every long-lived `on_db_open` —
-  GUI start, CLI, db switch/restore).  Library: "Action Items" sidebar
+  GUI start, CLI, db switch).  Library: "Action Items" sidebar
   row below the folder tree and Tags section, above Trash (visible while
   items exist; optional count = OPEN items) shows a third notes-pane
   stack child ("actions"): untitled checkbox column + "Action" text
@@ -244,10 +251,9 @@ sees the new flags.
   `due` is in the CREATE TABLE (so new databases have it immediately)
   and a guarded ALTER migration backfills existing databases on open.
   `grid_pref` restores list/grid when leaving the view.
-- **Backup/Restore** (File menu): `on_db_backup_to()` uses SQLite's
-  online backup API on the live DB; `on_app_restore_database()` closes
-  editors, keeps the old file as `blue_notes.db.pre-restore`, copies the
-  backup in, reopens (rolls back if the file isn't a usable DB).
+- **CLI backup**: `on_db_backup_to()` (db.c) uses SQLite's online backup
+  API on the live DB; exposed as `blue_notes backup FILE.db`. No GUI
+  equivalent — the File menu backup/restore items were removed.
 - **CLI ↔ GUI coexistence is socket-based, not lock-based**: a running
   GUI serves later CLI invocations over a unix socket (`src/ipc.c`), so
   the two never write the DB concurrently. The old in-DB `in_use`
@@ -424,8 +430,7 @@ sees the new flags.
   on-tag span, and the insert after-handler when typing inside one) —
   never by scanning the buffer at save time. note_tags is rewritten
   only when that flag is set. Create/move/delete run in the library,
-  which refreshes itself directly; db switch/restore use the full
-  notify.
+  which refreshes itself directly; db switch uses the full notify.
 - `ed->dirty` (set by editor_queue_autosave, cleared by editor_save)
   gates the close-time flush: closing a window whose last autosave
   already ran skips serialization entirely.
@@ -507,7 +512,7 @@ then change the files in the "Change" column.
 | Add a new sidebar row or section | `library_window.c` (`SB_KIND_*`, `refresh_sidebar`) | `library_window.c`, `app.h` |
 | Add a new CLI command | `cli.h` (synopsis), `cli.c` (`cmd_*`, `on_cli_dispatch_db`) | `cli.h`, `cli.c` |
 | Add a new toolbar button | `app.c` (`on_app_tool_item_new`), target window .c | `app.h` (if new kind), target window .c |
-| Add a new ini setting | `app.h` (`OnApp` struct + block comment), `app.c` (`on_app_config_init`) | `app.h`, `app.c`, `settings_window.c` |
+| Add a new ini setting | `app.h` (`OnApp` struct + block comment), `main.c` (bool loading block) | `app.h`, `main.c`, `settings_window.c` |
 | Add a new DB column | `db.c` (schema + ALTER migration section around line 223) | `db.h`, `db.c` |
 | Modify the BNBF format | `serialize.h` (format spec), `serialize.c` | `serialize.h`, `serialize.c` (bump `BNBF_VERSION`, add new `REC_*`) |
 | Change editor window layout | `editor_window.c` (`editor_build_layout`, `editor_build_view`) | `editor_window.c` |

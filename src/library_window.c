@@ -79,6 +79,7 @@ enum {
     NL_PATH,                         /* gchar*: "/Folder/Sub" location      */
     NL_CREATED,                      /* gchar*: formatted created_at        */
     NL_CREATED_RAW,                  /* gint64: raw created_at (sort key)   */
+    NL_PREVIEW,                      /* gchar*: first line of body text      */
     NL_N_COLS
 };
 
@@ -1044,6 +1045,9 @@ refresh_notes(OnLibrary *lw)
      * folders, never per note (shared/network DBs).                        */
     GHashTable *paths = on_db_folder_path_map(lw->app->db);
 
+    /* Body-text previews for the Comfortable list density — ONE query.     */
+    GHashTable *previews = on_db_note_preview_map(lw->app->db);
+
     /* Autofit measuring rides this population loop (no second model
      * walk, no re-fetching the strings) and only while the LIST is the
      * visible view — the grid doesn't show these columns, and switching
@@ -1116,18 +1120,43 @@ refresh_notes(OnLibrary *lw)
             thumb_todo = e == NULL || e->updated_at != m->updated_at;
         }
 
+        /* First non-blank line of body text AFTER the title line, for the
+         * Comfortable density preview.  body_text starts with the title
+         * followed by '\n', so skip that first line entirely.               */
+        gchar *preview = NULL;
+        const gchar *body = g_hash_table_lookup(previews, &m->id);
+        if (body != NULL) {
+            const gchar *pos = strchr(body, '\n');
+            if (pos != NULL)
+                pos++;               /* step past the title's newline         */
+            while (pos != NULL && *pos != '\0') {
+                const gchar *eol = strchr(pos, '\n');
+                gchar *line = eol != NULL ? g_strndup(pos, eol - pos)
+                                          : g_strdup(pos);
+                g_strstrip(line);
+                if (*line != '\0') {
+                    preview = line;
+                    break;
+                }
+                g_free(line);
+                pos = eol != NULL ? eol + 1 : NULL;
+            }
+        }
+
         GtkTreeIter iter;
         gtk_list_store_append(lw->notes_store, &iter);
         gtk_list_store_set(lw->notes_store, &iter,
-                           NL_ID,       m->id,
-                           NL_TITLE,    m->title,
-                           NL_MODIFIED, when,
-                           NL_THUMB,    thumb,
-                           NL_UPDATED,  m->updated_at,
-                           NL_PATH,     where,
-                           NL_CREATED,  born,
+                           NL_ID,          m->id,
+                           NL_TITLE,       m->title,
+                           NL_MODIFIED,    when,
+                           NL_THUMB,       thumb,
+                           NL_UPDATED,     m->updated_at,
+                           NL_PATH,        where,
+                           NL_CREATED,     born,
                            NL_CREATED_RAW, m->created_at,
+                           NL_PREVIEW,     preview,
                            -1);
+        g_free(preview);
         if (thumb_todo) {
             GtkTreePath *path = gtk_tree_model_get_path(
                 GTK_TREE_MODEL(lw->notes_store), &iter);
@@ -1144,6 +1173,7 @@ refresh_notes(OnLibrary *lw)
         g_free(born);
     }
     g_hash_table_destroy(paths);
+    g_hash_table_destroy(previews);
     on_db_note_list_free(notes);
 
     if (fit) {
@@ -2454,52 +2484,6 @@ on_open_settings(GtkWidget *widget, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * on_backup_db() — File → Back Up Database…: write a consistent snapshot
- * of the live database to a user-chosen file.
- * ------------------------------------------------------------------------- */
-static void
-on_backup_db(GtkWidget *widget, gpointer user_data)
-{
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
-
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Back Up Database", GTK_WINDOW(lw->window),
-        GTK_FILE_CHOOSER_ACTION_SAVE,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Back Up", GTK_RESPONSE_ACCEPT,
-        NULL);
-    gtk_file_chooser_set_do_overwrite_confirmation(
-        GTK_FILE_CHOOSER(chooser), TRUE);
-
-    /* Suggest a dated filename.                                            */
-    GDateTime *now = g_date_time_new_now_local();
-    gchar *suggestion = g_date_time_format(
-        now, "blue-notes-backup-%Y%m%d.db");
-    g_date_time_unref(now);
-    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser),
-                                      suggestion);
-    g_free(suggestion);
-
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-        gchar *path = gtk_file_chooser_get_filename(
-            GTK_FILE_CHOOSER(chooser));
-        gtk_widget_destroy(chooser);
-
-        gboolean ok = on_db_backup_to(lw->app->db, path);
-        if (ok)
-            on_app_status(lw->app, "Database backed up");
-        on_app_notice(GTK_WINDOW(lw->window),
-                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
-                      ok ? "Database backed up to\n%s"
-                         : "Backup to %s failed", path);
-        g_free(path);
-    } else {
-        gtk_widget_destroy(chooser);
-    }
-}
-
-/* ---------------------------------------------------------------------------
  * on_open_db() — File → Open Database…: let the user pick any .db file and
  * open it, either as the new permanent default or for this session only.
  * ------------------------------------------------------------------------- */
@@ -2582,37 +2566,6 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     if (app->notify_notes_changed != NULL)
         app->notify_notes_changed(app);
     on_app_status(app, "DB at %s loaded", app->db->path);
-}
-
-/* ---------------------------------------------------------------------------
- * on_restore_db() — File → Restore Database…: replace the current
- * database with a backup file (after confirmation; the replaced file is
- * kept as blue_notes.db.pre-restore).
- * ------------------------------------------------------------------------- */
-static void
-on_restore_db(GtkWidget *widget, gpointer user_data)
-{
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
-
-    gchar *path = on_app_pick_path(
-        GTK_WINDOW(lw->window), "Restore Database",
-        GTK_FILE_CHOOSER_ACTION_OPEN, "_Restore",
-        "Database files (*.db)", "*.db");
-    if (path == NULL)
-        return;
-
-    if (confirm(lw, "Replace ALL current notes with this backup?",
-                "The current database will be kept as "
-                "blue_notes.db.pre-restore.")) {
-        gboolean ok = on_app_restore_database(lw->app, path);
-        on_app_notice(GTK_WINDOW(lw->window),
-                      ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR, NULL,
-                      "%s", ok ? "Database restored."
-                               : "Restore failed \xe2\x80\x94 the previous "
-                                 "database is still in use.");
-    }
-    g_free(path);
 }
 
 /* find_gtk_image() — first GtkImage in a widget subtree (depth-first).
@@ -4367,6 +4320,66 @@ sort_actions_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
 }
 
 /* ---------------------------------------------------------------------------
+ * notes_title_cell_func() — cell data function for the Title column.
+ * Handles the alternating row tint AND the density-dependent rendering:
+ *   Compact      — plain text title, minimal ypad.
+ *   Comfortable  — bold Pango markup title with a small dimmed body-text
+ *                  preview on the second line, generous ypad.
+ * Alpha-based dimming for the preview keeps it readable on both the
+ * selection highlight and the plain row background (fixed grey fails on
+ * the blue selection — see hacienda task_desc_markup for the same rule).
+ * ------------------------------------------------------------------------- */
+static void
+notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                      GtkTreeModel *model, GtkTreeIter *iter,
+                      gpointer user_data)
+{
+    (void)col;
+    OnLibrary *lw = user_data;         /* owning library window               */
+
+    /* Alternating row tint — same as notes_row_bg_func.                    */
+    GtkTreePath *path = gtk_tree_model_get_path(model, iter);
+    gboolean even = (gtk_tree_path_get_indices(path)[0] % 2) == 0;
+    gtk_tree_path_free(path);
+    g_object_set(cell, "cell-background", even ? NULL : ROW_TINT, NULL);
+
+    gchar *title   = NULL;
+    gchar *preview = NULL;
+    gtk_tree_model_get(model, iter,
+                       NL_TITLE,   &title,
+                       NL_PREVIEW, &preview,
+                       -1);
+
+    if (lw->app->comfortable_list) {
+        gchar *esc = g_markup_escape_text(
+            title != NULL && *title != '\0' ? title : "Untitled", -1);
+        gchar *markup;
+        if (preview != NULL && *preview != '\0') {
+            gchar *esc_prev = g_markup_escape_text(preview, -1);
+            markup = g_strdup_printf(
+                "<b>%s</b>\n"
+                "<small><span alpha=\"65%%\">%s</span></small>",
+                esc, esc_prev);
+            g_free(esc_prev);
+        } else {
+            markup = g_strdup_printf("<b>%s</b>", esc);
+        }
+        g_object_set(cell, "markup", markup, "ypad", 7, NULL);
+        g_free(markup);
+        g_free(esc);
+    } else {
+        /* Always drive via "markup" so the Pango attribute list (set when
+         * comfortable mode was last active) gets replaced, not left behind
+         * to render the plain title in bold.                                */
+        gchar *esc = g_markup_escape_text(title != NULL ? title : "", -1);
+        g_object_set(cell, "markup", esc, "ypad", 2, NULL);
+        g_free(esc);
+    }
+    g_free(title);
+    g_free(preview);
+}
+
+/* ---------------------------------------------------------------------------
  * notes_row_bg_func() — cell data function giving list rows alternating
  * white / light-blue backgrounds regardless of theme.
  * ------------------------------------------------------------------------- */
@@ -4426,12 +4439,6 @@ build_menubar(OnLibrary *lw)
                           gtk_separator_menu_item_new());
     add_menu_item(file_menu, "_Open Database\xe2\x80\xa6",
                   G_CALLBACK(on_open_db), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
-    add_menu_item(file_menu, "_Back Up Database\xe2\x80\xa6",
-                  G_CALLBACK(on_backup_db), lw);
-    add_menu_item(file_menu, "Restore _Database\xe2\x80\xa6",
-                  G_CALLBACK(on_restore_db), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
     add_menu_item(file_menu, "_Settings\xe2\x80\xa6",
@@ -4902,14 +4909,16 @@ library_build_notes_list(OnLibrary *lw)
         "  border-style: none none solid none;"
         "}");
     {
-        /* Each column gets a data func painting the alternating row tint.  */
+        /* Title: no static attribute binding — the cell data function drives
+         * both the row tint and the compact/comfortable rendering.          */
         GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-        GtkTreeViewColumn *c1 =
-            gtk_tree_view_column_new_with_attributes("Title", r1,
-                                                     "text", NL_TITLE,
-                                                     NULL);
-        gtk_tree_view_column_set_cell_data_func(c1, r1, notes_row_bg_func,
-                                                NULL, NULL);
+        g_object_set(r1, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
+        GtkTreeViewColumn *c1 = gtk_tree_view_column_new();
+        gtk_tree_view_column_set_title(c1, "Title");
+        gtk_tree_view_column_pack_start(c1, r1, TRUE);
+        gtk_tree_view_column_set_cell_data_func(c1, r1,
+                                                notes_title_cell_func,
+                                                lw, NULL);
         gtk_tree_view_column_set_resizable(c1, TRUE);
         gtk_tree_view_append_column(lw->notes_list, c1);
 
@@ -5340,7 +5349,8 @@ on_library_window_create(OnApp *app)
         G_TYPE_INT64,                    /* NL_UPDATED                     */
         G_TYPE_STRING,                   /* NL_PATH                        */
         G_TYPE_STRING,                   /* NL_CREATED                     */
-        G_TYPE_INT64);                   /* NL_CREATED_RAW                 */
+        G_TYPE_INT64,                    /* NL_CREATED_RAW                 */
+        G_TYPE_STRING);                  /* NL_PREVIEW                     */
     g_signal_connect(lw->notes_store, "row-deleted",
                      G_CALLBACK(on_notes_row_deleted), lw);
 

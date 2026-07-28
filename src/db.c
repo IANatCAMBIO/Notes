@@ -1438,6 +1438,26 @@ on_db_note_body_map(OnDatabase *db)
     return map;
 }
 
+GHashTable *
+on_db_note_preview_map(OnDatabase *db)
+{
+    GHashTable *map = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                            g_free, g_free);
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT id, SUBSTR(body_text, 1, 200) FROM notes "
+        "WHERE body_text IS NOT NULL AND body_text != ''");
+    if (stmt == NULL)
+        return map;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        gint64 *key = g_new(gint64, 1);
+        *key = sqlite3_column_int64(stmt, 0);
+        g_hash_table_insert(map, key,
+            g_strdup((const gchar *)sqlite3_column_text(stmt, 1)));
+    }
+    sqlite3_finalize(stmt);
+    return map;
+}
+
 /* =========================================================================
  * utilities
  * ========================================================================= */

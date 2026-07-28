@@ -69,6 +69,10 @@
  *                    menu button and the list buttons into a "Lists"
  *                    one; persisted as the "compact_editor_toolbar"
  *                    setting (default off).
+ *   comfortable_list — whether the library list view shows tall rows
+ *                    with a bold title and a small grey body-text
+ *                    preview (Comfortable density); persisted as
+ *                    "list_density_comfortable" (default off = Compact).
  *   db_dir         — custom directory holding the db (owned string), or
  *                    NULL for the default location.  Persisted in the
  *                    config FILE (blue_notes.ini next to the binary), not
@@ -126,6 +130,7 @@ typedef struct OnApp {
     gboolean         sidebar_counts;
     gboolean         first_line_h1;
     gboolean         compact_editor_toolbar;
+    gboolean         comfortable_list;
     gchar           *db_dir;
     gboolean         db_integrity_check;
     gchar           *db_hash_at_open;  /* MD5 of the db FILE as found at
@@ -356,16 +361,6 @@ void on_app_close_all_editors(OnApp *app);
  * Returns TRUE if the switch happened.
  * ------------------------------------------------------------------------- */
 gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);
-
-/* ---------------------------------------------------------------------------
- * on_app_restore_database() — replace the current database with a backup
- * file: closes all editors, snapshots the current file next to itself as
- * "blue_notes.db.pre-restore", copies `backup_path` over the active
- * location,
- * and reopens.  Returns TRUE on success (on failure the old file is
- * still in place and reopened).
- * ------------------------------------------------------------------------- */
-gboolean on_app_restore_database(OnApp *app, const gchar *backup_path);
 
 /* ---------------------------------------------------------------------------
  * on_app_actions_backfill() — one-time population of the action_items

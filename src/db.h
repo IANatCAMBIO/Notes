@@ -436,6 +436,12 @@ GHashTable *on_db_note_count_map(OnDatabase *db);
  * Destroy with g_hash_table_destroy().                                      */
 GHashTable *on_db_note_body_map(OnDatabase *db);
 
+/* First 200 characters of body_text for every note that has one, in ONE
+ * query: note id (gint64*) → owned truncated text.  Used to populate
+ * the list-view preview line in Comfortable density mode.
+ * Destroy with g_hash_table_destroy().                                      */
+GHashTable *on_db_note_preview_map(OnDatabase *db);
+
 /* Per-tag note counts in one query; same shape as above.                    */
 GHashTable *on_db_tag_count_map(OnDatabase *db);
 

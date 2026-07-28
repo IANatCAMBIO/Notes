@@ -620,13 +620,23 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
     on_db_close(app->db);
     app->db = NULL;
 
-    /* Move the database to the new location (copy then delete original),
-     * unless the user chose to use an existing file there instead.         */
-    gboolean did_copy = FALSE;
-    if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
-        if (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))
-            did_copy = copy_file(old_path, target);
-        /* "Use Existing" path: did_copy stays FALSE, old file is untouched. */
+    /* Copy to the new location when needed.  Fail fast on copy error so we
+     * never delete old_path without having a good copy at target.  The
+     * "Use Existing" path skips the copy entirely — deletion on success is
+     * the new intended behaviour there, not a side-effect of a failed copy. */
+    if (g_file_test(old_path, G_FILE_TEST_EXISTS) &&
+        (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))) {
+        if (!copy_file(old_path, target)) {
+            on_app_notice(app->library_window != NULL
+                              ? GTK_WINDOW(app->library_window) : NULL,
+                          GTK_MESSAGE_ERROR, NULL,
+                          "Could not copy the database to that location.\n"
+                          "The previous database is still in use.");
+            app->db = on_db_open(old_path);
+            g_free(target);
+            g_free(old_path);
+            return FALSE;
+        }
     }
 
     app->db = on_db_open(target);
@@ -644,8 +654,9 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
                       "The previous database is still in use.");
         app->db = on_db_open(old_path);
     } else {
-        /* Delete the original file: the data now lives at the new path.   */
-        if (did_copy) {
+        /* Delete the original file: either we copied it to the new path,
+         * or the user chose to switch to an existing database there.       */
+        if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
             GFile *fold = g_file_new_for_path(old_path);
             if (!g_file_delete(fold, NULL, NULL))
                 g_warning("config: could not remove old db at %s", old_path);
@@ -665,41 +676,6 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
     if (ok)
         on_app_status(app, "DB at %s loaded", app->db->path);
     return ok;
-}
-
-gboolean
-on_app_restore_database(OnApp *app, const gchar *backup_path)
-{
-    on_app_close_all_editors(app);
-
-    gchar *db_path = g_strdup(app->db->path);    /* active db file          */
-    on_db_close(app->db);
-    app->db = NULL;
-
-    /* Keep an escape hatch next to the database being replaced.            */
-    gchar *safety = g_strdup_printf("%s.pre-restore", db_path);
-    if (g_file_test(db_path, G_FILE_TEST_EXISTS))
-        copy_file(db_path, safety);
-
-    gboolean ok = copy_file(backup_path, db_path);
-    app->db = on_db_open(db_path);
-    if (app->db == NULL && g_file_test(safety, G_FILE_TEST_EXISTS)) {
-        /* The backup file was not a usable database: roll back.            */
-        copy_file(safety, db_path);
-        app->db = on_db_open(db_path);
-        ok = FALSE;
-    }
-    on_app_actions_backfill(app->db);   /* backups may predate actions      */
-
-    on_app_config_set("db_hash", NULL);   /* stale hash; recompute on exit  */
-    g_free(safety);
-    g_free(db_path);
-    if (app->notify_notes_changed != NULL)
-        app->notify_notes_changed(app);
-    gboolean restored = ok && app->db != NULL;
-    if (restored)
-        on_app_status(app, "Database restored");
-    return restored;
 }
 
 gchar *

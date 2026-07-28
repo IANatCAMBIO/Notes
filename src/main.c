@@ -453,6 +453,8 @@ main(int argc, char *argv[])
         on_app_config_get_bool("statusbar_note_id",      FALSE);
     app.show_done_actions =
         on_app_config_get_bool("show_done_actions",      TRUE);
+    app.bold_list_titles =
+        on_app_config_get_bool("bold_list_titles",       TRUE);
     app.ai_enabled =
         on_app_config_get_bool("ai_enabled",             FALSE);
     app.ai_command       = on_app_config_get("ai_command");

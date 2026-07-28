@@ -141,6 +141,7 @@ typedef struct OnApp {
     gboolean         statusbar_db_path;
     gboolean         statusbar_note_id;
     gboolean         show_done_actions;
+    gboolean         bold_list_titles;   /* bold titles in comfortable list mode */
     gboolean         ai_enabled;       /* AI features master kill switch       */
     gchar           *ai_command;       /* command path to invoke AI            */
     gchar           *ai_custom_prompt; /* prompt text for Custom folder mode   */

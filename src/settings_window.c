@@ -122,6 +122,7 @@ apply_statusbar_db_path(OnApp *app)
  * ------------------------------------------------------------------------- */
 typedef enum {
     BS_SIDEBAR_COUNTS,               /* Appearance                          */
+    BS_BOLD_LIST_TITLES,
     BS_SHOW_DONE_ACTIONS,
     BS_CODE_COPY,                    /* Editor                              */
     BS_CODE_LINES,
@@ -143,6 +144,10 @@ static const BoolSetting BOOL_SETTINGS[] = {
     [BS_SIDEBAR_COUNTS] = {
         "Show note counts next to folders and tags",
         "sidebar_counts", offsetof(OnApp, sidebar_counts),
+        apply_notes_changed },
+    [BS_BOLD_LIST_TITLES] = {
+        "Bold titles in comfortable list density",
+        "bold_list_titles", offsetof(OnApp, bold_list_titles),
         apply_notes_changed },
     [BS_SHOW_DONE_ACTIONS] = {
         "Show completed action items",
@@ -478,6 +483,9 @@ on_settings_window_open(OnApp *app)
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        bool_check_new(app, BS_SIDEBAR_COUNTS),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       bool_check_new(app, BS_BOLD_LIST_TITLES),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox),
                        bool_check_new(app, BS_SHOW_DONE_ACTIONS),

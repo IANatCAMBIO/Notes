@@ -4354,15 +4354,16 @@ notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
         gchar *esc = g_markup_escape_text(
             title != NULL && *title != '\0' ? title : "Untitled", -1);
         gchar *markup;
+        gboolean bold = lw->app->bold_list_titles;
         if (preview != NULL && *preview != '\0') {
             gchar *esc_prev = g_markup_escape_text(preview, -1);
             markup = g_strdup_printf(
-                "<b>%s</b>\n"
-                "<small><span alpha=\"65%%\">%s</span></small>",
+                bold ? "<b>%s</b>\n<small><span alpha=\"65%%\">%s</span></small>"
+                     :    "%s\n<small><span alpha=\"65%%\">%s</span></small>",
                 esc, esc_prev);
             g_free(esc_prev);
         } else {
-            markup = g_strdup_printf("<b>%s</b>", esc);
+            markup = g_strdup_printf(bold ? "<b>%s</b>" : "%s", esc);
         }
         g_object_set(cell, "markup", markup, "ypad", 7, NULL);
         g_free(markup);

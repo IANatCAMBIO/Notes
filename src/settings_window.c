@@ -204,6 +204,18 @@ bool_check_new(OnApp *app, BoolSettingId id)
     return check;
 }
 
+#ifdef __APPLE__
+/* on_freetype_toggled() — persist the font backend choice; takes effect
+ * on next launch.                                                           */
+static void
+on_freetype_toggled(GtkToggleButton *check, gpointer user_data)
+{
+    OnApp *app = user_data;
+    app->use_freetype = gtk_toggle_button_get_active(check);
+    on_app_config_set("use_freetype", app->use_freetype ? "1" : "0");
+}
+#endif /* __APPLE__ */
+
 #ifdef HAVE_GTKOSX
 /* on_native_menubar_toggled() — move the library menu into (or out of)
  * the native macOS menu bar, live.                                          */
@@ -484,6 +496,17 @@ on_settings_window_open(OnApp *app)
                        FALSE, FALSE, 0);
 
 #ifdef __APPLE__
+    /* Font backend toggle — FreeType renders with full hint control but
+     * triggers a slow fontconfig scan; CoreText starts instantly.          */
+    GtkWidget *ft_check = gtk_check_button_new_with_label(
+        "Use FreeType font renderer instead of CoreText (requires restart)");
+    gtk_widget_set_margin_start(ft_check, 12);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ft_check),
+                                 app->use_freetype);
+    g_signal_connect(ft_check, "toggled",
+                     G_CALLBACK(on_freetype_toggled), app);
+    gtk_box_pack_start(GTK_BOX(vbox), ft_check, FALSE, FALSE, 0);
+
     /* Native macOS menu bar belongs with the other appearance choices.     */
     GtkWidget *mac_check = gtk_check_button_new_with_label(
         "Use the native macOS menu bar (hide the in-window menu)");

@@ -243,6 +243,29 @@ on_activate(GtkApplication *gtk_app, gpointer user_data)
         return;
     }
 
+    /* Font backend: FreeType/fontconfig or CoreText, per user preference.
+     * FreeType fully honours cairo_font_options but triggers a slow
+     * fontconfig scan on macOS; CoreText starts instantly.                  */
+    cairo_font_options_t *fo = cairo_font_options_create();
+    cairo_font_options_set_hint_metrics(fo, CAIRO_HINT_METRICS_ON);
+    if (app->use_freetype) {
+        PangoFontMap *ft_map = pango_cairo_font_map_new_for_font_type(
+                                   CAIRO_FONT_TYPE_FT);
+        if (ft_map != NULL) {
+            pango_cairo_font_map_set_default(PANGO_CAIRO_FONT_MAP(ft_map));
+            g_object_unref(ft_map);
+        }
+        g_object_set(gtk_settings_get_default(),
+                     "gtk-font-name", "Sans 12", NULL);
+        cairo_font_options_set_hint_style(fo, CAIRO_HINT_STYLE_SLIGHT);
+        cairo_font_options_set_antialias(fo, CAIRO_ANTIALIAS_SUBPIXEL);
+    } else {
+        cairo_font_options_set_hint_style(fo, CAIRO_HINT_STYLE_NONE);
+        cairo_font_options_set_antialias(fo, CAIRO_ANTIALIAS_GRAY);
+    }
+    gdk_screen_set_font_options(gdk_screen_get_default(), fo);
+    cairo_font_options_destroy(fo);
+
     /* Default window icon: the app logo from the icons/ folder.            */
     gchar *icon_path = g_build_filename(app->icons_dir, "vinyl.png",
                                         NULL);
@@ -447,6 +470,8 @@ main(int argc, char *argv[])
         on_app_config_get_bool("list_density_comfortable", TRUE);
     app.db_integrity_check =
         on_app_config_get_bool("db_integrity_check",     TRUE);
+    app.use_freetype =
+        on_app_config_get_bool("use_freetype",           FALSE);
     app.statusbar_db_path =
         on_app_config_get_bool("statusbar_db_path",      TRUE);
     app.statusbar_note_id =

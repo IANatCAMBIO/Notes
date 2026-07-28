@@ -4358,6 +4358,7 @@ notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
             gchar *esc_prev = g_markup_escape_text(preview, -1);
             markup = g_strdup_printf(
                 "<b>%s</b>\n"
+                "<span size=\"2048\"> </span>\n"
                 "<small><span alpha=\"65%%\">%s</span></small>",
                 esc, esc_prev);
             g_free(esc_prev);
@@ -4812,6 +4813,7 @@ library_build_sidebar(OnLibrary *lw)
         "treeview.view {"
         "  background-color: rgb(230,230,230);"
         "  color: rgb(65,65,65);"
+        "  font-size: 12pt;"
         "}"
         "treeview.view:selected {"
         "  background-color: rgb(86,131,224);"

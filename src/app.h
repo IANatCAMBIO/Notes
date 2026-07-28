@@ -91,6 +91,10 @@
  *   show_done_actions — whether the library's Action Items view lists
  *                    completed (struck-through) items too; persisted as
  *                    the "show_done_actions" setting (default on).
+ *   use_freetype   — (macOS only) use FreeType/fontconfig for font
+ *                    rendering instead of CoreText; persisted as the
+ *                    "use_freetype" setting (default off). Takes effect
+ *                    on next launch.
  *   ai_enabled     — master switch for AI features (Summary toolbar button
  *                    visible only when TRUE); persisted as "ai_enabled".
  *   ai_command     — shell command invoked to run the AI model (owned
@@ -141,6 +145,7 @@ typedef struct OnApp {
     gboolean         statusbar_db_path;
     gboolean         statusbar_note_id;
     gboolean         show_done_actions;
+    gboolean         use_freetype;       /* macOS: FreeType instead of CoreText */
     gboolean         ai_enabled;       /* AI features master kill switch       */
     gchar           *ai_command;       /* command path to invoke AI            */
     gchar           *ai_custom_prompt; /* prompt text for Custom folder mode   */

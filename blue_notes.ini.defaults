@@ -24,3 +24,5 @@ list_autofit=1
 statusbar_db_path=1
 statusbar_note_id=0
 show_done_actions=1
+list_density_comfortable=1
+bold_list_titles=1

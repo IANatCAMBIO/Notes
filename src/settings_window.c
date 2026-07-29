@@ -244,9 +244,11 @@ static void
 db_section_refresh(DbSection *s)
 {
     gchar *markup = g_markup_printf_escaped(
-        "<small>Current database: %s\n"
+        "<small>%s: %s\n"
         "<i>Do not open the same database from two machines at the same "
-        "time.</i></small>", s->app->db->path);
+        "time.</i></small>",
+        s->app->db_dir != NULL ? "Custom database" : "Default database",
+        s->app->db->path);
     gtk_label_set_markup(GTK_LABEL(s->path_label), markup);
     g_free(markup);
     gtk_widget_set_sensitive(s->choose_btn, s->app->db_dir != NULL);
@@ -442,7 +444,21 @@ on_settings_window_open(OnApp *app)
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
-    gtk_container_add(GTK_CONTAINER(window), vbox);
+
+    /* Wrap in a scrolled window so the settings are reachable on low-res
+     * screens.  propagate_natural_height + max_content_height lets the
+     * window size to content when content fits, and scroll when it doesn't. */
+    GtkWidget *outer_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(outer_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(
+        GTK_SCROLLED_WINDOW(outer_scroll), FALSE);
+    gtk_scrolled_window_set_propagate_natural_height(
+        GTK_SCROLLED_WINDOW(outer_scroll), TRUE);
+    gtk_scrolled_window_set_max_content_height(
+        GTK_SCROLLED_WINDOW(outer_scroll), 600);
+    gtk_container_add(GTK_CONTAINER(outer_scroll), vbox);
+    gtk_container_add(GTK_CONTAINER(window), outer_scroll);
 
     /* --- appearance ----------------------------------------------------------*/
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),

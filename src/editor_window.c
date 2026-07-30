@@ -3289,7 +3289,11 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
      * Exception: Enter at the end of a heading leaves an empty line whose
      * newline inherited the heading tag — strip it instead, so the next
      * line starts as body text (headings are single-line; code blocks by
-     * contrast grow line by line).                                        */
+     * contrast grow line by line).
+     * For pastes (n_chars > 2) starting at line offset 0: same gravity
+     * problem — the start mark slides right, leaving pasted text before
+     * the tag.  Re-assert from the paste-start line.  Code blocks cover
+     * every pasted line; headings cover only the starting line.         */
     if (n_chars <= 2) {
         GtkTextIter ls, le;          /* cursor line incl. trailing newline  */
         line_span(buffer, gtk_text_iter_get_line(location), &ls, &le);
@@ -3314,6 +3318,41 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
             }
             ed->internal_change--;
             gtk_text_buffer_get_iter_at_offset(buffer, location, end_off);
+        }
+    } else {
+        GtkTextIter ps;              /* first character of the paste        */
+        gtk_text_buffer_get_iter_at_offset(buffer, &ps,
+                                           end_off - (gint)n_chars);
+        if (gtk_text_iter_get_line_offset(&ps) == 0) {
+            GtkTextIter ps_ls, ps_le; /* span of the paste-start line      */
+            line_span(buffer, gtk_text_iter_get_line(&ps), &ps_ls, &ps_le);
+            guint32 para = line_para_flags(buffer, &ps_ls);
+            if (para == 0) {
+                /* The paragraph tag's start mark slid right past the
+                 * paste, so the line start is untagged.  The original
+                 * '\n' that carried the tag was at P and is now at
+                 * P + n_chars = end_off — probe that position.        */
+                GtkTextIter orig_nl;
+                gtk_text_buffer_get_iter_at_offset(buffer, &orig_nl,
+                                                   end_off);
+                para = on_flags_at_iter(buffer, &orig_nl, ON_FMT_PARA_MASK);
+            }
+            if (para != 0) {
+                GtkTextIter apply_end;
+                if (para == ON_FMT_CODEBLOCK) {
+                    /* multi-line: cover all pasted lines                */
+                    GtkTextIter dummy;
+                    line_span(buffer, gtk_text_iter_get_line(location),
+                              &dummy, &apply_end);
+                } else {
+                    apply_end = ps_le; /* heading is single-line         */
+                }
+                ed->internal_change++;
+                gtk_text_buffer_apply_tag_by_name(
+                    buffer, on_tag_name_for_flag(para), &ps_ls, &apply_end);
+                ed->internal_change--;
+                gtk_text_buffer_get_iter_at_offset(buffer, location, end_off);
+            }
         }
     }
 

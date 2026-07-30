@@ -429,8 +429,7 @@ on_app_config_set(const gchar *key, const gchar *value)
         return;
 
     /* Skip the file rewrite when the value isn't changing — some callers
-     * fire per keystroke (the image-viewer entry) or re-store identical
-     * values (db_hash on an unchanged database).                           */
+     * fire per keystroke (the image-viewer entry).                         */
     gchar *cur = g_key_file_get_string(config_kf, CONFIG_GROUP, key, NULL);
     gboolean same = g_strcmp0(cur, value) == 0;
     g_free(cur);
@@ -665,7 +664,6 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
         g_free(app->db_dir);
         app->db_dir = g_strdup(new_dir);
         app->db_transient = FALSE;
-        on_app_config_set("db_hash", NULL);
         config_save_db_dir(new_dir);
     }
 
@@ -676,29 +674,6 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
     if (ok)
         on_app_status(app, "DB at %s loaded", app->db->path);
     return ok;
-}
-
-gchar *
-on_app_db_compute_hash(const gchar *path)
-{
-    /* Stream in chunks: image-heavy databases run to hundreds of MB, and
-     * this runs at startup and exit — slurping the whole file doubled as
-     * a full download on network-mounted databases.                        */
-    FILE *f = fopen(path, "rb");
-    if (f == NULL)
-        return NULL;
-
-    GChecksum *sum = g_checksum_new(G_CHECKSUM_MD5);
-    guchar buf[256 * 1024];          /* read chunk                          */
-    gsize  got;
-    while ((got = fread(buf, 1, sizeof buf, f)) > 0)
-        g_checksum_update(sum, buf, (gssize)got);
-    gboolean ok = ferror(f) == 0;
-    fclose(f);
-
-    gchar *hash = ok ? g_strdup(g_checksum_get_string(sum)) : NULL;
-    g_checksum_free(sum);
-    return hash;
 }
 
 void

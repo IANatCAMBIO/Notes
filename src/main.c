@@ -75,27 +75,60 @@ integrity_collect(void *data, int argc, char **argv, char **col_names)
     return 0;
 }
 
-/* startup_integrity_check() — run PRAGMA integrity_check and show results.
- * Returns TRUE if the check passed (caller may proceed to open normally).   */
+/* fk_collect() — sqlite3_exec callback: formats PRAGMA foreign_key_check
+ * rows (table, rowid, parent, fkid) into human-readable lines.             */
+static int
+fk_collect(void *data, int argc, char **argv, char **col_names)
+{
+    (void)col_names;
+    GString *out = data;
+    if (argc >= 3 && argv[0] != NULL) {
+        if (out->len > 0)
+            g_string_append_c(out, '\n');
+        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
+                               argv[0],
+                               argv[1] != NULL ? argv[1] : "?",
+                               argv[2] != NULL ? argv[2] : "?");
+    }
+    return 0;
+}
+
+/* startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
+ * foreign_key_check against the open database.  Shows a warning dialog if
+ * either check reports problems.  Returns TRUE if both passed.             */
 static gboolean
 startup_integrity_check(OnApp *app)
 {
-    GString *errors = g_string_new(NULL);
+    GString *ic_errors = g_string_new(NULL);
     sqlite3_exec(app->db->handle, "PRAGMA integrity_check",
-                 integrity_collect, errors, NULL);
-    gboolean ok = (errors->len == 0);
+                 integrity_collect, ic_errors, NULL);
 
-    if (ok) {
-        on_app_notice(NULL, GTK_MESSAGE_INFO,
-                      "Blue Notes - Integrity Check",
-                      "The database passed the integrity check.");
-    } else {
-        on_app_notice(NULL, GTK_MESSAGE_ERROR,
-                      "Blue Notes - Integrity Check Failed",
-                      "The integrity check found errors:\n\n%s",
-                      errors->str);
+    GString *fk_errors = g_string_new(NULL);
+    sqlite3_exec(app->db->handle, "PRAGMA foreign_key_check",
+                 fk_collect, fk_errors, NULL);
+
+    gboolean ok = (ic_errors->len == 0 && fk_errors->len == 0);
+    if (!ok) {
+        GString *msg = g_string_new(NULL);
+        if (ic_errors->len > 0) {
+            g_string_append(msg, "Integrity check errors:\n");
+            g_string_append(msg, ic_errors->str);
+        }
+        if (fk_errors->len > 0) {
+            if (msg->len > 0)
+                g_string_append(msg, "\n\n");
+            g_string_append(msg, "Foreign key violations:\n");
+            g_string_append(msg, fk_errors->str);
+        }
+        on_app_notice(NULL, GTK_MESSAGE_WARNING,
+                      "Blue Notes - Database Integrity Check",
+                      "The database integrity check found issues:\n\n%s",
+                      msg->str);
+        g_string_free(msg, TRUE);
     }
-    g_string_free(errors, TRUE);
+
+    g_string_free(ic_errors, TRUE);
+    g_string_free(fk_errors, TRUE);
     return ok;
 }
 
@@ -127,9 +160,6 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
         gtk_widget_destroy(dlg);
 
         if (resp == 2) {
-            /* A stale hash (ini kept, DB file gone) would flag the fresh
-             * database as "changed" in on_activate — clear it.             */
-            on_app_config_set("db_hash", NULL);
             return TRUE;             /* on_db_open() creates it             */
         }
         if (resp != 1)
@@ -162,67 +192,10 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
         gchar *dir = g_path_get_dirname(file_path);
         g_free(file_path);
         on_app_config_set("db_dir",  dir);
-        on_app_config_set("db_hash", NULL);   /* stale for this file        */
         g_free(*db_dir);   *db_dir  = dir;
         g_free(*db_path);  *db_path = g_build_filename(dir, ON_DB_FILENAME,
                                                        NULL);
         return TRUE;
-    }
-}
-
-/* startup_check_db_hash() — compare the stored MD5 hash against the current
- * DB file.  If they differ, show a warning dialog offering two choices.
- * Returns TRUE when the app should proceed, FALSE to quit.
- *   verified — receives TRUE only when the database actually checked out
- *              (hash matched, or PRAGMA integrity_check passed) — not
- *              when the user proceeded past the warning unchecked.         */
-static gboolean
-startup_check_db_hash(OnApp *app, gboolean *verified)
-{
-    *verified = FALSE;
-    gchar *stored = on_app_config_get("db_hash");
-    if (stored == NULL)
-        return TRUE;    /* no prior hash — first run or feature just enabled  */
-
-    /* Compare against the file as it was FOUND at startup (snapshotted in
-     * main() before on_db_open) — by now our own schema migrations and
-     * backfills may already have rewritten it legitimately.                 */
-    gboolean changed = (app->db_hash_at_open == NULL ||
-                        g_strcmp0(stored, app->db_hash_at_open) != 0);
-    g_free(stored);
-
-    if (!changed) {
-        *verified = TRUE;
-        return TRUE;    /* hash matches — proceed normally                    */
-    }
-
-    /* Loop so a failed integrity check can re-present the warning dialog.   */
-    for (;;) {
-        GtkWidget *dlg = gtk_message_dialog_new(
-            NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE,
-            "The database has changed since last access.\n\n"
-            "This may have been done by another Blue Notes instance, "
-            "or it could indicate database corruption.");
-        gtk_window_set_title(GTK_WINDOW(dlg),
-                             "Blue Notes - Database Changed");
-        gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-            "_Open Anyway",          1,
-            "Run _Integrity Check",  2,
-            NULL);
-        gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-        gtk_widget_destroy(dlg);
-
-        if (resp == 1) {
-            return TRUE;                        /* open as-is                */
-        } else if (resp == 2) {
-            if (startup_integrity_check(app)) {
-                *verified = TRUE;
-                return TRUE;                    /* passed — proceed          */
-            }
-            /* failed — loop back to the warning dialog                      */
-        } else {
-            return FALSE;                       /* dialog closed — quit      */
-        }
     }
 }
 
@@ -260,19 +233,12 @@ on_activate(GtkApplication *gtk_app, gpointer user_data)
     /* Hide the touch aids (selection handles, magnifier) unless enabled.   */
     on_app_apply_touch_assist(app);
 
-    /* DB integrity check: warn if the file changed since last exit.        */
-    gboolean db_verified = FALSE;    /* did the startup check actually pass?*/
-    if (app->db_integrity_check &&
-        !startup_check_db_hash(app, &db_verified)) {
-        g_application_quit(G_APPLICATION(app->gtk_app));
-        return;
-    }
+    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.  */
+    gboolean db_ok = !app->db_integrity_check || startup_integrity_check(app);
 
     on_library_window_create(app);
 
-    /* The window opened with "DB at … loaded"; append the check's verdict
-     * when the startup verification actually ran and passed.               */
-    if (db_verified)
+    if (app->db_integrity_check && db_ok)
         on_app_status(app, "DB at %s loaded, integrity check passed",
                       app->db->path);
 
@@ -384,16 +350,6 @@ main(int argc, char *argv[])
         g_free(expected);
     }
 
-    /* Snapshot the file's hash BEFORE opening it: opening runs schema
-     * migrations and backfills, all legitimate self-inflicted writes —
-     * the integrity check must compare the stored hash against the file
-     * as the LAST instance left it, or every upgrade that migrates the
-     * schema false-alarms as "changed since last access".                  */
-    gchar *hash_path = (db_path != NULL) ? g_strdup(db_path)
-                                         : on_db_default_path();
-    gchar *db_hash_at_open = on_app_db_compute_hash(hash_path);
-    g_free(hash_path);
-
     OnDatabase *db = on_db_open(db_path);
     if (db == NULL) {
         g_printerr("blue_notes: could not open the notes database at "
@@ -402,7 +358,6 @@ main(int argc, char *argv[])
                    db_path != NULL ? db_path : "the default location");
         g_free(db_path);
         g_free(db_dir);
-        g_free(db_hash_at_open);
         return 1;
     }
     g_free(db_path);
@@ -423,10 +378,8 @@ main(int argc, char *argv[])
         .toolbars             = { NULL, NULL },
         .icons_dir            = NULL,
         .db_dir               = NULL,
-        .db_hash_at_open      = NULL,
     };
     app.db_dir = db_dir;             /* ownership transferred               */
-    app.db_hash_at_open = db_hash_at_open;   /* ownership transferred       */
     for (gint k = 0; k < ON_TOOLBAR_N_KINDS; k++)
         app.toolbars[k] = g_ptr_array_new();
     on_app_load_toolbar_styles(&app);
@@ -448,7 +401,7 @@ main(int argc, char *argv[])
     app.db_integrity_check =
         on_app_config_get_bool("db_integrity_check",     TRUE);
     app.statusbar_db_path =
-        on_app_config_get_bool("statusbar_db_path",      TRUE);
+        on_app_config_get_bool("statusbar_db_path",      FALSE);
     app.statusbar_note_id =
         on_app_config_get_bool("statusbar_note_id",      FALSE);
     app.show_done_actions =
@@ -488,23 +441,7 @@ main(int argc, char *argv[])
     for (gint k = 0; k < ON_TOOLBAR_N_KINDS; k++)
         g_ptr_array_free(app.toolbars[k], TRUE);
 
-    /* Snapshot the DB file's MD5 so the next launch can detect external
-     * changes.  Must run AFTER on_db_close so the file is fully flushed.
-     * Skip when the session was a transient open (not the default DB) —
-     * the stored hash must reflect the configured DB, not a one-time one.   */
-    if (app.db_integrity_check && app.db != NULL && !app.db_transient) {
-        gchar *db_path_snap = g_strdup(app.db->path);
-        on_db_close(app.db);
-        app.db = NULL;
-        gchar *hash = on_app_db_compute_hash(db_path_snap);
-        if (hash != NULL) {
-            on_app_config_set("db_hash", hash);
-            g_free(hash);
-        }
-        g_free(db_path_snap);
-    } else {
-        on_db_close(app.db);
-    }
+    on_db_close(app.db);
 
     g_free(app.icons_dir);
     g_free(app.db_dir);

@@ -78,9 +78,9 @@
  *                    config FILE (blue_notes.ini next to the binary), not
  *                    the database — the database's own location cannot
  *                    live inside it.
- *   db_integrity_check — when TRUE, the MD5 of the database file is
- *                    written to the ini on exit and verified on the next
- *                    launch; a mismatch triggers a warning dialog.
+ *   db_integrity_check — when TRUE, PRAGMA integrity_check and PRAGMA
+ *                    foreign_key_check are run against the database at
+ *                    startup; a warning dialog is shown if issues are found.
  *   statusbar_db_path — whether the library/editor status bars prefix
  *                    the folder path with the database file's path;
  *                    persisted as the "statusbar_db_path" setting
@@ -133,11 +133,6 @@ typedef struct OnApp {
     gboolean         comfortable_list;
     gchar           *db_dir;
     gboolean         db_integrity_check;
-    gchar           *db_hash_at_open;  /* MD5 of the db FILE as found at
-                                        * startup, BEFORE on_db_open's
-                                        * migrations/backfills touched it —
-                                        * what the integrity check compares
-                                        * against (owned, may be NULL)       */
     gboolean         statusbar_db_path;
     gboolean         statusbar_note_id;
     gboolean         show_done_actions;
@@ -372,11 +367,5 @@ gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);
  * the feature).  NULL-safe.
  * ------------------------------------------------------------------------- */
 void on_app_actions_backfill(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_app_db_compute_hash() — compute the MD5 hex digest of the database
- * file at `path`.  Returns a new string (g_free it), or NULL on I/O error.
- * ------------------------------------------------------------------------- */
-gchar *on_app_db_compute_hash(const gchar *path);
 
 #endif /* BLUE_APP_H */

@@ -2554,7 +2554,6 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         app->db_dir = g_strdup(new_dir);
         app->db_transient = FALSE;
         on_app_config_set("db_dir",  new_dir);
-        on_app_config_set("db_hash", NULL);
         g_free(new_dir);
     } else {
         app->db_transient = TRUE;   /* session only: don't persist anything */
@@ -3519,7 +3518,7 @@ run_ai_summary(OnLibrary *lw)
     if (lw->sel_kind == SB_KIND_TRASH ||
         lw->sel_kind == SB_KIND_TRASH_FOLDER ||
         lw->sel_kind == SB_KIND_ACTIONS) {
-        ai_fail(buf, lw, "Select a folder, tag, or All Notes to summarize.");
+        ai_fail(buf, lw, "Select notes to summarize.");
         return;
     }
 
@@ -3535,15 +3534,21 @@ run_ai_summary(OnLibrary *lw)
         return;
     }
 
-    GList *notes;
-    if (lw->sel_kind == SB_KIND_TAG)
-        notes = on_db_notes_by_tag(lw->app->db, lw->sel_id);
-    else if (lw->sel_kind == SB_KIND_PINNED)
-        notes = on_db_note_list_pinned(lw->app->db);
-    else if (lw->sel_kind == SB_KIND_ALL)
-        notes = on_db_note_list_recent(lw->app->db);
-    else
-        notes = on_db_note_list(lw->app->db, lw->sel_id);
+    GArray *sel_ids = selected_note_ids(lw);
+    if (sel_ids->len == 0) {
+        g_array_free(sel_ids, TRUE);
+        ai_fail(buf, lw, "Select one or more notes to summarize.");
+        return;
+    }
+
+    GList *notes = NULL;
+    for (guint i = 0; i < sel_ids->len; i++) {
+        gint64     id = g_array_index(sel_ids, gint64, i);
+        OnNoteMeta *m = on_db_note_get(lw->app->db, id);
+        if (m != NULL)
+            notes = g_list_append(notes, m);
+    }
+    g_array_free(sel_ids, TRUE);
 
     if (notes == NULL) {
         ai_fail(buf, lw, "No notes to summarize.");

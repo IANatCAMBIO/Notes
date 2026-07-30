@@ -129,8 +129,8 @@ typedef enum {
     BS_FIRST_LINE_H1,
     BS_COMPACT_TOOLBAR,
     BS_STATUSBAR_NOTE_ID,
+    BS_STATUSBAR_DB_PATH,            /* Appearance                          */
     BS_DB_INTEGRITY,                 /* Database                            */
-    BS_STATUSBAR_DB_PATH,
 } BoolSettingId;
 
 typedef struct {
@@ -173,7 +173,7 @@ static const BoolSetting BOOL_SETTINGS[] = {
         "statusbar_note_id", offsetof(OnApp, statusbar_note_id),
         on_editor_status_refresh_all },
     [BS_DB_INTEGRITY] = {
-        "Check database integrity on startup (detect external changes)",
+        "Check database integrity on startup (PRAGMA integrity_check)",
         "db_integrity_check", offsetof(OnApp, db_integrity_check), NULL },
     [BS_STATUSBAR_DB_PATH] = {
         "Show database path prefix in status bar",
@@ -506,6 +506,9 @@ on_settings_window_open(OnApp *app)
     gtk_box_pack_start(GTK_BOX(vbox),
                        bool_check_new(app, BS_SHOW_DONE_ACTIONS),
                        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       bool_check_new(app, BS_STATUSBAR_DB_PATH),
+                       FALSE, FALSE, 0);
 
 #ifdef __APPLE__
     /* Native macOS menu bar belongs with the other appearance choices.     */
@@ -644,9 +647,6 @@ on_settings_window_open(OnApp *app)
                      G_CALLBACK(on_db_choose_clicked), dbs);
 
     gtk_box_pack_start(GTK_BOX(vbox), bool_check_new(app, BS_DB_INTEGRITY),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_STATUSBAR_DB_PATH),
                        FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox),

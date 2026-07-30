@@ -155,6 +155,61 @@ stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
     return ok;
 }
 
+/* stmt_cache_finalize() — GDestroyNotify wrapper for sqlite3_finalize,
+ * used as the value-destroy function of stmt_cache.                          */
+static void
+stmt_cache_finalize(gpointer stmt)
+{
+    sqlite3_finalize((sqlite3_stmt *)stmt);
+}
+
+/* ---------------------------------------------------------------------------
+ * cached_prepare() — look up a compiled statement in the per-connection cache;
+ * prepare and cache it on the first call.  Returns the statement reset and
+ * with all bindings cleared, ready for fresh binding.  The caller must NOT
+ * finalize it — the cache owns the lifetime.
+ *   db  — open database.
+ *   sql — string literal (the pointer is used as the cache key).
+ * Returns the statement, or NULL on a prepare failure.
+ * ------------------------------------------------------------------------- */
+static sqlite3_stmt *
+cached_prepare(OnDatabase *db, const char *sql)
+{
+    if (db->stmt_cache == NULL)
+        return prepare(db, sql);
+    sqlite3_stmt *stmt = g_hash_table_lookup(db->stmt_cache, sql);
+    if (stmt != NULL) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        return stmt;
+    }
+    stmt = prepare(db, sql);
+    if (stmt != NULL)
+        g_hash_table_insert(db->stmt_cache, (gpointer)sql, stmt);
+    return stmt;
+}
+
+/* ---------------------------------------------------------------------------
+ * cached_stmt_done() — execute a cached DML statement then reset it for
+ * reuse.  Unlike stmt_done(), the statement is NOT finalized.
+ *   db   — open database (for the error message).
+ *   stmt — prepared and bound cached statement, or NULL (a failed prepare).
+ * Steps once and logs a g_warning() on anything but SQLITE_DONE.
+ * Returns TRUE when the statement completed.
+ * ------------------------------------------------------------------------- */
+static gboolean
+cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
+{
+    if (stmt == NULL)
+        return FALSE;
+    gboolean ok = sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok)
+        g_warning("db: statement failed: %s", sqlite3_errmsg(db->handle));
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return ok;
+}
+
 /* ---------------------------------------------------------------------------
  * query_int64() — first column of the first row of a scalar SELECT.
  *   db      — open database.
@@ -203,6 +258,9 @@ on_db_open(const gchar *path_override)
 
     OnDatabase *db = g_new0(OnDatabase, 1);
     db->path = path;
+    /* Statements are keyed by SQL literal pointer; finalized on db_close.   */
+    db->stmt_cache = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
+                                           stmt_cache_finalize);
 
     if (sqlite3_open(path, &db->handle) != SQLITE_OK) {
         g_warning("db: cannot open %s: %s", path, sqlite3_errmsg(db->handle));
@@ -297,6 +355,11 @@ on_db_close(OnDatabase *db)
 {
     if (db == NULL)
         return;
+    /* Finalize all cached statements BEFORE closing the connection.          */
+    if (db->stmt_cache != NULL) {
+        g_hash_table_destroy(db->stmt_cache);
+        db->stmt_cache = NULL;
+    }
     if (db->handle != NULL)
         sqlite3_close(db->handle);
     g_free(db->path);
@@ -642,7 +705,7 @@ gboolean
 on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                 const guint8 *content, gsize len, const gchar *body_text)
 {
-    sqlite3_stmt *stmt = prepare(db,
+    sqlite3_stmt *stmt = cached_prepare(db,
         "UPDATE notes SET title=?, content=?, body_text=?, "
         "updated_at=strftime('%s','now') WHERE id=?");
     if (stmt != NULL) {
@@ -657,7 +720,7 @@ on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
             sqlite3_bind_null(stmt, 3);
         sqlite3_bind_int64(stmt, 4, id);
     }
-    return stmt_done(db, stmt);
+    return cached_stmt_done(db, stmt);
 }
 
 gchar *
@@ -784,20 +847,42 @@ meta_query(OnDatabase *db, const char *sql)
     return (stmt != NULL) ? run_meta_query(stmt) : NULL;
 }
 
+/* run_meta_query_cached() — collect every row of a cached stmt into a list
+ * of OnNoteMeta*, then reset+clear the stmt for reuse (not finalized).       */
+static GList *
+run_meta_query_cached(sqlite3_stmt *stmt)
+{
+    GList *out = NULL;
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        out = g_list_prepend(out, meta_from_row(stmt));
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return g_list_reverse(out);
+}
+
+/* meta_query_cached() — look up or compile a parameterless note-metadata
+ * SELECT and collect its rows via run_meta_query_cached().                   */
+static GList *
+meta_query_cached(OnDatabase *db, const char *sql)
+{
+    sqlite3_stmt *stmt = cached_prepare(db, sql);
+    return (stmt != NULL) ? run_meta_query_cached(stmt) : NULL;
+}
+
 GList *
 on_db_note_list(OnDatabase *db, gint64 folder_id)
 {
     /* trashed=0 keeps directly-trashed notes out; when the folder itself
      * sits in the Trash (browsing it from the Trash section) its regular
      * notes carry no flag and still list here.                              */
-    sqlite3_stmt *stmt = prepare(db,
+    sqlite3_stmt *stmt = cached_prepare(db,
         "SELECT " NOTE_META_COLS " "
         "FROM notes WHERE folder_id IS ? AND trashed=0 "
         "ORDER BY sort_order, updated_at DESC");
     if (stmt == NULL)
         return NULL;
     bind_id_or_null(stmt, 1, folder_id);
-    return run_meta_query(stmt);
+    return run_meta_query_cached(stmt);
 }
 
 GList *
@@ -814,7 +899,7 @@ on_db_note_list_all(OnDatabase *db, gboolean include_trash)
 GList *
 on_db_note_list_recent(OnDatabase *db)
 {
-    return meta_query(db,
+    return meta_query_cached(db,
         "SELECT " NOTE_META_COLS " "
         "FROM notes WHERE " NOTE_VISIBLE_SQL " "
         "ORDER BY updated_at DESC");
@@ -835,7 +920,7 @@ on_db_note_set_pinned(OnDatabase *db, gint64 id, gboolean pinned)
 GList *
 on_db_note_list_pinned(OnDatabase *db)
 {
-    return meta_query(db,
+    return meta_query_cached(db,
         "SELECT " NOTE_META_COLS " "
         "FROM notes WHERE pinned=1 AND " NOTE_VISIBLE_SQL " "
         "ORDER BY updated_at DESC");
@@ -1110,6 +1195,30 @@ on_db_action_list(OnDatabase *db)
     return g_list_reverse(out);
 }
 
+GList *
+on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT note_id, ord, text, done, due FROM action_items "
+        "WHERE note_id=? ORDER BY ord");
+    if (stmt == NULL)
+        return NULL;
+    sqlite3_bind_int64(stmt, 1, note_id);
+
+    GList *out = NULL;                    /* accumulated OnActionItem rows   */
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        OnActionItem *it = g_new0(OnActionItem, 1);
+        it->note_id = sqlite3_column_int64(stmt, 0);
+        it->ord     = sqlite3_column_int(stmt, 1);
+        it->text    = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
+        it->done    = sqlite3_column_int(stmt, 3) != 0;
+        it->due     = sqlite3_column_int64(stmt, 4);
+        out = g_list_prepend(out, it);
+    }
+    sqlite3_finalize(stmt);
+    return g_list_reverse(out);
+}
+
 gboolean
 on_db_action_set_done(OnDatabase *db, gint64 note_id, gint ord,
                       gboolean done)
@@ -1271,7 +1380,7 @@ on_db_folder_list_trashed(OnDatabase *db)
 GList *
 on_db_note_list_trashed(OnDatabase *db)
 {
-    return meta_query(db,
+    return meta_query_cached(db,
         "SELECT " NOTE_META_COLS " "
         "FROM notes WHERE trashed=1 ORDER BY updated_at DESC");
 }

@@ -174,6 +174,11 @@ typedef struct {
                                         extracted set differs, so ordinary
                                         saves do no action work (same idea
                                         as tags_modified)                    */
+    gboolean        actions_clean;  /* TRUE when no edit has occurred since
+                                        the last extract that could have
+                                        created or destroyed a '!' action
+                                        line; the blob walk is skipped when
+                                        this is set AND last_actions==NULL   */
 
     GPtrArray      *undo_stack;
     GPtrArray      *redo_stack;
@@ -3218,6 +3223,10 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
      * touched (a paste can create or split '!' lines anywhere).            */
     tag_emoji_in_range(ed, end_off - (gint)n_chars, end_off);
     action_retag_lines(ed, end_off - (gint)n_chars, end_off);
+    /* A '!' or newline can create an action line; a paste can too.          */
+    if (n_chars > 1 || memchr(text, '!', (size_t)len) ||
+        memchr(text, '\n', (size_t)len))
+        ed->actions_clean = FALSE;
     gtk_text_buffer_get_iter_at_offset(ed->buffer, location, end_off);
 
     /* Auto-H1: while the first line of a brand-new note is being typed,
@@ -3428,6 +3437,7 @@ on_buffer_delete_range_after(GtkTextBuffer *buffer, GtkTextIter *start,
     /* start == end after the deletion: retag the collapse-point line.      */
     gint off = gtk_text_iter_get_offset(start);
     action_retag_lines(ed, off, off);
+    ed->actions_clean = FALSE;    /* deletes can create/destroy '!' lines   */
 
     if (ed->tag_start == NULL)
         return;
@@ -3816,18 +3826,23 @@ editor_save(OnEditor *ed)
         ed->tags_modified = FALSE;
     }
 
-    /* Mirror the '!' action lines into action_items only when they
-     * changed since the last sync (cheap blob walk, no images decoded) —
-     * the common save writes no action rows at all.                        */
-    GList *actions = on_note_extract_actions(blob, blob_len);
-    gboolean actions_changed = !action_lists_equal(actions,
-                                                   ed->last_actions);
-    if (actions_changed) {
-        on_db_note_set_actions(ed->app->db, ed->note_id, actions);
-        on_db_action_list_free(ed->last_actions);
-        ed->last_actions = actions;
-    } else {
-        on_db_action_list_free(actions);
+    /* Mirror the '!' action lines into action_items only when they changed
+     * since the last sync (cheap blob walk, no images decoded).  Skip the
+     * walk entirely when actions_clean is set AND last_actions is NULL —
+     * no action line existed before and no insert/delete that could have
+     * created one has occurred since the last extract.                      */
+    gboolean actions_changed = FALSE;
+    if (ed->last_actions != NULL || !ed->actions_clean) {
+        GList *actions = on_note_extract_actions(blob, blob_len);
+        actions_changed = !action_lists_equal(actions, ed->last_actions);
+        if (actions_changed) {
+            on_db_note_set_actions(ed->app->db, ed->note_id, actions);
+            on_db_action_list_free(ed->last_actions);
+            ed->last_actions = actions;
+        } else {
+            on_db_action_list_free(actions);
+        }
+        ed->actions_clean = TRUE;
     }
     ed->dirty = FALSE;
 
@@ -4382,6 +4397,7 @@ editor_load_content(OnEditor *ed)
         ed->internal_change--;
         /* Snapshot the action set; editor_save only rewrites when it drifts. */
         ed->last_actions = on_note_extract_actions(blob, blob_len);
+        ed->actions_clean = TRUE;
         g_free(blob);
     }
     /* A brand-new (empty) note gets its first line auto-styled as H1.      */

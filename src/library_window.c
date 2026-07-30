@@ -173,6 +173,10 @@ typedef struct {
                                             collapses to it on release     */
     gint          populating;
     GHashTable   *thumb_cache;
+    GHashTable   *folder_path_cache;     /* folder_id→path string; populated
+                                            lazily by refresh_notes and
+                                            invalidated by refresh_sidebar
+                                            so autosave refreshes reuse it  */
     GQueue        thumb_pending;         /* ThumbJob* rows awaiting a
                                             render by thumb_fill_idle       */
     guint         thumb_idle;            /* the idle source doing it        */
@@ -466,6 +470,13 @@ refresh_sidebar(OnLibrary *lw)
 {
     gint   want_kind = lw->sel_kind; /* selection to restore                */
     gint64 want_id   = lw->sel_id;
+
+    /* Folder mutations flow through refresh_sidebar; invalidate the cached
+     * path map so refresh_notes fetches a fresh one on the next call.       */
+    if (lw->folder_path_cache != NULL) {
+        g_hash_table_destroy(lw->folder_path_cache);
+        lw->folder_path_cache = NULL;
+    }
 
     /* Capture the expansion state (keyed by kind+id, which survive the
      * rebuild) before the clear wipes it.                                  */
@@ -1025,6 +1036,11 @@ refresh_notes(OnLibrary *lw)
         : NULL;
     gdouble scroll_pos = vadj ? gtk_adjustment_get_value(vadj) : 0.0;
 
+    /* On a content refresh (autosave, editor close) — same view, not a
+     * navigation — capture the selection so we can put it back after the
+     * store rebuild.  Navigations start with no selection by design.        */
+    GArray *sel_ids = keep_scroll ? selected_note_ids(lw) : NULL;
+
     lw->populating++;
     gtk_list_store_clear(lw->notes_store);
 
@@ -1042,11 +1058,17 @@ refresh_notes(OnLibrary *lw)
         notes = on_db_note_list(lw->app->db, lw->sel_id);
 
     /* Folder paths for the list view's Path column — ONE query for all
-     * folders, never per note (shared/network DBs).                        */
-    GHashTable *paths = on_db_folder_path_map(lw->app->db);
+     * folders, never per note (shared/network DBs).  The result is cached
+     * in lw and reused across autosave-triggered refreshes; refresh_sidebar
+     * clears it whenever folders change.                                    */
+    if (lw->folder_path_cache == NULL)
+        lw->folder_path_cache = on_db_folder_path_map(lw->app->db);
+    GHashTable *paths = lw->folder_path_cache;
 
-    /* Body-text previews for the Comfortable list density — ONE query.     */
-    GHashTable *previews = on_db_note_preview_map(lw->app->db);
+    /* Body-text previews for the Comfortable list density — ONE query, only
+     * when comfortable mode is on; compact mode never shows the preview.    */
+    GHashTable *previews = lw->app->comfortable_list
+        ? on_db_note_preview_map(lw->app->db) : NULL;
 
     /* Autofit measuring rides this population loop (no second model
      * walk, no re-fetching the strings) and only while the LIST is the
@@ -1124,7 +1146,7 @@ refresh_notes(OnLibrary *lw)
          * Comfortable density preview.  body_text starts with the title
          * followed by '\n', so skip that first line entirely.               */
         gchar *preview = NULL;
-        const gchar *body = g_hash_table_lookup(previews, &m->id);
+        const gchar *body = previews ? g_hash_table_lookup(previews, &m->id) : NULL;
         if (body != NULL) {
             const gchar *pos = strchr(body, '\n');
             if (pos != NULL)
@@ -1172,8 +1194,8 @@ refresh_notes(OnLibrary *lw)
         g_free(when);
         g_free(born);
     }
-    g_hash_table_destroy(paths);
-    g_hash_table_destroy(previews);
+    /* paths == lw->folder_path_cache — kept alive for the next refresh.     */
+    if (previews != NULL) g_hash_table_destroy(previews);
     on_db_note_list_free(notes);
 
     if (fit) {
@@ -1184,6 +1206,41 @@ refresh_notes(OnLibrary *lw)
         g_object_unref(fit_lay);
     }
     lw->populating--;
+
+    /* Restore the note selection that existed before the store rebuild.     */
+    if (sel_ids != NULL) {
+        if (sel_ids->len > 0) {
+            const gchar *mode = gtk_stack_get_visible_child_name(
+                GTK_STACK(lw->stack));
+            gboolean in_grid  = g_strcmp0(mode, "grid") == 0;
+            GtkTreeSelection *list_sel =
+                gtk_tree_view_get_selection(lw->notes_list);
+            GtkTreeIter it;
+            gboolean valid = gtk_tree_model_get_iter_first(
+                GTK_TREE_MODEL(lw->notes_store), &it);
+            while (valid) {
+                gint64 id;
+                gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &it,
+                                   NL_ID, &id, -1);
+                for (guint k = 0; k < sel_ids->len; k++) {
+                    if (g_array_index(sel_ids, gint64, k) == id) {
+                        if (in_grid) {
+                            GtkTreePath *p = gtk_tree_model_get_path(
+                                GTK_TREE_MODEL(lw->notes_store), &it);
+                            gtk_icon_view_select_path(lw->notes_grid, p);
+                            gtk_tree_path_free(p);
+                        } else {
+                            gtk_tree_selection_select_iter(list_sel, &it);
+                        }
+                        break;
+                    }
+                }
+                valid = gtk_tree_model_iter_next(
+                    GTK_TREE_MODEL(lw->notes_store), &it);
+            }
+        }
+        g_array_free(sel_ids, TRUE);
+    }
 
     /* Render the queued (stale/missing) thumbnails in idle time slices.    */
     if (!g_queue_is_empty(&lw->thumb_pending) && lw->thumb_idle == 0)
@@ -3546,8 +3603,9 @@ run_ai_summary(OnLibrary *lw)
         gint64     id = g_array_index(sel_ids, gint64, i);
         OnNoteMeta *m = on_db_note_get(lw->app->db, id);
         if (m != NULL)
-            notes = g_list_append(notes, m);
+            notes = g_list_prepend(notes, m);
     }
+    notes = g_list_reverse(notes);
     g_array_free(sel_ids, TRUE);
 
     if (notes == NULL) {
@@ -3555,9 +3613,7 @@ run_ai_summary(OnLibrary *lw)
         return;
     }
 
-    GList      *all_actions = on_db_action_list(lw->app->db);
-    GHashTable *body_map    = on_db_note_body_map(lw->app->db);
-    GString    *prompt      = g_string_new(NULL);
+    GString *prompt = g_string_new(NULL);
 
     /* Build the prompt header based on the folder's AI mode.               */
     if (ai_mode == ON_AI_MODE_PROJECT) {
@@ -3589,17 +3645,19 @@ run_ai_summary(OnLibrary *lw)
                                mod);
         g_free(mod);
 
-        const gchar *body = g_hash_table_lookup(body_map, &m->id);
+        /* Fetch body text for just this note — avoids loading the whole DB. */
+        gchar *body = on_db_note_body_text(lw->app->db, m->id);
         if (body != NULL && *body != '\0')
             g_string_append_printf(prompt, "%s\n", body);
         else
             g_string_append(prompt, "(empty note)\n");
+        g_free(body);
 
+        /* Action items for just this note.                                  */
+        GList   *note_actions = on_db_action_list_for_note(lw->app->db, m->id);
         gboolean first_action = TRUE;
-        for (GList *al = all_actions; al != NULL; al = al->next) {
+        for (GList *al = note_actions; al != NULL; al = al->next) {
             OnActionItem *it = al->data;
-            if (it->note_id != m->id)
-                continue;
             if (first_action) {
                 g_string_append(prompt, "\nAction items:\n");
                 first_action = FALSE;
@@ -3615,11 +3673,10 @@ run_ai_summary(OnLibrary *lw)
             }
             g_string_append_c(prompt, '\n');
         }
+        on_db_action_list_free(note_actions);
         g_string_append_c(prompt, '\n');
     }
 
-    g_hash_table_destroy(body_map);
-    on_db_action_list_free(all_actions);
     on_db_note_list_free(notes);
 
     gint    argc_ai = 0;
@@ -4712,6 +4769,8 @@ library_free(gpointer data)
     }
     thumb_pending_clear(lw);
     g_hash_table_destroy(lw->thumb_cache);
+    if (lw->folder_path_cache != NULL)
+        g_hash_table_destroy(lw->folder_path_cache);
     if (lw->notes_press_path != NULL)
         gtk_tree_path_free(lw->notes_press_path);
     g_free(lw->sel_name);

@@ -62,8 +62,10 @@
  *   path   — absolute path of the database file (owned string).
  * ------------------------------------------------------------------------- */
 typedef struct {
-    sqlite3 *handle;
-    gchar   *path;
+    sqlite3    *handle;
+    gchar      *path;
+    GHashTable *stmt_cache;   /* sql literal → sqlite3_stmt*, reused via
+                                  reset+clear_bindings between calls        */
 } OnDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -349,6 +351,10 @@ gboolean on_db_note_set_actions(OnDatabase *db, gint64 note_id,
  * first, note order preserved within a note.  Returns a GList of
  * OnActionItem*; free with on_db_action_list_free().                        */
 GList *on_db_action_list(OnDatabase *db);
+
+/* All action items for one specific note, ordered by ord.  Returns a GList
+ * of OnActionItem*; free with on_db_action_list_free().                     */
+GList *on_db_action_list_for_note(OnDatabase *db, gint64 note_id);
 
 /* Set one item's done flag (addressed by note id + position).               */
 gboolean on_db_action_set_done(OnDatabase *db, gint64 note_id, gint ord,

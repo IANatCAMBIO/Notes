@@ -1,6 +1,6 @@
-# Blue Notes — Internals
+# Records — Internals
 
-How Blue Notes is put together: the source layout, the database schema,
+How Records is put together: the source layout, the database schema,
 and the BNBF note format. For everyday use see the
 [User Guide](User_Guide.md); for build instructions see the
 [README](README.md).
@@ -85,7 +85,7 @@ FROM notes n LEFT JOIN fpath p ON n.folder_id = p.id
 ORDER BY 1;
 ```
 
-`content` is BNBF ("Blue Notes Binary Format"), a simple little-endian
+`content` is BNBF (a simple little-endian
 record stream — 4-byte magic `BNBF`, a `u32` version
 (currently 5), then typed records until a `0x00` end marker:
 
@@ -104,6 +104,6 @@ parsing BNBF yourself when possible.
 
 Two practical cautions: the app sets a 5-second busy timeout, so brief
 external readers coexist fine, but long write transactions from other
-tools will stall it; and back up with `blue_notes backup FILE.db`
+tools will stall it; and back up with `records backup FILE.db`
 (SQLite's online backup API) rather than copying the file while the app
 is running.

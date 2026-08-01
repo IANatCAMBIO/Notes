@@ -1,5 +1,5 @@
 /* ===========================================================================
- * ipc.c — talk to an already-running Blue Notes instance (implementation)
+ * ipc.c — talk to an already-running Records instance (implementation)
  *
  * See ipc.h.  The wire protocol is line based:
  *
@@ -31,7 +31,7 @@
 
 /* ---------------------------------------------------------------------------
  * ipc_socket_path() — the per-user socket both sides agree on.  One instance
- * per user is the unit "a running Blue Notes"; the path lives in the user's
+ * per user is the unit "a running Records"; the path lives in the user's
  * runtime dir (short, private) so the Unix sun_path limit is never a concern.
  * Returns a new string (g_free it).
  * ------------------------------------------------------------------------- */
@@ -39,7 +39,7 @@ static gchar *
 ipc_socket_path(void)
 {
     return g_build_filename(g_get_user_runtime_dir(),
-                            "blue_notes.sock", NULL);
+                            "records.sock", NULL);
 }
 
 /* ===========================================================================
@@ -330,7 +330,7 @@ on_ipc_run_pending(OnApp *app)
     }
     /* The GUI is already visible; surface only failures, on stderr.         */
     if (reply != NULL && g_str_has_prefix(reply, "ERR "))
-        g_printerr("blue_notes: %s\n", reply + 4);
+        g_printerr("records: %s\n", reply + 4);
     g_free(reply);
     g_clear_pointer(&pending_path, g_free);
     pending_kind = IPC_PENDING_NONE;
@@ -421,7 +421,7 @@ ipc_handle_run(OnApp *app, GInputStream *in, GOutputStream *out)
     /* Rebuild an argv the dispatcher understands: argv[0] is a placeholder
      * program name, argv[1..] the received words.                          */
     char    **argv = g_new0(char *, (gsize)nargs + 2);
-    argv[0] = g_strdup("blue_notes");
+    argv[0] = g_strdup("records");
     gboolean bad = FALSE;            /* frame decode failed?                */
     for (gssize i = 0; i < nargs && !bad; i++) {
         gssize len = stream_read_uint_line(in);

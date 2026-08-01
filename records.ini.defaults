@@ -1,7 +1,7 @@
-# Blue Notes default configuration — copied to blue_notes.ini on
+# Records default configuration — copied to records.ini on
 # first launch. An empty db_dir means the default database location
-# (~/.local/share/blue_notes/blue_notes.db).
-[blue-notes]
+# (~/.local/share/records/records.db).
+[records]
 db_dir=
 toolbar_style_library=icons
 toolbar_style_editor=icons

@@ -1,23 +1,23 @@
 # =============================================================================
-# Blue Notes — Makefile
+# Records — Makefile
 #
-# Builds the Blue Notes application (a GTK3 + SQLite notes app written in
+# Builds the Records application (a GTK3 + SQLite notes app written in
 # plain C).  Requires GTK3 and SQLite3, discovered via pkg-config.
 #
 # On macOS with MacPorts:
 #     sudo port install pkgconf gtk3 +quartz
 #
 # Targets:
-#     make          — build the `blue_notes` binary
+#     make          — build the `records` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
-#     make app      — macOS .app bundle → dist/BlueNotes-<version>.app
+#     make app      — macOS .app bundle → dist/Records-<version>.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
-#     make deb      — Debian package → dist/blue_notes_<version>_<arch>.deb
+#     make deb      — Debian package → dist/records_<version>_<arch>.deb
 #                     (needs dpkg-deb; build ON a Debian/Ubuntu machine —
 #                     the packaged binary is whatever `make` produced)
-#     make rpm      — RPM package → dist/blue_notes-<version>-1.<arch>.rpm
+#     make rpm      — RPM package → dist/records-<version>-1.<arch>.rpm
 #                     (needs rpmbuild; same caveat as deb)
 # =============================================================================
 
@@ -70,7 +70,7 @@ SRCS     := src/main.c \
 OBJS     := $(SRCS:src/%.c=build/%.o)
 
 # The final executable name.
-BIN      := blue_notes
+BIN      := records
 
 # Default target: build the application binary.
 all: $(BIN)
@@ -108,7 +108,7 @@ DIST     := dist
 # The binary still links against the MacPorts GTK dylibs (absolute install
 # names), so the bundle runs on this machine but is NOT self-contained.
 
-APP_DIR  := $(DIST)/BlueNotes-$(VERSION).app
+APP_DIR  := $(DIST)/Records-$(VERSION).app
 ICONSET  := $(DIST)/vinyl.iconset
 
 app: $(BIN)
@@ -118,14 +118,14 @@ app: $(BIN)
 	rm -rf "$(APP_DIR)" "$(ICONSET)"
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
 	         "$(ICONSET)"
-	# The executable is named "Blue Notes": for NIB-less apps (the
+	# The executable is named "Records": for NIB-less apps (the
 	# gtkosx menubar is built programmatically) macOS titles the app
 	# menu with the PROCESS name, not CFBundleName — the binary's
 	# filename is the only lever.  argv[0]-relative lookups (icons,
 	# ini) resolve by directory, so the rename is harmless.
-	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Blue Notes"
+	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Records"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
-	cp blue_notes.ini.defaults "$(APP_DIR)/Contents/MacOS/"
+	cp records.ini.defaults "$(APP_DIR)/Contents/MacOS/"
 	find "$(APP_DIR)" -name .DS_Store -delete
 	for sz in 16 32 128 256 512; do \
 	  sips -z $$sz $$sz icons/vinyl.png \
@@ -142,10 +142,10 @@ app: $(BIN)
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 	  '<plist version="1.0">' \
 	  '<dict>' \
-	  '  <key>CFBundleName</key><string>Blue Notes</string>' \
-	  '  <key>CFBundleDisplayName</key><string>Blue Notes</string>' \
-	  '  <key>CFBundleIdentifier</key><string>org.example.blue-notes</string>' \
-	  '  <key>CFBundleExecutable</key><string>Blue Notes</string>' \
+	  '  <key>CFBundleName</key><string>Records</string>' \
+	  '  <key>CFBundleDisplayName</key><string>Records</string>' \
+	  '  <key>CFBundleIdentifier</key><string>org.example.records</string>' \
+	  '  <key>CFBundleExecutable</key><string>Records</string>' \
 	  '  <key>CFBundleIconFile</key><string>vinyl</string>' \
 	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
 	  '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
@@ -157,47 +157,44 @@ app: $(BIN)
 	@echo "built $(APP_DIR)"
 
 # --- shared Linux package staging ---------------------------------------------
-# Both deb and rpm install the whole app to /opt/blue_notes (the binary
+# Both deb and rpm install the whole app to /opt/records (the binary
 # resolves icons/ and its defaults ini relative to argv[0]) and put a
 # wrapper script on PATH that execs it by absolute path so that
-# resolution works.  Per-user settings fall back to ~/.config/blue_notes/
+# resolution works.  Per-user settings fall back to ~/.config/records/
 # because /opt is not writable (see on_app_config_init).
 
 PKGROOT  := $(DIST)/pkgroot
 
 pkgroot: $(BIN)
 	rm -rf $(PKGROOT)
-	mkdir -p $(PKGROOT)/opt/blue_notes $(PKGROOT)/usr/bin \
+	mkdir -p $(PKGROOT)/opt/records $(PKGROOT)/usr/bin \
 	         $(PKGROOT)/usr/share/applications \
 	         $(PKGROOT)/usr/share/icons/hicolor/512x512/apps
-	cp $(BIN) $(PKGROOT)/opt/blue_notes/
-	cp -R icons $(PKGROOT)/opt/blue_notes/icons
-	cp blue_notes.ini.defaults $(PKGROOT)/opt/blue_notes/
+	cp $(BIN) $(PKGROOT)/opt/records/
+	cp -R icons $(PKGROOT)/opt/records/icons
+	cp records.ini.defaults $(PKGROOT)/opt/records/
 	find $(PKGROOT) -name .DS_Store -delete
 	printf '%s\n' \
 	  '#!/bin/sh' \
-	  '# Blue Notes finds icons/ and its defaults ini next to argv[0];' \
-	  '# exec by absolute path so both resolve into /opt/blue_notes.' \
-	  'exec /opt/blue_notes/blue_notes "$$@"' \
-	  > $(PKGROOT)/usr/bin/blue_notes
-	chmod 755 $(PKGROOT)/usr/bin/blue_notes
+	  '# Records finds icons/ and its defaults ini next to argv[0];' \
+	  '# exec by absolute path so both resolve into /opt/records.' \
+	  'exec /opt/records/records "$$@"' \
+	  > $(PKGROOT)/usr/bin/records
+	chmod 755 $(PKGROOT)/usr/bin/records
 	printf '%s\n' \
 	  '[Desktop Entry]' \
 	  'Type=Application' \
-	  'Name=Blue Notes' \
+	  'Name=Records' \
 	  'Comment=Notes with folders, tags and rich text' \
-	  'Exec=/usr/bin/blue_notes' \
-	  'Icon=blue_notes' \
+	  'Exec=/usr/bin/records' \
+	  'Icon=records' \
 	  'Terminal=false' \
 	  'Categories=Utility;Office;' \
-	  > $(PKGROOT)/usr/share/applications/blue_notes.desktop
+	  > $(PKGROOT)/usr/share/applications/records.desktop
 	cp icons/vinyl.png \
-	   $(PKGROOT)/usr/share/icons/hicolor/512x512/apps/blue_notes.png
+	   $(PKGROOT)/usr/share/icons/hicolor/512x512/apps/records.png
 
 # --- Debian package ------------------------------------------------------------
-# The control "Package:" field stays blue-notes: Debian policy (and
-# dpkg-deb) forbid "_" in package names.  Every path and filename uses
-# blue_notes.
 DEB_ARCH := $(shell dpkg --print-architecture 2>/dev/null || \
                     uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 DEB_ROOT := $(DIST)/deb-root
@@ -210,7 +207,7 @@ deb: pkgroot
 	cp -R $(PKGROOT) $(DEB_ROOT)
 	mkdir -p $(DEB_ROOT)/DEBIAN
 	printf '%s\n' \
-	  'Package: blue-notes' \
+	  'Package: records' \
 	  'Version: $(VERSION)' \
 	  'Section: editors' \
 	  'Priority: optional' \
@@ -221,7 +218,7 @@ deb: pkgroot
 	  ' Apple Notes-style desktop notes application (GTK3 + SQLite).' \
 	  > $(DEB_ROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEB_ROOT) \
-	  $(DIST)/blue_notes_$(VERSION)_$(DEB_ARCH).deb
+	  $(DIST)/records_$(VERSION)_$(DEB_ARCH).deb
 
 # --- RPM package ----------------------------------------------------------------
 RPM_ARCH := $(shell uname -m)
@@ -233,7 +230,7 @@ rpm: pkgroot
 	rm -rf $(DIST)/rpm
 	mkdir -p $(DIST)/rpm/SPECS
 	printf '%s\n' \
-	  'Name: blue_notes' \
+	  'Name: records' \
 	  'Version: $(VERSION)' \
 	  'Release: 1' \
 	  'Summary: Notes app with folders, tags and rich text' \
@@ -243,13 +240,13 @@ rpm: pkgroot
 	  '%install' \
 	  'cp -a $(abspath $(PKGROOT))/. %{buildroot}/' \
 	  '%files' \
-	  '/opt/blue_notes' \
-	  '/usr/bin/blue_notes' \
-	  '/usr/share/applications/blue_notes.desktop' \
-	  '/usr/share/icons/hicolor/512x512/apps/blue_notes.png' \
-	  > $(DIST)/rpm/SPECS/blue_notes.spec
+	  '/opt/records' \
+	  '/usr/bin/records' \
+	  '/usr/share/applications/records.desktop' \
+	  '/usr/share/icons/hicolor/512x512/apps/records.png' \
+	  > $(DIST)/rpm/SPECS/records.spec
 	rpmbuild -bb --define "_topdir $(abspath $(DIST))/rpm" \
-	  $(DIST)/rpm/SPECS/blue_notes.spec
-	cp $(DIST)/rpm/RPMS/*/blue_notes-$(VERSION)-1.*.rpm $(DIST)/
+	  $(DIST)/rpm/SPECS/records.spec
+	cp $(DIST)/rpm/RPMS/*/records-$(VERSION)-1.*.rpm $(DIST)/
 
 .PHONY: all run clean app pkgroot deb rpm

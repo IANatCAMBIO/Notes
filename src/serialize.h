@@ -2,7 +2,7 @@
  * serialize.h — BNBF binary note format
  *
  * Converts a GtkTextBuffer (rich text + inline images) to and from the
- * "Blue Notes Binary Format" (BNBF) blob stored in SQLite.
+ * "BNBF" binary blob stored in SQLite (originally "Blue Notes Binary Format").
  *
  * BNBF layout (all integers little-endian):
  *
@@ -129,7 +129,7 @@ guint32 on_flags_at_iter(GtkTextBuffer *buffer, const GtkTextIter *iter,
 const gchar *on_tag_name_for_flag(guint32 flag);
 
 /* ---------------------------------------------------------------------------
- * on_buffer_ensure_tags() — create the standard Blue Notes tag set on
+ * on_buffer_ensure_tags() — create the standard Records tag set on
  * `buffer`'s tag table if not already present.  Both the editor window and
  * the exporter call this before touching a buffer, so the two always agree
  * on tag names and appearance.

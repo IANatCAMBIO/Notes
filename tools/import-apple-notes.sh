@@ -1,10 +1,10 @@
 #!/bin/sh
 # ===========================================================================
-# import-apple-notes.sh — migrate Apple Notes into Blue Notes
+# import-apple-notes.sh — migrate Apple Notes into Records
 #
 # Exports every folder and note from Notes.app via its AppleScript
 # interface, converts the note bodies from HTML to text with textutil,
-# and imports them through the blue_notes CLI.  Everything lands under
+# and imports them through the records CLI.  Everything lands under
 # an "Apple Notes Import" folder, mirroring the Apple Notes hierarchy.
 #
 # Usage:
@@ -17,20 +17,20 @@
 #     from Notes' scripting interface).  Non-image attachments (PDFs,
 #     scans, …) are skipped with a warning.
 #   - "Recently Deleted" is skipped.
-#   - Safe to re-run, but re-running imports duplicates (Blue Notes
+#   - Safe to re-run, but re-running imports duplicates (Records
 #     ids differ) — delete the "Apple Notes Import" folder first.
 # ===========================================================================
 
 set -eu
 
-# The blue_notes binary lives next to this repo's tools/ directory.
-BIN="$(cd "$(dirname "$0")/.." && pwd)/blue_notes"
+# The records binary lives next to this repo's tools/ directory.
+BIN="$(cd "$(dirname "$0")/.." && pwd)/records"
 if [ ! -x "$BIN" ]; then
     echo "error: $BIN not found — run make first" >&2
     exit 1
 fi
 
-# Import destination root inside Blue Notes.
+# Import destination root inside Records.
 DEST_ROOT="Apple Notes Import"
 
 # Workspace: one .html per note plus a manifest of TAB-separated
@@ -150,7 +150,7 @@ if [ ! -s "$TMP/manifest.tsv" ]; then
 fi
 
 total=$(grep -c . "$TMP/manifest.tsv")
-echo "Importing into Blue Notes..."
+echo "Importing into Records..."
 
 imported=0
 failed=0

@@ -1,9 +1,9 @@
-# Blue Notes — toolbar icons
+# Records — toolbar icons
 
 Custom PNG icons for the toolbars and dialogs.  The only SVGs left are
 the bundled `theme/` symbolic arrows (see below); rendering those
 requires the librsvg gdk-pixbuf loader: `sudo port install librsvg`
-(then restart Blue Notes). Without it, GTK falls back to its stock
+(then restart Records). Without it, GTK falls back to its stock
 arrows.
 
 ## Replacing icons

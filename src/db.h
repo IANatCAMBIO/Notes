@@ -1,9 +1,9 @@
 /* ===========================================================================
- * db.h — SQLite persistence layer for Blue Notes
+ * db.h — SQLite persistence layer for Records
  *
  * All notes, folders and tags live in a single SQLite database file stored
  * in the user's data directory
- * (e.g. ~/.local/share/blue_notes/blue_notes.db).
+ * (e.g. ~/.local/share/records/records.db).
  *
  * Note *content* is stored as an opaque binary BLOB in the custom "BNBF"
  * format produced by serialize.c; this module never interprets it.
@@ -141,9 +141,9 @@ typedef struct {
 /* --------------------------- lifecycle ---------------------------------- */
 
 /* The database filename inside its directory (default or configured).      */
-#define ON_DB_FILENAME "blue_notes.db"
+#define ON_DB_FILENAME "records.db"
 
-/* The default database path (~/.local/share/blue_notes/blue_notes.db),
+/* The default database path (~/.local/share/records/records.db),
  * creating the directory if needed. Returns a new string; g_free() it.     */
 gchar *on_db_default_path(void);
 

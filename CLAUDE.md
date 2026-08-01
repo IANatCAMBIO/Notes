@@ -1,25 +1,23 @@
-# Blue Notes — project guide
+# Records — project guide
 
 Apple Notes–style app in **plain C + GTK3 + SQLite**. Two window types:
 a Library (folders/tags sidebar, notes as list or grid) and one editor
 window per note (WYSIWYG rich text). No GNOME HeaderBars anywhere —
-plain `GtkWindow` titlebars, formatted `"Blue Notes - <thing>"`.
+plain `GtkWindow` titlebars, formatted `"Records - <thing>"`.
 
 ## Build & run
 
 ```sh
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./blue_notes
+make          # builds ./records
 make run
-make app      # dist/BlueNotes-<version>.app (macOS; sips/iconutil;
+make app      # dist/Records-<version>.app (macOS; sips/iconutil;
               # vinyl.png → .icns; NOT self-contained — needs MacPorts GTK)
-make deb      # dist/blue_notes_<version>_<arch>.deb (needs dpkg-deb,
-make rpm      # dist/blue_notes-<version>-1.<arch>.rpm  needs rpmbuild —
+make deb      # dist/records_<version>_<arch>.deb (needs dpkg-deb,
+make rpm      # dist/records-<version>-1.<arch>.rpm  needs rpmbuild —
               # build these ON the target Linux distro; they install to
-              # /opt/blue_notes + a /usr/bin wrapper script that execs by
-              # absolute path so argv[0]-relative icons/defaults resolve;
-              # the deb control Package: field stays "blue-notes" —
-              # Debian forbids "_" in package names)
+              # /opt/records + a /usr/bin wrapper script that execs by
+              # absolute path so argv[0]-relative icons/defaults resolve)
 ```
 
 The semantic version is the `VERSION` variable at the top of the
@@ -56,12 +54,12 @@ sees the new flags.
 
 ## Data & formats
 
-- DB: `~/.local/share/blue_notes/blue_notes.db` (GLib user-data dir; the
+- DB: `~/.local/share/records/records.db` (GLib user-data dir; the
   filename is `ON_DB_FILENAME` in db.h.  The pre-1.4 `notes.db` rename
   shim was removed 2026-07 (sole user's DB verified migrated); the dir
   was renamed
-  from `orange-notes` pre-release — do NOT rename again once released,
-  user data will live there).
+  from `orange-notes` → `blue_notes` pre-release, then to `records` —
+  do NOT rename again once released, user data will live there).
 - Note content: **BNBF v5** blobs (magic `BNBF`; the pre-rename `ONBF`
   magic was retired 2026-07 after an offline scan found zero such blobs)
   (see header comment in `serialize.h`).
@@ -83,14 +81,14 @@ sees the new flags.
   offscreen and never need widgets. Default thumbnail display fits a
   200×125 box (`ON_IMAGE_THUMB_W/H`, aspect kept, never upscaled);
   right-click menu toggles thumbnail/full.
-- ALL UI settings live in the ini (`[blue-notes]` group), loaded into
+- ALL UI settings live in the ini (`[records]` group), loaded into
   memory ONCE by `on_app_config_init()` and written through on change
   (`on_app_config_get/set`); the file is never re-read while running.
   The ini normally sits NEXT TO THE BINARY (portable mode); when no
   binary-adjacent ini exists AND that directory is unwritable (system
   installs: .deb/.rpm in /opt, .app in /Applications) it falls back to
-  `~/.config/blue_notes/blue_notes.ini` instead.
-  On first launch (no ini) it is seeded from `blue_notes.ini.defaults`
+  `~/.config/records/records.ini` instead.
+  On first launch (no ini) it is seeded from `records.ini.defaults`
   next to the binary (committed; empty `db_dir` = default DB location).
   The live ini is gitignored — its rewrites drop comments and carry
   per-machine values.
@@ -106,7 +104,7 @@ sees the new flags.
   hashing afterwards false-alarmed on every upgrading launch),
   `sidebar_counts` (`1|0`, default 0 — folder/tag counts in the
   sidebar), `first_line_h1` (`1|0`, code default 0, but
-  blue_notes.ini.defaults seeds it to 1 — auto-style the first
+  records.ini.defaults seeds it to 1 — auto-style the first
   line of a new note as H1), `compact_editor_toolbar` (`1|0`, default 1
   — collapse the editor's H1/H2/¶ buttons into an "Aa" Styles menu
   button and the list buttons into a "≡" Lists one; applies live via
@@ -158,22 +156,22 @@ sees the new flags.
   GONE (dropped from the schema and the live DB 2026-07); all
   preferences live in the ini.
 - **Custom DB location** (shared-folder support) lives in the CONFIG
-  FILE `blue_notes.ini` NEXT TO THE BINARY (`[blue-notes] db_dir=`;
+  FILE `records.ini` NEXT TO THE BINARY (`[records] db_dir=`;
   resolved from argv[0] by `on_app_config_init()`, which must run before
   any config read — main() calls it first thing), never in the DB.
   `on_app_switch_database()` switches live: closes all editors (flushing
   saves), swaps the handle, copies the current file to the target if no
-  blue_notes.db exists there (or overwrites it at the user's choice);
+  records.db exists there (or overwrites it at the user's choice);
   either way the original file is deleted on success, persists, refreshes
   the library. Failure reverts to the old DB. If the configured DB can't be opened at
   startup, main.c ERRORS OUT — deliberately NO fallback to the default
   location: a silent fallback once made a user's notes "disappear" and
   strands writes in the wrong file (the trigger was a relaunch racing
   the dying instance's final flush past the 5 s busy timeout). One
-  configured database, or a clear error. When no blue_notes.db EXISTS at
+  configured database, or a clear error. When no records.db EXISTS at
   the expected location (first launch / emptied dir),
-  `startup_first_run()` asks — "Open a blue_notes.db File" (persists the
-  new db_dir) or "Create a New blue_notes.db" — instead of silently creating
+  `startup_first_run()` asks — "Open a records.db File" (persists the
+  new db_dir) or "Create a New records.db" — instead of silently creating
   an empty DB; both paths clear any stale db_hash.
 - **Folder emoji** (`folders.emoji` TEXT, default `''`): each folder
   can have an optional emoji set via its Info dialog (right-click a
@@ -252,7 +250,7 @@ sees the new flags.
   and a guarded ALTER migration backfills existing databases on open.
   `grid_pref` restores list/grid when leaving the view.
 - **CLI backup**: `on_db_backup_to()` (db.c) uses SQLite's online backup
-  API on the live DB; exposed as `blue_notes backup FILE.db`. No GUI
+  API on the live DB; exposed as `records backup FILE.db`. No GUI
   equivalent — the File menu backup/restore items were removed.
 - **CLI ↔ GUI coexistence is socket-based, not lock-based**: a running
   GUI serves later CLI invocations over a unix socket (`src/ipc.c`), so
@@ -498,7 +496,7 @@ sees the new flags.
   (no compile_commands.json); trust `make`, which builds `-Wall -Wextra`
   clean.
 - The GUI can be launched in background for the user with
-  `./blue_notes & disown` after `pkill -f "./blue_notes"`.
+  `./records & disown` after `pkill -f "./records"`.
 
 ## Common task patterns
 
@@ -527,7 +525,7 @@ then change the files in the "Change" column.
   non-obvious variables. Column-aligned trailing comments, ~78-col lines.
 - `on_` prefix for public symbols; `On` prefix for types.
 - UI strings use UTF-8 escapes for …, •, ✕ etc. in source.
-- No GtkHeaderBar. Window titles `"Blue Notes - <name>"`.
+- No GtkHeaderBar. Window titles `"Records - <name>"`.
 - Scrollbars: overlay scrolling disabled globally
   (`GTK_OVERLAY_SCROLLING=0` in main) + per-scrolled-window; vertical
   policy AUTOMATIC.

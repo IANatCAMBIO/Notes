@@ -1460,7 +1460,7 @@ action_due_dialog(OnLibrary *lw, GtkTreeIter *iter)
                        -1);
 
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Blue Notes - Due Date", GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
+        "Records - Due Date", GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
         "_Clear",  1,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Set",    GTK_RESPONSE_OK,
@@ -2573,7 +2573,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         "Open “%s” as your new default database, or for this "
         "session only?", display);
     g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Blue Notes - Open Database");
+    gtk_window_set_title(GTK_WINDOW(dlg), "Records - Open Database");
     gtk_dialog_add_buttons(GTK_DIALOG(dlg),
         "_Cancel",         GTK_RESPONSE_CANCEL,
         "_Session Only",   1,
@@ -2596,7 +2596,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     if (app->db == NULL) {
         on_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Blue Notes - Database Error",
+                      "Records - Database Error",
                       "Could not open:\n%s", file_path);
         /* Revert to old database. */
         app->db = on_db_open(old_path);
@@ -2668,7 +2668,7 @@ on_about(GtkWidget *widget, gpointer user_data)
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
-                                      "Blue Notes");
+                                      "Records");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), ON_VERSION);
     if (logo != NULL) {
         /* set_logo() first (it makes the internal image visible and
@@ -4655,7 +4655,7 @@ build_action_bar(OnLibrary *lw)
                                g_object_ref_sink(label), g_object_unref);
         g_free(logo_path);
     }
-    gtk_tool_item_set_tooltip_text(about_item, "About Blue Notes");
+    gtk_tool_item_set_tooltip_text(about_item, "About Records");
     g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about), lw);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
 
@@ -5384,7 +5384,7 @@ on_library_window_create(OnApp *app)
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------*/
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Blue Notes - Library");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Records - Library");
     gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
     g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,

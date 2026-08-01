@@ -1,5 +1,5 @@
 /* ===========================================================================
- * main.c — Blue Notes application entry point
+ * main.c — Records application entry point
  *
  * Wires everything together: opens the SQLite database, creates the
  * shared OnApp context, and shows the library window when the
@@ -121,7 +121,7 @@ startup_integrity_check(OnApp *app)
             g_string_append(msg, fk_errors->str);
         }
         on_app_notice(NULL, GTK_MESSAGE_WARNING,
-                      "Blue Notes - Database Integrity Check",
+                      "Records - Database Integrity Check",
                       "The database integrity check found issues:\n\n%s",
                       msg->str);
         g_string_free(msg, TRUE);
@@ -132,7 +132,7 @@ startup_integrity_check(OnApp *app)
     return ok;
 }
 
-/* startup_first_run() — no blue_notes.db exists at the expected location:
+/* startup_first_run() — no records.db exists at the expected location:
  * ask whether to open an existing file or create a new one there, instead
  * of silently creating an empty database (a user pointing at a shared
  * folder usually means to OPEN a file that is already there).
@@ -151,10 +151,10 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
             "No notes database was found at\n%s",
             expected);
-        gtk_window_set_title(GTK_WINDOW(dlg), "Blue Notes - Welcome");
+        gtk_window_set_title(GTK_WINDOW(dlg), "Records - Welcome");
         gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-            "_Open a blue_notes.db File",  1,
-            "Create a _New blue_notes.db", 2,
+            "_Open a records.db File",  1,
+            "Create a _New records.db", 2,
             NULL);
         gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
         gtk_widget_destroy(dlg);
@@ -172,8 +172,8 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             "_Open",   GTK_RESPONSE_ACCEPT,
             NULL);
         gtk_window_set_title(GTK_WINDOW(chooser),
-                             "Blue Notes - Open Database");
-        /* The app's model is a directory + the fixed name blue_notes.db
+                             "Records - Open Database");
+        /* The app's model is a directory + the fixed name records.db
          * (the ini stores db_dir only), so only that name is openable.     */
         GtkFileFilter *ff = gtk_file_filter_new();
         gtk_file_filter_add_pattern(ff, ON_DB_FILENAME);
@@ -290,7 +290,7 @@ main(int argc, char *argv[])
                       quartz_log_filter, NULL);
 #endif
 
-    /* The application config (blue_notes.ini) lives next to the
+    /* The application config (records.ini) lives next to the
      * binary; resolve its location before anything reads it.               */
     on_app_config_init(argv[0]);
 
@@ -352,7 +352,7 @@ main(int argc, char *argv[])
 
     OnDatabase *db = on_db_open(db_path);
     if (db == NULL) {
-        g_printerr("blue_notes: could not open the notes database at "
+        g_printerr("records: could not open the notes database at "
                    "%s\n(if another instance is still shutting down, "
                    "try again in a few seconds)\n",
                    db_path != NULL ? db_path : "the default location");
@@ -413,7 +413,7 @@ main(int argc, char *argv[])
     app.ai_command       = on_app_config_get("ai_command");
     app.ai_custom_prompt = on_app_config_get("ai_custom_prompt");
 
-    app.gtk_app = gtk_application_new("org.example.blue-notes",
+    app.gtk_app = gtk_application_new("org.example.records",
                                       G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app.gtk_app, "activate",
                      G_CALLBACK(on_activate), &app);

@@ -1,6 +1,6 @@
-# Blue Notes — User Guide
+# Records — User Guide
 
-Everyday use of Blue Notes: the library, search, the editor, settings,
+Everyday use of Records: the library, search, the editor, settings,
 storage & backup, export, and command-line automation. For build
 instructions and the Apple Notes importer see the [README](README.md);
 for the database schema and file formats see [Internals](Internals.md).
@@ -119,7 +119,7 @@ header bars anywhere). The first line of the note becomes its title.
   path shown before the folder path in each window's status bar (on by
   default — handy when you juggle more than one database).
 
-All changes apply live and persist (in `blue_notes.ini` next to the
+All changes apply live and persist (in `records.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
 dropping in files, see `icons/README.md`.
 
@@ -127,19 +127,19 @@ dropping in files, see `icons/README.md`.
 
 Everything lives in a single SQLite database:
 
-- `~/.local/share/blue_notes/blue_notes.db` by default (GLib's user-data
+- `~/.local/share/records/records.db` by default (GLib's user-data
   directory). *File → Settings… → Database* can point the app at a custom
   folder instead — e.g. a shared drive used by two machines (never open
-  it from both at once). The choice is stored in `blue_notes.ini` in
+  it from both at once). The choice is stored in `records.ini` in
   the same directory as the binary (created on first launch from
-  `blue_notes.ini.defaults`). If the configured database cannot be
+  `records.ini.defaults`). If the configured database cannot be
   opened at startup, the app reports the error and exits — it never
   silently opens a different database.
 - *File → Back Up Database…* snapshots the live database to a file;
   *File → Restore Database…* replaces the current data with a backup
-  (keeping the old file as `blue_notes.db.pre-restore`).
+  (keeping the old file as `records.db.pre-restore`).
 - **CLI and GUI cooperate over a socket** — while the GUI is running,
-  `blue_notes` command-line invocations are forwarded to it over a unix
+  `records` command-line invocations are forwarded to it over a unix
   socket instead of opening the database a second time, so the two never
   write concurrently. If the database file changed on disk since the
   last clean exit (shared folder, crash), startup offers **Open Anyway**
@@ -169,60 +169,60 @@ windows refresh to show what changed.
 Reading:
 
 ```
-blue_notes note list [PATH|--all]     ids, modified dates and titles
-blue_notes note cat ID [--md]         a note's text (--md: Markdown with
+records note list [PATH|--all]     ids, modified dates and titles
+records note cat ID [--md]         a note's text (--md: Markdown with
                                       formatting; images as placeholders)
-blue_notes search TEXT [--regex]      case-insensitive, titles + full text;
+records search TEXT [--regex]      case-insensitive, titles + full text;
                                       prints ID / modified / full path
-blue_notes folder list                folder tree with note counts
-blue_notes tag list                   every tag with its note count
-blue_notes tag notes NAME             the notes labeled with a tag
-blue_notes note tags ID               a note's tags, one per line
+records folder list                folder tree with note counts
+records tag list                   every tag with its note count
+records tag notes NAME             the notes labeled with a tag
+records note tags ID               a note's tags, one per line
 ```
 
 Writing:
 
 ```
-blue_notes note new [--folder PATH] TEXT|-   create (first line = title)
-blue_notes note append ID TEXT|-             add text on a fresh line
-blue_notes note set ID TEXT|-                REPLACE a note's content
-blue_notes note move ID [ID...] PATH         move into a folder ('/' = top)
-blue_notes note tag ID NAME                  add a #tag to the note text
-blue_notes note untag ID NAME                remove a #tag
-blue_notes note add-image ID FILE            append an image file
-blue_notes note set-modified ID TIMESTAMP    set the modified date (UNIX s)
-blue_notes folder add PATH                   create nested, like mkdir -p
+records note new [--folder PATH] TEXT|-   create (first line = title)
+records note append ID TEXT|-             add text on a fresh line
+records note set ID TEXT|-                REPLACE a note's content
+records note move ID [ID...] PATH         move into a folder ('/' = top)
+records note tag ID NAME                  add a #tag to the note text
+records note untag ID NAME                remove a #tag
+records note add-image ID FILE            append an image file
+records note set-modified ID TIMESTAMP    set the modified date (UNIX s)
+records folder add PATH                   create nested, like mkdir -p
 ```
 
 Deleting (safe by default — both go to the Trash, restorable in the GUI):
 
 ```
-blue_notes note delete [--permanent] ID [ID...]
-blue_notes note restore ID [ID...]
-blue_notes folder delete [--permanent] PATH
+records note delete [--permanent] ID [ID...]
+records note restore ID [ID...]
+records folder delete [--permanent] PATH
 ```
 
 Action items (see the editor's `!` lines; items are addressed by the
 `NOTEID:ORD` ids the list prints):
 
 ```
-blue_notes action list [--open|--done]   every action item: NOTEID:ORD,
+records action list [--open|--done]   every action item: NOTEID:ORD,
                                          [x]/[ ], due date, text
-blue_notes action done NOTEID:ORD        mark done (strikes the note line)
-blue_notes action undone NOTEID:ORD      reopen a completed item
-blue_notes action due NOTEID:ORD DATE|-  set/clear the due date (rewrites
+records action done NOTEID:ORD        mark done (strikes the note line)
+records action undone NOTEID:ORD      reopen a completed item
+records action due NOTEID:ORD DATE|-  set/clear the due date (rewrites
                                          the line's "due DATE" suffix)
 ```
 
 GUI and maintenance:
 
 ```
-blue_notes note open PATH             open an editor (id or Folder/Title;
-                                      starts Blue Notes if needed)
-blue_notes quicknote                  new note in the root folder + editor
-blue_notes backup FILE.db             snapshot the live database
-blue_notes export-md DIR              export all notes as Markdown
-blue_notes export-html DIR            export all notes as HTML
+records note open PATH             open an editor (id or Folder/Title;
+                                      starts Records if needed)
+records quicknote                  new note in the root folder + editor
+records backup FILE.db             snapshot the live database
+records export-md DIR              export all notes as Markdown
+records export-html DIR            export all notes as HTML
 ```
 
 Folders are addressed by path (`"Work/Projects"`); notes by the ids
@@ -233,14 +233,14 @@ argument or stdin (`-`). Plain text goes in; `note set` replaces the
 whole note, so any formatting, images, tables or tags the old content
 had are lost — prefer `note append` for adding to rich notes. Output is
 tab-separated for easy scripting; exit codes: 0 success, 1 usage,
-2 failure. `blue_notes help` shows the full reference.
+2 failure. `records help` shows the full reference.
 
-## Using Blue Notes with an AI agent
+## Using Records with an AI agent
 
 The CLI is the intended interface for AI agents: it covers reading,
 searching, writing, tagging and organizing, and because a running GUI
 serves CLI calls over its socket, an agent can work on the database
-while you have Blue Notes open — your windows update live as it works.
+while you have Records open — your windows update live as it works.
 
 **Agents that can run shell commands** (Claude Code, Codex CLI, Cursor,
 and similar) can use the binary directly. Tell the agent where it is
@@ -251,8 +251,8 @@ prompt):
 ```markdown
 ## My notes database
 
-My notes live in Blue Notes; use its CLI: /path/to/blue_notes
-Run "blue_notes help" for the full command list.
+My notes live in Records; use its CLI: /path/to/records
+Run "records help" for the full command list.
 
 - Find notes with `search TEXT` (or `note list --all`), read one with
   `note cat ID` (`--md` keeps formatting), then act on the id.
@@ -278,22 +278,22 @@ A useful pattern is a capture workflow — "summarize this thread and
 save it to my notes" becomes:
 
 ```
-blue_notes folder add "Inbox/AI"
-blue_notes note new --folder "Inbox/AI" -   <<'EOF'
+records folder add "Inbox/AI"
+records note new --folder "Inbox/AI" -   <<'EOF'
 Meeting summary 2026-07-10
 ...the agent's text...
 EOF
-blue_notes note tag 42 meeting
+records note tag 42 meeting
 ```
 
 **Chat-only assistants** (ChatGPT or Claude in the browser, with no
 shell access) cannot reach the database directly. Two options:
 
-- Export and upload: `blue_notes export-md ~/notes-export` produces a
+- Export and upload: `records export-md ~/notes-export` produces a
   folder of plain Markdown files that any assistant can read; paste the
   assistant's answers back with `note new -`/`note append -`.
 - Wrap the CLI in an MCP server: each tool call shells out to one
-  `blue_notes` subcommand. Clients that speak MCP (Claude Desktop,
+  `records` subcommand. Clients that speak MCP (Claude Desktop,
   Claude in Slack, others) then get live read/write access with the
   same safety properties as the CLI — the wrapper needs no database
   code at all.

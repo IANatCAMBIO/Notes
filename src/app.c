@@ -325,16 +325,16 @@ on_app_set_toolbar_style(OnApp *app, OnToolbarKind kind,
 }
 
 /* ---------------------------------------------------------------------------
- * The application config: "blue_notes.ini" in the same directory as
+ * The application config: "records.ini" in the same directory as
  * the binary.  on_app_config_init() resolves the path and loads the
  * whole file into memory ONCE; every read is served from memory and the
  * file is only touched again to write a modification through.  All keys
- * live under one [blue-notes] group.
+ * live under one [records] group.
  * ------------------------------------------------------------------------- */
 static gchar    *config_ini_path = NULL;   /* resolved ini path             */
 static GKeyFile *config_kf       = NULL;   /* in-memory settings            */
 
-#define CONFIG_GROUP "blue-notes"
+#define CONFIG_GROUP "records"
 
 void
 on_app_config_init(const gchar *argv0)
@@ -342,21 +342,21 @@ on_app_config_init(const gchar *argv0)
     if (config_kf != NULL)
         return;                      /* already resolved and loaded         */
     gchar *exe_dir = exe_dir_from_argv0(argv0);
-    config_ini_path = g_build_filename(exe_dir, "blue_notes.ini", NULL);
+    config_ini_path = g_build_filename(exe_dir, "records.ini", NULL);
 
     /* Portable mode (the usual case: binary run from its build/unpack
      * directory) keeps the ini next to the binary.  System installs
      * (.deb/.rpm/.app in /Applications: read-only binary dir) would fail
      * every write-through, so when no binary-adjacent ini exists AND the
      * directory is unwritable, the ini lives in the user config dir
-     * instead (~/.config/blue_notes/blue_notes.ini).                       */
+     * instead (~/.config/records/records.ini).                             */
     if (!g_file_test(config_ini_path, G_FILE_TEST_EXISTS) &&
         g_access(exe_dir, W_OK) != 0) {
         g_free(config_ini_path);
         gchar *cfg_dir = g_build_filename(g_get_user_config_dir(),
-                                          "blue_notes", NULL);
+                                          "records", NULL);
         g_mkdir_with_parents(cfg_dir, 0755);
-        config_ini_path = g_build_filename(cfg_dir, "blue_notes.ini",
+        config_ini_path = g_build_filename(cfg_dir, "records.ini",
                                            NULL);
         g_free(cfg_dir);
     }
@@ -365,7 +365,7 @@ on_app_config_init(const gchar *argv0)
      * next to the binary, so a fresh install starts with sane settings.    */
     if (!g_file_test(config_ini_path, G_FILE_TEST_EXISTS)) {
         gchar *defaults_path = g_build_filename(
-            exe_dir, "blue_notes.ini.defaults", NULL);
+            exe_dir, "records.ini.defaults", NULL);
         gchar *contents = NULL;      /* defaults file body                  */
         gsize  len = 0;
         if (g_file_get_contents(defaults_path, &contents, &len, NULL)) {
@@ -597,7 +597,7 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
             "(Overwriting permanently replaces the file at %s.)",
             target);
         gtk_window_set_title(GTK_WINDOW(dialog),
-                             "Blue Notes - Existing Database");
+                             "Records - Existing Database");
         gtk_dialog_add_buttons(GTK_DIALOG(dialog),
                                "_Cancel",                GTK_RESPONSE_CANCEL,
                                "_Use Existing Database", 1,

@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.c — SQLite persistence layer for Blue Notes (implementation)
+ * db.c — SQLite persistence layer for Records (implementation)
  *
  * See db.h for the public API and schema overview.  All functions log
  * failures through g_warning() and return a "failed" value rather than
@@ -240,7 +240,7 @@ gchar *
 on_db_default_path(void)
 {
     gchar *dir = g_build_filename(g_get_user_data_dir(),
-                                  "blue_notes", NULL);
+                                  "records", NULL);
     g_mkdir_with_parents(dir, 0700);
     gchar *path = g_build_filename(dir, ON_DB_FILENAME, NULL);
     g_free(dir);

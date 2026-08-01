@@ -1,5 +1,5 @@
 /* ===========================================================================
- * app.h — shared application context for Blue Notes
+ * app.h — shared application context for Records
  *
  * A single OnApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open editor windows, carries the
@@ -75,7 +75,7 @@
  *                    "list_density_comfortable" (default off = Compact).
  *   db_dir         — custom directory holding the db (owned string), or
  *                    NULL for the default location.  Persisted in the
- *                    config FILE (blue_notes.ini next to the binary), not
+ *                    config FILE (records.ini next to the binary), not
  *                    the database — the database's own location cannot
  *                    live inside it.
  *   db_integrity_check — when TRUE, PRAGMA integrity_check and PRAGMA
@@ -285,7 +285,7 @@ void on_app_load_toolbar_styles(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_init() — resolve the application config file once
- * ("blue_notes.ini" in the same directory as the binary, from `argv0`)
+ * ("records.ini" in the same directory as the binary, from `argv0`)
  * and load it into memory.  All later reads are served from memory; the
  * file is only written when a setting changes.  Must run before any
  * other config call; safe to call repeatedly.
@@ -345,15 +345,15 @@ void on_app_close_all_editors(OnApp *app);
 /* ---------------------------------------------------------------------------
  * on_app_switch_database() — move the app onto a different database
  * location, live: closes all editors, closes the current database, opens
- * blue_notes.db inside `new_dir` (NULL = the default location), and
+ * records.db inside `new_dir` (NULL = the default location), and
  * persists the choice in the config file.  If the target has no
- * blue_notes.db yet, the current database file is copied there first, so
- * notes follow the move.  If the target ALREADY has a blue_notes.db, the
+ * records.db yet, the current database file is copied there first, so
+ * notes follow the move.  If the target ALREADY has a records.db, the
  * user is asked first — use the existing database, overwrite it with a
  * copy of the current one, or cancel (which leaves everything untouched).
  * Failures are reported in a dialog and the old database is reopened.
  *   app     — the application context.
- *   new_dir — directory to hold blue_notes.db, or NULL for the default.
+ *   new_dir — directory to hold records.db, or NULL for the default.
  * Returns TRUE if the switch happened.
  * ------------------------------------------------------------------------- */
 gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);

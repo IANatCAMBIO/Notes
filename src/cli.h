@@ -8,32 +8,32 @@
  *
  * Commands follow a noun-verb structure:
  *
- *   blue_notes tag list
- *   blue_notes tag notes NAME             (notes labeled with a tag)
- *   blue_notes tag delete NAME
- *   blue_notes folder list
- *   blue_notes folder add PATH            (nested, created like mkdir -p)
- *   blue_notes folder delete [--permanent] PATH    (default: to the Trash)
- *   blue_notes note list [PATH|--all]
- *   blue_notes note cat ID [--md]         (plain text, or Markdown render)
- *   blue_notes note new [--folder PATH] CONTENT|-   (- reads stdin)
- *   blue_notes note append ID CONTENT|-   (plain text, on a fresh line)
- *   blue_notes note set ID CONTENT|-      (REPLACES the note's content)
- *   blue_notes note delete [--permanent] ID [ID...] (default: to the Trash)
- *   blue_notes note restore ID [ID...]
- *   blue_notes note move ID [ID...] PATH  (/ = top level)
- *   blue_notes note tags ID
- *   blue_notes note tag ID NAME           (appends the literal #NAME token)
- *   blue_notes note untag ID NAME
- *   blue_notes note open PATH             (id or Folder/Title; uses the GUI)
- *   blue_notes action list [--open|--done]  ('!' items; NOTEID:ORD ids)
- *   blue_notes action done|undone NOTEID:ORD
- *   blue_notes action due NOTEID:ORD DATE|-  (rewrites the note line)
- *   blue_notes search TEXT [--regex]      (titles + full text, all notes)
- *   blue_notes quicknote                  (new root note in the running GUI)
- *   blue_notes backup FILE.db
- *   blue_notes export-md DIR
- *   blue_notes export-html DIR
+ *   records tag list
+ *   records tag notes NAME             (notes labeled with a tag)
+ *   records tag delete NAME
+ *   records folder list
+ *   records folder add PATH            (nested, created like mkdir -p)
+ *   records folder delete [--permanent] PATH    (default: to the Trash)
+ *   records note list [PATH|--all]
+ *   records note cat ID [--md]         (plain text, or Markdown render)
+ *   records note new [--folder PATH] CONTENT|-   (- reads stdin)
+ *   records note append ID CONTENT|-   (plain text, on a fresh line)
+ *   records note set ID CONTENT|-      (REPLACES the note's content)
+ *   records note delete [--permanent] ID [ID...] (default: to the Trash)
+ *   records note restore ID [ID...]
+ *   records note move ID [ID...] PATH  (/ = top level)
+ *   records note tags ID
+ *   records note tag ID NAME           (appends the literal #NAME token)
+ *   records note untag ID NAME
+ *   records note open PATH             (id or Folder/Title; uses the GUI)
+ *   records action list [--open|--done]  ('!' items; NOTEID:ORD ids)
+ *   records action done|undone NOTEID:ORD
+ *   records action due NOTEID:ORD DATE|-  (rewrites the note line)
+ *   records search TEXT [--regex]      (titles + full text, all notes)
+ *   records quicknote                  (new root note in the running GUI)
+ *   records backup FILE.db
+ *   records export-md DIR
+ *   records export-html DIR
  * =========================================================================== */
 
 #ifndef BLUE_CLI_H

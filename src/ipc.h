@@ -1,9 +1,9 @@
 /* ===========================================================================
- * ipc.h — talk to an already-running Blue Notes instance
+ * ipc.h — talk to an already-running Records instance
  *
  * The GUI process listens on a per-user Unix-domain socket
- * (<runtime-dir>/blue_notes.sock).  Short-lived CLI invocations
- * ("blue_notes quicknote" / "blue_notes note open PATH") connect to that
+ * (<runtime-dir>/records.sock).  Short-lived CLI invocations
+ * ("records quicknote" / "records note open PATH") connect to that
  * socket and hand the running instance a one-line command so the note opens
  * in the existing windows rather than a second copy of the app.  When no
  * instance is listening the CLI records the request as a "pending action" and

@@ -45,7 +45,6 @@
 
 /* Width reserved for the floating code-block copy button, and its inset
  * from the block's shaded top and right edges.                             */
-#define CODE_BTN_SIZE   22
 #define CODE_BTN_MARGIN 4
 
 /* Horizontal margin the code-block tag applies (see on_buffer_ensure_tags
@@ -722,23 +721,44 @@ handle_return_in_list(OnEditor *ed)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * on_code_copy_clicked() — copy the whole code block whose start mark is
- * attached to the clicked button.
+ * on_copy_link_realize() — set a pointer cursor on the EventBox's own
+ * GdkWindow.  GtkButton has no window (windowless widget in GTK3), so
+ * the realize handler must live on the EventBox wrapper, not the button,
+ * to avoid setting the cursor on the whole text-view text window.
  * ------------------------------------------------------------------------- */
 static void
-on_code_copy_clicked(GtkButton *btn, gpointer user_data)
+on_copy_link_realize(GtkWidget *widget, gpointer user_data)
 {
+    (void)user_data;
+    GdkDisplay *display = gtk_widget_get_display(widget);
+    GdkCursor  *cursor  = gdk_cursor_new_from_name(display, "pointer");
+    if (cursor != NULL) {
+        gdk_window_set_cursor(gtk_widget_get_window(widget), cursor);
+        g_object_unref(cursor);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * on_code_copy_pressed() — copy the whole code block whose start mark is
+ * attached to the EventBox wrapper and post a status confirmation.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_code_copy_pressed(GtkWidget *widget, GdkEventButton *event,
+                     gpointer user_data)
+{
+    if (event->button != GDK_BUTTON_PRIMARY)
+        return FALSE;
     OnEditor *ed = user_data;        /* owning editor                       */
-    GtkTextMark *mark =              /* block-start mark on the button      */
-        g_object_get_data(G_OBJECT(btn), "on-mark");
+    GtkTextMark *mark =              /* block-start mark on the EventBox    */
+        g_object_get_data(G_OBJECT(widget), "on-mark");
     GtkTextTag *tag = lookup_tag(ed->buffer, ON_TAGNAME_CODEBLOCK);
     if (mark == NULL || tag == NULL)
-        return;
+        return FALSE;
 
     GtkTextIter start;               /* block start                         */
     gtk_text_buffer_get_iter_at_mark(ed->buffer, &start, mark);
     if (!gtk_text_iter_has_tag(&start, tag))
-        return;                      /* block vanished since last rebuild   */
+        return FALSE;                /* block vanished since last rebuild   */
 
     GtkTextIter end = start;         /* block end                           */
     gtk_text_iter_forward_to_tag_toggle(&end, tag);
@@ -750,6 +770,8 @@ on_code_copy_clicked(GtkButton *btn, gpointer user_data)
                                  GDK_SELECTION_CLIPBOARD),
         code, -1);
     g_free(code);
+    on_app_status(ed->app, "Codeblock copied");
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -779,10 +801,8 @@ code_buttons_update_positions(OnEditor *ed)
         if (mark == NULL)
             continue;
 
-        /* The button's CSS pins it to exactly CODE_BTN_SIZE square in
-         * every state (normal/hover/active), so positioning can rely on
-         * the constant instead of chasing theme-dependent allocations.     */
-        const gint bw = CODE_BTN_SIZE;
+        gint bw;                     /* natural width of this link widget   */
+        gtk_widget_get_preferred_width(btn, NULL, &bw);
 
         GtkTextIter it;              /* block start position                */
         gtk_text_buffer_get_iter_at_mark(ed->buffer, &it, mark);
@@ -890,48 +910,30 @@ code_buttons_rebuild(OnEditor *ed)
                 continue;
         }
 
-        /* One block starts here: build its button.  Its CSS pins every
-         * state (normal, hover, active) to exactly CODE_BTN_SIZE square —
-         * hover styling must not change the geometry — and draws a solid
-         * background + border in ALL states, so the button reads as a
-         * button even while overlaying code text (normal relief keeps the
-         * theme's frame instead of the hover-only flat look).              */
-        GtkWidget *btn = gtk_button_new();
-        GtkWidget *icon = on_app_icon_image_sized(ed->app, "copy", 16);
-        if (icon == NULL)
-            icon = gtk_label_new("\xe2\x8e\x98");    /* ⎘ fallback glyph    */
-        gtk_container_add(GTK_CONTAINER(btn), icon);
-        gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NORMAL);
-        gtk_widget_set_tooltip_text(btn, "Copy code block");
-        gtk_widget_set_size_request(btn, CODE_BTN_SIZE, CODE_BTN_SIZE);
-
-        gchar *css_text = g_strdup_printf(
-            "button, button:hover, button:active {"
-            "  padding: 0;"
-            "  margin: 0;"
-            "  border: 1px solid #b0b0b0;"
-            "  border-radius: 4px;"
-            "  background-image: none;"
-            "  background-color: #ffffff;"
-            "  min-width: %dpx;"
-            "  min-height: %dpx;"
-            "}"
-            "button:hover  { background-color: #f2f2f2; }"
-            "button:active { background-color: #e2e2e2; }",
-            CODE_BTN_SIZE - 2, CODE_BTN_SIZE - 2);
-        on_app_widget_add_css(btn, css_text);
-        g_free(css_text);
+        /* One block starts here: build its "copy" hyperlink overlay.
+         * GtkButton is windowless in GTK3, so we wrap in an EventBox
+         * (which has its own GdkWindow) to scope the pointer cursor to
+         * just the link region instead of the whole text-view window.   */
+        GtkWidget *evbox = gtk_event_box_new();
+        gtk_event_box_set_visible_window(GTK_EVENT_BOX(evbox), FALSE);
+        GtkWidget *lbl = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(lbl),
+            "<span size=\"8192\" foreground=\"#0066cc\""
+            " underline=\"single\">copy</span>");
+        gtk_container_add(GTK_CONTAINER(evbox), lbl);
+        g_signal_connect(evbox, "realize",
+                         G_CALLBACK(on_copy_link_realize), NULL);
 
         GtkTextMark *mark = gtk_text_buffer_create_mark(ed->buffer, NULL,
                                                         &it, TRUE);
-        g_object_set_data(G_OBJECT(btn), "on-mark", mark);
-        g_signal_connect(btn, "clicked",
-                         G_CALLBACK(on_code_copy_clicked), ed);
+        g_object_set_data(G_OBJECT(evbox), "on-mark", mark);
+        g_signal_connect(evbox, "button-press-event",
+                         G_CALLBACK(on_code_copy_pressed), ed);
 
-        gtk_text_view_add_child_in_window(ed->view, btn,
+        gtk_text_view_add_child_in_window(ed->view, evbox,
                                           GTK_TEXT_WINDOW_TEXT, 0, 0);
-        gtk_widget_show_all(btn);
-        ed->code_buttons = g_slist_prepend(ed->code_buttons, btn);
+        gtk_widget_show_all(evbox);
+        ed->code_buttons = g_slist_prepend(ed->code_buttons, evbox);
 
         /* Jump past this block and continue scanning.                      */
         if (!gtk_text_iter_forward_to_tag_toggle(&it, tag))
@@ -2966,7 +2968,7 @@ undo_notify_change(OnEditor *ed)
  * undo_insert_seg_slice() — insert characters [s, s+n) of one segment at
  * buffer offset `at`: text slices by UTF-8 offset, anchors whole (their
  * slice is always the single 0xFFFC char).  The fresh span first has
- * every Blue Notes tag stripped — GtkTextBuffer makes insertions inherit
+ * every Records tag stripped — GtkTextBuffer makes insertions inherit
  * tags applied on BOTH sides of the insertion point — then the segment's
  * own flags applied.  Returns n.
  * ------------------------------------------------------------------------- */
@@ -3887,7 +3889,7 @@ editor_save(OnEditor *ed)
 
     /* Window title mirrors the note title.                                 */
     if (ed->window != NULL) {
-        gchar *wtitle = g_strdup_printf("Blue Notes - %s", title);
+        gchar *wtitle = g_strdup_printf("Records - %s", title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
         g_free(wtitle);
     }
@@ -4599,7 +4601,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
     gtk_window_set_default_size(GTK_WINDOW(ed->window), win_w, win_h);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(ed->window));
     {
-        gchar *wtitle = g_strdup_printf("Blue Notes - %s", meta->title);
+        gchar *wtitle = g_strdup_printf("Records - %s", meta->title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
         g_free(wtitle);
     }

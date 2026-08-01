@@ -8,7 +8,7 @@
  *   2 — operation failed (missing folder, database error, …)
  *
  * The database is resolved exactly like the GUI resolves it: the custom
- * location from blue_notes.ini (next to the binary) when set, otherwise
+ * location from records.ini (next to the binary) when set, otherwise
  * the default per-user path.
  * =========================================================================== */
 
@@ -1190,7 +1190,7 @@ static int
 usage(FILE *out)
 {
     fputs(
-"Usage: blue_notes [COMMAND ...]   (no command starts the GUI)\n"
+"Usage: records [COMMAND ...]   (no command starts the GUI)\n"
 "\n"
 "  tag list                          print every tag with its note count\n"
 "  tag notes NAME                    print the notes labeled with a tag\n"
@@ -1225,7 +1225,7 @@ usage(FILE *out)
 "                                    seconds; for importers)\n"
 "  note open PATH                    open a note's editor in the running\n"
 "                                    instance (PATH = id or Folder/Title);\n"
-"                                    starts Blue Notes if it is not running\n"
+"                                    starts Records if it is not running\n"
 "\n"
 "  action list [--open|--done]       print every '!' action item across\n"
 "                                    the notes: NOTEID:ORD, [x]/[ ],\n"
@@ -1243,7 +1243,7 @@ usage(FILE *out)
 "\n"
 "  quicknote                         create a note in the root folder and\n"
 "                                    open its editor in the running instance\n"
-"                                    (starts Blue Notes if not running)\n"
+"                                    (starts Records if not running)\n"
 "\n"
 "  backup FILE.db                    snapshot the database to FILE.db\n"
 "  export-md DIR                     export all notes as Markdown into DIR\n"

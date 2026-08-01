@@ -519,6 +519,30 @@ then change the files in the "Change" column.
 | Modify export output | `export.c` | `export.c` |
 | Modify search behaviour | `search_window.c` | `search_window.c` |
 
+## Rename cleanup TODO
+
+The 2026-07-31 rename from Blue Notes to Records left a few things
+intentionally unchanged that should be cleaned up eventually:
+
+- **Internal C naming**: `on_` / `On` / `ON_` prefixes throughout all
+  source files (originally stood for "Orange Notes" → carried through
+  Blue Notes → Records; safe to rename but a large mechanical change).
+- **Header guards**: `BLUE_DB_H`, `BLUE_IPC_H`, `BLUE_CLI_H` etc. in
+  the `#ifndef` guards — purely cosmetic, zero runtime impact.
+- **BNBF format name**: `serialize.h` still has a note that BNBF stood
+  for "Blue Notes Binary Format". The magic bytes `BNBF` are stored in
+  every note blob and cannot be changed without a migration; the comment
+  is just a historical footnote.
+- **About dialog authors string**: "And thanks to Blue Note Records…" —
+  this is an acknowledgment of the jazz label and intentionally kept,
+  but the name overlap is now gone so the double-entendre no longer
+  applies. Worth rewording at some point.
+- **REFACTORING.md historical paths**: references to
+  `~/.local/share/blue_notes/pre-heal-backup-20260709.db` and
+  `~/.local/share/blue_notes/pre-onbf-migration-20260709.db` — those
+  backup files physically exist at those paths; update the doc if/when
+  the files are moved or deleted.
+
 ## Conventions
 
 - Every function gets a banner comment: purpose, params, return; comment

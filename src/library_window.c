@@ -521,9 +521,9 @@ refresh_sidebar(OnLibrary *lw)
 
     /* "All Notes" — a live view of every note outside the Trash.           */
     gchar *all_label = lw->app->sidebar_counts
-        ? g_strdup_printf("All Notes (%d)",
+        ? g_strdup_printf("\xf0\x9f\x94\xae\xc2\xa0 All Notes (%d)",
                           on_db_note_count_visible(lw->app->db))
-        : g_strdup("All Notes");
+        : g_strdup("\xf0\x9f\x94\xae\xc2\xa0 All Notes");
     GtkTreeIter all_iter;            /* the fixed "All Notes" row           */
     gtk_tree_store_append(lw->sidebar_store, &all_iter, NULL);
     gtk_tree_store_set(lw->sidebar_store, &all_iter,
@@ -588,8 +588,8 @@ refresh_sidebar(OnLibrary *lw)
     on_db_action_counts(lw->app->db, &n_actions, &n_open);
     if (n_actions > 0) {
         gchar *label = lw->app->sidebar_counts
-            ? g_strdup_printf("Action Items (%d)", n_open)
-            : g_strdup("Action Items");
+            ? g_strdup_printf("\xe2\x9d\x97\xc2\xa0 Action Items (%d)", n_open)
+            : g_strdup("\xe2\x9d\x97\xc2\xa0 Action Items");
         GtkTreeIter iter;
         gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
         gtk_tree_store_set(lw->sidebar_store, &iter,
@@ -607,8 +607,8 @@ refresh_sidebar(OnLibrary *lw)
     gint n_trash = on_db_trash_count(lw->app->db);
     if (n_trash > 0) {
         gchar *label = lw->app->sidebar_counts
-            ? g_strdup_printf("Trash (%d)", n_trash)
-            : g_strdup("Trash");
+            ? g_strdup_printf("\xf0\x9f\x97\x91\xc2\xa0 Trash (%d)", n_trash)
+            : g_strdup("\xf0\x9f\x97\x91\xc2\xa0 Trash");
         GtkTreeIter trash_iter;      /* the "Trash" section row             */
         gtk_tree_store_append(lw->sidebar_store, &trash_iter, NULL);
         gtk_tree_store_set(lw->sidebar_store, &trash_iter,

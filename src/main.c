@@ -397,7 +397,7 @@ main(int argc, char *argv[])
     app.compact_editor_toolbar =
         on_app_config_get_bool("compact_editor_toolbar", TRUE);
     app.comfortable_list =
-        on_app_config_get_bool("list_density_comfortable", TRUE);
+        on_app_config_get_bool("list_density_comfortable", FALSE);
     app.db_integrity_check =
         on_app_config_get_bool("db_integrity_check",     TRUE);
     app.statusbar_db_path =

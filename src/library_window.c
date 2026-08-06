@@ -506,8 +506,9 @@ refresh_sidebar(OnLibrary *lw)
     gint n_pinned = on_db_note_count_pinned(lw->app->db);
     if (n_pinned > 0) {
         gchar *label = lw->app->sidebar_counts
-            ? g_strdup_printf("Pinned Notes (%d)", n_pinned)
-            : g_strdup("Pinned Notes");
+            ? g_strdup_printf("\xf0\x9f\x93\x8c\xc2\xa0 Pinned Notes (%d)",
+                              n_pinned)
+            : g_strdup("\xf0\x9f\x93\x8c\xc2\xa0 Pinned Notes");
         GtkTreeIter iter;
         gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
         gtk_tree_store_set(lw->sidebar_store, &iter,
@@ -5428,6 +5429,12 @@ on_library_window_create(OnApp *app)
     /* --- assemble -----------------------------------------------------------*/
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     lw->sidebar_paned = paned;
+    /* A 6 px divider: wide-handle switches GtkPaned off its hairline style,
+     * and the exact width comes from CSS on the handle's own `separator`
+     * node (this paned is horizontal, so its separator is vertical and
+     * min-WIDTH is the lever).                                             */
+    gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
+    on_app_widget_add_css(paned, "paned > separator { min-width: 6px; }");
     gtk_paned_pack1(GTK_PANED(paned), lw->sidebar_box, FALSE, FALSE);
     lw->ai_pane = build_ai_pane(lw);
     /* Vertical paned so the user can drag the divider between the notes list

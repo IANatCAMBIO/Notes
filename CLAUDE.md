@@ -11,7 +11,7 @@ plain `GtkWindow` titlebars, formatted `"Records - <thing>"`.
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
 make          # builds ./records
 make run
-make app      # dist/Records-<version>.app (macOS; sips/iconutil;
+make app      # dist/Records.app (unversioned name; macOS; sips/iconutil;
               # vinyl.png → .icns; NOT self-contained — needs MacPorts GTK)
 make deb      # dist/records_<version>_<arch>.deb (needs dpkg-deb,
 make rpm      # dist/records-<version>-1.<arch>.rpm  needs rpmbuild —
@@ -22,7 +22,9 @@ make rpm      # dist/records-<version>-1.<arch>.rpm  needs rpmbuild —
 
 The semantic version is the `VERSION` variable at the top of the
 Makefile — single source: baked into the binary as `ON_VERSION` (About
-dialog) and into every package filename. Objects depend on the Makefile
+dialog), into the .deb/.rpm filenames and into the .app bundle's
+Info.plist — the .app bundle NAME is deliberately unversioned so the
+path in /Applications never changes. Objects depend on the Makefile
 so a version bump recompiles.
 
 Dependencies (MacPorts): `gtk3 +quartz`, `sqlite3`, `pkgconf`, and

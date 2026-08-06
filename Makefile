@@ -11,7 +11,7 @@
 #     make          — build the `records` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
-#     make app      — macOS .app bundle → dist/Records-<version>.app
+#     make app      — macOS .app bundle → dist/Records.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
 #     make deb      — Debian package → dist/records_<version>_<arch>.deb
@@ -22,7 +22,8 @@
 # =============================================================================
 
 # Semantic version — the single source: it is baked into the binary
-# (ON_VERSION, shown in the About dialog) and into every package filename.
+# (ON_VERSION, shown in the About dialog), into the .deb/.rpm filenames and
+# into the .app bundle's Info.plist (the bundle name itself is unversioned).
 VERSION  := 3.4.3
 
 # The compiler to use.  clang is the system compiler on macOS.
@@ -108,7 +109,7 @@ DIST     := dist
 # The binary still links against the MacPorts GTK dylibs (absolute install
 # names), so the bundle runs on this machine but is NOT self-contained.
 
-APP_DIR  := $(DIST)/Records-$(VERSION).app
+APP_DIR  := $(DIST)/Records.app
 ICONSET  := $(DIST)/vinyl.iconset
 
 app: $(BIN)

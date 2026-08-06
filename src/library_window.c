@@ -534,6 +534,26 @@ refresh_sidebar(OnLibrary *lw)
                        -1);
     g_free(all_label);
 
+    /* "Action Items" directly under All Notes — every '!' line across the
+     * visible notes (mirrored into the action_items table by saves).
+     * Shown only while any exist; the optional count is the OPEN ones.     */
+    gint n_actions = 0, n_open = 0;  /* all items / unchecked items         */
+    on_db_action_counts(lw->app->db, &n_actions, &n_open);
+    if (n_actions > 0) {
+        gchar *label = lw->app->sidebar_counts
+            ? g_strdup_printf("\xe2\x9d\x97\xc2\xa0 Action Items (%d)", n_open)
+            : g_strdup("\xe2\x9d\x97\xc2\xa0 Action Items");
+        GtkTreeIter iter;
+        gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
+        gtk_tree_store_set(lw->sidebar_store, &iter,
+                           SB_KIND, SB_KIND_ACTIONS,
+                           SB_ID,   (gint64)0,
+                           SB_NAME, label,
+                           SB_RAW,  "Action Items",
+                           -1);
+        g_free(label);
+    }
+
     /* "Notes" root — selecting it shows the top-level notes.               */
     gchar *root_label = lw->app->sidebar_counts
         ? g_strdup_printf("Notes (%d)", count_from_map(note_counts, 0))
@@ -580,26 +600,6 @@ refresh_sidebar(OnLibrary *lw)
         }
     }
     on_db_tag_list_free(tags);
-
-    /* "Action Items" below folders and tags — every '!' line across the
-     * visible notes (mirrored into the action_items table by saves).
-     * Shown only while any exist; the optional count is the OPEN ones.     */
-    gint n_actions = 0, n_open = 0;  /* all items / unchecked items         */
-    on_db_action_counts(lw->app->db, &n_actions, &n_open);
-    if (n_actions > 0) {
-        gchar *label = lw->app->sidebar_counts
-            ? g_strdup_printf("\xe2\x9d\x97\xc2\xa0 Action Items (%d)", n_open)
-            : g_strdup("\xe2\x9d\x97\xc2\xa0 Action Items");
-        GtkTreeIter iter;
-        gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
-        gtk_tree_store_set(lw->sidebar_store, &iter,
-                           SB_KIND, SB_KIND_ACTIONS,
-                           SB_ID,   (gint64)0,
-                           SB_NAME, label,
-                           SB_RAW,  "Action Items",
-                           -1);
-        g_free(label);
-    }
 
     /* "Trash" at the bottom, only while it holds something.  Selecting
      * it lists the directly-trashed notes; trashed folders hang under it

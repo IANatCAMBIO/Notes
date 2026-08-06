@@ -198,7 +198,8 @@ sees the new flags.
   Sidebar: "Pinned Notes" on top (only while any are pinned; the
   selection-restore fallback reads the FIRST row's kind from the model
   rather than assuming All Notes), then "All Notes" (`SB_KIND_ALL`,
-  newest-first), "Trash" section at the bottom only while non-empty
+  newest-first), then "Action Items", then the folder tree and Tags,
+  and the "Trash" section at the bottom only while non-empty
   (`SB_KIND_TRASH`, trashed folders as `SB_KIND_TRASH_FOLDER` children);
   in trash views the Delete paths turn permanent (with confirm) and the
   note menu becomes Open/Restore/Delete Permanently; GUI note/folder
@@ -220,7 +221,7 @@ sees the new flags.
   backfill for pre-feature notes is gated by `PRAGMA user_version`
   (`on_app_actions_backfill`, run after every long-lived `on_db_open` —
   GUI start, CLI, db switch).  Library: "Action Items" sidebar
-  row below the folder tree and Tags section, above Trash (visible while
+  row directly under All Notes, ABOVE the folder tree (visible while
   items exist; optional count = OPEN items) shows a third notes-pane
   stack child ("actions"): untitled checkbox column + "Action" text
   column (done rows struck).  Toggling

@@ -54,6 +54,7 @@ cli_open_db(void)
     g_free(path);
     g_free(db_dir);
     on_app_actions_backfill(db);     /* one-time '!'-line index (gated)     */
+    on_app_action_uids_backfill(db); /* then give those rows stable ids     */
     return db;
 }
 
@@ -949,8 +950,16 @@ cmd_set_modified(OnDatabase *db, const gchar *id_str, const gchar *ts_str)
 }
 
 /* ---------------------------------------------------------------------------
- * action_token_parse() — split a "NOTEID:ORD" item address (the first
- * column of `action list`).  Validates that the note exists.
+ * action_token_parse() — resolve an item address to (note_id, ord).
+ *
+ * Two forms, told apart BY SHAPE: a token containing ':' is the legacy
+ * positional "NOTEID:ORD" (the first column of plain `action list`, whose
+ * meaning shifts as lines are added and removed); anything else is a
+ * stable uid (the first column of `action list --uid`), looked up in the
+ * table.  Since a uid is a bare decimal and the positional form always
+ * carries a colon, neither can ever be read as the other.
+ *
+ * Validates that the note (or the uid) actually exists.
  * Returns TRUE on success; prints an error otherwise.
  * ------------------------------------------------------------------------- */
 static gboolean
@@ -958,7 +967,22 @@ action_token_parse(OnDatabase *db, const gchar *token,
                    gint64 *note_id, gint *ord)
 {
     gchar *colon = strchr(token, ':');
-    if (colon == NULL || colon == token || colon[1] == '\0') {
+    if (colon == NULL) {             /* the stable-uid form                 */
+        gchar *endp = NULL;          /* end of the parsed uid               */
+        gint64 uid = g_ascii_strtoll(token, &endp, 10);
+        if (uid <= 0 || endp == NULL || *endp != '\0') {
+            fprintf(stderr, "error: bad action item id: %s (expected a UID "
+                            "from 'action list --uid', or NOTEID:ORD)\n",
+                    token);
+            return FALSE;
+        }
+        if (!on_db_action_find_uid(db, uid, note_id, ord)) {
+            fprintf(stderr, "error: no such action item: %s\n", token);
+            return FALSE;
+        }
+        return TRUE;
+    }
+    if (colon == token || colon[1] == '\0') {
         fprintf(stderr, "error: bad action item id: %s "
                         "(expected NOTEID:ORD, see 'action list')\n", token);
         return FALSE;
@@ -985,11 +1009,17 @@ action_token_parse(OnDatabase *db, const gchar *token,
  * cmd_action_list() — every action item across the visible notes, newest
  * note first: "NOTEID:ORD<TAB>[x]/[ ]<TAB>due-date<TAB>text" ('-' = no
  * due date).  `filter` narrows to open or done items.
+ *
+ * with_uid prepends the item's STABLE uid as a further first column:
+ *   "UID<TAB>NOTEID:ORD<TAB>[x]/[ ]<TAB>due-date<TAB>text"
+ * The default form is byte-for-byte unchanged — external consumers split
+ * it into a fixed number of fields, and the text (which may itself
+ * contain tabs) has to stay last, so a new column can only go in front.
  * ------------------------------------------------------------------------- */
 typedef enum { ACTION_ALL, ACTION_OPEN, ACTION_DONE } ActionFilter;
 
 static int
-cmd_action_list(OnDatabase *db, ActionFilter filter)
+cmd_action_list(OnDatabase *db, ActionFilter filter, gboolean with_uid)
 {
     GList *items = on_db_action_list(db);
     for (GList *l = items; l != NULL; l = l->next) {
@@ -1003,6 +1033,8 @@ cmd_action_list(OnDatabase *db, ActionFilter filter)
             when = g_date_time_format(dt, "%Y-%m-%d");
             g_date_time_unref(dt);
         }
+        if (with_uid)
+            printf("%" G_GINT64_FORMAT "\t", it->uid);
         printf("%" G_GINT64_FORMAT ":%d\t%s\t%s\t%s\n",
                it->note_id, it->ord,
                it->done ? "[x]" : "[ ]",
@@ -1228,12 +1260,16 @@ usage(FILE *out)
 "                                    starts Records if it is not running\n"
 "\n"
 "  action list [--open|--done]       print every '!' action item across\n"
-"                                    the notes: NOTEID:ORD, [x]/[ ],\n"
-"                                    due date ('-' = none), text\n"
-"  action done NOTEID:ORD            mark an item done (strikes its line\n"
+"              [--uid]               the notes: NOTEID:ORD, [x]/[ ],\n"
+"                                    due date ('-' = none), text.\n"
+"                                    --uid adds the item's stable UID as\n"
+"                                    a first column: that id survives\n"
+"                                    editing, reordering and renumbering,\n"
+"                                    while NOTEID:ORD does not\n"
+"  action done UID|NOTEID:ORD        mark an item done (strikes its line\n"
 "                                    in the note text)\n"
-"  action undone NOTEID:ORD          reopen a completed item\n"
-"  action due NOTEID:ORD DATE|-      set the item's due date (written\n"
+"  action undone UID|NOTEID:ORD      reopen a completed item\n"
+"  action due UID|NOTEID:ORD DATE|-  set the item's due date (written\n"
 "                                    into the note line as 'due DATE';\n"
 "                                    '-' clears it)\n"
 "\n"
@@ -1293,13 +1329,21 @@ static int
 dispatch_action(OnDatabase *db, const char *verb, char **argv, int argc)
 {
     if (g_strcmp0(verb, "list") == 0) {
-        if (argc == 0)
-            return cmd_action_list(db, ACTION_ALL);
-        if (argc == 1 && g_strcmp0(argv[0], "--open") == 0)
-            return cmd_action_list(db, ACTION_OPEN);
-        if (argc == 1 && g_strcmp0(argv[0], "--done") == 0)
-            return cmd_action_list(db, ACTION_DONE);
-        return usage(stderr);
+        /* Flags in any order; anything unrecognised is a usage error (exit
+         * 1), which is how a caller probes an older build for --uid.       */
+        ActionFilter filter   = ACTION_ALL;
+        gboolean     with_uid = FALSE;
+        for (int i = 0; i < argc; i++) {
+            if (g_strcmp0(argv[i], "--open") == 0)
+                filter = ACTION_OPEN;
+            else if (g_strcmp0(argv[i], "--done") == 0)
+                filter = ACTION_DONE;
+            else if (g_strcmp0(argv[i], "--uid") == 0)
+                with_uid = TRUE;
+            else
+                return usage(stderr);
+        }
+        return cmd_action_list(db, filter, with_uid);
     }
     if (g_strcmp0(verb, "done") == 0 && argc == 1)
         return cmd_action_done(db, argv[0], TRUE);

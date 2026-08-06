@@ -26,9 +26,12 @@
  *   records note tag ID NAME           (appends the literal #NAME token)
  *   records note untag ID NAME
  *   records note open PATH             (id or Folder/Title; uses the GUI)
- *   records action list [--open|--done]  ('!' items; NOTEID:ORD ids)
- *   records action done|undone NOTEID:ORD
- *   records action due NOTEID:ORD DATE|-  (rewrites the note line)
+ *   records action list [--open|--done] [--uid]  ('!' items; NOTEID:ORD
+ *                                        positions, --uid prepends the
+ *                                        stable per-item id that survives
+ *                                        edits and renumbering)
+ *   records action done|undone UID|NOTEID:ORD
+ *   records action due UID|NOTEID:ORD DATE|-  (rewrites the note line)
  *   records search TEXT [--regex]      (titles + full text, all notes)
  *   records quicknote                  (new root note in the running GUI)
  *   records backup FILE.db

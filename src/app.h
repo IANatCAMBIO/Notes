@@ -368,4 +368,13 @@ gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);
  * ------------------------------------------------------------------------- */
 void on_app_actions_backfill(OnDatabase *db);
 
+/* ---------------------------------------------------------------------------
+ * on_app_action_uids_backfill() — one-time assignment of stable uids to
+ * action_items rows written before the uid column existed (gated by
+ * PRAGMA user_version, like on_app_actions_backfill, which it must run
+ * AFTER: that one indexes the rows, this one identifies them).  Cheap —
+ * it touches the table only, never the note blobs.  NULL-safe.
+ * ------------------------------------------------------------------------- */
+void on_app_action_uids_backfill(OnDatabase *db);
+
 #endif /* BLUE_APP_H */

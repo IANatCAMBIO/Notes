@@ -48,8 +48,21 @@ static const char *SCHEMA_SQL =
     "  text    TEXT NOT NULL,"
     "  done    INTEGER NOT NULL DEFAULT 0,"
     "  due     INTEGER NOT NULL DEFAULT 0,"
+    "  uid     INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (note_id, ord)"
     ");"
+    /* The uid high-water mark: one row, monotonically increasing, so a
+     * uid retired by a deleted item is never handed out again.             */
+    "CREATE TABLE IF NOT EXISTS action_uid_seq ("
+    "  id   INTEGER PRIMARY KEY CHECK (id = 1),"
+    "  next INTEGER NOT NULL"
+    ");"
+    "INSERT OR IGNORE INTO action_uid_seq (id, next) VALUES (1, 1);"
+    /* NOTE: the index on action_items(uid) is NOT here — on a database
+     * predating that column this string runs BEFORE the ALTER that adds
+     * it, and indexing a missing column fails the whole batch (which
+     * means on_db_open returns NULL and the app refuses to start).  It is
+     * created after the migrations instead, with the Trash view.          */
     "CREATE INDEX IF NOT EXISTS idx_notes_folder  ON notes(folder_id);"
     "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);"
     "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);";
@@ -306,10 +319,20 @@ on_db_open(const gchar *path_override)
                  "ALTER TABLE folders ADD COLUMN emoji TEXT "
                  "NOT NULL DEFAULT ''",
                  NULL, NULL, NULL);
+    /* 0 = no uid yet; on_app_action_uids_backfill() fills those in once.   */
+    sqlite3_exec(db->handle,
+                 "ALTER TABLE action_items ADD COLUMN uid INTEGER "
+                 "NOT NULL DEFAULT 0",
+                 NULL, NULL, NULL);
 
-    /* The Trash view references the trashed columns, so it is created
-     * only after the migrations above have run.                             */
+    /* The Trash view references the trashed columns, and the uid index the
+     * uid column, so both are created only after the migrations above.      */
     if (!exec_simple(db, TRASH_VIEW_SQL)) {
+        on_db_close(db);
+        return NULL;
+    }
+    if (!exec_simple(db, "CREATE INDEX IF NOT EXISTS idx_action_items_uid "
+                         "ON action_items(uid)")) {
         on_db_close(db);
         return NULL;
     }
@@ -1127,26 +1150,181 @@ on_db_note_tag_list(OnDatabase *db, gint64 note_id)
  * rebuilt whenever a save changes them (see on_note_extract_actions)
  * ========================================================================= */
 
+/* ---------------------------------------------------------------------------
+ * action_uid_alloc() — take the next stable uid from the action_uid_seq
+ * high-water mark and advance it.  MUST run inside the caller's
+ * transaction so a rolled-back rebuild does not burn ids (and, more
+ * importantly, so two allocations can never collide).  The counter is
+ * only ever incremented, so a uid retired with a deleted item is never
+ * handed out to a different item.
+ * Returns the new uid, or 0 on failure.
+ * ------------------------------------------------------------------------- */
+static gint64
+action_uid_alloc(OnDatabase *db)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT next FROM action_uid_seq WHERE id=1");
+    if (stmt == NULL)
+        return 0;
+    gint64 uid = 0;                      /* the id to hand out              */
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        uid = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    if (uid <= 0)
+        return 0;
+
+    stmt = prepare(db, "UPDATE action_uid_seq SET next=? WHERE id=1");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_int64(stmt, 1, uid + 1);
+    gboolean ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok ? uid : 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * OldAction — one of the note's pre-rebuild rows, used to carry uids
+ * across the DELETE-then-INSERT (see on_db_note_set_actions).
+ *
+ * Fields:
+ *   uid     — the stable id to hand on (0 for pre-column rows).
+ *   ord     — the row's old position.
+ *   text    — the row's old text (owned).
+ *   claimed — already matched to one of the new items?
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64   uid;
+    gint     ord;
+    gchar   *text;
+    gboolean claimed;
+} OldAction;
+
+/* ---------------------------------------------------------------------------
+ * action_uids_carry() — assign every item in `items` its stable uid,
+ * reusing the note's old rows wherever one can be identified.  Four
+ * passes over the whole list, strongest evidence first (see the
+ * on_db_note_set_actions banner in db.h): identical text, then the
+ * caller's it->uid hint, then the same ord, then a fresh id.  Each pass
+ * runs to completion before the next so a strong match anywhere always
+ * beats a weak one — a text match must not lose a row to a positional
+ * guess made earlier in the list.
+ *   old — the pre-rebuild rows (claimed flags are updated in place).
+ * Returns TRUE on success (FALSE only when the allocator fails).
+ * ------------------------------------------------------------------------- */
+static gboolean
+action_uids_carry(OnDatabase *db, GList *items, GPtrArray *old)
+{
+    /* Hints must be read before pass 1 overwrites any of them.            */
+    GArray *hints = g_array_new(FALSE, FALSE, sizeof(gint64));
+    for (GList *l = items; l != NULL; l = l->next) {
+        gint64 hint = ((OnActionItem *)l->data)->uid;
+        g_array_append_val(hints, hint);
+        ((OnActionItem *)l->data)->uid = 0;   /* 0 until a pass assigns it  */
+    }
+
+    /* Pass 1 — identical text: the item did not change, only moved.       */
+    for (GList *l = items; l != NULL; l = l->next) {
+        OnActionItem *it = l->data;
+        for (guint i = 0; i < old->len; i++) {
+            OldAction *o = g_ptr_array_index(old, i);
+            if (!o->claimed && o->uid != 0 &&
+                g_strcmp0(o->text, it->text) == 0) {
+                o->claimed = TRUE;
+                it->uid = o->uid;
+                break;
+            }
+        }
+    }
+
+    /* Pass 2 — the caller's hint: a live editor mark still sitting on
+     * this item's line, the one signal that survives a reword.           */
+    guint idx = 0;                       /* position in the hints array    */
+    for (GList *l = items; l != NULL; l = l->next, idx++) {
+        OnActionItem *it = l->data;
+        gint64 hint = g_array_index(hints, gint64, idx);
+        if (it->uid != 0 || hint == 0)
+            continue;
+        for (guint i = 0; i < old->len; i++) {
+            OldAction *o = g_ptr_array_index(old, i);
+            if (!o->claimed && o->uid == hint) {
+                o->claimed = TRUE;
+                it->uid = o->uid;
+                break;
+            }
+        }
+    }
+
+    /* Pass 3 — same position: the headless reword, with no hint to go on. */
+    gint ord = 0;                        /* the item's new position        */
+    for (GList *l = items; l != NULL; l = l->next, ord++) {
+        OnActionItem *it = l->data;
+        if (it->uid != 0)
+            continue;
+        for (guint i = 0; i < old->len; i++) {
+            OldAction *o = g_ptr_array_index(old, i);
+            if (!o->claimed && o->uid != 0 && o->ord == ord) {
+                o->claimed = TRUE;
+                it->uid = o->uid;
+                break;
+            }
+        }
+    }
+
+    /* Pass 4 — nothing matched: this is a new item.                       */
+    gboolean ok = TRUE;                  /* allocator still healthy?       */
+    for (GList *l = items; ok && l != NULL; l = l->next) {
+        OnActionItem *it = l->data;
+        if (it->uid == 0)
+            ok = (it->uid = action_uid_alloc(db)) != 0;
+    }
+
+    g_array_unref(hints);
+    return ok;
+}
+
 gboolean
 on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
 {
     if (!exec_simple(db, "BEGIN"))
         return FALSE;
 
-    /* Drop the note's old items, then insert the current set.              */
+    /* The note's old rows, read BEFORE the delete so their uids can be
+     * carried across the rebuild.                                         */
+    GPtrArray *old = g_ptr_array_new_with_free_func(g_free);
     sqlite3_stmt *stmt = prepare(db,
-        "DELETE FROM action_items WHERE note_id=?");
+        "SELECT uid, ord, text FROM action_items WHERE note_id=?");
     gboolean ok = stmt != NULL;          /* overall success flag            */
     if (ok) {
         sqlite3_bind_int64(stmt, 1, note_id);
-        ok = sqlite3_step(stmt) == SQLITE_DONE;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            OldAction *o = g_new0(OldAction, 1);
+            o->uid  = sqlite3_column_int64(stmt, 0);
+            o->ord  = sqlite3_column_int(stmt, 1);
+            o->text = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
+            g_ptr_array_add(old, o);
+        }
         sqlite3_finalize(stmt);
+    }
+    /* OldAction.text is owned by the struct, freed with it below.         */
+
+    if (ok && items != NULL)
+        ok = action_uids_carry(db, items, old);
+
+    /* Drop the note's old items, then insert the current set.              */
+    if (ok) {
+        stmt = prepare(db, "DELETE FROM action_items WHERE note_id=?");
+        ok = stmt != NULL;
+        if (ok) {
+            sqlite3_bind_int64(stmt, 1, note_id);
+            ok = sqlite3_step(stmt) == SQLITE_DONE;
+            sqlite3_finalize(stmt);
+        }
     }
 
     if (ok && items != NULL) {
         stmt = prepare(db,
-            "INSERT INTO action_items (note_id, ord, text, done, due) "
-            "VALUES (?,?,?,?,?)");
+            "INSERT INTO action_items (note_id, ord, text, done, due, uid) "
+            "VALUES (?,?,?,?,?,?)");
         ok = stmt != NULL;
         gint ord = 0;                    /* row position, list order        */
         for (GList *l = items; ok && l != NULL; l = l->next, ord++) {
@@ -1156,6 +1334,7 @@ on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
             sqlite3_bind_text(stmt, 3, it->text, -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt, 4, it->done ? 1 : 0);
             sqlite3_bind_int64(stmt, 5, it->due);
+            sqlite3_bind_int64(stmt, 6, it->uid);
             ok = sqlite3_step(stmt) == SQLITE_DONE;
             sqlite3_reset(stmt);
         }
@@ -1163,6 +1342,90 @@ on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
             sqlite3_finalize(stmt);
     }
 
+    for (guint i = 0; i < old->len; i++)
+        g_free(((OldAction *)g_ptr_array_index(old, i))->text);
+    g_ptr_array_unref(old);
+
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
+    return ok;
+}
+
+gboolean
+on_db_action_find_uid(OnDatabase *db, gint64 uid, gint64 *note_id, gint *ord)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT note_id, ord FROM action_items WHERE uid=?");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, uid);
+    gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
+    if (found) {
+        *note_id = sqlite3_column_int64(stmt, 0);
+        *ord     = sqlite3_column_int(stmt, 1);
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+gboolean
+on_db_action_uids_missing(OnDatabase *db)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT 1 FROM action_items WHERE uid=0 LIMIT 1");
+    if (stmt == NULL)
+        return FALSE;
+    gboolean missing = sqlite3_step(stmt) == SQLITE_ROW;
+    sqlite3_finalize(stmt);
+    return missing;
+}
+
+gboolean
+on_db_action_uids_fill(OnDatabase *db)
+{
+    if (!exec_simple(db, "BEGIN"))
+        return FALSE;
+
+    /* Collect first, update after: the rows are addressed by
+     * (note_id, ord) — the table's primary key — and rewriting them
+     * while the SELECT is still stepping would be reading a moving set.  */
+    typedef struct { gint64 note_id; gint ord; } Addr;
+    GArray *todo = g_array_new(FALSE, FALSE, sizeof(Addr));
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT note_id, ord FROM action_items WHERE uid=0");
+    gboolean ok = stmt != NULL;          /* overall success flag            */
+    if (ok) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            Addr a = { sqlite3_column_int64(stmt, 0),
+                       sqlite3_column_int(stmt, 1) };
+            g_array_append_val(todo, a);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    if (ok && todo->len > 0) {
+        stmt = prepare(db,
+            "UPDATE action_items SET uid=? WHERE note_id=? AND ord=?");
+        ok = stmt != NULL;
+        for (guint i = 0; ok && i < todo->len; i++) {
+            Addr   a   = g_array_index(todo, Addr, i);
+            gint64 uid = action_uid_alloc(db);
+            ok = uid != 0;
+            if (!ok)
+                break;
+            sqlite3_bind_int64(stmt, 1, uid);
+            sqlite3_bind_int64(stmt, 2, a.note_id);
+            sqlite3_bind_int(stmt, 3, a.ord);
+            ok = sqlite3_step(stmt) == SQLITE_DONE;
+            sqlite3_reset(stmt);
+        }
+        if (stmt != NULL)
+            sqlite3_finalize(stmt);
+    }
+
+    g_array_unref(todo);
     if (ok)
         ok = exec_simple(db, "COMMIT");
     if (!ok)
@@ -1174,7 +1437,7 @@ GList *
 on_db_action_list(OnDatabase *db)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT a.note_id, a.ord, a.text, a.done, a.due "
+        "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid "
         "FROM action_items a JOIN notes n ON n.id = a.note_id "
         "WHERE n." NOTE_VISIBLE_SQL " "
         "ORDER BY n.updated_at DESC, a.ord");
@@ -1189,6 +1452,7 @@ on_db_action_list(OnDatabase *db)
         it->text    = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
         it->done    = sqlite3_column_int(stmt, 3) != 0;
         it->due     = sqlite3_column_int64(stmt, 4);
+        it->uid     = sqlite3_column_int64(stmt, 5);
         out = g_list_prepend(out, it);
     }
     sqlite3_finalize(stmt);
@@ -1199,7 +1463,7 @@ GList *
 on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, ord, text, done, due FROM action_items "
+        "SELECT note_id, ord, text, done, due, uid FROM action_items "
         "WHERE note_id=? ORDER BY ord");
     if (stmt == NULL)
         return NULL;
@@ -1213,6 +1477,7 @@ on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
         it->text    = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
         it->done    = sqlite3_column_int(stmt, 3) != 0;
         it->due     = sqlite3_column_int64(stmt, 4);
+        it->uid     = sqlite3_column_int64(stmt, 5);
         out = g_list_prepend(out, it);
     }
     sqlite3_finalize(stmt);

@@ -16,7 +16,8 @@
  *              pinned, body_text, trashed)
  *   tags      (id, name UNIQUE)
  *   note_tags    (note_id, tag_id)                       -- many-to-many
- *   action_items (note_id, ord, text, done, due)         -- queryable mirror of '!' lines
+ *   action_items (note_id, ord, text, done, due, uid)    -- queryable mirror of '!' lines
+ *   action_uid_seq (id, next)                            -- uid high-water mark
  *
  * A NULL parent_id means "top-level folder"; a NULL folder_id means the
  * note lives at the top level ("Notes" root).
@@ -129,6 +130,15 @@ typedef struct {
  *   done    — completed: the whole text is struck through in the note.
  *   due     — due date as a UNIX timestamp (local midnight), parsed from
  *             the line's trailing "due <date>"; 0 = no due date.
+ *   uid     — the item's STABLE identity: assigned once when the item
+ *             first appears and carried across every later rebuild of
+ *             the mirror (see on_db_note_set_actions), so an external
+ *             mirror can hold a reference that survives editing and
+ *             renumbering.  Nothing about it is stored in the note text.
+ *             0 = "not known": the extractor leaves it zero, and a
+ *             caller may set it as a MATCH HINT (see below) before
+ *             calling on_db_note_set_actions, which fills in the
+ *             assigned uid on return.  Never reused once retired.
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   note_id;
@@ -136,6 +146,7 @@ typedef struct {
     gchar   *text;
     gboolean done;
     gint64   due;
+    gint64   uid;
 } OnActionItem;
 
 /* --------------------------- lifecycle ---------------------------------- */
@@ -343,9 +354,36 @@ GList *on_db_note_tag_list(OnDatabase *db, gint64 note_id);
 
 /* Replace note `note_id`'s action_items rows with `items` (a GList of
  * OnActionItem; ord is assigned from list order).  One transaction.
+ *
+ * The rows are rebuilt DELETE-then-INSERT, but each item's `uid` is
+ * CARRIED ACROSS that rebuild so it stays a stable external reference:
+ * the note's old rows are read first and matched against `items` in four
+ * passes, strongest evidence first —
+ *   1. identical text (an item that merely moved),
+ *   2. the caller's hint in it->uid (the live editor's per-line marks —
+ *      the only signal that survives a reword; see editor_window.c),
+ *   3. the same ord (the headless fallback: a reword with no hint),
+ *   4. otherwise a fresh uid from the action_uid_seq high-water mark.
+ * Every item's assigned uid is written back into the list on return.
+ * A retired uid is never handed out again.
+ *
  * Returns TRUE on success.                                                  */
 gboolean on_db_note_set_actions(OnDatabase *db, gint64 note_id,
                                 GList *items);
+
+/* Resolve a stable uid to the item's current address.  Returns FALSE when
+ * no item carries that uid (it was deleted, or never existed).             */
+gboolean on_db_action_find_uid(OnDatabase *db, gint64 uid,
+                               gint64 *note_id, gint *ord);
+
+/* Give every action_items row still lacking a uid (rows written before the
+ * column existed) a fresh one.  One transaction; gated by its caller —
+ * see on_app_action_uids_backfill().  Returns TRUE on success.             */
+gboolean on_db_action_uids_fill(OnDatabase *db);
+
+/* Does any action_items row still lack a uid?  An indexed existence probe,
+ * cheap enough to run on every open.                                       */
+gboolean on_db_action_uids_missing(OnDatabase *db);
 
 /* Every action item of every visible (non-trashed) note, newest note
  * first, note order preserved within a note.  Returns a GList of

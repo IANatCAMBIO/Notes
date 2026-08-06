@@ -48,7 +48,7 @@ sees the new flags.
 | `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options |
 | `src/settings_window.[ch]` | Toolbar styles, list density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
 | `src/export.[ch]` | HTML + Markdown export (all notes mirroring folder tree, or single note) |
-| `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/done/undone/due` (items addressed `NOTEID:ORD`; done/due rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the offscreen path); `note new/append/set` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`) |
+| `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/done/undone/due` (items addressed `NOTEID:ORD` **or** by stable `UID` — `action_token_parse` tells them apart BY SHAPE, a ':' means the positional form, a bare decimal means a uid; `action list --uid` prepends the uid as a further FIRST column, leaving the default output byte-identical because text must stay last, and an unknown flag exits 1 so a caller can probe an older build; done/due rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the offscreen path); `note new/append/set` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`) |
 | `icons/` | custom PNG toolbar icons + `vinyl.png` app logo (window icon, About button/dialog), loaded by basename; see icons/README.md |
 | `tools/import-apple-notes.sh` | Apple Notes migration (AppleScript export → CLI import; keeps modification dates) |
 
@@ -213,7 +213,7 @@ sees the new flags.
   `on-action` tag (priority 0 so #tags keep their orange; re-derived on
   insert/delete/paragraph-format/load/undo like the emoji padding) —
   nothing about "actionness" is stored in BNBF.  The `action_items`
-  table (note_id/ord/text/done/due, ON DELETE CASCADE) is a queryable
+  table (note_id/ord/text/done/due/uid, ON DELETE CASCADE) is a queryable
   mirror like note_tags: editor_save rewrites it only when the
   extracted set differs from `ed->last_actions` (full library notify
   then, light otherwise); CLI saves sync unconditionally; a one-time
@@ -248,6 +248,44 @@ sees the new flags.
   no-due rows must reset "foreground-set" (shared renderer).
   `due` is in the CREATE TABLE (so new databases have it immediately)
   and a guarded ALTER migration backfills existing databases on open.
+- **An action item's STABLE identity is `action_items.uid`** — `ord` is a
+  POSITION and shifts whenever a '!' line is added or removed, so it can
+  never be a reference an external mirror (the Lists app) holds onto.
+  The uid is assigned once, invisible to the user, and NOT stored in the
+  note text (that was considered and rejected: a token in the prose
+  leaks into `note cat`, both exports, the body_text search cache and the
+  list previews, duplicates itself on copy/paste, and is deletable by
+  ordinary editing).  Since `on_db_note_set_actions` rebuilds a note's
+  rows DELETE-then-INSERT, an AUTOINCREMENT column would be reissued on
+  every save; instead the OLD rows are read first and matched against the
+  new set in four passes, strongest evidence first — identical text (an
+  item that only moved), then the live editor's per-line mark hint (the
+  ONLY signal that survives a reword), then the same ord (the headless
+  reword), then a fresh id from the `action_uid_seq` one-row high-water
+  mark (only ever incremented, so a retired uid is never handed out
+  again).  Each pass completes before the next, so a strong match cannot
+  lose its row to a positional guess made earlier in the list.  The
+  editor keeps one `GtkTextMark` per action line carrying that item's uid
+  (`ed->action_marks`, seeded at load, re-placed after any save that
+  rewrote the table); marks ride edits to the surrounding text, which is
+  what makes a rewording keep its identity.  They are PRUNED in the
+  delete-range BEFORE handler (`action_marks_prune`) — GtkTextBuffer
+  would otherwise collapse a deleted line's mark onto the FOLLOWING
+  line, where it would confidently misidentify a different item; pruning
+  even on internal changes matters because an undo replaces the whole
+  buffer.  A cut-and-paste reorder therefore loses its mark and is caught
+  by the text pass instead: the two signals cover each other's blind
+  spot.  Migration: `uid` is in the CREATE TABLE plus a guarded ALTER,
+  and `on_app_action_uids_backfill` (user_version 3) fills existing rows.
+  That backfill ALSO re-runs whenever any row has uid 0 — an older build
+  writing to an already-migrated database inserts without the column, and
+  the version stamp alone would leave those rows unidentified forever;
+  the probe is an indexed existence check, so the normal case is free.
+  NOTE the index on `action_items(uid)` is created AFTER the ALTER
+  migrations (with the Trash view), never in the schema string: indexing
+  a column that does not exist yet fails the whole batch, which makes
+  `on_db_open` return NULL and the app refuse to start on every existing
+  database.
   `grid_pref` restores list/grid when leaving the view.
 - **CLI backup**: `on_db_backup_to()` (db.c) uses SQLite's online backup
   API on the live DB; exposed as `records backup FILE.db`. No GUI

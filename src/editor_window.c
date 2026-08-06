@@ -178,6 +178,13 @@ typedef struct {
                                         created or destroyed a '!' action
                                         line; the blob walk is skipped when
                                         this is set AND last_actions==NULL   */
+    GPtrArray      *action_marks;   /* ActionMark* — one GtkTextMark per
+                                       action line, carrying that item's
+                                       stable uid.  Marks ride text edits,
+                                       so they are the only signal that
+                                       identifies an item whose text was
+                                       REWORDED; on_db_note_set_actions
+                                       takes them as match hints            */
 
     GPtrArray      *undo_stack;
     GPtrArray      *redo_stack;
@@ -1642,6 +1649,176 @@ action_rest_real(const gchar *rest)
     gboolean real = *g_strstrip(t) != '\0';
     g_free(t);
     return real;
+}
+
+/* ===========================================================================
+ * action-item identity marks
+ *
+ * An action item's stable uid lives in the action_items table, not in the
+ * note text — so when a save rebuilds that table, something has to say
+ * which new '!' line is which old item.  Identical text answers that for
+ * an item that merely moved, but NOT for one whose text was reworded,
+ * which is exactly the case an external mirror (the Lists app) depends
+ * on.  A GtkTextMark rides arbitrary edits to the text around it, so one
+ * mark per action line, tagged with that item's uid, survives any amount
+ * of rewording and any number of lines inserted above.
+ *
+ * Marks are pruned when their text is DELETED (see action_marks_prune):
+ * GtkTextBuffer would otherwise collapse the mark onto the following
+ * line, where it would confidently misidentify a different item — worse
+ * than having no hint at all.  A cut-and-paste reorder therefore loses
+ * its mark, and the text pass in on_db_note_set_actions picks it up
+ * instead; the two signals cover each other's blind spot.
+ * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * ActionMark — one action line's identity.
+ *
+ * Fields:
+ *   mark — buffer mark at the line's start (left gravity, so text typed
+ *          at the start of the line stays to its right).
+ *   uid  — the stable uid of the item on that line.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    GtkTextMark *mark;
+    gint64       uid;
+} ActionMark;
+
+/* ---------------------------------------------------------------------------
+ * action_real_lines() — the buffer line numbers of every REAL action line,
+ * in order, so the n-th entry corresponds to the item at ord n (the same
+ * numbering the extractor and action_strike_ord use).
+ * Returns a new GArray of gint; g_array_unref() it.
+ * ------------------------------------------------------------------------- */
+static GArray *
+action_real_lines(GtkTextBuffer *buffer)
+{
+    GArray *lines = g_array_new(FALSE, FALSE, sizeof(gint));
+    gint n_lines = gtk_text_buffer_get_line_count(buffer);
+    for (gint line = 0; line < n_lines; line++) {
+        GtkTextIter ls, rs, le;      /* line span (+ rest start)            */
+        if (!action_line_rest(buffer, line, &ls, &rs, &le))
+            continue;
+        gchar *t = gtk_text_buffer_get_text(buffer, &rs, &le, FALSE);
+        gboolean real = action_rest_real(t);
+        g_free(t);
+        if (real)
+            g_array_append_val(lines, line);
+    }
+    return lines;
+}
+
+/* action_marks_clear() — drop every identity mark (buffer side included). */
+static void
+action_marks_clear(OnEditor *ed)
+{
+    if (ed->action_marks == NULL)
+        return;
+    for (guint i = 0; i < ed->action_marks->len; i++) {
+        ActionMark *am = g_ptr_array_index(ed->action_marks, i);
+        if (!gtk_text_mark_get_deleted(am->mark))
+            gtk_text_buffer_delete_mark(ed->buffer, am->mark);
+    }
+    g_ptr_array_set_size(ed->action_marks, 0);
+}
+
+/* ---------------------------------------------------------------------------
+ * action_marks_sync() — re-place the identity marks so the n-th real
+ * action line carries the n-th item's uid.  Called after any save that
+ * rewrote the table (the uids are then known) and once at load.
+ *   items — OnActionItem list in ord order, uids filled in.
+ * ------------------------------------------------------------------------- */
+static void
+action_marks_sync(OnEditor *ed, GList *items)
+{
+    if (ed->action_marks == NULL)
+        return;
+    action_marks_clear(ed);
+
+    GArray *lines = action_real_lines(ed->buffer);
+    guint   i = 0;                   /* index into the line array           */
+    for (GList *l = items; l != NULL && i < lines->len; l = l->next, i++) {
+        OnActionItem *it = l->data;
+        if (it->uid == 0)            /* nothing to remember                 */
+            continue;
+        GtkTextIter ls;              /* the line's start                    */
+        gtk_text_buffer_get_iter_at_line(ed->buffer, &ls,
+                                         g_array_index(lines, gint, i));
+        ActionMark *am = g_new0(ActionMark, 1);
+        am->mark = gtk_text_buffer_create_mark(ed->buffer, NULL, &ls, TRUE);
+        am->uid  = it->uid;
+        g_ptr_array_add(ed->action_marks, am);
+    }
+    g_array_unref(lines);
+}
+
+/* ---------------------------------------------------------------------------
+ * action_marks_hint() — fill each item's uid with the uid marked on its
+ * line, as a match hint for on_db_note_set_actions.  An item whose line
+ * carries no surviving mark keeps uid 0 ("no hint"), leaving the text and
+ * ord passes to identify it.
+ *   items — freshly extracted OnActionItem list, in ord order.
+ * ------------------------------------------------------------------------- */
+static void
+action_marks_hint(OnEditor *ed, GList *items)
+{
+    if (ed->action_marks == NULL || ed->action_marks->len == 0)
+        return;
+
+    /* line number → uid, for the marks that are still alive.               */
+    GHashTable *by_line = g_hash_table_new(g_direct_hash, g_direct_equal);
+    for (guint i = 0; i < ed->action_marks->len; i++) {
+        ActionMark *am = g_ptr_array_index(ed->action_marks, i);
+        if (gtk_text_mark_get_deleted(am->mark))
+            continue;
+        GtkTextIter at;              /* the mark's current position         */
+        gtk_text_buffer_get_iter_at_mark(ed->buffer, &at, am->mark);
+        gint line = gtk_text_iter_get_line(&at);
+        /* First mark on a line wins: a second one can only be a leftover
+         * from a line that was merged into this one.                       */
+        if (!g_hash_table_contains(by_line, GINT_TO_POINTER(line)))
+            g_hash_table_insert(by_line, GINT_TO_POINTER(line),
+                                &am->uid);
+    }
+
+    GArray *lines = action_real_lines(ed->buffer);
+    guint   i = 0;                   /* index into the line array           */
+    for (GList *l = items; l != NULL && i < lines->len; l = l->next, i++) {
+        gint    line = g_array_index(lines, gint, i);
+        gint64 *uid  = g_hash_table_lookup(by_line, GINT_TO_POINTER(line));
+        if (uid != NULL)
+            ((OnActionItem *)l->data)->uid = *uid;
+    }
+    g_array_unref(lines);
+    g_hash_table_destroy(by_line);
+}
+
+/* ---------------------------------------------------------------------------
+ * action_marks_prune() — destroy the identity marks that sit inside a
+ * range about to be deleted.  MUST run BEFORE the deletion: afterwards
+ * GtkTextBuffer has already collapsed those marks onto the join point,
+ * where they are indistinguishable from the surviving neighbour's mark.
+ * ------------------------------------------------------------------------- */
+static void
+action_marks_prune(OnEditor *ed, const GtkTextIter *start,
+                   const GtkTextIter *end)
+{
+    if (ed->action_marks == NULL || ed->action_marks->len == 0)
+        return;
+    for (guint i = ed->action_marks->len; i > 0; i--) {
+        ActionMark *am = g_ptr_array_index(ed->action_marks, i - 1);
+        if (gtk_text_mark_get_deleted(am->mark)) {
+            g_ptr_array_remove_index(ed->action_marks, i - 1);
+            continue;
+        }
+        GtkTextIter at;              /* the mark's current position         */
+        gtk_text_buffer_get_iter_at_mark(ed->buffer, &at, am->mark);
+        if (gtk_text_iter_compare(&at, start) >= 0 &&
+            gtk_text_iter_compare(&at, end) < 0) {
+            gtk_text_buffer_delete_mark(ed->buffer, am->mark);
+            g_ptr_array_remove_index(ed->action_marks, i - 1);
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -3432,7 +3609,8 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
 
 /* ---------------------------------------------------------------------------
  * on_buffer_delete_range_before() — runs BEFORE a deletion is carried out
- * (afterwards the removed text is unknowable): if the doomed range
+ * (afterwards the removed text is unknowable): drop the action-item
+ * identity marks the deletion takes with it, and if the doomed range
  * touches a styled #tag, a tag is being deleted or renamed, so flag the
  * tag set as changed for the next save.
  * ------------------------------------------------------------------------- */
@@ -3441,6 +3619,12 @@ on_buffer_delete_range_before(GtkTextBuffer *buffer, GtkTextIter *start,
                               GtkTextIter *end, gpointer user_data)
 {
     OnEditor *ed = user_data;        /* owning editor                       */
+
+    /* Marks are pruned even for internal changes: an undo replaces the
+     * whole buffer, and marks left over from that would all collapse to
+     * offset 0 and then mis-hint the first item.                           */
+    action_marks_prune(ed, start, end);
+
     if (ed->internal_change > 0 || ed->tags_modified)
         return;
 
@@ -3877,7 +4061,12 @@ editor_save(OnEditor *ed)
         GList *actions = on_note_extract_actions(blob, blob_len);
         actions_changed = !action_lists_equal(actions, ed->last_actions);
         if (actions_changed) {
+            /* Hint from the marks (identifies reworded items), let the
+             * rebuild assign the uids, then re-place the marks on the
+             * lines as they now stand.                                     */
+            action_marks_hint(ed, actions);
             on_db_note_set_actions(ed->app->db, ed->note_id, actions);
+            action_marks_sync(ed, actions);
             on_db_action_list_free(ed->last_actions);
             ed->last_actions = actions;
         } else {
@@ -4021,6 +4210,9 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
 
     g_hash_table_remove(ed->app->editors, &ed->note_id);
     on_db_action_list_free(ed->last_actions);
+    action_marks_clear(ed);          /* marks die with the buffer anyway    */
+    g_ptr_array_unref(ed->action_marks);
+    ed->action_marks = NULL;
     g_object_unref(ed->buffer);
     g_free(ed);
 }
@@ -4440,6 +4632,13 @@ editor_load_content(OnEditor *ed)
         ed->last_actions = on_note_extract_actions(blob, blob_len);
         ed->actions_clean = TRUE;
         g_free(blob);
+
+        /* Seed the identity marks from the stored rows, which are in the
+         * same ord order as the lines just loaded — that is what lets a
+         * reword in this session keep its uid.                             */
+        GList *rows = on_db_action_list_for_note(ed->app->db, ed->note_id);
+        action_marks_sync(ed, rows);
+        on_db_action_list_free(rows);
     }
     /* A brand-new (empty) note gets its first line auto-styled as H1.      */
     ed->auto_h1 = ed->app->first_line_h1 &&
@@ -4577,6 +4776,8 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
     OnEditor *ed = g_new0(OnEditor, 1);
     ed->app     = app;
     ed->note_id = note_id;
+    /* Identity marks for the '!' lines; seeded by editor_load_content.     */
+    ed->action_marks = g_ptr_array_new_with_free_func(g_free);
 
     /* --- window: a plain GtkWindow, standard titlebar (no HeaderBar) ---- */
     ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);

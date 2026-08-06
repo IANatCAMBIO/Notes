@@ -540,6 +540,11 @@ copy_file(const gchar *src, const gchar *dest)
  * table (2026-07).                                                          */
 #define DB_VERSION_ACTIONS 2
 
+/* The user_version that says every action_items row carries a stable uid
+ * (2026-08).  Strictly above DB_VERSION_ACTIONS: the rows must exist
+ * before they can be given ids.                                            */
+#define DB_VERSION_ACTION_UIDS 3
+
 void
 on_app_actions_backfill(OnDatabase *db)
 {
@@ -564,6 +569,24 @@ on_app_actions_backfill(OnDatabase *db)
     }
     on_db_note_list_free(notes);
     on_db_set_user_version(db, DB_VERSION_ACTIONS);
+}
+
+void
+on_app_action_uids_backfill(OnDatabase *db)
+{
+    if (db == NULL)
+        return;
+    /* Normally a one-shot gated by the version stamp.  It also re-runs
+     * whenever any row has no uid, which happens when an OLDER build
+     * (whose INSERT predates the column) saves a note in a database this
+     * one has already migrated: without the self-heal those rows would
+     * keep uid 0 forever, since the stamp is already current.  The probe
+     * is an indexed existence check, so the common case costs nothing.    */
+    if (on_db_user_version(db) >= DB_VERSION_ACTION_UIDS &&
+        !on_db_action_uids_missing(db))
+        return;
+    if (on_db_action_uids_fill(db))
+        on_db_set_user_version(db, DB_VERSION_ACTION_UIDS);
 }
 
 gboolean
@@ -640,6 +663,7 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
 
     app->db = on_db_open(target);
     on_app_actions_backfill(app->db);   /* adopted dbs may predate actions  */
+    on_app_action_uids_backfill(app->db);   /* ...and predate their uids    */
     gboolean ok = app->db != NULL;   /* did the new location work?          */
 
     if (!ok) {

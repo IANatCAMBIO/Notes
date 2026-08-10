@@ -545,6 +545,12 @@ copy_file(const gchar *src, const gchar *dest)
  * before they can be given ids.                                            */
 #define DB_VERSION_ACTION_UIDS 3
 
+/* The user_version that says no note's first line carries a stored H1
+ * (2026-08).  The title's heading look is derived by the editor now
+ * (title_line_sync), so the H1 that the old auto-H1 wrote into brand-new
+ * notes is redundant — and it survived turning first_line_title off.       */
+#define DB_VERSION_TITLE_H1_STRIPPED 4
+
 void
 on_app_actions_backfill(OnDatabase *db)
 {
@@ -587,6 +593,44 @@ on_app_action_uids_backfill(OnDatabase *db)
         return;
     if (on_db_action_uids_fill(db))
         on_db_set_user_version(db, DB_VERSION_ACTION_UIDS);
+}
+
+void
+on_app_first_line_h1_strip(OnDatabase *db)
+{
+    if (db == NULL || on_db_user_version(db) >= DB_VERSION_TITLE_H1_STRIPPED)
+        return;
+
+    /* Trashed notes included, so a restored note doesn't come back with a
+     * stored heading nothing else in the app produces any more.  The strip
+     * is a record walk that copies image payloads without decoding them,
+     * and only notes it actually changes are written back — a note whose
+     * first line was never H1 costs one blob read.                         */
+    GList *notes = on_db_note_list_all(db, TRUE);
+    gint   n_changed = 0;            /* notes actually rewritten            */
+    for (GList *l = notes; l != NULL; l = l->next) {
+        OnNoteMeta *m = l->data;     /* one note                            */
+        gsize   blob_len = 0;        /* stored blob size                    */
+        guint8 *blob = on_db_note_load(db, m->id, &blob_len);
+        if (blob == NULL)
+            continue;
+        gsize   out_len = 0;         /* rewritten blob                      */
+        guint8 *out = NULL;
+        if (on_note_strip_first_line_h1(blob, blob_len, &out, &out_len)) {
+            /* Content only: the text, title and search cache are all
+             * unchanged, and updated_at must NOT move — this is a format
+             * cleanup, not an edit the user made.                          */
+            if (on_db_note_set_content(db, m->id, out, out_len))
+                n_changed++;
+            g_free(out);
+        }
+        g_free(blob);
+    }
+    on_db_note_list_free(notes);
+    if (n_changed > 0)
+        g_message("cleared a stored Heading 1 from the first line of "
+                  "%d note(s); the title look is derived now", n_changed);
+    on_db_set_user_version(db, DB_VERSION_TITLE_H1_STRIPPED);
 }
 
 gboolean
@@ -664,6 +708,7 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
     app->db = on_db_open(target);
     on_app_actions_backfill(app->db);   /* adopted dbs may predate actions  */
     on_app_action_uids_backfill(app->db);   /* ...and predate their uids    */
+    on_app_first_line_h1_strip(app->db);    /* ...and predate derived titles */
     gboolean ok = app->db != NULL;   /* did the new location work?          */
 
     if (!ok) {

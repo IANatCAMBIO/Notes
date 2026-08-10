@@ -61,9 +61,12 @@
  *   sidebar_counts — whether the library sidebar shows note counts next
  *                    to folders and tags; persisted as the
  *                    "sidebar_counts" setting (default off).
- *   first_line_h1  — whether the first line typed into a brand-new note
- *                    is automatically formatted as Heading 1; persisted
- *                    as the "first_line_h1" setting (default off).
+ *   first_line_title — whether line 0 of a note is treated as its title:
+ *                    the editor centers that line and auto-formats it as
+ *                    Heading 1 while a brand-new (or emptied) note's title
+ *                    is still unwritten.  Off = a plain left-aligned body
+ *                    line; line 0 still SUPPLIES the note title either
+ *                    way.  Persisted as "first_line_title" (default on).
  *   compact_editor_toolbar — whether the editor toolbar collapses the
  *                    paragraph-style buttons (H1/H2/¶) into a "Styles"
  *                    menu button and the list buttons into a "Lists"
@@ -128,7 +131,7 @@ typedef struct OnApp {
     gboolean         code_copy_buttons;
     gboolean         code_line_numbers;
     gboolean         sidebar_counts;
-    gboolean         first_line_h1;
+    gboolean         first_line_title;
     gboolean         compact_editor_toolbar;
     gboolean         comfortable_list;
     gchar           *db_dir;
@@ -376,5 +379,17 @@ void on_app_actions_backfill(OnDatabase *db);
  * it touches the table only, never the note blobs.  NULL-safe.
  * ------------------------------------------------------------------------- */
 void on_app_action_uids_backfill(OnDatabase *db);
+
+/* ---------------------------------------------------------------------------
+ * on_app_first_line_h1_strip() — one-time removal of the stored Heading 1
+ * from every note's FIRST line (gated by PRAGMA user_version, so repeat
+ * calls cost a single PRAGMA read).  The editor derives the title's
+ * heading look now (title_line_sync), so a stored H1 there is redundant
+ * and, being real content, would outlive turning first_line_title off.
+ * Reads every blob but decodes no images, rewrites only the notes that
+ * actually carried one, and leaves title/body_text/updated_at alone.
+ * Run wherever the action backfills are.  NULL-safe.
+ * ------------------------------------------------------------------------- */
+void on_app_first_line_h1_strip(OnDatabase *db);
 
 #endif /* BLUE_APP_H */

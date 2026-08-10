@@ -126,7 +126,7 @@ typedef enum {
     BS_SHOW_DONE_ACTIONS,
     BS_CODE_COPY,                    /* Editor                              */
     BS_CODE_LINES,
-    BS_FIRST_LINE_H1,
+    BS_FIRST_LINE_TITLE,
     BS_COMPACT_TOOLBAR,
     BS_STATUSBAR_NOTE_ID,
     BS_STATUSBAR_DB_PATH,            /* Appearance                          */
@@ -161,9 +161,10 @@ static const BoolSetting BOOL_SETTINGS[] = {
         "Show line numbers in code blocks",
         "code_line_numbers", offsetof(OnApp, code_line_numbers),
         on_editor_apply_line_numbers_all },
-    [BS_FIRST_LINE_H1] = {
-        "Format the first line of a new note as Heading 1",
-        "first_line_h1", offsetof(OnApp, first_line_h1), NULL },
+    [BS_FIRST_LINE_TITLE] = {
+        "First line is Title formatted",
+        "first_line_title", offsetof(OnApp, first_line_title),
+        on_editor_title_refresh_all },
     [BS_COMPACT_TOOLBAR] = {
         "Compact toolbar (group paragraph styles and lists into menus)",
         "compact_editor_toolbar", offsetof(OnApp, compact_editor_toolbar),
@@ -557,7 +558,7 @@ on_settings_window_open(OnApp *app)
 
     /* The five table-driven editor checkboxes, in display order.           */
     static const BoolSettingId EDITOR_CHECKS[] = {
-        BS_CODE_COPY, BS_CODE_LINES, BS_FIRST_LINE_H1, BS_COMPACT_TOOLBAR,
+        BS_CODE_COPY, BS_CODE_LINES, BS_FIRST_LINE_TITLE, BS_COMPACT_TOOLBAR,
         BS_STATUSBAR_NOTE_ID,
     };
     for (gsize i = 0; i < G_N_ELEMENTS(EDITOR_CHECKS); i++)

@@ -557,8 +557,9 @@ refresh_sidebar(OnLibrary *lw)
 
     /* "Notes" root — selecting it shows the top-level notes.               */
     gchar *root_label = lw->app->sidebar_counts
-        ? g_strdup_printf("Notes (%d)", count_from_map(note_counts, 0))
-        : g_strdup("Notes");
+        ? g_strdup_printf("\xf0\x9f\x93\x93\xc2\xa0 Notes (%d)",
+                          count_from_map(note_counts, 0))
+        : g_strdup("\xf0\x9f\x93\x93\xc2\xa0 Notes");
     GtkTreeIter root;                /* the fixed root row                  */
     gtk_tree_store_append(lw->sidebar_store, &root, NULL);
     gtk_tree_store_set(lw->sidebar_store, &root,
@@ -578,7 +579,7 @@ refresh_sidebar(OnLibrary *lw)
         gtk_tree_store_set(lw->sidebar_store, &header,
                            SB_KIND, SB_KIND_TAGS_HEADER,
                            SB_ID,   (gint64)0,
-                           SB_NAME, "Tags",
+                           SB_NAME, "\xf0\x9f\x8f\xb7\xef\xb8\x8f\xc2\xa0 Tags",
                            SB_RAW,  "Tags",
                            -1);
         for (GList *l = tags; l != NULL; l = l->next) {

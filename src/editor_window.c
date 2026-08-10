@@ -103,10 +103,6 @@
  *                     editor_save knows — without any buffer scan —
  *                     whether note_tags and the library's tag sidebar
  *                     need updating.
- *   auto_h1         — TRUE while the first line of a brand-new note is
- *                     being typed and should be styled as Heading 1
- *                     (File → Settings…); cleared once the title line
- *                     is finished (Enter pressed).
  *   status_path     — status-bar label (bottom left): the note's folder
  *                     path, same format as the library window's.  Set at
  *                     open and refreshed on window focus-in, so a move
@@ -163,7 +159,6 @@ typedef struct {
     guint           initial_search_idle;
     gboolean        dirty;
     gboolean        tags_modified;
-    gboolean        auto_h1;
     GtkWidget      *status_path;
     GtkWidget      *status_note_id;
     GList          *last_actions;    /* the action-item set last synced to
@@ -221,6 +216,8 @@ static void     editor_save(OnEditor *ed);
 static void     editor_queue_autosave(OnEditor *ed);
 static void     tag_capture_end(OnEditor *ed, gboolean apply);
 static void     action_retag_lines(OnEditor *ed, gint start_off,
+                                   gint end_off);
+static void     title_line_sync(OnEditor *ed, gint start_off,
                                    gint end_off);
 static void     tag_popup_update(OnEditor *ed);
 static void     renumber_list_block(OnEditor *ed, gint line);
@@ -549,6 +546,12 @@ apply_paragraph_format(OnEditor *ed, guint32 flag)
     gtk_text_buffer_get_iter_at_line(ed->buffer, &rs, first_line);
     line_span(ed->buffer, last_line, &rls, &rle);
     action_retag_lines(ed, gtk_text_iter_get_offset(&rs),
+                       gtk_text_iter_get_offset(&rle));
+    /* Styling a line can insert a newline or a list prefix, either of which
+     * shifts lines under the pass — re-derive the title look too.  It also
+     * decides whether line 0 still gets the derived size: a style picked by
+     * hand suppresses it, plain body text (¶) brings it back.              */
+    title_line_sync(ed, gtk_text_iter_get_offset(&rs),
                        gtk_text_iter_get_offset(&rle));
 
     /* Text inside a code block is never a #tag: strip any tag spans the
@@ -1112,6 +1115,20 @@ on_editor_rebuild_code_buttons_all(OnApp *app)
     editors_foreach(app, code_buttons_queue_rebuild);
 }
 
+/* editor_title_refresh() — re-run the title pass over line 0 alone: the
+ * only line the feature ever tags, so this both applies and clears it.     */
+static void
+editor_title_refresh(OnEditor *ed)
+{
+    title_line_sync(ed, 0, 0);
+}
+
+void
+on_editor_title_refresh_all(OnApp *app)
+{
+    editors_foreach(app, editor_title_refresh);
+}
+
 /* on_view_size_allocate() — re-anchor buttons when the view's geometry
  * changes (width affects their x; reflow affects their line_y).  Scroll
  * needs NO handling: the buttons are text-window children and ride the
@@ -1628,6 +1645,93 @@ action_retag_lines(OnEditor *ed, gint start_off, gint end_off)
                                               &ls, &le);
         else
             gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-action",
+                                               &ls, &le);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * title_line_sync() — keep line 0 presented as the note's title, whatever
+ * it happens to contain.  A retag pass over every line between the two
+ * buffer OFFSETS (their lines, inclusive): LINE 0 is the title, always —
+ * blank or not, freshly typed or promoted by deleting the line above it —
+ * and gets the editor-only "on-title-center" and "on-title-size" tags;
+ * every other line in range loses them (a paste or an Enter can carry them
+ * in).  Both are DERIVED, like the emoji padding and the action tint: never
+ * serialized, so the title look is presentation only.  Nothing is written
+ * into the note, which is what lets the setting turn it off again.
+ *
+ * The whole thing is gated on the first_line_title setting; with it off
+ * every line is treated as body text (line 0 still SUPPLIES the note title,
+ * that is just on_buffer_first_line reading the buffer).  Since the setting
+ * applies live, the off path must actively CLEAR the tags rather than skip
+ * the pass — see on_editor_title_refresh_all.
+ *
+ * The SIZE tag is skipped when line 0 already carries a paragraph style of
+ * its own: GTK MULTIPLIES the scale of every tag on a character
+ * (_gtk_text_attributes_fill_from_tags), so stacking 1.6 onto a real H1
+ * would render the line at 2.56x.  An H1 line 0 is already title-sized; an
+ * H2, code-block or list line 0 is a style the user picked by hand.
+ *
+ * GTK reads paragraph properties from the line's FIRST character, which
+ * decides how far each span reaches: a line with text is covered up to (not
+ * including) its newline — covering the newline would buy nothing and would
+ * let the next line inherit the title look from text typed right after it —
+ * while an EMPTY line is covered through its newline, the only character it
+ * has that can carry a tag (or hold a leaked one, which is why the clearing
+ * branch follows the same rule).
+ * ------------------------------------------------------------------------- */
+static void
+title_line_sync(OnEditor *ed, gint start_off, gint end_off)
+{
+    gboolean on    = ed->app->first_line_title;   /* feature gate          */
+    gboolean empty = gtk_text_buffer_get_char_count(ed->buffer) == 0;
+
+    /* A completely empty buffer has no character at all, so no tag can
+     * apply and the caret on line 0 can only be styled by the VIEW's own
+     * defaults — justification here, font size via the style class below.
+     * Both are exact rather than a compromise: an empty buffer IS line 0
+     * and nothing else, so there is no body text to catch the fallout.
+     * Any content flips them back, and the tags take over.                 */
+    GtkJustification want = (on && empty) ? GTK_JUSTIFY_CENTER
+                                          : GTK_JUSTIFY_LEFT;
+    if (gtk_text_view_get_justification(ed->view) != want)
+        gtk_text_view_set_justification(ed->view, want);
+
+    GtkStyleContext *sc = gtk_widget_get_style_context(GTK_WIDGET(ed->view));
+    if ((on && empty) != gtk_style_context_has_class(sc, "on-title-empty")) {
+        if (on && empty)
+            gtk_style_context_add_class(sc, "on-title-empty");
+        else
+            gtk_style_context_remove_class(sc, "on-title-empty");
+    }
+
+    GtkTextIter it;                  /* offset → line resolution            */
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, start_off);
+    gint first = gtk_text_iter_get_line(&it);
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, end_off);
+    gint last = gtk_text_iter_get_line(&it);
+
+    for (gint line = first; line <= last; line++) {
+        GtkTextIter ls, le;          /* line span (see banner)              */
+        gtk_text_buffer_get_iter_at_line(ed->buffer, &ls, line);
+        le = ls;
+        if (gtk_text_iter_ends_line(&le))
+            gtk_text_iter_forward_char(&le);      /* empty line: its '\n'   */
+        else
+            gtk_text_iter_forward_to_line_end(&le);
+        gboolean title = on && line == 0;
+        if (title)
+            gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-center",
+                                              &ls, &le);
+        else
+            gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-center",
+                                               &ls, &le);
+        /* Size only where no paragraph style of its own would multiply it.  */
+        if (title && on_flags_at_iter(ed->buffer, &ls, ON_FMT_PARA_MASK) == 0)
+            gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-size",
+                                              &ls, &le);
+        else
+            gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-size",
                                                &ls, &le);
     }
 }
@@ -3263,6 +3367,9 @@ undo_restore(OnEditor *ed, const UndoSnap *from, const UndoSnap *to)
         /* The action-line tint is derived, not snapshotted, either.        */
         action_retag_lines(ed, emo_s, emo_e);
     }
+    /* Nor is the title centering: the restored text comes back untagged,
+     * so re-derive it over the head of the buffer.                         */
+    title_line_sync(ed, 0, 0);
 
     GtkTextIter cur;                 /* restored cursor position            */
     gtk_text_buffer_get_iter_at_offset(ed->buffer, &cur, to->cursor);
@@ -3402,31 +3509,12 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
      * touched (a paste can create or split '!' lines anywhere).            */
     tag_emoji_in_range(ed, end_off - (gint)n_chars, end_off);
     action_retag_lines(ed, end_off - (gint)n_chars, end_off);
+    title_line_sync(ed, end_off - (gint)n_chars, end_off);
     /* A '!' or newline can create an action line; a paste can too.          */
     if (n_chars > 1 || memchr(text, '!', (size_t)len) ||
         memchr(text, '\n', (size_t)len))
         ed->actions_clean = FALSE;
     gtk_text_buffer_get_iter_at_offset(ed->buffer, location, end_off);
-
-    /* Auto-H1: while the first line of a brand-new note is being typed,
-     * keep it styled as a heading.  The tag can't be pre-applied to an
-     * empty line (there is nothing to tag yet), so it is re-applied per
-     * insertion; the first Enter ends the title line — the newline stays
-     * untagged, so the next line starts as plain body text.                */
-    if (ed->auto_h1) {
-        if (gtk_text_buffer_get_line_count(buffer) > 1) {
-            ed->auto_h1 = FALSE;     /* title line finished                 */
-        } else {
-            GtkTextIter ls, le;      /* whole first line                    */
-            line_span(buffer, 0, &ls, &le);
-            if (!gtk_text_iter_equal(&ls, &le)) {
-                ed->internal_change++;
-                gtk_text_buffer_apply_tag_by_name(buffer, ON_TAGNAME_H1,
-                                                  &ls, &le);
-                ed->internal_change--;
-            }
-        }
-    }
 
     /* Typing INSIDE an existing styled #tag renames it — flag the tag set
      * as changed so the next save updates note_tags and the sidebar.       */
@@ -3662,6 +3750,7 @@ on_buffer_delete_range_after(GtkTextBuffer *buffer, GtkTextIter *start,
     /* start == end after the deletion: retag the collapse-point line.      */
     gint off = gtk_text_iter_get_offset(start);
     action_retag_lines(ed, off, off);
+    title_line_sync(ed, off, off);   /* a merge can pull a line up to 0  */
     ed->actions_clean = FALSE;    /* deletes can create/destroy '!' lines   */
 
     if (ed->tag_start == NULL)
@@ -4592,6 +4681,25 @@ editor_build_view(OnEditor *ed)
         "weight",     PANGO_WEIGHT_SEMIBOLD,
         NULL);
     gtk_text_tag_set_priority(action_tag, 0);
+    /* Editor-only centering for the note's title line — always line 0.
+     * Nothing else sets justification, so priority doesn't matter here.
+     * Never serialized: only the editor centers it (title_line_sync).   */
+    gtk_text_buffer_create_tag(ed->buffer, "on-title-center",
+                               "justification", GTK_JUSTIFY_CENTER,
+                               NULL);
+    /* ...and its heading look, same values as ON_TAGNAME_H1 but derived, so
+     * a line becomes (or stops being) the title purely by moving to or off
+     * line 0.  Skipped where a real paragraph style would multiply the
+     * scale — see title_line_sync.                                         */
+    gtk_text_buffer_create_tag(ed->buffer, "on-title-size",
+                               "weight", PANGO_WEIGHT_BOLD,
+                               "scale",  1.6,
+                               NULL);
+    /* Caret sizing while the buffer is EMPTY, where no tag can apply: 160%
+     * matches the scale above, so the caret is already the height of the
+     * title the first keystroke produces.  title_line_sync owns the class. */
+    on_app_widget_add_css(GTK_WIDGET(ed->view),
+                          "textview.on-title-empty { font-size: 160%; }");
 
     gtk_text_view_set_editable(ed->view, TRUE);
     gtk_text_view_set_wrap_mode(ed->view, GTK_WRAP_WORD_CHAR);
@@ -4640,9 +4748,12 @@ editor_load_content(OnEditor *ed)
         action_marks_sync(ed, rows);
         on_db_action_list_free(rows);
     }
-    /* A brand-new (empty) note gets its first line auto-styled as H1.      */
-    ed->auto_h1 = ed->app->first_line_h1 &&
-                  gtk_text_buffer_get_char_count(ed->buffer) == 0;
+    /* Present line 0 as the title.  OUTSIDE the branch above: a note with
+     * no blob is exactly the case whose caret needs the view-level
+     * fallbacks, set before the window is ever shown.  Only the head of the
+     * buffer needs the pass — freshly deserialized text can't be carrying
+     * the editor-only tags.                                                */
+    title_line_sync(ed, 0, 0);
 
     ed->undo_stack   = g_ptr_array_new();
     ed->redo_stack   = g_ptr_array_new();

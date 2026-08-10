@@ -45,7 +45,7 @@ sees the new flags.
 | `src/app.[ch]` | Shared `OnApp` context: db handle, open-editors map, per-family toolbar styles, icon loading, toolbar registry + right-click style menu |
 | `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering |
 | `src/serialize.[ch]` | BNBF binary format ⇄ GtkTextBuffer; image anchors; shared GtkTextTag set (`on_buffer_ensure_tags`) |
-| `src/editor_window.[ch]` | WYSIWYG editor: inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, debounced autosave |
+| `src/editor_window.[ch]` | WYSIWYG editor: inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, title line (line 0 centered + heading-sized, both derived by `title_line_sync`, gated by `first_line_title`), debounced autosave |
 | `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area \| Search … About), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
 | `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options |
 | `src/settings_window.[ch]` | Toolbar styles, list density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
@@ -68,6 +68,21 @@ sees the new flags.
   TEXT records = styled runs (flag bits ↔ named GtkTextTags via one
   shared table); IMAGE = full-resolution PNG + display width; TABLE;
   CHECK. All older versions (1–4) still parse.
+- **A blob can be rewritten WITHOUT deserializing it** — the pattern for
+  format migrations, because a full deserialize decodes every PNG in the
+  database (measured: seconds per hundred MB, and the DB is ~600 MB).
+  `on_note_strip_first_line_h1` (serialize.c) is the worked example: it
+  walks records like `on_note_extract_text`, copies image payloads
+  verbatim, clears one flag bit on the first line's TEXT runs — SPLITTING
+  a run at the first newline so a heading that continues below keeps its
+  H1 — preserves the blob's own version field, and returns FALSE (writing
+  nothing) when there was nothing to change or the blob doesn't parse.
+  Its one-time driver is `on_app_first_line_h1_strip` (user_version 4,
+  2026-08, run beside the action backfills at every long-lived
+  `on_db_open`); it writes through `on_db_note_set_content`, which touches
+  the content column ONLY — a formatting cleanup must not bump
+  `updated_at`, or the whole library reorders itself.  Trashed notes are
+  included so a restore can't reintroduce the old formatting.
 - **Task checkboxes are GtkTextChildAnchors** carrying their state as
   object data (`on_anchor_set/is_checkbox`), rendered as native
   GtkCheckButtons (BNBF v5 CHECK records).  A task line = anchor + space
@@ -105,9 +120,25 @@ sees the new flags.
   migrations and backfills legitimately rewrite the file at open, so
   hashing afterwards false-alarmed on every upgrading launch),
   `sidebar_counts` (`1|0`, default 0 — folder/tag counts in the
-  sidebar), `first_line_h1` (`1|0`, code default 0, but
-  records.ini.defaults seeds it to 1 — auto-style the first
-  line of a new note as H1), `compact_editor_toolbar` (`1|0`, default 1
+  sidebar), `first_line_title` (`1|0`, default 1 — treat line 0 as the
+  note's title: the editor CENTERS it and renders it heading-sized,
+  unconditionally and whatever it holds, so a line becomes the title just
+  by landing on line 0 (delete the title line and the body line under it
+  takes over).  Both are EDITOR-ONLY derived tags (`on-title-center`,
+  `on-title-size`), never serialized — nothing is written into the note,
+  which is exactly what lets the setting turn the look off again.  Off = a
+  plain left-aligned body line; line 0 still supplies the note title
+  either way.  Applies live via `on_editor_title_refresh_all`.  The old
+  auto-H1 behaviour (real, SERIALIZED H1 on the first line of a brand-new
+  note, `ed->auto_h1`) was removed with this — it could not be undone by
+  the setting, and it stacked with the derived scale.  The H1s it already
+  wrote were stripped by the one-time `on_app_first_line_h1_strip`
+  migration (below); a stored H1 that survives anyway — the user applied it
+  by hand after the migration ran — is harmless, the derived size just
+  stands down there (see quirk 20) so it looks identical.  Replaced the old
+  `first_line_h1` key 2026-08 — a stale `first_line_h1=` line in an
+  existing ini is simply ignored),
+  `compact_editor_toolbar` (`1|0`, default 1
   — collapse the editor's H1/H2/¶ buttons into an "Aa" Styles menu
   button and the list buttons into a "≡" Lists one; applies live via
   `on_editor_rebuild_toolbars_all`), `touch_assist` (`1|0`, default 0 =
@@ -440,6 +471,37 @@ sees the new flags.
     `ed->typing_insert` for ≤2-char (typed) insertions; on_cursor_moved
     skips style adoption while it's up; the after-handler clears it.
     Real navigation (clicks, arrows) still adopts.
+
+19. **A tag can't style an EMPTY line, so the caret there can't be styled
+    by tags at all.**  `gtk_text_buffer_apply_tag` over a zero-length span
+    is a silent no-op — which is why the old auto-H1 re-applied itself per
+    keystroke instead of pre-styling the line.  The caret's height and
+    x-position on an unwritten line therefore come from the view's
+    DEFAULTS, and the title line needs both (see `title_line_sync`):
+    justification via
+    `gtk_text_view_set_justification`, font size via a style class the
+    function toggles on the view (`textview.on-title-empty
+    { font-size: 160% }`, matching ON_TAGNAME_H1's 1.6 scale).  Enlarging
+    the whole view is safe ONLY because it is done exclusively while the
+    buffer is empty — an empty buffer IS line 0 and nothing else.  The
+    class must select the `textview` node, NOT its `text` child:
+    `gtk_text_view_set_attributes_from_style` reads the default font off
+    the widget's own style context and takes only letter-spacing from the
+    text node.  A line that is empty but has a NEWLINE (a blank first
+    line) is the in-between case: its newline is the one character it owns,
+    so spans there run THROUGH the newline while spans on a line with text
+    stop before it — covering the newline would let the next line inherit
+    the tag from text typed after it.
+
+20. **GtkTextTag "scale" values MULTIPLY when tags overlap** —
+    `_gtk_text_attributes_fill_from_tags` does `dest->font_scale *=
+    vals->font_scale` per tag, which is why an H1 line that is also H2
+    renders at 2.08x.  So a DERIVED scale tag must never be laid over text
+    that might already carry a real one: `title_line_sync` applies
+    `on-title-size` only where line 0 has no ON_FMT_PARA_MASK style of its
+    own (H1 there is already title-sized; H2/code/list is a style the user
+    chose).  Weight and justification don't compound this way — only
+    scale does.
 
 ## Performance decisions
 

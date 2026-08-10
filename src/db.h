@@ -265,6 +265,13 @@ gchar *on_db_note_body_text(OnDatabase *db, gint64 id);
 gboolean on_db_note_set_body_text(OnDatabase *db, gint64 id,
                                   const gchar *body_text);
 
+/* Replace ONLY a note's content blob, leaving title, body_text and
+ * updated_at untouched.  For rewrites that change formatting and nothing
+ * else (the first-line-H1 strip), where bumping the modification date
+ * would reorder every note in the library.  Returns TRUE on success.        */
+gboolean on_db_note_set_content(OnDatabase *db, gint64 id,
+                                const guint8 *content, gsize len);
+
 /* Overwrite a note's updated_at with an explicit UNIX timestamp.  Used by
  * importers to preserve the original modification date (ordinary saves
  * stamp the current time). Returns TRUE on success.                         */

@@ -179,6 +179,24 @@ gboolean on_note_deserialize_scaled(GtkTextBuffer *buffer,
 gchar *on_note_extract_text(const guint8 *data, gsize len);
 
 /* ---------------------------------------------------------------------------
+ * on_note_strip_first_line_h1() — clear the ON_FMT_H1 bit from the note's
+ * FIRST line, rewriting the blob record by record (same cheap walk as
+ * on_note_extract_text: image payloads are copied, never decoded — a full
+ * deserialize of every note would decode every PNG in the database).  A run
+ * that spans the first newline is SPLIT so a heading continuing onto later
+ * lines keeps its H1 there.  Everything else, including the blob's own
+ * format version, is preserved byte for byte.
+ *   out_blob — receives the rewritten blob (g_free() it) when TRUE.
+ *   out_len  — receives its length.
+ * Returns FALSE, writing nothing, when the first line carries no H1 or the
+ * blob doesn't parse — so a caller can use it as "was there anything to
+ * do?".  Used by the one-time on_app_first_line_h1_strip migration; the
+ * editor's title styling is derived and needs no stored heading.
+ * ------------------------------------------------------------------------- */
+gboolean on_note_strip_first_line_h1(const guint8 *data, gsize len,
+                                     guint8 **out_blob, gsize *out_len);
+
+/* ---------------------------------------------------------------------------
  * on_note_extract_actions() — pull the ACTION ITEMS out of a BNBF blob
  * without building a GtkTextBuffer (same cheap record walk as
  * on_note_extract_text).  An action item is a line whose first character

@@ -363,6 +363,7 @@ main(int argc, char *argv[])
     g_free(db_path);
     on_app_actions_backfill(db);     /* one-time '!'-line index (gated)     */
     on_app_action_uids_backfill(db); /* then give those rows stable ids     */
+    on_app_first_line_h1_strip(db);  /* drop stored title H1s (gated)       */
 
     /* The shared context handed to every window.                           */
     OnApp app = {
@@ -393,8 +394,8 @@ main(int argc, char *argv[])
         on_app_config_get_bool("code_line_numbers",      FALSE);
     app.sidebar_counts =
         on_app_config_get_bool("sidebar_counts",         FALSE);
-    app.first_line_h1 =
-        on_app_config_get_bool("first_line_h1",          FALSE);
+    app.first_line_title =
+        on_app_config_get_bool("first_line_title",       TRUE);
     app.compact_editor_toolbar =
         on_app_config_get_bool("compact_editor_toolbar", TRUE);
     app.comfortable_list =

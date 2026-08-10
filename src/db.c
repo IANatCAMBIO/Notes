@@ -775,6 +775,19 @@ on_db_note_set_body_text(OnDatabase *db, gint64 id, const gchar *body_text)
 }
 
 gboolean
+on_db_note_set_content(OnDatabase *db, gint64 id,
+                       const guint8 *content, gsize len)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "UPDATE notes SET content=? WHERE id=?");
+    if (stmt != NULL) {
+        sqlite3_bind_blob(stmt, 1, content, (int)len, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, id);
+    }
+    return stmt_done(db, stmt);
+}
+
+gboolean
 on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts)
 {
     sqlite3_stmt *stmt = prepare(db,

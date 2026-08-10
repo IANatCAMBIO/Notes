@@ -68,6 +68,14 @@ void on_editor_apply_line_numbers_all(OnApp *app);
 void on_editor_rebuild_toolbars_all(OnApp *app);
 
 /* ---------------------------------------------------------------------------
+ * on_editor_title_refresh_all() — re-derive the title-line presentation
+ * (centering, and the caret sizing on an unwritten title) in every open
+ * editor per app->first_line_title.  Called by the settings window when
+ * the preference changes (applies live).
+ * ------------------------------------------------------------------------- */
+void on_editor_title_refresh_all(OnApp *app);
+
+/* ---------------------------------------------------------------------------
  * on_editor_status_refresh_all() — re-render the status-bar location of
  * every open editor window.  Called by the settings window when the
  * DB-path-prefix preference changes (applies live).

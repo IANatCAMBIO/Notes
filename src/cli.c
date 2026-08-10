@@ -55,6 +55,7 @@ cli_open_db(void)
     g_free(db_dir);
     on_app_actions_backfill(db);     /* one-time '!'-line index (gated)     */
     on_app_action_uids_backfill(db); /* then give those rows stable ids     */
+    on_app_first_line_h1_strip(db);  /* drop stored title H1s (gated)       */
     return db;
 }
 

@@ -697,6 +697,114 @@ read_table_record(const guint8 *data, gsize len, gsize *pos,
     return TRUE;
 }
 
+gboolean
+on_note_strip_first_line_h1(const guint8 *data, gsize len,
+                            guint8 **out_blob, gsize *out_len)
+{
+    if (!magic_ok(data, len))
+        return FALSE;
+    gsize   pos = 4;                 /* read cursor, past the magic         */
+    guint32 version;
+    if (!get_u32(data, len, &pos, &version) ||
+        version < 1 || version > BNBF_VERSION)
+        return FALSE;
+
+    GByteArray *out = g_byte_array_new();   /* the rewritten blob           */
+    g_byte_array_append(out, BNBF_MAGIC, 4);
+    put_u32(out, version);           /* keep the note's own version         */
+
+    gboolean line0   = TRUE;         /* still walking the first line?       */
+    gboolean changed = FALSE;        /* did we clear an H1 bit?             */
+    gboolean bad     = FALSE;        /* malformed: abandon the rewrite      */
+
+    while (pos < len) {
+        gsize   rec_start = pos;     /* for copying a record verbatim       */
+        guint8  rec = data[pos++];   /* record type byte                    */
+        if (rec == REC_END)
+            break;
+
+        if (rec == REC_TEXT) {
+            guint32 flags, n;
+            if (!get_u32(data, len, &pos, &flags) ||
+                !get_u32(data, len, &pos, &n) || pos + n > len) {
+                bad = TRUE;
+                break;
+            }
+            const gchar *txt = (const gchar *)data + pos;
+            /* How much of this run belongs to line 0: through the first
+             * newline, or all of it when the run has none.                 */
+            const gchar *nl  = memchr(txt, '\n', n);
+            guint32 head = nl != NULL ? (guint32)(nl - txt) + 1 : n;
+
+            if (line0 && (flags & ON_FMT_H1)) {
+                /* Split the run so a heading that continues onto later
+                 * lines keeps its H1 there — only line 0 loses it.         */
+                guint8 tb = REC_TEXT;
+                g_byte_array_append(out, &tb, 1);
+                put_u32(out, flags & ~(guint32)ON_FMT_H1);
+                put_u32(out, head);
+                g_byte_array_append(out, (const guint8 *)txt, head);
+                if (head < n) {
+                    g_byte_array_append(out, &tb, 1);
+                    put_u32(out, flags);
+                    put_u32(out, n - head);
+                    g_byte_array_append(out, (const guint8 *)txt + head,
+                                        n - head);
+                }
+                changed = TRUE;
+            } else {
+                g_byte_array_append(out, data + rec_start,
+                                    (guint)(pos + n - rec_start));
+            }
+            pos += n;
+            if (nl != NULL)
+                line0 = FALSE;       /* line 0 ended inside this run        */
+            continue;
+        }
+
+        /* Every other record is copied byte for byte; only its LENGTH has
+         * to be parsed.  Images and checkboxes occupy one character, so
+         * they do not end line 0; a table is treated as if it did, which
+         * merely stops the strip early (conservative, never wrong).        */
+        if (rec == REC_IMAGE) {
+            guint32 dw, n;
+            if ((version >= 2 && !get_u32(data, len, &pos, &dw)) ||
+                !get_u32(data, len, &pos, &n) || pos + n > len) {
+                bad = TRUE;
+                break;
+            }
+            pos += n;
+        } else if (rec == REC_TABLE) {
+            if (!read_table_record(data, len, &pos, version, NULL)) {
+                bad = TRUE;
+                break;
+            }
+            line0 = FALSE;
+        } else if (rec == REC_CHECK) {
+            if (pos >= len) {
+                bad = TRUE;
+                break;
+            }
+            pos += 1;
+        } else {
+            bad = TRUE;              /* unknown record: don't guess         */
+            break;
+        }
+        g_byte_array_append(out, data + rec_start,
+                            (guint)(pos - rec_start));
+    }
+
+    if (bad || !changed) {           /* nothing to write back               */
+        g_byte_array_free(out, TRUE);
+        return FALSE;
+    }
+    guint8 end = REC_END;
+    g_byte_array_append(out, &end, 1);
+    *out_len  = out->len;
+    *out_blob = g_byte_array_free(out, FALSE);
+    return TRUE;
+}
+
 gchar *
 on_note_extract_text(const guint8 *data, gsize len)
 {

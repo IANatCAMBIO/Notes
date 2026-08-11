@@ -1,6 +1,6 @@
-# Records — User Guide
+# Notes — User Guide
 
-Everyday use of Records: the library, search, the editor, settings,
+Everyday use of Notes: the library, search, the editor, settings,
 storage & backup, export, and command-line automation. For build
 instructions and the Apple Notes importer see the [README](README.md);
 for the database schema and file formats see [Internals](Internals.md).
@@ -21,9 +21,12 @@ for the database schema and file formats see [Internals](Internals.md).
   drag any selected note onto a sidebar folder to move the whole
   selection, or use the right-click menu — Open, Export as
   HTML/Markdown, Delete.
-- **Ctrl/Cmd+N** creates a note in the selected folder. The vinyl logo
-  at the toolbar's right edge opens the About dialog (program info plus
-  live database statistics).
+- **Ctrl/Cmd+N** creates a note in the selected folder.
+- **Quicknote** (toolbar) creates a note in the **root** folder no matter
+  what is selected, and opens its editor straight away — for the thought
+  you want written down before deciding where it belongs. The
+  `notes quicknote` command does exactly the same thing.
+- **File → About** shows program info plus live database statistics.
 - **Action Items** — a sidebar section (below the folders and tags,
   shown while any exist) listing every `!` action item from all your
   notes, one per
@@ -119,7 +122,7 @@ header bars anywhere). The first line of the note becomes its title.
   path shown before the folder path in each window's status bar (on by
   default — handy when you juggle more than one database).
 
-All changes apply live and persist (in `records.ini` next to the
+All changes apply live and persist (in `notes.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
 dropping in files, see `icons/README.md`.
 
@@ -127,19 +130,19 @@ dropping in files, see `icons/README.md`.
 
 Everything lives in a single SQLite database:
 
-- `~/.local/share/records/records.db` by default (GLib's user-data
+- `~/.local/share/notes/notes.db` by default (GLib's user-data
   directory). *File → Settings… → Database* can point the app at a custom
   folder instead — e.g. a shared drive used by two machines (never open
-  it from both at once). The choice is stored in `records.ini` in
+  it from both at once). The choice is stored in `notes.ini` in
   the same directory as the binary (created on first launch from
-  `records.ini.defaults`). If the configured database cannot be
+  `notes.ini.defaults`). If the configured database cannot be
   opened at startup, the app reports the error and exits — it never
   silently opens a different database.
 - *File → Back Up Database…* snapshots the live database to a file;
   *File → Restore Database…* replaces the current data with a backup
-  (keeping the old file as `records.db.pre-restore`).
+  (keeping the old file as `notes.db.pre-restore`).
 - **CLI and GUI cooperate over a socket** — while the GUI is running,
-  `records` command-line invocations are forwarded to it over a unix
+  `notes` command-line invocations are forwarded to it over a unix
   socket instead of opening the database a second time, so the two never
   write concurrently. If the database file changed on disk since the
   last clean exit (shared folder, crash), startup offers **Open Anyway**
@@ -169,60 +172,60 @@ windows refresh to show what changed.
 Reading:
 
 ```
-records note list [PATH|--all]     ids, modified dates and titles
-records note cat ID [--md]         a note's text (--md: Markdown with
+notes note list [PATH|--all]     ids, modified dates and titles
+notes note cat ID [--md]         a note's text (--md: Markdown with
                                       formatting; images as placeholders)
-records search TEXT [--regex]      case-insensitive, titles + full text;
+notes search TEXT [--regex]      case-insensitive, titles + full text;
                                       prints ID / modified / full path
-records folder list                folder tree with note counts
-records tag list                   every tag with its note count
-records tag notes NAME             the notes labeled with a tag
-records note tags ID               a note's tags, one per line
+notes folder list                folder tree with note counts
+notes tag list                   every tag with its note count
+notes tag notes NAME             the notes labeled with a tag
+notes note tags ID               a note's tags, one per line
 ```
 
 Writing:
 
 ```
-records note new [--folder PATH] TEXT|-   create (first line = title)
-records note append ID TEXT|-             add text on a fresh line
-records note set ID TEXT|-                REPLACE a note's content
-records note move ID [ID...] PATH         move into a folder ('/' = top)
-records note tag ID NAME                  add a #tag to the note text
-records note untag ID NAME                remove a #tag
-records note add-image ID FILE            append an image file
-records note set-modified ID TIMESTAMP    set the modified date (UNIX s)
-records folder add PATH                   create nested, like mkdir -p
+notes note new [--folder PATH] TEXT|-   create (first line = title)
+notes note append ID TEXT|-             add text on a fresh line
+notes note set ID TEXT|-                REPLACE a note's content
+notes note move ID [ID...] PATH         move into a folder ('/' = top)
+notes note tag ID NAME                  add a #tag to the note text
+notes note untag ID NAME                remove a #tag
+notes note add-image ID FILE            append an image file
+notes note set-modified ID TIMESTAMP    set the modified date (UNIX s)
+notes folder add PATH                   create nested, like mkdir -p
 ```
 
 Deleting (safe by default — both go to the Trash, restorable in the GUI):
 
 ```
-records note delete [--permanent] ID [ID...]
-records note restore ID [ID...]
-records folder delete [--permanent] PATH
+notes note delete [--permanent] ID [ID...]
+notes note restore ID [ID...]
+notes folder delete [--permanent] PATH
 ```
 
 Action items (see the editor's `!` lines; items are addressed by the
 `NOTEID:ORD` ids the list prints):
 
 ```
-records action list [--open|--done]   every action item: NOTEID:ORD,
+notes action list [--open|--done]   every action item: NOTEID:ORD,
                                          [x]/[ ], due date, text
-records action done NOTEID:ORD        mark done (strikes the note line)
-records action undone NOTEID:ORD      reopen a completed item
-records action due NOTEID:ORD DATE|-  set/clear the due date (rewrites
+notes action done NOTEID:ORD        mark done (strikes the note line)
+notes action undone NOTEID:ORD      reopen a completed item
+notes action due NOTEID:ORD DATE|-  set/clear the due date (rewrites
                                          the line's "due DATE" suffix)
 ```
 
 GUI and maintenance:
 
 ```
-records note open PATH             open an editor (id or Folder/Title;
-                                      starts Records if needed)
-records quicknote                  new note in the root folder + editor
-records backup FILE.db             snapshot the live database
-records export-md DIR              export all notes as Markdown
-records export-html DIR            export all notes as HTML
+notes note open PATH             open an editor (id or Folder/Title;
+                                      starts Notes if needed)
+notes quicknote                  new note in the root folder + editor
+notes backup FILE.db             snapshot the live database
+notes export-md DIR              export all notes as Markdown
+notes export-html DIR            export all notes as HTML
 ```
 
 Folders are addressed by path (`"Work/Projects"`); notes by the ids
@@ -233,14 +236,14 @@ argument or stdin (`-`). Plain text goes in; `note set` replaces the
 whole note, so any formatting, images, tables or tags the old content
 had are lost — prefer `note append` for adding to rich notes. Output is
 tab-separated for easy scripting; exit codes: 0 success, 1 usage,
-2 failure. `records help` shows the full reference.
+2 failure. `notes help` shows the full reference.
 
-## Using Records with an AI agent
+## Using Notes with an AI agent
 
 The CLI is the intended interface for AI agents: it covers reading,
 searching, writing, tagging and organizing, and because a running GUI
 serves CLI calls over its socket, an agent can work on the database
-while you have Records open — your windows update live as it works.
+while you have Notes open — your windows update live as it works.
 
 **Agents that can run shell commands** (Claude Code, Codex CLI, Cursor,
 and similar) can use the binary directly. Tell the agent where it is
@@ -251,8 +254,8 @@ prompt):
 ```markdown
 ## My notes database
 
-My notes live in Records; use its CLI: /path/to/records
-Run "records help" for the full command list.
+My notes live in Notes; use its CLI: /path/to/notes
+Run "notes help" for the full command list.
 
 - Find notes with `search TEXT` (or `note list --all`), read one with
   `note cat ID` (`--md` keeps formatting), then act on the id.
@@ -278,22 +281,22 @@ A useful pattern is a capture workflow — "summarize this thread and
 save it to my notes" becomes:
 
 ```
-records folder add "Inbox/AI"
-records note new --folder "Inbox/AI" -   <<'EOF'
+notes folder add "Inbox/AI"
+notes note new --folder "Inbox/AI" -   <<'EOF'
 Meeting summary 2026-07-10
 ...the agent's text...
 EOF
-records note tag 42 meeting
+notes note tag 42 meeting
 ```
 
 **Chat-only assistants** (ChatGPT or Claude in the browser, with no
 shell access) cannot reach the database directly. Two options:
 
-- Export and upload: `records export-md ~/notes-export` produces a
+- Export and upload: `notes export-md ~/notes-export` produces a
   folder of plain Markdown files that any assistant can read; paste the
   assistant's answers back with `note new -`/`note append -`.
 - Wrap the CLI in an MCP server: each tool call shells out to one
-  `records` subcommand. Clients that speak MCP (Claude Desktop,
+  `notes` subcommand. Clients that speak MCP (Claude Desktop,
   Claude in Slack, others) then get live read/write access with the
   same safety properties as the CLI — the wrapper needs no database
   code at all.

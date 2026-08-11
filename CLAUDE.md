@@ -1,22 +1,22 @@
-# Records — project guide
+# Notes — project guide
 
 Apple Notes–style app in **plain C + GTK3 + SQLite**. Two window types:
 a Library (folders/tags sidebar, notes as list or grid) and one editor
 window per note (WYSIWYG rich text). No GNOME HeaderBars anywhere —
-plain `GtkWindow` titlebars, formatted `"Records - <thing>"`.
+plain `GtkWindow` titlebars, formatted `"Notes - <thing>"`.
 
 ## Build & run
 
 ```sh
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./records
+make          # builds ./notes
 make run
-make app      # dist/Records.app (unversioned name; macOS; sips/iconutil;
-              # vinyl.png → .icns; NOT self-contained — needs MacPorts GTK)
-make deb      # dist/records_<version>_<arch>.deb (needs dpkg-deb,
-make rpm      # dist/records-<version>-1.<arch>.rpm  needs rpmbuild —
+make app      # dist/Notes.app (unversioned name; macOS; sips/iconutil;
+              # composition.png → .icns; NOT self-contained — needs MacPorts GTK)
+make deb      # dist/notes_<version>_<arch>.deb (needs dpkg-deb,
+make rpm      # dist/notes-<version>-1.<arch>.rpm  needs rpmbuild —
               # build these ON the target Linux distro; they install to
-              # /opt/records + a /usr/bin wrapper script that execs by
+              # /opt/notes + a /usr/bin wrapper script that execs by
               # absolute path so argv[0]-relative icons/defaults resolve)
 ```
 
@@ -41,48 +41,58 @@ sees the new flags.
 
 | File | Purpose |
 |---|---|
-| `src/main.c` | GtkApplication entry; config init; sets `icons/vinyl.png` as default window icon |
+| `src/main.c` | GtkApplication entry; config init; sets `icons/composition.png` as default window icon |
 | `src/app.[ch]` | Shared `OnApp` context: db handle, open-editors map, per-family toolbar styles, icon loading, toolbar registry + right-click style menu |
 | `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering |
 | `src/serialize.[ch]` | BNBF binary format ⇄ GtkTextBuffer; image anchors; shared GtkTextTag set (`on_buffer_ensure_tags`) |
-| `src/editor_window.[ch]` | WYSIWYG editor: inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, title line (line 0 centered + heading-sized, both derived by `title_line_sync`, gated by `first_line_title`), debounced autosave |
-| `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area \| Search … About), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
+| `src/editor_window.[ch]` | WYSIWYG editor: new windows open in the screen's bottom-right corner, 12 px clear of the work area (`editor_place_bottom_right`, quirk #21); inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, title line (line 0 centered + heading-sized, both derived by `title_line_sync`, gated by `first_line_title`), debounced autosave |
+| `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area, whose Quicknote button (archive.png) calls `on_library_quicknote()` — a note in the ROOT folder whatever is selected, editor to the front; THE one implementation, also behind the `notes quicknote` CLI/IPC command \| Search …; the About button that used to sit at the far right, with its expanding spacer and per-style child swap, was removed 2026-08 — About lives in the File menu only), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
 | `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options |
 | `src/settings_window.[ch]` | Toolbar styles, list density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
 | `src/export.[ch]` | HTML + Markdown export (all notes mirroring folder tree, or single note) |
 | `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/done/undone/due` (items addressed `NOTEID:ORD` **or** by stable `UID` — `action_token_parse` tells them apart BY SHAPE, a ':' means the positional form, a bare decimal means a uid; `action list --uid` prepends the uid as a further FIRST column, leaving the default output byte-identical because text must stay last, and an unknown flag exits 1 so a caller can probe an older build; done/due rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the offscreen path); `note new/append/set` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`) |
-| `icons/` | custom PNG toolbar icons + `vinyl.png` app logo (window icon, About button/dialog), loaded by basename; see icons/README.md |
+| `icons/` | custom PNG toolbar icons + `composition.png` app logo (window icon + About dialog, and the .icns/Linux hicolor packaging icon), loaded by basename; see icons/README.md |
 | `tools/import-apple-notes.sh` | Apple Notes migration (AppleScript export → CLI import; keeps modification dates) |
 
 ## Data & formats
 
-- DB: `~/.local/share/records/records.db` (GLib user-data dir; the
-  filename is `ON_DB_FILENAME` in db.h.  The pre-1.4 `notes.db` rename
-  shim was removed 2026-07 (sole user's DB verified migrated); the dir
-  was renamed
-  from `orange-notes` → `blue_notes` pre-release, then to `records` —
-  do NOT rename again once released, user data will live there).
+- DB: `~/.local/share/notes/notes.db` (GLib user-data dir; the filename is
+  `ON_DB_FILENAME` in db.h).  The dir went `orange-notes` → `blue_notes`
+  pre-release → `records` → `notes` (2026-08), and the file `notes.db` →
+  `records.db` → `notes.db` again.  **Do not rename either again without a
+  shim**: user data lives there, and a rename with no pickup path looks
+  exactly like "my notes vanished".  The 2026-08 rename shipped one
+  (`on_db_adopt_legacy_path()`: rename a leftover `records.db` into place,
+  either beside the expected path or from the old default dir); it was
+  REMOVED days later once the sole user's database had been adopted, the
+  same way the pre-1.4 `notes.db` shim went in 2026-07.  Consequence to
+  know before opening an old backup: a `records.db` is no longer picked
+  up — rename the file to `notes.db` by hand.
 - Note content: **BNBF v5** blobs (magic `BNBF`; the pre-rename `ONBF`
   magic was retired 2026-07 after an offline scan found zero such blobs)
   (see header comment in `serialize.h`).
   TEXT records = styled runs (flag bits ↔ named GtkTextTags via one
   shared table); IMAGE = full-resolution PNG + display width; TABLE;
   CHECK. All older versions (1–4) still parse.
-- **A blob can be rewritten WITHOUT deserializing it** — the pattern for
-  format migrations, because a full deserialize decodes every PNG in the
-  database (measured: seconds per hundred MB, and the DB is ~600 MB).
-  `on_note_strip_first_line_h1` (serialize.c) is the worked example: it
-  walks records like `on_note_extract_text`, copies image payloads
-  verbatim, clears one flag bit on the first line's TEXT runs — SPLITTING
-  a run at the first newline so a heading that continues below keeps its
-  H1 — preserves the blob's own version field, and returns FALSE (writing
-  nothing) when there was nothing to change or the blob doesn't parse.
-  Its one-time driver is `on_app_first_line_h1_strip` (user_version 4,
-  2026-08, run beside the action backfills at every long-lived
-  `on_db_open`); it writes through `on_db_note_set_content`, which touches
-  the content column ONLY — a formatting cleanup must not bump
-  `updated_at`, or the whole library reorders itself.  Trashed notes are
-  included so a restore can't reintroduce the old formatting.
+- **A blob can be rewritten WITHOUT deserializing it**, and a format
+  migration MUST be written that way: a full deserialize decodes every PNG
+  in the database (seconds per hundred MB, and the DB is ~600 MB).  Walk
+  records like `on_note_extract_text` does, copy image payloads verbatim,
+  change only the flag words you mean to, preserve the blob's own version
+  field, and return "nothing changed" so untouched notes are never
+  rewritten.  Write back through a content-ONLY UPDATE — a formatting
+  cleanup must not bump `updated_at`, or the whole library reorders
+  itself.  The 2026-08 first-line-H1 strip
+  (`on_note_strip_first_line_h1` + `on_app_first_line_h1_strip` +
+  `on_db_note_set_content`) was the worked example; all three were removed
+  after it ran on the sole user's database and found zero notes to change
+  (verified independently: 0 of 1296 notes carried any paragraph style on
+  line 0).  `git log` has it if the shape is ever needed again.
+- **`PRAGMA user_version` 4 IS CONSUMED** even though nothing claims it any
+  more: the removed H1 strip stamped it, so the user's database sits at 4
+  while a freshly created one stops at 3.  The next one-time migration must
+  therefore be **5 or higher** — numbering it 4 would silently skip the one
+  database that matters.
 - **Task checkboxes are GtkTextChildAnchors** carrying their state as
   object data (`on_anchor_set/is_checkbox`), rendered as native
   GtkCheckButtons (BNBF v5 CHECK records).  A task line = anchor + space
@@ -98,17 +108,25 @@ sees the new flags.
   offscreen and never need widgets. Default thumbnail display fits a
   200×125 box (`ON_IMAGE_THUMB_W/H`, aspect kept, never upscaled);
   right-click menu toggles thumbnail/full.
-- ALL UI settings live in the ini (`[records]` group), loaded into
+- ALL UI settings live in the ini (`[notes]` group), loaded into
   memory ONCE by `on_app_config_init()` and written through on change
   (`on_app_config_get/set`); the file is never re-read while running.
   The ini normally sits NEXT TO THE BINARY (portable mode); when no
   binary-adjacent ini exists AND that directory is unwritable (system
   installs: .deb/.rpm in /opt, .app in /Applications) it falls back to
-  `~/.config/records/records.ini` instead.
-  On first launch (no ini) it is seeded from `records.ini.defaults`
+  `~/.config/notes/notes.ini` instead.
+  On first launch (no ini) it is seeded from `notes.ini.defaults`
   next to the binary (committed; empty `db_dir` = default DB location).
   The live ini is gitignored — its rewrites drop comments and carry
-  per-machine values.
+  per-machine values.  (It was NOT actually ignored until 2026-08: the
+  .gitignore still named the pre-2026-07 `blue_notes`/`blue_notes.ini`, so
+  the binary and a machine-specific `db_dir` were committed.  A rename must
+  update .gitignore too.)  The rename's ini pickup (`config_adopt_legacy()`,
+  which republished every `[records]` key under `[notes]`) was REMOVED once
+  the sole install had been adopted — a stray `records.ini` is now simply
+  ignored, which means the app falls back to `notes.ini.defaults` and loses
+  the configured `db_dir`.  That is the failure mode any future rename of
+  this file must budget for.
   Keys: `db_dir`, `toolbar_style_library`, `toolbar_style_editor`
   (`text|icons|both`, default icons), `code_copy_button` (`1|0`),
   `code_line_numbers` (`1|0`), `native_menubar` (`1|0`),
@@ -131,11 +149,11 @@ sees the new flags.
   either way.  Applies live via `on_editor_title_refresh_all`.  The old
   auto-H1 behaviour (real, SERIALIZED H1 on the first line of a brand-new
   note, `ed->auto_h1`) was removed with this — it could not be undone by
-  the setting, and it stacked with the derived scale.  The H1s it already
-  wrote were stripped by the one-time `on_app_first_line_h1_strip`
-  migration (below); a stored H1 that survives anyway — the user applied it
-  by hand after the migration ran — is harmless, the derived size just
-  stands down there (see quirk 20) so it looks identical.  Replaced the old
+  the setting, and it stacked with the derived scale.  A stored H1 on line 0
+  (applied by hand, or by a build predating all this) is harmless: the
+  derived size stands down there (see quirk 20), so it looks identical —
+  the only tell is that turning the setting OFF leaves that one line big.
+  Replaced the old
   `first_line_h1` key 2026-08 — a stale `first_line_h1=` line in an
   existing ini is simply ignored),
   `compact_editor_toolbar` (`1|0`, default 1
@@ -189,22 +207,22 @@ sees the new flags.
   GONE (dropped from the schema and the live DB 2026-07); all
   preferences live in the ini.
 - **Custom DB location** (shared-folder support) lives in the CONFIG
-  FILE `records.ini` NEXT TO THE BINARY (`[records] db_dir=`;
+  FILE `notes.ini` NEXT TO THE BINARY (`[notes] db_dir=`;
   resolved from argv[0] by `on_app_config_init()`, which must run before
   any config read — main() calls it first thing), never in the DB.
   `on_app_switch_database()` switches live: closes all editors (flushing
   saves), swaps the handle, copies the current file to the target if no
-  records.db exists there (or overwrites it at the user's choice);
+  notes.db exists there (or overwrites it at the user's choice);
   either way the original file is deleted on success, persists, refreshes
   the library. Failure reverts to the old DB. If the configured DB can't be opened at
   startup, main.c ERRORS OUT — deliberately NO fallback to the default
   location: a silent fallback once made a user's notes "disappear" and
   strands writes in the wrong file (the trigger was a relaunch racing
   the dying instance's final flush past the 5 s busy timeout). One
-  configured database, or a clear error. When no records.db EXISTS at
+  configured database, or a clear error. When no notes.db EXISTS at
   the expected location (first launch / emptied dir),
-  `startup_first_run()` asks — "Open a records.db File" (persists the
-  new db_dir) or "Create a New records.db" — instead of silently creating
+  `startup_first_run()` asks — "Open a notes.db File" (persists the
+  new db_dir) or "Create a New notes.db" — instead of silently creating
   an empty DB; both paths clear any stale db_hash.
 - **Folder emoji** (`folders.emoji` TEXT, default `''`): each folder
   can have an optional emoji set via its Info dialog (right-click a
@@ -322,7 +340,7 @@ sees the new flags.
   database.
   `grid_pref` restores list/grid when leaving the view.
 - **CLI backup**: `on_db_backup_to()` (db.c) uses SQLite's online backup
-  API on the live DB; exposed as `records backup FILE.db`. No GUI
+  API on the live DB; exposed as `notes backup FILE.db`. No GUI
   equivalent — the File menu backup/restore items were removed.
 - **CLI ↔ GUI coexistence is socket-based, not lock-based**: a running
   GUI serves later CLI invocations over a unix socket (`src/ipc.c`), so
@@ -503,6 +521,26 @@ sees the new flags.
     chose).  Weight and justification don't compound this way — only
     scale does.
 
+21. **What `gtk_window_move()` positions is PLATFORM-DEPENDENT, and window
+    gravity is not the way out.**  Measured on GTK 3.24: on quartz the
+    coordinate is the CLIENT origin (the frame extends the titlebar's 28 px
+    ABOVE it — `gdk_window_get_frame_extents` on a realized-but-unmapped
+    window reports `y = -28`), while X11's documented behaviour is the
+    frame's top-left.  `GDK_GRAVITY_SOUTH_EAST` looks like the fix —
+    "move the bottom-right corner to this point" — and IS honoured on
+    quartz, but GTK computes it from the client size it knows before
+    mapping, so a request for `corner − 12` landed the frame flush IN the
+    corner with the margin silently swallowed.  Reliable recipe (see
+    `editor_place_bottom_right`): keep default gravity, move using the
+    CLIENT size for the first placement, then correct ONCE in a `map-event`
+    handler from the real `gdk_window_get_frame_extents` — shift by the
+    leftover delta via `gtk_window_get_position` + `gtk_window_move`, which
+    share a coordinate space whatever the convention, and disconnect the
+    handler.  On macOS the residual is 0, so nothing visibly moves.
+    Positions must be measured against `gdk_monitor_get_workarea`, never
+    the monitor rect: the work area already excludes the menu bar, Dock and
+    Linux panels.
+
 ## Performance decisions
 
 - Grid thumbnails render ONLY while grid view is visible (`want_thumbs`
@@ -599,7 +637,7 @@ sees the new flags.
   (no compile_commands.json); trust `make`, which builds `-Wall -Wextra`
   clean.
 - The GUI can be launched in background for the user with
-  `./records & disown` after `pkill -f "./records"`.
+  `./notes & disown` after `pkill -f "./notes"`.
 
 ## Common task patterns
 
@@ -624,12 +662,24 @@ then change the files in the "Change" column.
 
 ## Rename cleanup TODO
 
-The 2026-07-31 rename from Blue Notes to Records left a few things
-intentionally unchanged that should be cleaned up eventually:
+Two renames — Blue Notes → Records (2026-07-31), Records → Notes
+(2026-08) — left a few things intentionally unchanged.  The second rename
+covered every identifier and string that literally said "records", plus the
+on-disk names (with the two adopt shims documented above), the binary,
+the .app bundle, the packages and .gitignore.  What was deliberately NOT
+touched, and should be cleaned up eventually:
 
 - **Internal C naming**: `on_` / `On` / `ON_` prefixes throughout all
   source files (originally stood for "Orange Notes" → carried through
-  Blue Notes → Records; safe to rename but a large mechanical change).
+  Blue Notes → Records → Notes; safe to rename but a large mechanical
+  change, and they never said "records", which is why the 2026-08 sweep
+  left them alone).
+- **The word "records" as a NOUN in the format docs** — `serialize.[ch]`,
+  the BNBF sections here, "PNG image records", "typed records" — refers to
+  BNBF records, not the app.  A rename sweep MUST protect these (and the
+  verb, as in "the CLI records the request", and the Blue Note Records
+  credit below); do it with an explicit protect-list and assert the
+  protected strings survive, never a bare find-and-replace.
 - **Header guards**: `BLUE_DB_H`, `BLUE_IPC_H`, `BLUE_CLI_H` etc. in
   the `#ifndef` guards — purely cosmetic, zero runtime impact.
 - **BNBF format name**: `serialize.h` still has a note that BNBF stood
@@ -637,9 +687,10 @@ intentionally unchanged that should be cleaned up eventually:
   every note blob and cannot be changed without a migration; the comment
   is just a historical footnote.
 - **About dialog authors string**: "And thanks to Blue Note Records…" —
-  this is an acknowledgment of the jazz label and intentionally kept,
-  but the name overlap is now gone so the double-entendre no longer
-  applies. Worth rewording at some point.
+  an acknowledgment of the jazz label, intentionally kept and deliberately
+  excluded from both rename sweeps ("Records" there is the label's name).
+  The app is called Notes again, so "Note" overlaps once more, though the
+  original Blue Notes double-entendre is still gone. Worth rewording.
 - **REFACTORING.md historical paths**: references to
   `~/.local/share/blue_notes/pre-heal-backup-20260709.db` and
   `~/.local/share/blue_notes/pre-onbf-migration-20260709.db` — those
@@ -652,7 +703,7 @@ intentionally unchanged that should be cleaned up eventually:
   non-obvious variables. Column-aligned trailing comments, ~78-col lines.
 - `on_` prefix for public symbols; `On` prefix for types.
 - UI strings use UTF-8 escapes for …, •, ✕ etc. in source.
-- No GtkHeaderBar. Window titles `"Records - <name>"`.
+- No GtkHeaderBar. Window titles `"Notes - <name>"`.
 - Scrollbars: overlay scrolling disabled globally
   (`GTK_OVERLAY_SCROLLING=0` in main) + per-scrolled-window; vertical
   policy AUTOMATIC.

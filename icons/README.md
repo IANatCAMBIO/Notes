@@ -1,9 +1,9 @@
-# Records — toolbar icons
+# Notes — toolbar icons
 
 Custom PNG icons for the toolbars and dialogs.  The only SVGs left are
 the bundled `theme/` symbolic arrows (see below); rendering those
 requires the librsvg gdk-pixbuf loader: `sudo port install librsvg`
-(then restart Records). Without it, GTK falls back to its stock
+(then restart Notes). Without it, GTK falls back to its stock
 arrows.
 
 ## Replacing icons
@@ -22,7 +22,8 @@ is missing or cannot be decoded, the button falls back to a text glyph.
 | `web.png`                | Show/hide the folder pane      |
 | `search.png`             | Search                         |
 | `copy.png`               | Code-block copy button         |
-| `vinyl.png`            | App logo: window icon, About button + dialog |
+| `archive.png`          | Quicknote (new note in the root folder)      |
+| `composition.png`      | App logo: window icon + About dialog         |
 | `warning.png`            | Delete-confirmation dialogs    |
 | `folder.png`             | Drag icon: dragging a folder   |
 | `documents.png`          | Drag icon: dragging 2+ notes   |

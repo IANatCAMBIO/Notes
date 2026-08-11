@@ -8,35 +8,35 @@
  *
  * Commands follow a noun-verb structure:
  *
- *   records tag list
- *   records tag notes NAME             (notes labeled with a tag)
- *   records tag delete NAME
- *   records folder list
- *   records folder add PATH            (nested, created like mkdir -p)
- *   records folder delete [--permanent] PATH    (default: to the Trash)
- *   records note list [PATH|--all]
- *   records note cat ID [--md]         (plain text, or Markdown render)
- *   records note new [--folder PATH] CONTENT|-   (- reads stdin)
- *   records note append ID CONTENT|-   (plain text, on a fresh line)
- *   records note set ID CONTENT|-      (REPLACES the note's content)
- *   records note delete [--permanent] ID [ID...] (default: to the Trash)
- *   records note restore ID [ID...]
- *   records note move ID [ID...] PATH  (/ = top level)
- *   records note tags ID
- *   records note tag ID NAME           (appends the literal #NAME token)
- *   records note untag ID NAME
- *   records note open PATH             (id or Folder/Title; uses the GUI)
- *   records action list [--open|--done] [--uid]  ('!' items; NOTEID:ORD
+ *   notes tag list
+ *   notes tag notes NAME             (notes labeled with a tag)
+ *   notes tag delete NAME
+ *   notes folder list
+ *   notes folder add PATH            (nested, created like mkdir -p)
+ *   notes folder delete [--permanent] PATH    (default: to the Trash)
+ *   notes note list [PATH|--all]
+ *   notes note cat ID [--md]         (plain text, or Markdown render)
+ *   notes note new [--folder PATH] CONTENT|-   (- reads stdin)
+ *   notes note append ID CONTENT|-   (plain text, on a fresh line)
+ *   notes note set ID CONTENT|-      (REPLACES the note's content)
+ *   notes note delete [--permanent] ID [ID...] (default: to the Trash)
+ *   notes note restore ID [ID...]
+ *   notes note move ID [ID...] PATH  (/ = top level)
+ *   notes note tags ID
+ *   notes note tag ID NAME           (appends the literal #NAME token)
+ *   notes note untag ID NAME
+ *   notes note open PATH             (id or Folder/Title; uses the GUI)
+ *   notes action list [--open|--done] [--uid]  ('!' items; NOTEID:ORD
  *                                        positions, --uid prepends the
  *                                        stable per-item id that survives
  *                                        edits and renumbering)
- *   records action done|undone UID|NOTEID:ORD
- *   records action due UID|NOTEID:ORD DATE|-  (rewrites the note line)
- *   records search TEXT [--regex]      (titles + full text, all notes)
- *   records quicknote                  (new root note in the running GUI)
- *   records backup FILE.db
- *   records export-md DIR
- *   records export-html DIR
+ *   notes action done|undone UID|NOTEID:ORD
+ *   notes action due UID|NOTEID:ORD DATE|-  (rewrites the note line)
+ *   notes search TEXT [--regex]      (titles + full text, all notes)
+ *   notes quicknote                  (new root note in the running GUI)
+ *   notes backup FILE.db
+ *   notes export-md DIR
+ *   notes export-html DIR
  * =========================================================================== */
 
 #ifndef BLUE_CLI_H

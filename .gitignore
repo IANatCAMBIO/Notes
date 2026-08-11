@@ -1,9 +1,9 @@
 # Build artifacts
 build/
-blue_notes
+notes
 
 # Per-machine application configuration (lives next to the binary)
-blue_notes.ini
+notes.ini
 
 # macOS noise
 .DS_Store

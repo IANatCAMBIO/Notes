@@ -283,11 +283,6 @@ static gboolean trash_folder(OnLibrary *lw, gint64 folder_id,
                              const gchar *name);
 static void    add_menu_item(GtkWidget *menu, const gchar *label,
                              GCallback callback, gpointer data);
-static void    about_button_fit_style(GtkToolItem *item,
-                                      GtkToolbarStyle style);
-static void    on_action_toolbar_style_changed(GtkToolbar *toolbar,
-                                               GtkToolbarStyle style,
-                                               gpointer user_data);
 static void    run_ai_summary(OnLibrary *lw);
 static GtkWidget *build_ai_pane(OnLibrary *lw);
 static void    on_ai_copy_clicked(GtkButton *btn, gpointer user_data);
@@ -1462,7 +1457,7 @@ action_due_dialog(OnLibrary *lw, GtkTreeIter *iter)
                        -1);
 
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Records - Due Date", GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
+        "Notes - Due Date", GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
         "_Clear",  1,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Set",    GTK_RESPONSE_OK,
@@ -2238,6 +2233,35 @@ on_new_note(GtkWidget *widget, gpointer user_data)
     }
 }
 
+gint64
+on_library_quicknote(OnApp *app)
+{
+    gint64 id = on_db_note_create(app->db, 0);    /* 0 = the root folder    */
+    if (id == 0)
+        return 0;
+
+    /* The full notify: a new note changes the root's count as well as the
+     * notes pane, and the library may not even be the caller (the CLI's
+     * "quicknote" lands here too).                                         */
+    if (app->notify_notes_changed != NULL)
+        app->notify_notes_changed(app);
+
+    GtkWidget *win = on_editor_window_open(app, id);
+    if (win != NULL)
+        gtk_window_present(GTK_WINDOW(win));
+    return id;
+}
+
+/* on_quicknote() — toolbar button: a note in the root folder, whatever is
+ * selected, with its editor to the front.                                   */
+static void
+on_quicknote(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    on_library_quicknote(lw->app);
+}
+
 /* on_new_folder() — prompt for a name and AI mode; create under current.    */
 static void
 on_new_folder(GtkWidget *widget, gpointer user_data)
@@ -2575,7 +2599,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         "Open “%s” as your new default database, or for this "
         "session only?", display);
     g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Records - Open Database");
+    gtk_window_set_title(GTK_WINDOW(dlg), "Notes - Open Database");
     gtk_dialog_add_buttons(GTK_DIALOG(dlg),
         "_Cancel",         GTK_RESPONSE_CANCEL,
         "_Session Only",   1,
@@ -2598,7 +2622,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     if (app->db == NULL) {
         on_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Records - Database Error",
+                      "Notes - Database Error",
                       "Could not open:\n%s", file_path);
         /* Revert to old database. */
         app->db = on_db_open(old_path);
@@ -2654,10 +2678,10 @@ on_about(GtkWidget *widget, gpointer user_data)
     (void)widget;
     OnLibrary *lw = user_data;       /* owning library window               */
 
-    /* 128x128-logical logo from vinyl.png, decoded at the display's
+    /* 128x128-logical logo from composition.png, decoded at the display's
      * scale factor so it stays sharp on Retina (quirk #5).                 */
     gint sf = gtk_widget_get_scale_factor(lw->window);
-    gchar *icon_path = g_build_filename(lw->app->icons_dir, "vinyl.png",
+    gchar *icon_path = g_build_filename(lw->app->icons_dir, "composition.png",
                                         NULL);
     GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path,
                                                        128 * sf, 128 * sf,
@@ -2670,7 +2694,7 @@ on_about(GtkWidget *widget, gpointer user_data)
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
-                                      "Records");
+                                      "Notes");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), ON_VERSION);
     if (logo != NULL) {
         /* set_logo() first (it makes the internal image visible and
@@ -4589,6 +4613,9 @@ build_action_bar(OnLibrary *lw)
     add_tool_button(lw, toolbar, "file", "+", "New Note",
                     "Create a note in the current folder",
                     G_CALLBACK(on_new_note));
+    add_tool_button(lw, toolbar, "archive", "\xe2\x9a\xa1", "Quicknote",
+                    "Create a note in the root folder",
+                    G_CALLBACK(on_quicknote));
     add_tool_button(lw, toolbar, "delete", "\xe2\x9c\x95",
                     "Delete Note",
                     "Move the selected notes to the Trash",
@@ -4619,97 +4646,8 @@ build_action_bar(OnLibrary *lw)
     if (lw->app->ai_enabled)
         gtk_widget_show(GTK_WIDGET(lw->ai_btn));
 
-    /* Expanding separator pushes the About button to the right edge.       */
-    GtkToolItem *spacer = gtk_separator_tool_item_new();
-    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
-                                     FALSE);
-    gtk_tool_item_set_expand(spacer, TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
-
-    /* The About button at the far right.  Built by hand because the
-     * child must stay centered (see about_button_fit_style).               */
-    GtkToolItem *about_item = gtk_tool_item_new();
-    GtkWidget *about_btn = gtk_button_new();
-    gtk_button_set_relief(GTK_BUTTON(about_btn), GTK_RELIEF_NONE);
-    gtk_container_add(GTK_CONTAINER(about_item), about_btn);
-    {
-        gchar *logo_path = g_build_filename(lw->app->icons_dir,
-                                            "vinyl.png", NULL);
-        gint sf = gtk_widget_get_scale_factor(lw->window);
-        GdkPixbuf *pix = gdk_pixbuf_new_from_file_at_size(
-            logo_path, 24 * sf, 24 * sf, NULL);
-        GtkWidget *logo;             /* the icon-mode child                 */
-        if (pix != NULL) {
-            cairo_surface_t *surface =
-                gdk_cairo_surface_create_from_pixbuf(pix, sf, NULL);
-            logo = gtk_image_new_from_surface(surface);
-            cairo_surface_destroy(surface);
-            g_object_unref(pix);
-        } else {
-            logo = gtk_label_new("\xf0\x9f\x92\xbf");    /* 💿 fallback     */
-        }
-        GtkWidget *label = gtk_label_new("About");   /* text-mode child     */
-
-        /* Keep owning refs so removal from the button never frees them.    */
-        g_object_set_data_full(G_OBJECT(about_item), "on-logo",
-                               g_object_ref_sink(logo), g_object_unref);
-        g_object_set_data_full(G_OBJECT(about_item), "on-label",
-                               g_object_ref_sink(label), g_object_unref);
-        g_free(logo_path);
-    }
-    gtk_tool_item_set_tooltip_text(about_item, "About Records");
-    g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about), lw);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
-
-    /* Logo only, except in text-only mode — applied now and re-applied on
-     * every style switch.                                                  */
-    about_button_fit_style(about_item,
-                           lw->app->toolbar_style[ON_TOOLBAR_LIBRARY]);
-    g_signal_connect(toolbar, "style-changed",
-                     G_CALLBACK(on_action_toolbar_style_changed),
-                     about_item);
-
     on_app_register_toolbar(lw->app, ON_TOOLBAR_LIBRARY, toolbar);
     return toolbar;
-}
-
-/* ---------------------------------------------------------------------------
- * about_button_fit_style() — the About button shows the centered logo in
- * every toolbar style; the "About" text appears ONLY in text-only mode
- * (where there would otherwise be nothing to click).  The item is a plain
- * GtkToolItem wrapping a GtkButton whose single child gets swapped — a
- * GtkToolButton would reserve empty label space under the icon in
- * icons-above-text mode.  The logo and label widgets live as object data
- * ("on-logo"/"on-label", owning refs) so they survive being unparented.
- *   item  — the About tool item.
- *   style — the toolbar style being applied.
- * ------------------------------------------------------------------------- */
-static void
-about_button_fit_style(GtkToolItem *item, GtkToolbarStyle style)
-{
-    GtkWidget *btn   = gtk_bin_get_child(GTK_BIN(item));
-    GtkWidget *logo  = g_object_get_data(G_OBJECT(item), "on-logo");
-    GtkWidget *label = g_object_get_data(G_OBJECT(item), "on-label");
-
-    GtkWidget *want =                /* the child this style calls for      */
-        (style == GTK_TOOLBAR_TEXT) ? label : logo;
-    GtkWidget *cur = gtk_bin_get_child(GTK_BIN(btn));
-    if (cur == want)
-        return;
-    if (cur != NULL)
-        gtk_container_remove(GTK_CONTAINER(btn), cur);
-    gtk_container_add(GTK_CONTAINER(btn), want);
-    gtk_widget_show(want);
-}
-
-/* on_action_toolbar_style_changed() — keep the About button's label rule
- * applied when the library toolbar style changes.                           */
-static void
-on_action_toolbar_style_changed(GtkToolbar *toolbar,
-                                GtkToolbarStyle style, gpointer user_data)
-{
-    (void)toolbar;
-    about_button_fit_style(GTK_TOOL_ITEM(user_data), style);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5386,7 +5324,7 @@ on_library_window_create(OnApp *app)
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------*/
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Records - Library");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Notes - Library");
     gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
     g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,

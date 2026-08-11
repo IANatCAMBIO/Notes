@@ -8,7 +8,7 @@
  *   2 — operation failed (missing folder, database error, …)
  *
  * The database is resolved exactly like the GUI resolves it: the custom
- * location from records.ini (next to the binary) when set, otherwise
+ * location from notes.ini (next to the binary) when set, otherwise
  * the default per-user path.
  * =========================================================================== */
 
@@ -55,7 +55,6 @@ cli_open_db(void)
     g_free(db_dir);
     on_app_actions_backfill(db);     /* one-time '!'-line index (gated)     */
     on_app_action_uids_backfill(db); /* then give those rows stable ids     */
-    on_app_first_line_h1_strip(db);  /* drop stored title H1s (gated)       */
     return db;
 }
 
@@ -1223,7 +1222,7 @@ static int
 usage(FILE *out)
 {
     fputs(
-"Usage: records [COMMAND ...]   (no command starts the GUI)\n"
+"Usage: notes [COMMAND ...]   (no command starts the GUI)\n"
 "\n"
 "  tag list                          print every tag with its note count\n"
 "  tag notes NAME                    print the notes labeled with a tag\n"
@@ -1258,7 +1257,7 @@ usage(FILE *out)
 "                                    seconds; for importers)\n"
 "  note open PATH                    open a note's editor in the running\n"
 "                                    instance (PATH = id or Folder/Title);\n"
-"                                    starts Records if it is not running\n"
+"                                    starts Notes if it is not running\n"
 "\n"
 "  action list [--open|--done]       print every '!' action item across\n"
 "              [--uid]               the notes: NOTEID:ORD, [x]/[ ],\n"
@@ -1280,7 +1279,7 @@ usage(FILE *out)
 "\n"
 "  quicknote                         create a note in the root folder and\n"
 "                                    open its editor in the running instance\n"
-"                                    (starts Records if not running)\n"
+"                                    (starts Notes if not running)\n"
 "\n"
 "  backup FILE.db                    snapshot the database to FILE.db\n"
 "  export-md DIR                     export all notes as Markdown into DIR\n"

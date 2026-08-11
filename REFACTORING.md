@@ -93,7 +93,7 @@ name-only list in the load normalizer). Now there is exactly one:
    windows open on its notes** (flushing autosaves) — the drag-to-trash
    path always did this; the inconsistency was resolved in favor of
    closing.
-2. **`records tag list` counts exclude trashed notes**, matching the
+2. **`notes tag list` counts exclude trashed notes**, matching the
    GUI sidebar (the old per-tag COUNT included trashed notes' links).
 3. db-layer DML failures now log a generic "statement failed" warning
    uniformly (previously inconsistent / mostly silent).
@@ -135,7 +135,7 @@ unneeded (and a one-time offline heal made it so):
   half-tagged paragraph lines (styled text, untagged newline — the state
   `normalize_paragraph_tags` repaired on every load but that only
   persisted on re-save).
-- **One-time heal**: after `records backup` (kept as
+- **One-time heal**: after `notes backup` (kept as
   `~/.local/share/blue_notes/pre-heal-backup-20260709.db`) and a clean
   GUI shutdown, the 8 blobs were rewritten offline, extending each
   line's start style over the whole line — a byte-level mirror of the

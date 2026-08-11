@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.c — SQLite persistence layer for Records (implementation)
+ * db.c — SQLite persistence layer for Notes (implementation)
  *
  * See db.h for the public API and schema overview.  All functions log
  * failures through g_warning() and return a "failed" value rather than
@@ -8,7 +8,6 @@
 
 #include "db.h"
 
-#include <errno.h>
 #include <string.h>
 #include <glib/gstdio.h>
 
@@ -253,7 +252,7 @@ gchar *
 on_db_default_path(void)
 {
     gchar *dir = g_build_filename(g_get_user_data_dir(),
-                                  "records", NULL);
+                                  "notes", NULL);
     g_mkdir_with_parents(dir, 0700);
     gchar *path = g_build_filename(dir, ON_DB_FILENAME, NULL);
     g_free(dir);
@@ -769,19 +768,6 @@ on_db_note_set_body_text(OnDatabase *db, gint64 id, const gchar *body_text)
         "UPDATE notes SET body_text=? WHERE id=?");
     if (stmt != NULL) {
         sqlite3_bind_text(stmt, 1, body_text, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, id);
-    }
-    return stmt_done(db, stmt);
-}
-
-gboolean
-on_db_note_set_content(OnDatabase *db, gint64 id,
-                       const guint8 *content, gsize len)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "UPDATE notes SET content=? WHERE id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_blob(stmt, 1, content, (int)len, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 2, id);
     }
     return stmt_done(db, stmt);

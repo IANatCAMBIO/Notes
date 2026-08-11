@@ -1,7 +1,7 @@
-# Records default configuration — copied to records.ini on
+# Notes default configuration — copied to notes.ini on
 # first launch. An empty db_dir means the default database location
-# (~/.local/share/records/records.db).
-[records]
+# (~/.local/share/notes/notes.db).
+[notes]
 db_dir=
 toolbar_style_library=icons
 toolbar_style_editor=icons

@@ -2,7 +2,7 @@
  * settings_window.c — the application settings window (implementation)
  *
  * See settings_window.h for the overview.  Every control writes through
- * to the OnApp setters, which persist to the records.ini config file
+ * to the OnApp setters, which persist to the notes.ini config file
  * and live-update all open windows, so there is no OK/Apply button.
  * =========================================================================== */
 
@@ -437,7 +437,7 @@ void
 on_settings_window_open(OnApp *app)
 {
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "Records - Settings");
+    gtk_window_set_title(GTK_WINDOW(window), "Notes - Settings");
     gtk_window_set_default_size(GTK_WINDOW(window), 210, -1);
     gtk_window_set_transient_for(GTK_WINDOW(window),
                                  GTK_WINDOW(app->library_window));
@@ -540,7 +540,7 @@ on_settings_window_open(OnApp *app)
         gtk_label_set_markup(GTK_LABEL(warn),
             "<small><i>Some icons (tree arrows) render best "
             "with the librsvg loader:\nsudo port install librsvg "
-            "(then restart Records)</i></small>");
+            "(then restart Notes)</i></small>");
         gtk_label_set_xalign(GTK_LABEL(warn), 0.0);
         gtk_label_set_line_wrap(GTK_LABEL(warn), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(warn), 40);

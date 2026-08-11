@@ -1,5 +1,5 @@
 /* ===========================================================================
- * app.h — shared application context for Records
+ * app.h — shared application context for Notes
  *
  * A single OnApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open editor windows, carries the
@@ -78,7 +78,7 @@
  *                    "list_density_comfortable" (default off = Compact).
  *   db_dir         — custom directory holding the db (owned string), or
  *                    NULL for the default location.  Persisted in the
- *                    config FILE (records.ini next to the binary), not
+ *                    config FILE (notes.ini next to the binary), not
  *                    the database — the database's own location cannot
  *                    live inside it.
  *   db_integrity_check — when TRUE, PRAGMA integrity_check and PRAGMA
@@ -288,7 +288,7 @@ void on_app_load_toolbar_styles(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_init() — resolve the application config file once
- * ("records.ini" in the same directory as the binary, from `argv0`)
+ * ("notes.ini" in the same directory as the binary, from `argv0`)
  * and load it into memory.  All later reads are served from memory; the
  * file is only written when a setting changes.  Must run before any
  * other config call; safe to call repeatedly.
@@ -348,15 +348,15 @@ void on_app_close_all_editors(OnApp *app);
 /* ---------------------------------------------------------------------------
  * on_app_switch_database() — move the app onto a different database
  * location, live: closes all editors, closes the current database, opens
- * records.db inside `new_dir` (NULL = the default location), and
+ * notes.db inside `new_dir` (NULL = the default location), and
  * persists the choice in the config file.  If the target has no
- * records.db yet, the current database file is copied there first, so
- * notes follow the move.  If the target ALREADY has a records.db, the
+ * notes.db yet, the current database file is copied there first, so
+ * notes follow the move.  If the target ALREADY has a notes.db, the
  * user is asked first — use the existing database, overwrite it with a
  * copy of the current one, or cancel (which leaves everything untouched).
  * Failures are reported in a dialog and the old database is reopened.
  *   app     — the application context.
- *   new_dir — directory to hold records.db, or NULL for the default.
+ *   new_dir — directory to hold notes.db, or NULL for the default.
  * Returns TRUE if the switch happened.
  * ------------------------------------------------------------------------- */
 gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);
@@ -379,17 +379,5 @@ void on_app_actions_backfill(OnDatabase *db);
  * it touches the table only, never the note blobs.  NULL-safe.
  * ------------------------------------------------------------------------- */
 void on_app_action_uids_backfill(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_app_first_line_h1_strip() — one-time removal of the stored Heading 1
- * from every note's FIRST line (gated by PRAGMA user_version, so repeat
- * calls cost a single PRAGMA read).  The editor derives the title's
- * heading look now (title_line_sync), so a stored H1 there is redundant
- * and, being real content, would outlive turning first_line_title off.
- * Reads every blob but decodes no images, rewrites only the notes that
- * actually carried one, and leaves title/body_text/updated_at alone.
- * Run wherever the action backfills are.  NULL-safe.
- * ------------------------------------------------------------------------- */
-void on_app_first_line_h1_strip(OnDatabase *db);
 
 #endif /* BLUE_APP_H */

@@ -325,16 +325,16 @@ on_app_set_toolbar_style(OnApp *app, OnToolbarKind kind,
 }
 
 /* ---------------------------------------------------------------------------
- * The application config: "records.ini" in the same directory as
+ * The application config: "notes.ini" in the same directory as
  * the binary.  on_app_config_init() resolves the path and loads the
  * whole file into memory ONCE; every read is served from memory and the
  * file is only touched again to write a modification through.  All keys
- * live under one [records] group.
+ * live under one [notes] group.
  * ------------------------------------------------------------------------- */
 static gchar    *config_ini_path = NULL;   /* resolved ini path             */
 static GKeyFile *config_kf       = NULL;   /* in-memory settings            */
 
-#define CONFIG_GROUP "records"
+#define CONFIG_GROUP "notes"
 
 void
 on_app_config_init(const gchar *argv0)
@@ -342,21 +342,21 @@ on_app_config_init(const gchar *argv0)
     if (config_kf != NULL)
         return;                      /* already resolved and loaded         */
     gchar *exe_dir = exe_dir_from_argv0(argv0);
-    config_ini_path = g_build_filename(exe_dir, "records.ini", NULL);
+    config_ini_path = g_build_filename(exe_dir, "notes.ini", NULL);
 
     /* Portable mode (the usual case: binary run from its build/unpack
      * directory) keeps the ini next to the binary.  System installs
      * (.deb/.rpm/.app in /Applications: read-only binary dir) would fail
      * every write-through, so when no binary-adjacent ini exists AND the
      * directory is unwritable, the ini lives in the user config dir
-     * instead (~/.config/records/records.ini).                             */
+     * instead (~/.config/notes/notes.ini).                             */
     if (!g_file_test(config_ini_path, G_FILE_TEST_EXISTS) &&
         g_access(exe_dir, W_OK) != 0) {
         g_free(config_ini_path);
         gchar *cfg_dir = g_build_filename(g_get_user_config_dir(),
-                                          "records", NULL);
+                                          "notes", NULL);
         g_mkdir_with_parents(cfg_dir, 0755);
-        config_ini_path = g_build_filename(cfg_dir, "records.ini",
+        config_ini_path = g_build_filename(cfg_dir, "notes.ini",
                                            NULL);
         g_free(cfg_dir);
     }
@@ -365,7 +365,7 @@ on_app_config_init(const gchar *argv0)
      * next to the binary, so a fresh install starts with sane settings.    */
     if (!g_file_test(config_ini_path, G_FILE_TEST_EXISTS)) {
         gchar *defaults_path = g_build_filename(
-            exe_dir, "records.ini.defaults", NULL);
+            exe_dir, "notes.ini.defaults", NULL);
         gchar *contents = NULL;      /* defaults file body                  */
         gsize  len = 0;
         if (g_file_get_contents(defaults_path, &contents, &len, NULL)) {
@@ -545,12 +545,6 @@ copy_file(const gchar *src, const gchar *dest)
  * before they can be given ids.                                            */
 #define DB_VERSION_ACTION_UIDS 3
 
-/* The user_version that says no note's first line carries a stored H1
- * (2026-08).  The title's heading look is derived by the editor now
- * (title_line_sync), so the H1 that the old auto-H1 wrote into brand-new
- * notes is redundant — and it survived turning first_line_title off.       */
-#define DB_VERSION_TITLE_H1_STRIPPED 4
-
 void
 on_app_actions_backfill(OnDatabase *db)
 {
@@ -595,43 +589,6 @@ on_app_action_uids_backfill(OnDatabase *db)
         on_db_set_user_version(db, DB_VERSION_ACTION_UIDS);
 }
 
-void
-on_app_first_line_h1_strip(OnDatabase *db)
-{
-    if (db == NULL || on_db_user_version(db) >= DB_VERSION_TITLE_H1_STRIPPED)
-        return;
-
-    /* Trashed notes included, so a restored note doesn't come back with a
-     * stored heading nothing else in the app produces any more.  The strip
-     * is a record walk that copies image payloads without decoding them,
-     * and only notes it actually changes are written back — a note whose
-     * first line was never H1 costs one blob read.                         */
-    GList *notes = on_db_note_list_all(db, TRUE);
-    gint   n_changed = 0;            /* notes actually rewritten            */
-    for (GList *l = notes; l != NULL; l = l->next) {
-        OnNoteMeta *m = l->data;     /* one note                            */
-        gsize   blob_len = 0;        /* stored blob size                    */
-        guint8 *blob = on_db_note_load(db, m->id, &blob_len);
-        if (blob == NULL)
-            continue;
-        gsize   out_len = 0;         /* rewritten blob                      */
-        guint8 *out = NULL;
-        if (on_note_strip_first_line_h1(blob, blob_len, &out, &out_len)) {
-            /* Content only: the text, title and search cache are all
-             * unchanged, and updated_at must NOT move — this is a format
-             * cleanup, not an edit the user made.                          */
-            if (on_db_note_set_content(db, m->id, out, out_len))
-                n_changed++;
-            g_free(out);
-        }
-        g_free(blob);
-    }
-    on_db_note_list_free(notes);
-    if (n_changed > 0)
-        g_message("cleared a stored Heading 1 from the first line of "
-                  "%d note(s); the title look is derived now", n_changed);
-    on_db_set_user_version(db, DB_VERSION_TITLE_H1_STRIPPED);
-}
 
 gboolean
 on_app_switch_database(OnApp *app, const gchar *new_dir)
@@ -664,7 +621,7 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
             "(Overwriting permanently replaces the file at %s.)",
             target);
         gtk_window_set_title(GTK_WINDOW(dialog),
-                             "Records - Existing Database");
+                             "Notes - Existing Database");
         gtk_dialog_add_buttons(GTK_DIALOG(dialog),
                                "_Cancel",                GTK_RESPONSE_CANCEL,
                                "_Use Existing Database", 1,
@@ -708,7 +665,6 @@ on_app_switch_database(OnApp *app, const gchar *new_dir)
     app->db = on_db_open(target);
     on_app_actions_backfill(app->db);   /* adopted dbs may predate actions  */
     on_app_action_uids_backfill(app->db);   /* ...and predate their uids    */
-    on_app_first_line_h1_strip(app->db);    /* ...and predate derived titles */
     gboolean ok = app->db != NULL;   /* did the new location work?          */
 
     if (!ok) {

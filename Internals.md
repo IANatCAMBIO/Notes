@@ -1,6 +1,6 @@
-# Records — Internals
+# Notes — Internals
 
-How Records is put together: the source layout, the database schema,
+How Notes is put together: the source layout, the database schema,
 and the BNBF note format. For everyday use see the
 [User Guide](User_Guide.md); for build instructions see the
 [README](README.md).
@@ -104,6 +104,6 @@ parsing BNBF yourself when possible.
 
 Two practical cautions: the app sets a 5-second busy timeout, so brief
 external readers coexist fine, but long write transactions from other
-tools will stall it; and back up with `records backup FILE.db`
+tools will stall it; and back up with `notes backup FILE.db`
 (SQLite's online backup API) rather than copying the file while the app
 is running.

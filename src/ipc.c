@@ -1,5 +1,5 @@
 /* ===========================================================================
- * ipc.c — talk to an already-running Records instance (implementation)
+ * ipc.c — talk to an already-running Notes instance (implementation)
  *
  * See ipc.h.  The wire protocol is line based:
  *
@@ -16,6 +16,7 @@
 #include "cli.h"
 #include "db.h"
 #include "editor_window.h"
+#include "library_window.h"
 
 #include <gio/gio.h>
 #include <gio/gunixsocketaddress.h>
@@ -31,7 +32,7 @@
 
 /* ---------------------------------------------------------------------------
  * ipc_socket_path() — the per-user socket both sides agree on.  One instance
- * per user is the unit "a running Records"; the path lives in the user's
+ * per user is the unit "a running Notes"; the path lives in the user's
  * runtime dir (short, private) so the Unix sun_path limit is never a concern.
  * Returns a new string (g_free it).
  * ------------------------------------------------------------------------- */
@@ -39,7 +40,7 @@ static gchar *
 ipc_socket_path(void)
 {
     return g_build_filename(g_get_user_runtime_dir(),
-                            "records.sock", NULL);
+                            "notes.sock", NULL);
 }
 
 /* ===========================================================================
@@ -235,17 +236,9 @@ ipc_resolve_note_path(OnDatabase *db, const gchar *path, gint64 *out_id)
 static gchar *
 ipc_do_quicknote(OnApp *app)
 {
-    gint64 id = on_db_note_create(app->db, 0);   /* 0 = root folder          */
+    gint64 id = on_library_quicknote(app);       /* THE quicknote action     */
     if (id == 0)
         return g_strdup("ERR could not create note");
-
-    /* Reflect the new note in the library (sidebar counts + notes pane).    */
-    if (app->notify_notes_changed != NULL)
-        app->notify_notes_changed(app);
-
-    GtkWidget *win = on_editor_window_open(app, id);
-    if (win != NULL)
-        gtk_window_present(GTK_WINDOW(win));
     return g_strdup_printf("OK created note %" G_GINT64_FORMAT, id);
 }
 
@@ -330,7 +323,7 @@ on_ipc_run_pending(OnApp *app)
     }
     /* The GUI is already visible; surface only failures, on stderr.         */
     if (reply != NULL && g_str_has_prefix(reply, "ERR "))
-        g_printerr("records: %s\n", reply + 4);
+        g_printerr("notes: %s\n", reply + 4);
     g_free(reply);
     g_clear_pointer(&pending_path, g_free);
     pending_kind = IPC_PENDING_NONE;
@@ -421,7 +414,7 @@ ipc_handle_run(OnApp *app, GInputStream *in, GOutputStream *out)
     /* Rebuild an argv the dispatcher understands: argv[0] is a placeholder
      * program name, argv[1..] the received words.                          */
     char    **argv = g_new0(char *, (gsize)nargs + 2);
-    argv[0] = g_strdup("records");
+    argv[0] = g_strdup("notes");
     gboolean bad = FALSE;            /* frame decode failed?                */
     for (gssize i = 0; i < nargs && !bad; i++) {
         gssize len = stream_read_uint_line(in);

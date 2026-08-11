@@ -1,9 +1,9 @@
 /* ===========================================================================
- * db.h — SQLite persistence layer for Records
+ * db.h — SQLite persistence layer for Notes
  *
  * All notes, folders and tags live in a single SQLite database file stored
  * in the user's data directory
- * (e.g. ~/.local/share/records/records.db).
+ * (e.g. ~/.local/share/notes/notes.db).
  *
  * Note *content* is stored as an opaque binary BLOB in the custom "BNBF"
  * format produced by serialize.c; this module never interprets it.
@@ -152,9 +152,9 @@ typedef struct {
 /* --------------------------- lifecycle ---------------------------------- */
 
 /* The database filename inside its directory (default or configured).      */
-#define ON_DB_FILENAME "records.db"
+#define ON_DB_FILENAME "notes.db"
 
-/* The default database path (~/.local/share/records/records.db),
+/* The default database path (~/.local/share/notes/notes.db),
  * creating the directory if needed. Returns a new string; g_free() it.     */
 gchar *on_db_default_path(void);
 
@@ -264,13 +264,6 @@ gchar *on_db_note_body_text(OnDatabase *db, gint64 id);
 /* Fill the searchable-text cache for one note.                              */
 gboolean on_db_note_set_body_text(OnDatabase *db, gint64 id,
                                   const gchar *body_text);
-
-/* Replace ONLY a note's content blob, leaving title, body_text and
- * updated_at untouched.  For rewrites that change formatting and nothing
- * else (the first-line-H1 strip), where bumping the modification date
- * would reorder every note in the library.  Returns TRUE on success.        */
-gboolean on_db_note_set_content(OnDatabase *db, gint64 id,
-                                const guint8 *content, gsize len);
 
 /* Overwrite a note's updated_at with an explicit UNIX timestamp.  Used by
  * importers to preserve the original modification date (ordinary saves

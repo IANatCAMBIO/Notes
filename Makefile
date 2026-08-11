@@ -1,30 +1,30 @@
 # =============================================================================
-# Records — Makefile
+# Notes — Makefile
 #
-# Builds the Records application (a GTK3 + SQLite notes app written in
+# Builds the Notes application (a GTK3 + SQLite notes app written in
 # plain C).  Requires GTK3 and SQLite3, discovered via pkg-config.
 #
 # On macOS with MacPorts:
 #     sudo port install pkgconf gtk3 +quartz
 #
 # Targets:
-#     make          — build the `records` binary
+#     make          — build the `notes` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
-#     make app      — macOS .app bundle → dist/Records.app
+#     make app      — macOS .app bundle → dist/Notes.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
-#     make deb      — Debian package → dist/records_<version>_<arch>.deb
+#     make deb      — Debian package → dist/notes_<version>_<arch>.deb
 #                     (needs dpkg-deb; build ON a Debian/Ubuntu machine —
 #                     the packaged binary is whatever `make` produced)
-#     make rpm      — RPM package → dist/records-<version>-1.<arch>.rpm
+#     make rpm      — RPM package → dist/notes-<version>-1.<arch>.rpm
 #                     (needs rpmbuild; same caveat as deb)
 # =============================================================================
 
 # Semantic version — the single source: it is baked into the binary
 # (ON_VERSION, shown in the About dialog), into the .deb/.rpm filenames and
 # into the .app bundle's Info.plist (the bundle name itself is unversioned).
-VERSION  := 3.4.3
+VERSION  := 3.6.1
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc
@@ -71,7 +71,7 @@ SRCS     := src/main.c \
 OBJS     := $(SRCS:src/%.c=build/%.o)
 
 # The final executable name.
-BIN      := records
+BIN      := notes
 
 # Default target: build the application binary.
 all: $(BIN)
@@ -105,12 +105,17 @@ DIST     := dist
 # --- macOS .app bundle -------------------------------------------------------
 # A minimal bundle around the binary: icons/ and the defaults ini sit next
 # to the executable inside Contents/MacOS (the app resolves both relative
-# to argv[0]).  vinyl.png becomes the bundle icon via sips + iconutil.
+# to argv[0]).  icons/composition.png becomes the bundle icon via sips +
+# iconutil.  The OUTPUT names are the app's, not the artwork's
+# (notes.iconset → notes.icns, CFBundleIconFile "notes", and the Linux
+# hicolor icon apps/notes.png the .desktop's Icon=notes points at), so
+# swapping the source art is a one-line change and never touches the
+# bundle layout or the desktop entry.
 # The binary still links against the MacPorts GTK dylibs (absolute install
 # names), so the bundle runs on this machine but is NOT self-contained.
 
-APP_DIR  := $(DIST)/Records.app
-ICONSET  := $(DIST)/vinyl.iconset
+APP_DIR  := $(DIST)/Notes.app
+ICONSET  := $(DIST)/notes.iconset
 
 app: $(BIN)
 	@command -v iconutil >/dev/null || \
@@ -119,23 +124,23 @@ app: $(BIN)
 	rm -rf "$(APP_DIR)" "$(ICONSET)"
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
 	         "$(ICONSET)"
-	# The executable is named "Records": for NIB-less apps (the
+	# The executable is named "Notes": for NIB-less apps (the
 	# gtkosx menubar is built programmatically) macOS titles the app
 	# menu with the PROCESS name, not CFBundleName — the binary's
 	# filename is the only lever.  argv[0]-relative lookups (icons,
 	# ini) resolve by directory, so the rename is harmless.
-	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Records"
+	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Notes"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
-	cp records.ini.defaults "$(APP_DIR)/Contents/MacOS/"
+	cp notes.ini.defaults "$(APP_DIR)/Contents/MacOS/"
 	find "$(APP_DIR)" -name .DS_Store -delete
 	for sz in 16 32 128 256 512; do \
-	  sips -z $$sz $$sz icons/vinyl.png \
+	  sips -z $$sz $$sz icons/composition.png \
 	       --out "$(ICONSET)/icon_$${sz}x$${sz}.png" >/dev/null; \
 	  dbl=$$((sz * 2)); \
-	  sips -z $$dbl $$dbl icons/vinyl.png \
+	  sips -z $$dbl $$dbl icons/composition.png \
 	       --out "$(ICONSET)/icon_$${sz}x$${sz}@2x.png" >/dev/null; \
 	done
-	iconutil -c icns -o "$(APP_DIR)/Contents/Resources/vinyl.icns" \
+	iconutil -c icns -o "$(APP_DIR)/Contents/Resources/notes.icns" \
 	         "$(ICONSET)"
 	rm -rf "$(ICONSET)"
 	printf '%s\n' \
@@ -143,11 +148,11 @@ app: $(BIN)
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 	  '<plist version="1.0">' \
 	  '<dict>' \
-	  '  <key>CFBundleName</key><string>Records</string>' \
-	  '  <key>CFBundleDisplayName</key><string>Records</string>' \
-	  '  <key>CFBundleIdentifier</key><string>org.example.records</string>' \
-	  '  <key>CFBundleExecutable</key><string>Records</string>' \
-	  '  <key>CFBundleIconFile</key><string>vinyl</string>' \
+	  '  <key>CFBundleName</key><string>Notes</string>' \
+	  '  <key>CFBundleDisplayName</key><string>Notes</string>' \
+	  '  <key>CFBundleIdentifier</key><string>org.example.notes</string>' \
+	  '  <key>CFBundleExecutable</key><string>Notes</string>' \
+	  '  <key>CFBundleIconFile</key><string>notes</string>' \
 	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
 	  '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
 	  '  <key>CFBundleVersion</key><string>$(VERSION)</string>' \
@@ -158,42 +163,42 @@ app: $(BIN)
 	@echo "built $(APP_DIR)"
 
 # --- shared Linux package staging ---------------------------------------------
-# Both deb and rpm install the whole app to /opt/records (the binary
+# Both deb and rpm install the whole app to /opt/notes (the binary
 # resolves icons/ and its defaults ini relative to argv[0]) and put a
 # wrapper script on PATH that execs it by absolute path so that
-# resolution works.  Per-user settings fall back to ~/.config/records/
+# resolution works.  Per-user settings fall back to ~/.config/notes/
 # because /opt is not writable (see on_app_config_init).
 
 PKGROOT  := $(DIST)/pkgroot
 
 pkgroot: $(BIN)
 	rm -rf $(PKGROOT)
-	mkdir -p $(PKGROOT)/opt/records $(PKGROOT)/usr/bin \
+	mkdir -p $(PKGROOT)/opt/notes $(PKGROOT)/usr/bin \
 	         $(PKGROOT)/usr/share/applications \
 	         $(PKGROOT)/usr/share/icons/hicolor/512x512/apps
-	cp $(BIN) $(PKGROOT)/opt/records/
-	cp -R icons $(PKGROOT)/opt/records/icons
-	cp records.ini.defaults $(PKGROOT)/opt/records/
+	cp $(BIN) $(PKGROOT)/opt/notes/
+	cp -R icons $(PKGROOT)/opt/notes/icons
+	cp notes.ini.defaults $(PKGROOT)/opt/notes/
 	find $(PKGROOT) -name .DS_Store -delete
 	printf '%s\n' \
 	  '#!/bin/sh' \
-	  '# Records finds icons/ and its defaults ini next to argv[0];' \
-	  '# exec by absolute path so both resolve into /opt/records.' \
-	  'exec /opt/records/records "$$@"' \
-	  > $(PKGROOT)/usr/bin/records
-	chmod 755 $(PKGROOT)/usr/bin/records
+	  '# Notes finds icons/ and its defaults ini next to argv[0];' \
+	  '# exec by absolute path so both resolve into /opt/notes.' \
+	  'exec /opt/notes/notes "$$@"' \
+	  > $(PKGROOT)/usr/bin/notes
+	chmod 755 $(PKGROOT)/usr/bin/notes
 	printf '%s\n' \
 	  '[Desktop Entry]' \
 	  'Type=Application' \
-	  'Name=Records' \
+	  'Name=Notes' \
 	  'Comment=Notes with folders, tags and rich text' \
-	  'Exec=/usr/bin/records' \
-	  'Icon=records' \
+	  'Exec=/usr/bin/notes' \
+	  'Icon=notes' \
 	  'Terminal=false' \
 	  'Categories=Utility;Office;' \
-	  > $(PKGROOT)/usr/share/applications/records.desktop
-	cp icons/vinyl.png \
-	   $(PKGROOT)/usr/share/icons/hicolor/512x512/apps/records.png
+	  > $(PKGROOT)/usr/share/applications/notes.desktop
+	cp icons/composition.png \
+	   $(PKGROOT)/usr/share/icons/hicolor/512x512/apps/notes.png
 
 # --- Debian package ------------------------------------------------------------
 DEB_ARCH := $(shell dpkg --print-architecture 2>/dev/null || \
@@ -208,7 +213,7 @@ deb: pkgroot
 	cp -R $(PKGROOT) $(DEB_ROOT)
 	mkdir -p $(DEB_ROOT)/DEBIAN
 	printf '%s\n' \
-	  'Package: records' \
+	  'Package: notes' \
 	  'Version: $(VERSION)' \
 	  'Section: editors' \
 	  'Priority: optional' \
@@ -219,7 +224,7 @@ deb: pkgroot
 	  ' Apple Notes-style desktop notes application (GTK3 + SQLite).' \
 	  > $(DEB_ROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEB_ROOT) \
-	  $(DIST)/records_$(VERSION)_$(DEB_ARCH).deb
+	  $(DIST)/notes_$(VERSION)_$(DEB_ARCH).deb
 
 # --- RPM package ----------------------------------------------------------------
 RPM_ARCH := $(shell uname -m)
@@ -231,7 +236,7 @@ rpm: pkgroot
 	rm -rf $(DIST)/rpm
 	mkdir -p $(DIST)/rpm/SPECS
 	printf '%s\n' \
-	  'Name: records' \
+	  'Name: notes' \
 	  'Version: $(VERSION)' \
 	  'Release: 1' \
 	  'Summary: Notes app with folders, tags and rich text' \
@@ -241,13 +246,13 @@ rpm: pkgroot
 	  '%install' \
 	  'cp -a $(abspath $(PKGROOT))/. %{buildroot}/' \
 	  '%files' \
-	  '/opt/records' \
-	  '/usr/bin/records' \
-	  '/usr/share/applications/records.desktop' \
-	  '/usr/share/icons/hicolor/512x512/apps/records.png' \
-	  > $(DIST)/rpm/SPECS/records.spec
+	  '/opt/notes' \
+	  '/usr/bin/notes' \
+	  '/usr/share/applications/notes.desktop' \
+	  '/usr/share/icons/hicolor/512x512/apps/notes.png' \
+	  > $(DIST)/rpm/SPECS/notes.spec
 	rpmbuild -bb --define "_topdir $(abspath $(DIST))/rpm" \
-	  $(DIST)/rpm/SPECS/records.spec
-	cp $(DIST)/rpm/RPMS/*/records-$(VERSION)-1.*.rpm $(DIST)/
+	  $(DIST)/rpm/SPECS/notes.spec
+	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
 .PHONY: all run clean app pkgroot deb rpm

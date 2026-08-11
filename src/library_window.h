@@ -38,6 +38,18 @@
 GtkWidget *on_library_window_create(OnApp *app);
 
 /* ---------------------------------------------------------------------------
+ * on_library_quicknote() — THE quicknote action: create an empty note in the
+ * ROOT folder regardless of what the sidebar has selected, refresh the
+ * library, and open its editor to the front.  Shared by the toolbar's
+ * Quicknote button and the `notes quicknote` CLI/IPC command, so both behave
+ * identically.  Safe with no library window open (the CLI can start the GUI
+ * for exactly this).
+ *   app — global application context.
+ * Returns the new note's id, or 0 if it could not be created.
+ * ------------------------------------------------------------------------- */
+gint64 on_library_quicknote(OnApp *app);
+
+/* ---------------------------------------------------------------------------
  * on_library_get_scope() — the library's current sidebar selection, used
  * by the search window to resolve "Selected Folder/Tag" at search time.
  *   app   — global application context.

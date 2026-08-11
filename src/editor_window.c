@@ -40,6 +40,9 @@
 #define EDITOR_WIN_DEFAULT_W 640
 #define EDITOR_WIN_DEFAULT_H 509
 
+/* Gap left between a new editor window's frame and the screen edges.       */
+#define EDITOR_SCREEN_MARGIN 12
+
 /* Maximum number of suggestions shown in the tag popup.                    */
 #define TAG_POPUP_MAX 8
 
@@ -3249,7 +3252,7 @@ undo_notify_change(OnEditor *ed)
  * undo_insert_seg_slice() — insert characters [s, s+n) of one segment at
  * buffer offset `at`: text slices by UTF-8 offset, anchors whole (their
  * slice is always the single 0xFFFC char).  The fresh span first has
- * every Records tag stripped — GtkTextBuffer makes insertions inherit
+ * every Notes tag stripped — GtkTextBuffer makes insertions inherit
  * tags applied on BOTH sides of the insertion point — then the segment's
  * own flags applied.  Returns n.
  * ------------------------------------------------------------------------- */
@@ -4167,7 +4170,7 @@ editor_save(OnEditor *ed)
 
     /* Window title mirrors the note title.                                 */
     if (ed->window != NULL) {
-        gchar *wtitle = g_strdup_printf("Records - %s", title);
+        gchar *wtitle = g_strdup_printf("Notes - %s", title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
         g_free(wtitle);
     }
@@ -4856,6 +4859,99 @@ editor_connect_signals(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_workarea() — the usable rectangle of the monitor a new editor
+ * should appear on: the one showing the library window, so the editor lands
+ * on the display the user is working on; the primary monitor otherwise (an
+ * editor opened from the CLI may have no library window yet).  The work
+ * AREA, not the full monitor rect, is what positions are measured against —
+ * it already excludes the macOS menu bar and Dock, and Linux panels.
+ * Returns FALSE when there is no display at all.
+ * ------------------------------------------------------------------------- */
+static gboolean
+editor_workarea(OnEditor *ed, GdkRectangle *area)
+{
+    GdkDisplay *display = gdk_display_get_default();
+    if (display == NULL)
+        return FALSE;
+
+    GdkMonitor *monitor = NULL;      /* the display to corner into          */
+    if (ed->app->library_window != NULL) {
+        GdkWindow *lib = gtk_widget_get_window(ed->app->library_window);
+        if (lib != NULL)
+            monitor = gdk_display_get_monitor_at_window(display, lib);
+    }
+    if (monitor == NULL)
+        monitor = gdk_display_get_primary_monitor(display);
+    if (monitor == NULL)
+        monitor = gdk_display_get_monitor(display, 0);
+    if (monitor == NULL)
+        return FALSE;
+
+    gdk_monitor_get_workarea(monitor, area);
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_place_correct() — one-shot map handler that fixes up the corner
+ * placement, then disconnects itself.  Needed because what gtk_window_move()
+ * positions is platform-dependent (see quirk #21): quartz places the CLIENT
+ * origin, X11 the frame's top-left.  Rather than encode either convention,
+ * measure the frame once it exists and shift by whatever is left over —
+ * gtk_window_get_position/move share one coordinate space, so the residual
+ * applies cleanly.  On macOS the residual is 0 and no move happens at all.
+ * ------------------------------------------------------------------------- */
+static gboolean
+editor_place_correct(GtkWidget *window, GdkEvent *event, gpointer user_data)
+{
+    (void)event;
+    OnEditor    *ed = user_data;     /* owning editor                       */
+    GdkRectangle area, frame;        /* work area / decorated window        */
+    if (editor_workarea(ed, &area)) {
+        gdk_window_get_frame_extents(gtk_widget_get_window(window), &frame);
+        gint dx = (area.x + area.width  - EDITOR_SCREEN_MARGIN)
+                  - (frame.x + frame.width);
+        gint dy = (area.y + area.height - EDITOR_SCREEN_MARGIN)
+                  - (frame.y + frame.height);
+        if (dx != 0 || dy != 0) {
+            gint px, py;             /* current position, same space        */
+            gtk_window_get_position(GTK_WINDOW(window), &px, &py);
+            gtk_window_move(GTK_WINDOW(window), px + dx, py + dy);
+        }
+    }
+    g_signal_handlers_disconnect_by_func(window,
+                                         G_CALLBACK(editor_place_correct), ed);
+    return FALSE;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_place_bottom_right() — open a new editor in the BOTTOM-RIGHT corner
+ * of its monitor, EDITOR_SCREEN_MARGIN px clear of the work area's edges.
+ *   win_w/win_h — the CLIENT size just handed to gtk_window_set_default_size.
+ *
+ * The first move uses the client size, which is exact on quartz (where that
+ * is what gtk_window_move positions) and close everywhere else; the map
+ * handler above trims any remainder.  SOUTH_EAST gravity looks like the
+ * tidier answer and is NOT: GTK applies it using the client size it knows
+ * pre-map, and on quartz the result lands flush in the corner with the
+ * margin silently swallowed (measured).  Clamped so a window taller or
+ * wider than the work area still has its titlebar on screen.
+ * ------------------------------------------------------------------------- */
+static void
+editor_place_bottom_right(OnEditor *ed, gint win_w, gint win_h)
+{
+    GdkRectangle area;               /* usable area, panels excluded        */
+    if (!editor_workarea(ed, &area))
+        return;                      /* headless: nothing to place against  */
+
+    gint x = area.x + area.width  - EDITOR_SCREEN_MARGIN - win_w;
+    gint y = area.y + area.height - EDITOR_SCREEN_MARGIN - win_h;
+    gtk_window_move(GTK_WINDOW(ed->window),
+                    MAX(x, area.x), MAX(y, area.y));
+    g_signal_connect(ed->window, "map-event",
+                     G_CALLBACK(editor_place_correct), ed);
+}
+
+/* ---------------------------------------------------------------------------
  * editor_window_open_full() — shared implementation behind the two public
  * open functions.  `search_term` (may be NULL) pre-populates the in-note
  * search box and jumps to the first match, so a note opened from the library
@@ -4911,9 +5007,10 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
     g_free(w_str);
     g_free(h_str);
     gtk_window_set_default_size(GTK_WINDOW(ed->window), win_w, win_h);
+    editor_place_bottom_right(ed, win_w, win_h);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(ed->window));
     {
-        gchar *wtitle = g_strdup_printf("Records - %s", meta->title);
+        gchar *wtitle = g_strdup_printf("Notes - %s", meta->title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
         g_free(wtitle);
     }

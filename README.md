@@ -1,11 +1,11 @@
-# Records
+# Notes
 
-Records is my take on an Apple Notes–style app, coded in classic C
+Notes is my take on an Apple Notes–style app, coded in classic C
 with GTK3 and SQLite — **with the help of Claude Code for edits,
 testing, and code organization**. No electron or interpreted code. Low
 resource usage, and runs the same on MacOS and Linux.
 
-![Records](Screenshot.png)
+![Notes](Screenshot.png)
 
 TLDR; your notes live in a single SQLite file you can
 take anywhere. You organize them in a Library window — nested folders

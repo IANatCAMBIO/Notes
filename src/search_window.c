@@ -470,8 +470,18 @@ on_search_destroy(GtkWidget *widget, gpointer user_data)
     g_free(sw);
 }
 
-void
-on_search_window_open(OnApp *app, gboolean scope_to_sel)
+/* ---------------------------------------------------------------------------
+ * search_window_build() — construct, populate and show one search window.
+ * The shared body of both public entry points; returns the live OnSearch so
+ * the query variant can seed the entry and fire a search immediately.  The
+ * window owns itself from here on (on_search_destroy frees the struct).
+ *   app          — global application context.
+ *   scope_to_sel — TRUE preselects "Selected Folder/Tag" instead of
+ *                  "All Notes".
+ * Returns the window's state struct (never NULL).
+ * ------------------------------------------------------------------------- */
+static OnSearch *
+search_window_build(OnApp *app, gboolean scope_to_sel)
 {
     OnSearch *sw = g_new0(OnSearch, 1);
     sw->app = app;
@@ -596,4 +606,25 @@ on_search_window_open(OnApp *app, gboolean scope_to_sel)
 
     gtk_widget_show_all(sw->window);
     gtk_widget_grab_focus(sw->entry);
+    return sw;
+}
+
+void
+on_search_window_open(OnApp *app, gboolean scope_to_sel)
+{
+    search_window_build(app, scope_to_sel);
+}
+
+void
+on_search_window_open_query(OnApp *app, const gchar *query)
+{
+    OnSearch *sw = search_window_build(app, FALSE);
+    if (query == NULL || *query == '\0')
+        return;                      /* empty: just the idle window         */
+
+    /* All Notes + case-insensitive + plain text are exactly the freshly
+     * built window's defaults, so only the query needs seeding.            */
+    gtk_entry_set_text(GTK_ENTRY(sw->entry), query);
+    gtk_editable_set_position(GTK_EDITABLE(sw->entry), -1);
+    run_search(sw);
 }

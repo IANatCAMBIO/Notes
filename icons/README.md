@@ -21,6 +21,7 @@ is missing or cannot be decoded, the button falls back to a text glyph.
 | `view.png`               | List/Grid view toggle          |
 | `web.png`                | Show/hide the folder pane      |
 | `search.png`             | Search                         |
+| `settings.png`           | Settings                       |
 | `copy.png`               | Code-block copy button         |
 | `archive.png`          | Quicknote (new note in the root folder)      |
 | `composition.png`      | App logo: window icon + About dialog         |

@@ -44,4 +44,16 @@ typedef enum {
  * ------------------------------------------------------------------------- */
 void on_search_window_open(OnApp *app, gboolean scope_to_sel);
 
+/* ---------------------------------------------------------------------------
+ * on_search_window_open_query() — show a new search window already loaded
+ * with a query and run that search immediately.  Used by the library
+ * toolbar's search entry: scope is All Notes, matching is plain and
+ * case-insensitive (the window's own defaults), so the results are on
+ * screen without the user pressing Search a second time.
+ *
+ *   app   — global application context.
+ *   query — text to search for; NULL/empty just opens an idle window.
+ * ------------------------------------------------------------------------- */
+void on_search_window_open_query(OnApp *app, const gchar *query);
+
 #endif /* BLUE_SEARCH_WINDOW_H */

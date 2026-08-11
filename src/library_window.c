@@ -2567,6 +2567,24 @@ on_open_search(GtkWidget *widget, gpointer user_data)
     on_search_window_open(lw->app, scoped);
 }
 
+/* ---------------------------------------------------------------------------
+ * on_toolbar_search_activate() — Enter in the toolbar's search entry: open
+ * a search window already loaded with the typed query and run it against
+ * All Notes, case insensitively.  The text is left in the entry so the same
+ * query can be fired again.
+ *   entry     — the GtkSearchEntry that was activated.
+ *   user_data — the owning library window.
+ * ------------------------------------------------------------------------- */
+static void
+on_toolbar_search_activate(GtkEntry *entry, gpointer user_data)
+{
+    OnLibrary *lw = user_data;        /* owning library window               */
+    const gchar *query = gtk_entry_get_text(entry);
+    if (query == NULL || *query == '\0')
+        return;                      /* nothing typed: no window            */
+    on_search_window_open_query(lw->app, query);
+}
+
 /* on_open_settings() — File → Settings…                                     */
 static void
 on_open_settings(GtkWidget *widget, gpointer user_data)
@@ -4593,7 +4611,9 @@ add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
 /* ---------------------------------------------------------------------------
  * build_action_bar() — the single unified toolbar spanning the window:
  * a folder-actions area, a drawn separator, a note-actions area, another
- * separator, Search — and the About logo pushed to the right edge.
+ * separator, Settings and Search, a third separator, the AI Summary button
+ * (shown only while AI is enabled) — and the search entry pinned to the
+ * right edge by an expanding spacer.
  * Returns the toolbar widget.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
@@ -4637,8 +4657,12 @@ build_action_bar(OnLibrary *lw)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
+    /* --- app actions ------------------------------------------------------*/
+    add_tool_button(lw, toolbar, "settings", "\xe2\x9a\x99",
+                    "Settings", "Open the settings window",
+                    G_CALLBACK(on_open_settings));
     add_tool_button(lw, toolbar, "search", "\xf0\x9f\x94\x8d",
-                    "Search", "Search notes (Ctrl+F)",
+                    "Search", "Open search window",
                     G_CALLBACK(on_open_search));
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
@@ -4655,6 +4679,30 @@ build_action_bar(OnLibrary *lw)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), lw->ai_btn, -1);
     if (lw->app->ai_enabled)
         gtk_widget_show(GTK_WIDGET(lw->ai_btn));
+
+    /* --- right edge: the query entry -------------------------------------
+     * An expanding blank spacer pushes the rest of the toolbar left, the
+     * same recipe the editor uses for its find-in-note entry.  Enter in the
+     * entry opens the search window on the query (All Notes, case
+     * insensitive); the Search button opens it empty as before.            */
+    GtkToolItem *spacer = gtk_separator_tool_item_new();
+    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer), FALSE);
+    gtk_tool_item_set_expand(spacer, TRUE);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
+
+    GtkWidget *entry = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Search all notes");
+    gtk_widget_set_tooltip_text(entry,
+        "Search every note for this text (Enter)");
+    gtk_entry_set_width_chars(GTK_ENTRY(entry), 18);
+    /* 5 px of air between the entry and the window edge.                    */
+    gtk_widget_set_margin_end(entry, 5);
+    g_signal_connect(entry, "activate",
+                     G_CALLBACK(on_toolbar_search_activate), lw);
+
+    GtkToolItem *entry_item = gtk_tool_item_new();
+    gtk_container_add(GTK_CONTAINER(entry_item), entry);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), entry_item, -1);
 
     on_app_register_toolbar(lw->app, ON_TOOLBAR_LIBRARY, toolbar);
     return toolbar;

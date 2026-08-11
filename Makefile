@@ -24,7 +24,7 @@
 # Semantic version — the single source: it is baked into the binary
 # (ON_VERSION, shown in the About dialog), into the .deb/.rpm filenames and
 # into the .app bundle's Info.plist (the bundle name itself is unversioned).
-VERSION  := 3.6.1
+VERSION  := 3.6.2
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc

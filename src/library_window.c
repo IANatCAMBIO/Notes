@@ -47,6 +47,16 @@
 /* Background for even rows in list view (odd rows stay white).              */
 #define ROW_TINT "#e8f2fb"
 
+/* Blank strip above the sidebar tree, to line its first row's text up with
+ * the notes list's column-header text (see library_build_sidebar).          */
+#define SB_TOP_PAD 3
+
+/* How far the sidebar backdrop sits below the toolbar/window background it
+ * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
+ * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
+ * pasted into two CSS declarations in library_build_sidebar.                */
+#define SB_BG_SHADE "0.96"
+
 /* Sidebar row kinds (SB_KIND column).                                       */
 enum {
     SB_KIND_ROOT = 0,                /* the fixed "Notes" root row          */
@@ -4810,12 +4820,21 @@ library_build_sidebar(OnLibrary *lw)
         gtk_tree_view_append_column(lw->sidebar, name_col);
     }
 
-    /* Sidebar palette: light grey backdrop (rows and the empty area
-     * below them — the tree view paints the whole widget), muted grey
-     * text, and a blue selection bar (white text for contrast).            */
+    /* Sidebar palette: the backdrop (rows AND the empty area below them —
+     * the tree view paints the whole widget) is the theme's window/toolbar
+     * background taken down a step, so the pane sits just behind the
+     * toolbar above it and reads as distinct from the white notes list
+     * without pinning a grey of its own.  A tree view left alone would
+     * paint the white theme BASE colour instead.  Both CSS colour
+     * functions work from this widget-scoped provider (verified on GTK
+     * 3.24 / Adwaita: @theme_bg_color = rgb(246,245,244), exactly what the
+     * toolbar renders, and shade(…, 0.96) = rgb(238,236,234)); beware that
+     * an UNDEFINED colour name is NOT a parse error here — it silently
+     * renders transparent.  Then muted grey text and a blue selection bar
+     * (white text for contrast).                                           */
     on_app_widget_add_css(GTK_WIDGET(lw->sidebar),
         "treeview.view {"
-        "  background-color: rgb(230,230,230);"
+        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
         "  color: rgb(65,65,65);"
         "}"
         "treeview.view:selected {"
@@ -4875,11 +4894,25 @@ library_build_sidebar(OnLibrary *lw)
     gtk_container_add(GTK_CONTAINER(sidebar_scroll),
                       GTK_WIDGET(lw->sidebar));
 
-    /* Sidebar column: just the tree (all buttons live in the unified
-     * toolbar above the paned).  Its minimum width is whatever the tree
-     * content needs — the scrolled window never scrolls horizontally, so
-     * it requests the tree's full natural width.                           */
+    /* Sidebar column: a fixed spacer, then the tree (all buttons live in
+     * the unified toolbar above the paned).  Its minimum width is whatever
+     * the tree content needs — the scrolled window never scrolls
+     * horizontally, so it requests the tree's full natural width.          */
     GtkWidget *sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    /* Top padding, so the first row's text sits level with the text in the
+     * notes list's column headers (the sidebar has no headers of its own).
+     * It is a SPACER WIDGET rather than CSS padding: GtkScrolledWindow
+     * ignores padding when allocating its child, and a margin on the tree
+     * view would scroll away with it.  Painted in the sidebar grey so the
+     * strip reads as part of the pane.  A GtkBox has no background of its
+     * own, so it repeats the tree view's backdrop expression verbatim —
+     * keep the two in step.                                                */
+    GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
+    on_app_widget_add_css(sidebar_pad,
+        "box { background-color: shade(@theme_bg_color, "
+        SB_BG_SHADE "); }");
+    gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_pad, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_scroll,
                        TRUE, TRUE, 0);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */

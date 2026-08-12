@@ -147,6 +147,33 @@ on_flags_at_iter(GtkTextBuffer *buffer, const GtkTextIter *iter,
     return flags;
 }
 
+void
+on_flag_run_init(OnFlagRun *run, GtkTextBuffer *buffer, guint32 mask)
+{
+    run->buffer      = buffer;
+    run->mask        = mask;
+    run->flags       = 0;
+    run->next_toggle = -1;           /* nothing probed yet                  */
+}
+
+guint32
+on_flag_run_at(OnFlagRun *run, const GtkTextIter *iter)
+{
+    if (gtk_text_iter_get_offset(iter) < run->next_toggle)
+        return run->flags;           /* still inside the probed run         */
+
+    run->flags = on_flags_at_iter(run->buffer, iter, run->mask);
+
+    /* Where can the flag set change next?  A NULL tag means "any tag", so
+     * this also stops at editor-only tags (emoji padding, search hits, the
+     * action tint).  Those toggle more often than the serialized ones, which
+     * only costs a few extra probes — never a missed one.                   */
+    GtkTextIter next = *iter;        /* scan cursor for the next toggle     */
+    run->next_toggle = gtk_text_iter_forward_to_tag_toggle(&next, NULL)
+                       ? gtk_text_iter_get_offset(&next) : G_MAXINT;
+    return run->flags;
+}
+
 const gchar *
 on_tag_name_for_flag(guint32 flag)
 {
@@ -203,6 +230,8 @@ on_note_serialize(GtkTextBuffer *buffer, gsize *out_len)
 
     GString *run       = g_string_new(NULL); /* text of the pending run     */
     guint32  run_flags = 0;                  /* formatting of the run       */
+    OnFlagRun frun;                          /* per-run flag probing        */
+    on_flag_run_init(&frun, buffer, ~0u);
 
     while (!gtk_text_iter_is_end(&iter)) {
         /* Images and tables live on child anchors (raw pixbufs are also
@@ -298,7 +327,7 @@ on_note_serialize(GtkTextBuffer *buffer, gsize *out_len)
 
         /* Regular character: extend the current run, or flush and start a
          * new one when the formatting changes under the cursor.            */
-        guint32 flags = on_flags_at_iter(buffer, &iter, ~0u);
+        guint32 flags = on_flag_run_at(&frun, &iter);
         if (flags != run_flags) {
             flush_text_run(out, run, run_flags);
             run_flags = flags;

@@ -222,6 +222,8 @@ render_line_inline(OnExportCtx *ctx, GtkTextBuffer *buffer,
     GtkTextIter it = *start;         /* walk cursor                         */
     GString *run = g_string_new(NULL);   /* pending same-style text         */
     guint32  run_flags = 0;              /* its style bits                  */
+    OnFlagRun frun;                      /* per-run flag probing            */
+    on_flag_run_init(&frun, buffer, EXPORT_INLINE_MASK);
 
     while (gtk_text_iter_compare(&it, end) < 0) {
         /* Images and tables live on child anchors; raw pixbufs are also
@@ -257,8 +259,7 @@ render_line_inline(OnExportCtx *ctx, GtkTextBuffer *buffer,
             continue;
         }
 
-        guint32 flags =
-            raw ? 0 : on_flags_at_iter(buffer, &it, EXPORT_INLINE_MASK);
+        guint32 flags = raw ? 0 : on_flag_run_at(&frun, &it);
         if (flags != run_flags && run->len > 0) {
             emit_text_run(ctx, run->str, run_flags, raw);
             g_string_truncate(run, 0);

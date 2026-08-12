@@ -226,6 +226,27 @@ GList *on_db_folder_list(OnDatabase *db, gint64 parent_id);
 /* Free a list returned by on_db_folder_list().                              */
 void on_db_folder_list_free(GList *folders);
 
+/* ---------------------------------------------------------------------------
+ * on_db_folder_child_map() — every non-trashed folder in ONE query, grouped
+ * by parent.  Building a folder tree by recursing with on_db_folder_list()
+ * costs one query per folder (115 of them on a 114-folder database, on every
+ * sidebar rebuild); walking this map costs one, the same trick
+ * on_db_folder_path_map() uses.  Children come out in exactly the order
+ * on_db_folder_list() returns them.
+ * Returns a map of parent id → GList of OnFolder* (read it with
+ * on_db_folder_children()); free the whole thing with
+ * on_db_folder_child_map_free().  The lists and folders belong to the map —
+ * never pass one to on_db_folder_list_free().
+ * ------------------------------------------------------------------------- */
+GHashTable *on_db_folder_child_map(OnDatabase *db);
+
+/* Direct children of `parent_id` (0 = top level) within a child map, or
+ * NULL when that folder has none.  Borrowed: owned by the map.              */
+GList *on_db_folder_children(GHashTable *map, gint64 parent_id);
+
+/* Free a map from on_db_folder_child_map() and every folder in it.  NULL-safe. */
+void on_db_folder_child_map_free(GHashTable *map);
+
 /* ----------------------------- notes ------------------------------------ */
 
 /* Create an empty note in folder `folder_id` (0 = top level).

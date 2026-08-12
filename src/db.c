@@ -577,8 +577,13 @@ on_db_folder_delete(OnDatabase *db, gint64 id)
     return ok;
 }
 
-/* run_folder_query() — collect every row of `stmt` (columns: id, parent,
- * name, sort_order, emoji) into a list of OnFolder* and finalize it.        */
+/* Column list shared by every folder query, matching run_folder_query()'s
+ * expectations.  OnFolder has no parent/sort_order fields, so neither is
+ * selected — ORDER BY sort_order works without it being in the result.      */
+#define FOLDER_COLS "id, name, COALESCE(emoji,'')"
+
+/* run_folder_query() — collect every row of `stmt` (columns: FOLDER_COLS)
+ * into a list of OnFolder* and finalize it.                                 */
 static GList *
 run_folder_query(sqlite3_stmt *stmt)
 {
@@ -586,8 +591,8 @@ run_folder_query(sqlite3_stmt *stmt)
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         OnFolder *f  = g_new0(OnFolder, 1);
         f->id    = sqlite3_column_int64(stmt, 0);
-        f->name  = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
-        f->emoji = g_strdup((const gchar *)sqlite3_column_text(stmt, 4));
+        f->name  = g_strdup((const gchar *)sqlite3_column_text(stmt, 1));
+        f->emoji = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
         if (f->emoji == NULL)
             f->emoji = g_strdup("");
         out = g_list_prepend(out, f);
@@ -603,8 +608,7 @@ on_db_folder_list(OnDatabase *db, gint64 parent_id)
      * tree (it lives under the Trash section); its untouched descendants
      * never get listed because nothing recurses into it.                    */
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT id, COALESCE(parent_id,0), name, sort_order, "
-        "COALESCE(emoji,'') FROM folders "
+        "SELECT " FOLDER_COLS " FROM folders "
         "WHERE parent_id IS ? AND trashed=0 "
         "ORDER BY sort_order, name COLLATE NOCASE");
     if (stmt == NULL)
@@ -627,6 +631,67 @@ void
 on_db_folder_list_free(GList *folders)
 {
     g_list_free_full(folders, free_folder);
+}
+
+/* free_folder_list() — GDestroyNotify for on_db_folder_child_map values.    */
+static void
+free_folder_list(gpointer data)
+{
+    g_list_free_full(data, free_folder);
+}
+
+GHashTable *
+on_db_folder_child_map(OnDatabase *db)
+{
+    GHashTable *map = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                            g_free, free_folder_list);
+
+    /* Same filter and ordering as on_db_folder_list(), so a tree built by
+     * walking this map comes out row-for-row identical to the recursive
+     * one-query-per-folder walk it replaces.                                */
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT " FOLDER_COLS ", COALESCE(parent_id,0) FROM folders "
+        "WHERE trashed=0 "
+        "ORDER BY sort_order, name COLLATE NOCASE");
+    if (stmt == NULL)
+        return map;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        OnFolder *f  = g_new0(OnFolder, 1);
+        f->id    = sqlite3_column_int64(stmt, 0);
+        f->name  = g_strdup((const gchar *)sqlite3_column_text(stmt, 1));
+        f->emoji = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
+        gint64 parent = sqlite3_column_int64(stmt, 3);   /* 0 = top level   */
+
+        /* Rows arrive in display order, so appending keeps each sibling
+         * list ordered (walking to the tail is free at sibling counts).
+         * g_list_append returns the unchanged head of a non-empty list, so
+         * only the FIRST child of a parent has to be stored in the map —
+         * re-inserting later would make the table free the list we are
+         * still building.                                                   */
+        GList *kids = g_hash_table_lookup(map, &parent);
+        GList *head = g_list_append(kids, f);
+        if (kids == NULL) {
+            gint64 *key = g_new(gint64, 1);
+            *key = parent;
+            g_hash_table_insert(map, key, head);
+        }
+    }
+    sqlite3_finalize(stmt);
+    return map;
+}
+
+GList *
+on_db_folder_children(GHashTable *map, gint64 parent_id)
+{
+    return g_hash_table_lookup(map, &parent_id);
+}
+
+void
+on_db_folder_child_map_free(GHashTable *map)
+{
+    if (map != NULL)
+        g_hash_table_destroy(map);
 }
 
 /* =========================================================================
@@ -1727,25 +1792,28 @@ on_db_note_count_visible(OnDatabase *db)
         "SELECT COUNT(*) FROM notes WHERE " NOTE_VISIBLE_SQL, -1);
 }
 
-/* count_all() — COUNT(*) of one table (by trusted internal name).           */
-static gint
-count_all(OnDatabase *db, const gchar *table)
-{
-    gchar *sql = g_strdup_printf("SELECT COUNT(*) FROM %s", table);
-    gint count = (gint)query_int64(db, sql, -1);
-    g_free(sql);
-    return count;
-}
-
 void
 on_db_totals(OnDatabase *db, gint *notes, gint *folders, gint *tags)
 {
-    if (notes != NULL)
-        *notes = count_all(db, "notes");
-    if (folders != NULL)
-        *folders = count_all(db, "folders");
-    if (tags != NULL)
-        *tags = count_all(db, "tags");
+    if (notes   != NULL) *notes   = 0;
+    if (folders != NULL) *folders = 0;
+    if (tags    != NULL) *tags    = 0;
+
+    /* Three scalar subqueries in one row: the three totals used to be three
+     * separate prepare/step/finalize cycles (each with its SQL built by
+     * g_strdup_printf) for one About dialog.                                */
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT (SELECT COUNT(*) FROM notes), "
+        "       (SELECT COUNT(*) FROM folders), "
+        "       (SELECT COUNT(*) FROM tags)");
+    if (stmt == NULL)
+        return;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (notes   != NULL) *notes   = sqlite3_column_int(stmt, 0);
+        if (folders != NULL) *folders = sqlite3_column_int(stmt, 1);
+        if (tags    != NULL) *tags    = sqlite3_column_int(stmt, 2);
+    }
+    sqlite3_finalize(stmt);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1912,21 +1980,26 @@ on_db_folder_path(OnDatabase *db, gint64 folder_id)
     gint     depth = 0;                  /* levels walked so far            */
 
     while (cur > 0 && depth++ < ON_DB_FOLDER_PATH_DEPTH_LIMIT) {
-        sqlite3_stmt *stmt = prepare(db,
+        /* Cached statement: this loop runs once per tree LEVEL, and the
+         * function itself runs on every library navigation and every editor
+         * focus-in, so a fresh prepare/finalize per level added up.        */
+        sqlite3_stmt *stmt = cached_prepare(db,
             "SELECT name, COALESCE(parent_id,0) FROM folders WHERE id=?");
         if (stmt == NULL)
             break;
         sqlite3_bind_int64(stmt, 1, cur);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             const gchar *name = (const gchar *)sqlite3_column_text(stmt, 0);
-            /* Prepend "name/" to whatever we have so far.                  */
+            /* Prepend "name/" to whatever we have so far (both prepends
+             * copy, so the reset below is safe).                           */
             g_string_prepend(path, "/");
             g_string_prepend(path, name);
             cur = sqlite3_column_int64(stmt, 1);
         } else {
             cur = 0;
         }
-        sqlite3_finalize(stmt);
+        sqlite3_reset(stmt);             /* cache owns it: reset, never
+                                            finalize                        */
     }
 
     /* Trim the trailing slash left by the loop, if any.                    */

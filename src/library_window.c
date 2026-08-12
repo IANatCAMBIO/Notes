@@ -47,6 +47,11 @@
 /* Background for even rows in list view (odd rows stay white).              */
 #define ROW_TINT "#e8f2fb"
 
+/* strftime format of the Modified and Created cells ("Jun 3, 2026 14:05").
+ * ONE definition: list_autofit_time_width() bounds the column width from
+ * this same pattern, so the two can never disagree about the shape.         */
+#define LIST_TIME_FORMAT "%b %e, %Y %H:%M"
+
 /* Blank strip above the sidebar tree, to line its first row's text up with
  * the notes list's column-header text (see library_build_sidebar).          */
 #define SB_TOP_PAD 3
@@ -284,6 +289,8 @@ static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
 static void    list_autofit_set(OnLibrary *lw, PangoLayout *lay,
                                 const gchar *key, gint content_w);
+static gboolean list_column_shown(OnLibrary *lw, const gchar *key);
+static gint    list_autofit_time_width(PangoLayout *lay);
 static GtkTreePath *notes_sel_unblock(OnLibrary *lw, gboolean want_path);
 static void    close_editors_for_ids(OnLibrary *lw, const gint64 *ids,
                                      gsize n);
@@ -356,11 +363,13 @@ view_vadjustment(GtkWidget *view)
  *   parent_id   — database folder id whose children to add (0 = roots).
  *   parent_iter — sidebar row to attach them under.
  * ------------------------------------------------------------------------- */
-/* count_from_map() — look one id up in a count map (0 when absent).         */
+/* count_from_map() — look one id up in a count map (0 when absent, and 0
+ * for a NULL map: the maps are only built while sidebar counts are shown). */
 static gint
 count_from_map(GHashTable *map, gint64 id)
 {
-    return GPOINTER_TO_INT(g_hash_table_lookup(map, &id));
+    return (map != NULL)
+        ? GPOINTER_TO_INT(g_hash_table_lookup(map, &id)) : 0;
 }
 
 /* in_trash_view() — is the notes pane showing Trash contents (the Trash
@@ -388,9 +397,11 @@ sb_kind_is_section(gint kind)
 
 static void
 add_folder_rows(OnLibrary *lw, gint64 parent_id, GtkTreeIter *parent_iter,
-                GHashTable *note_counts)
+                GHashTable *note_counts, GHashTable *children)
 {
-    GList *folders = on_db_folder_list(lw->app->db, parent_id);
+    /* Borrowed from the pre-fetched child map — one query for the whole
+     * tree, instead of one per folder as this recursion used to do.         */
+    GList *folders = on_db_folder_children(children, parent_id);
     for (GList *l = folders; l != NULL; l = l->next) {
         OnFolder *f = l->data;       /* one child folder                    */
         gboolean has_emoji = f->emoji != NULL && *f->emoji != '\0';
@@ -413,9 +424,9 @@ add_folder_rows(OnLibrary *lw, gint64 parent_id, GtkTreeIter *parent_iter,
                            SB_RAW,  f->name,
                            -1);
         g_free(display);
-        add_folder_rows(lw, f->id, &iter, note_counts);
+        add_folder_rows(lw, f->id, &iter, note_counts, children);
     }
-    on_db_folder_list_free(folders);
+    /* `folders` belongs to the child map — nothing to free here.            */
 }
 
 /* sb_row_key() — hashable identity of a sidebar row for state that must
@@ -502,9 +513,20 @@ refresh_sidebar(OnLibrary *lw)
 
     /* Batched counts: one query for all folders, one for all tags —
      * refresh_sidebar runs after every autosave, so per-row COUNT
-     * queries added up (especially against a shared/networked db).         */
-    GHashTable *note_counts = on_db_note_count_map(lw->app->db);
-    GHashTable *tag_counts  = on_db_tag_count_map(lw->app->db);
+     * queries added up (especially against a shared/networked db).
+     * Built ONLY when the counts are actually displayed: every reader below
+     * sits inside a `sidebar_counts` branch, so with the setting off (the
+     * default) these two GROUP BY queries were run and thrown away on
+     * every rebuild.                                                        */
+    GHashTable *note_counts = NULL;  /* folder id → note count, or NULL     */
+    GHashTable *tag_counts  = NULL;  /* tag id → note count, or NULL        */
+    if (lw->app->sidebar_counts) {
+        note_counts = on_db_note_count_map(lw->app->db);
+        tag_counts  = on_db_tag_count_map(lw->app->db);
+    }
+
+    /* The whole folder tree in one query; add_folder_rows walks it.         */
+    GHashTable *children = on_db_folder_child_map(lw->app->db);
 
     /* "Pinned Notes" on top — a live view, not a real location; notes
      * stay in their folders.                                               */
@@ -574,7 +596,7 @@ refresh_sidebar(OnLibrary *lw)
                        SB_RAW,  "Notes",
                        -1);
     g_free(root_label);
-    add_folder_rows(lw, 0, &root, note_counts);
+    add_folder_rows(lw, 0, &root, note_counts, children);
 
     /* "Tags" header + one row per known tag.                               */
     GList *tags = on_db_tag_list(lw->app->db);
@@ -653,8 +675,11 @@ refresh_sidebar(OnLibrary *lw)
         on_db_folder_list_free(trashed);
     }
 
-    g_hash_table_destroy(note_counts);
-    g_hash_table_destroy(tag_counts);
+    on_db_folder_child_map_free(children);
+    if (note_counts != NULL)
+        g_hash_table_destroy(note_counts);
+    if (tag_counts != NULL)
+        g_hash_table_destroy(tag_counts);
 
     /* Every rebuild (including the first) restores the captured expansion
      * state in the walk below; first launch has nothing captured so all
@@ -1081,18 +1106,27 @@ refresh_notes(OnLibrary *lw)
      * walk, no re-fetching the strings) and only while the LIST is the
      * visible view — the grid doesn't show these columns, and switching
      * back to list re-measures (on_view_list).  Repeated folder paths
-     * are measured once, keyed by folder id.                               */
-    gboolean     fit      = lw->list_autofit && !want_thumbs;
+     * are measured once, keyed by folder id.
+     *
+     * Only VISIBLE columns are measured: list_autofit_set() throws away the
+     * width of a hidden one, so measuring it was pure waste — and Path and
+     * Created are hidden by default.  The two timestamp columns are not
+     * measured here at all: every value shares LIST_TIME_FORMAT, so
+     * list_autofit_time_width() bounds them once after the loop instead of
+     * once per row (measured ~68 ms for 1300 rows, on every refresh).       */
+    gboolean fit      = lw->list_autofit && !want_thumbs;
+    gboolean fit_path = fit && list_column_shown(lw, "path");
+    gboolean fit_mod  = fit && list_column_shown(lw, "modified");
+    gboolean fit_cre  = fit && list_column_shown(lw, "created");
     PangoLayout *fit_lay  = NULL;    /* reused measuring layout             */
     GHashTable  *fit_seen = NULL;    /* folder id → measured path width     */
-    gint fit_path_w = 0, fit_mod_w = 0,  /* running content maxima          */
-         fit_cre_w = 0;
-    if (fit) {
-        fit_lay  = gtk_widget_create_pango_layout(
+    gint fit_path_w = 0;             /* running Path content maximum        */
+    if (fit)
+        fit_lay = gtk_widget_create_pango_layout(
             GTK_WIDGET(lw->notes_list), NULL);
+    if (fit_path)
         fit_seen = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
-    }
 
     for (GList *l = notes; l != NULL; l = l->next) {
         OnNoteMeta *m = l->data;     /* one note                            */
@@ -1100,10 +1134,10 @@ refresh_notes(OnLibrary *lw)
         /* Format the modification and creation times like
          * "Jun 3, 2026 14:05".                                             */
         GDateTime *dt = g_date_time_new_from_unix_local(m->updated_at);
-        gchar *when = g_date_time_format(dt, "%b %e, %Y %H:%M");
+        gchar *when = g_date_time_format(dt, LIST_TIME_FORMAT);
         g_date_time_unref(dt);
         dt = g_date_time_new_from_unix_local(m->created_at);
-        gchar *born = g_date_time_format(dt, "%b %e, %Y %H:%M");
+        gchar *born = g_date_time_format(dt, LIST_TIME_FORMAT);
         g_date_time_unref(dt);
 
         /* "/Folder/Sub" location, "/" for the top level — the same
@@ -1112,8 +1146,8 @@ refresh_notes(OnLibrary *lw)
             ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
         gchar *where = g_strdup_printf("/%s", fpath != NULL ? fpath : "");
 
-        if (fit) {
-            gint w;                  /* width of the current string         */
+        if (fit_path) {
+            gint w;                  /* width of this note's path           */
             gpointer cached =
                 g_hash_table_lookup(fit_seen, &m->folder_id);
             if (cached != NULL) {
@@ -1126,14 +1160,6 @@ refresh_notes(OnLibrary *lw)
                 g_hash_table_insert(fit_seen, k, GINT_TO_POINTER(w));
             }
             fit_path_w = MAX(fit_path_w, w);
-
-            pango_layout_set_text(fit_lay, when, -1);
-            pango_layout_get_pixel_size(fit_lay, &w, NULL);
-            fit_mod_w = MAX(fit_mod_w, w);
-
-            pango_layout_set_text(fit_lay, born, -1);
-            pango_layout_get_pixel_size(fit_lay, &w, NULL);
-            fit_cre_w = MAX(fit_cre_w, w);
         }
 
         /* Thumbnails: only what the cache already has goes in right away
@@ -1206,10 +1232,18 @@ refresh_notes(OnLibrary *lw)
     on_db_note_list_free(notes);
 
     if (fit) {
-        list_autofit_set(lw, fit_lay, "path",     fit_path_w);
-        list_autofit_set(lw, fit_lay, "modified", fit_mod_w);
-        list_autofit_set(lw, fit_lay, "created",  fit_cre_w);
-        g_hash_table_destroy(fit_seen);
+        /* Both timestamp columns render the same format, so one bound
+         * serves both.  Computed only if one of them is actually shown.     */
+        gint time_w = (fit_mod || fit_cre)
+                      ? list_autofit_time_width(fit_lay) : 0;
+        if (fit_path)
+            list_autofit_set(lw, fit_lay, "path",     fit_path_w);
+        if (fit_mod)
+            list_autofit_set(lw, fit_lay, "modified", time_w);
+        if (fit_cre)
+            list_autofit_set(lw, fit_lay, "created",  time_w);
+        if (fit_seen != NULL)
+            g_hash_table_destroy(fit_seen);
         g_object_unref(fit_lay);
     }
     lw->populating--;
@@ -4097,6 +4131,73 @@ static GtkTreeViewColumn *
 list_column_by_key(OnLibrary *lw, const gchar *key)
 {
     return view_column_by_key(lw->notes_list, key);
+}
+
+/* list_column_shown() — is the notes list's `key` column visible right now?
+ * Autofit consults this BEFORE measuring: list_autofit_set() discards the
+ * width of a hidden column, so measuring one is wasted work.                */
+static gboolean
+list_column_shown(OnLibrary *lw, const gchar *key)
+{
+    GtkTreeViewColumn *c = list_column_by_key(lw, key);
+    return c != NULL && gtk_tree_view_column_get_visible(c);
+}
+
+/* ---------------------------------------------------------------------------
+ * list_autofit_time_width() — an upper bound, in pixels, on any timestamp
+ * the Modified or Created column can hold.
+ *
+ * Both columns render one fixed pattern (LIST_TIME_FORMAT), so every value
+ * has the same shape and differs only in which month abbreviation and which
+ * digits it contains.  Measuring the widest localized month against the
+ * widest digit therefore bounds the whole column in ~22 measurements instead
+ * of one per row — which at a thousand-plus notes was the most expensive
+ * thing refresh_notes() did, repeated on every autosave-driven refresh.
+ *
+ * A bound rather than the exact maximum is the right answer here: the caller
+ * adds AUTOFIT_CELL_EXTRA px of cell chrome on top anyway, and erring wide
+ * only pads the column, while erring narrow would clip text (these columns
+ * do not ellipsize under autofit).
+ *   lay — the measuring layout, in the view's font.
+ * Returns the bound in pixels.
+ * ------------------------------------------------------------------------- */
+static gint
+list_autofit_time_width(PangoLayout *lay)
+{
+    /* Widest digit glyph — proportional fonts do vary ('1' vs '8').         */
+    gchar widest  = '0';             /* digit with the largest advance      */
+    gint  digit_w = 0;               /* its width                           */
+    for (gchar d = '0'; d <= '9'; d++) {
+        gint w;                      /* width of this digit                 */
+        pango_layout_set_text(lay, &d, 1);
+        pango_layout_get_pixel_size(lay, &w, NULL);
+        if (w > digit_w) {
+            digit_w = w;
+            widest  = d;
+        }
+    }
+
+    /* Each month's name in a full synthetic stamp whose every digit is the
+     * widest one, so no real timestamp can come out wider.                  */
+    gint max_w = 0;                  /* running maximum                     */
+    for (gint month = 1; month <= 12; month++) {
+        GDateTime *dt = g_date_time_new_local(2026, month, 28, 23, 59, 0);
+        if (dt == NULL)
+            continue;
+        gchar *stamp = g_date_time_format(dt, LIST_TIME_FORMAT);
+        g_date_time_unref(dt);
+        if (stamp == NULL)
+            continue;
+        for (gchar *p = stamp; *p != '\0'; p++)
+            if (g_ascii_isdigit(*p))
+                *p = widest;
+        gint w;                      /* width of this month's stamp         */
+        pango_layout_set_text(lay, stamp, -1);
+        pango_layout_get_pixel_size(lay, &w, NULL);
+        max_w = MAX(max_w, w);
+        g_free(stamp);
+    }
+    return max_w;
 }
 
 /* ---------------------------------------------------------------------------

@@ -3146,6 +3146,8 @@ undo_snapshot_capture(OnEditor *ed)
 
     GString *run       = g_string_new(NULL); /* pending text run            */
     guint32  run_flags = 0;                  /* its formatting              */
+    OnFlagRun frun;                          /* per-run flag probing        */
+    on_flag_run_init(&frun, ed->buffer, ~0u);
 
     while (!gtk_text_iter_is_end(&iter)) {
         GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
@@ -3172,14 +3174,14 @@ undo_snapshot_capture(OnEditor *ed)
             }
             if (seg != NULL) {       /* payloadless anchors are dropped     */
                 undo_flush_run(snap, run, run_flags);
-                seg->flags = on_flags_at_iter(ed->buffer, &iter, ~0u);
+                seg->flags = on_flag_run_at(&frun, &iter);
                 g_ptr_array_add(snap->segs, seg);
             }
             gtk_text_iter_forward_char(&iter);
             continue;
         }
 
-        guint32 flags = on_flags_at_iter(ed->buffer, &iter, ~0u);
+        guint32 flags = on_flag_run_at(&frun, &iter);
         if (flags != run_flags) {
             undo_flush_run(snap, run, run_flags);
             run_flags = flags;

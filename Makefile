@@ -21,10 +21,16 @@
 #                     (needs rpmbuild; same caveat as deb)
 # =============================================================================
 
-# Semantic version — the single source: it is baked into the binary
-# (ON_VERSION, shown in the About dialog), into the .deb/.rpm filenames and
-# into the .app bundle's Info.plist (the bundle name itself is unversioned).
-VERSION  := 3.6.2
+# Semantic version — read from the VERSION file, which is the single
+# source: it is baked into the binary (ON_VERSION, shown in the About
+# dialog), into the .deb/.rpm filenames and into the .app bundle's
+# Info.plist (the bundle name itself is unversioned).  Bump the version by
+# editing that file, nothing here.  Read with `cat` rather than make 4's
+# $(file <...) — the system make on macOS is 3.81, which lacks it.
+VERSION  := $(strip $(shell cat VERSION 2>/dev/null))
+ifeq ($(VERSION),)
+$(error the VERSION file is missing or empty)
+endif
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc
@@ -83,8 +89,9 @@ $(BIN): $(OBJS)
 # Compile each .c file into a .o in build/, recreating the directory if
 # needed.  Every object depends on all headers for simplicity (the project
 # is small enough that full rebuilds on header change are cheap), and on
-# the Makefile so a VERSION bump recompiles the baked-in ON_VERSION.
-build/%.o: src/%.c $(wildcard src/*.h) Makefile
+# the Makefile and the VERSION file so a version bump recompiles the
+# baked-in ON_VERSION.
+build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
 

@@ -96,6 +96,10 @@
  *   popup_x/popup_y — text-window coordinates of the last right click,
  *                     used by the populate-popup handler to find the
  *                     image (if any) under the pointer.
+ *   hand_cursor     — TRUE while the text window is showing the hand
+ *                     cursor because the pointer is over a thumbnail
+ *                     image; cached so motion over ordinary text doesn't
+ *                     build a GdkCursor per event.
  *   dirty           — TRUE while the note has edits the database hasn't
  *                     seen (set whenever an autosave is queued, cleared
  *                     by editor_save); closing a window with no unsaved
@@ -156,6 +160,7 @@ typedef struct {
     guint           scroll_idle;
     gint            popup_x;
     gint            popup_y;
+    gboolean        hand_cursor;
 
     GtkWidget      *search_entry;
     gchar          *pending_search;   /* initial in-note query, applied once */
@@ -1288,6 +1293,66 @@ anchor_at_offset(OnEditor *ed, gint offset)
 }
 
 /* ---------------------------------------------------------------------------
+ * image_at_view_pos() — the embedded image under a pointer position, or
+ * NULL when that position is not inside one.
+ *   ed         — the editor.
+ *   wx, wy     — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
+ *   offset_out — filled with the image anchor's buffer offset, optional.
+ *   dw_out     — filled with the stored display width, optional.
+ * Returns the anchor-owned full-resolution pixbuf (do not unref), or NULL.
+ *
+ * get_iter_at_position, NOT get_iter_at_location: the latter returns
+ * CURSOR positions, so a position on the right half of an image resolves
+ * to the gap after it — and with two adjacent images that gap IS the next
+ * image's anchor, so the wrong image was picked.  Positions past the end
+ * of a line resolve to the line-end iter, hence the one-character step
+ * back; the closing rectangle test is what stops that step from claiming
+ * the empty space beside an image.
+ * ------------------------------------------------------------------------- */
+static GdkPixbuf *
+image_at_view_pos(OnEditor *ed, gint wx, gint wy,
+                  gint *offset_out, gint *dw_out)
+{
+    gint bx, by;                     /* position in buffer coordinates      */
+    gtk_text_view_window_to_buffer_coords(ed->view, GTK_TEXT_WINDOW_TEXT,
+                                          wx, wy, &bx, &by);
+    GtkTextIter it;                  /* iter under the pointer              */
+    gtk_text_view_get_iter_at_position(ed->view, &it, NULL, bx, by);
+
+    if (gtk_text_iter_get_child_anchor(&it) == NULL &&
+        !gtk_text_iter_backward_char(&it))
+        return NULL;
+    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
+    if (anchor == NULL)
+        return NULL;
+
+    gint dw;                         /* stored display width                */
+    GdkPixbuf *orig = on_anchor_get_image(anchor, &dw);
+    if (orig == NULL)
+        return NULL;
+
+    GdkRectangle rect;               /* the anchor character's own box      */
+    gtk_text_view_get_iter_location(ed->view, &it, &rect);
+    if (bx < rect.x || bx >= rect.x + rect.width ||
+        by < rect.y || by >= rect.y + rect.height)
+        return NULL;
+
+    if (offset_out != NULL)
+        *offset_out = gtk_text_iter_get_offset(&it);
+    if (dw_out != NULL)
+        *dw_out = dw;
+    return orig;
+}
+
+/* image_shown_full() — TRUE when an image with stored display width `dw`
+ * is currently displayed at its full size rather than as a thumbnail.     */
+static gboolean
+image_shown_full(GdkPixbuf *orig, gint dw)
+{
+    return image_effective_width(orig, dw) >= gdk_pixbuf_get_width(orig);
+}
+
+/* ---------------------------------------------------------------------------
  * replace_image_display() — change the stored display width of the image
  * at `offset` and rebuild its widget.  No text changes, so this is purely
  * a presentation update plus an autosave (the width is persisted).
@@ -1305,6 +1370,30 @@ replace_image_display(OnEditor *ed, gint offset, gint display_width)
     attach_image_widget(ed, anchor);
     editor_queue_autosave(ed);
     code_buttons_queue_rebuild(ed);
+}
+
+/* ---------------------------------------------------------------------------
+ * image_toggle_display_at() — switch the image under a pointer position
+ * between thumbnail and full size, the same two states the context menu
+ * offers.  Returns TRUE when an image was there (and toggled), so the
+ * caller knows to consume the click.
+ *   ed     — the editor.
+ *   wx, wy — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
+ * ------------------------------------------------------------------------- */
+static gboolean
+image_toggle_display_at(OnEditor *ed, gint wx, gint wy)
+{
+    gint offset;                     /* the image's buffer offset           */
+    gint dw;                         /* stored display width                */
+    GdkPixbuf *orig = image_at_view_pos(ed, wx, wy, &offset, &dw);
+    if (orig == NULL)
+        return FALSE;
+
+    replace_image_display(ed, offset,
+                          image_shown_full(orig, dw)
+                              ? 0    /* 0 = the default thumbnail width     */
+                              : gdk_pixbuf_get_width(orig));
+    return TRUE;
 }
 
 /* image_from_menu_item() — resolve an image context-menu item back to
@@ -1336,16 +1425,15 @@ on_img_copy(GtkMenuItem *item, gpointer user_data)
             orig);
 }
 
-/* on_img_open() — "Open": write the full-resolution image to a temporary
- * PNG file and hand it to an image viewer — the program configured under
- * Settings ("image_viewer" setting), or the platform opener (macOS
- * `open`, otherwise `xdg-open`) which launches the system's default
- * viewer.                                                                   */
+/* image_open_external() — write `orig` (a full-resolution image) to a
+ * temporary PNG file and hand it to an image viewer — the program
+ * configured under Settings ("image_viewer" setting), or the platform
+ * opener (macOS `open`, otherwise `xdg-open`) which launches the system's
+ * default viewer.  Shared by the "Open" menu item and the click-to-open
+ * handler.                                                                  */
 static void
-on_img_open(GtkMenuItem *item, gpointer user_data)
+image_open_external(GdkPixbuf *orig)
 {
-    OnEditor *ed = user_data;        /* owning editor                       */
-    GdkPixbuf *orig = image_from_menu_item(ed, item, NULL);
     if (orig == NULL)
         return;
 
@@ -1384,6 +1472,14 @@ on_img_open(GtkMenuItem *item, gpointer user_data)
     g_free(path);
 }
 
+/* on_img_open() — "Open" context-menu item.                                */
+static void
+on_img_open(GtkMenuItem *item, gpointer user_data)
+{
+    OnEditor *ed = user_data;        /* owning editor                       */
+    image_open_external(image_from_menu_item(ed, item, NULL));
+}
+
 /* on_img_display_full() / on_img_display_thumb() — inline display size.     */
 static void
 on_img_display_full(GtkMenuItem *item, gpointer user_data)
@@ -1406,9 +1502,55 @@ on_img_display_thumb(GtkMenuItem *item, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_hand_cursor() — show the hand ("pointer") cursor over the text
+ * window while the pointer sits on an image, and the ordinary
+ * text cursor — the one GtkTextView installs itself at realize — the rest
+ * of the time.  The current state is cached in ed->hand_cursor so plain
+ * motion over text doesn't build a GdkCursor per event.
+ * ------------------------------------------------------------------------- */
+static void
+editor_hand_cursor(OnEditor *ed, gboolean hand)
+{
+    if (ed->hand_cursor == hand)
+        return;
+    GdkWindow *win =                 /* the window the cursor sits on       */
+        gtk_text_view_get_window(ed->view, GTK_TEXT_WINDOW_TEXT);
+    if (win == NULL)
+        return;
+
+    GdkCursor *cursor = gdk_cursor_new_from_name(
+        gdk_window_get_display(win), hand ? "pointer" : "text");
+    gdk_window_set_cursor(win, cursor);
+    if (cursor != NULL)
+        g_object_unref(cursor);
+    ed->hand_cursor = hand;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_view_motion_notify() — hand cursor over embedded images.
+ *
+ * Connected AFTER the class handler on purpose: GtkTextView hides the
+ * pointer while the user types and restores the text cursor from its own
+ * motion handler, which would undo ours if we ran first.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_view_motion_notify(GtkWidget *widget, GdkEventMotion *event,
+                      gpointer user_data)
+{
+    (void)widget;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    editor_hand_cursor(ed, image_at_view_pos(ed, (gint)event->x,
+                                             (gint)event->y,
+                                             NULL, NULL) != NULL);
+    return FALSE;                    /* never consume: default handling     */
+}
+
+/* ---------------------------------------------------------------------------
  * on_view_button_press() — remember where right clicks land (in the text
  * window's coordinates) so on_view_populate_popup() can tell whether the
- * click was on an embedded image.
+ * click was on an embedded image; toggle an image between thumbnail and
+ * full size on a plain left click (the same pair of states its context
+ * menu offers).
  * ------------------------------------------------------------------------- */
 static gboolean
 on_view_button_press(GtkWidget *widget, GdkEventButton *event,
@@ -1420,6 +1562,16 @@ on_view_button_press(GtkWidget *widget, GdkEventButton *event,
         ed->popup_x = (gint)event->x;
         ed->popup_y = (gint)event->y;
     }
+
+    /* Plain single left click only: modifiers keep their selection
+     * meanings, and the 2BUTTON/3BUTTON events of a double click must not
+     * toggle a second and third time (which would land back where it
+     * started, looking like the click did nothing).                       */
+    if (event->type == GDK_BUTTON_PRESS &&
+        event->button == GDK_BUTTON_PRIMARY &&
+        (event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) == 0 &&
+        image_toggle_display_at(ed, (gint)event->x, (gint)event->y))
+        return TRUE;                 /* consumed: no caret move, no drag    */
     return FALSE;                    /* never consume: default handling     */
 }
 
@@ -1435,36 +1587,14 @@ on_view_populate_popup(GtkTextView *view, GtkWidget *popup,
     if (!GTK_IS_MENU(popup))
         return;
 
-    /* Which buffer position was clicked?  get_iter_at_position, NOT
-     * get_iter_at_location: the latter returns CURSOR positions, so a
-     * click on the right half of an image resolves to the gap after it —
-     * and with two adjacent images that gap IS the next image's anchor,
-     * so the wrong image's menu appeared.  This returns the character
-     * the click is inside, whichever half was hit.                        */
-    gint bx, by;                     /* click in buffer coordinates         */
-    gtk_text_view_window_to_buffer_coords(view, GTK_TEXT_WINDOW_TEXT,
-                                          ed->popup_x, ed->popup_y,
-                                          &bx, &by);
-    GtkTextIter it;                  /* iter under the pointer              */
-    gtk_text_view_get_iter_at_position(view, &it, NULL, bx, by);
-
-    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
-    if (anchor == NULL) {
-        /* Clicks past the end of the line resolve to the line-end iter;
-         * look one character back before giving up.                        */
-        if (!gtk_text_iter_backward_char(&it))
-            return;
-        anchor = gtk_text_iter_get_child_anchor(&it);
-        if (anchor == NULL)
-            return;
-    }
+    (void)view;
+    gint offset;                     /* the image's buffer offset           */
     gint dw;                         /* stored display width                */
-    GdkPixbuf *orig = on_anchor_get_image(anchor, &dw);
+    GdkPixbuf *orig =                /* image the click landed on           */
+        image_at_view_pos(ed, ed->popup_x, ed->popup_y, &offset, &dw);
     if (orig == NULL)
         return;
-    gint offset = gtk_text_iter_get_offset(&it);
-    gboolean shown_full =
-        image_effective_width(orig, dw) >= gdk_pixbuf_get_width(orig);
+    gboolean shown_full = image_shown_full(orig, dw);
 
     /* Build the extra items (prepended so they sit on top).                */
     struct { const gchar *label; GCallback cb; gboolean show; } items[] = {
@@ -4843,6 +4973,8 @@ editor_connect_signals(OnEditor *ed)
                      G_CALLBACK(on_paste_clipboard), ed);
     g_signal_connect(ed->view, "button-press-event",
                      G_CALLBACK(on_view_button_press), ed);
+    g_signal_connect_after(ed->view, "motion-notify-event",
+                           G_CALLBACK(on_view_motion_notify), ed);
     g_signal_connect(ed->view, "populate-popup",
                      G_CALLBACK(on_view_populate_popup), ed);
     g_signal_connect(ed->view, "size-allocate",

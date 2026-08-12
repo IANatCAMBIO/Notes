@@ -20,11 +20,14 @@ make rpm      # dist/notes-<version>-1.<arch>.rpm  needs rpmbuild —
               # absolute path so argv[0]-relative icons/defaults resolve)
 ```
 
-The semantic version is the `VERSION` variable at the top of the
-Makefile — single source: baked into the binary as `ON_VERSION` (About
-dialog), into the .deb/.rpm filenames and into the .app bundle's
-Info.plist — the .app bundle NAME is deliberately unversioned so the
-path in /Applications never changes. Objects depend on the Makefile
+The semantic version lives in the **`VERSION` file** at the repo root
+(one line, e.g. `3.6.2`); the Makefile reads it into its `VERSION`
+variable with `cat` (macOS ships GNU make 3.81, which has no
+`$(file <…)`) and errors out if the file is missing or empty. Single
+source: baked into the binary as `ON_VERSION` (About dialog), into the
+.deb/.rpm filenames and into the .app bundle's Info.plist — the .app
+bundle NAME is deliberately unversioned so the path in /Applications
+never changes. Objects depend on both the Makefile and the VERSION file
 so a version bump recompiles.
 
 Dependencies (MacPorts): `gtk3 +quartz`, `sqlite3`, `pkgconf`, and

@@ -118,6 +118,11 @@
  *                     only while the statusbar_note_id setting is on
  *                     (Settings applies it live through
  *                     on_editor_status_refresh_all).
+ *   status_dirty    — status-bar label at the FAR right, past every other
+ *                     status message: the save-state dot, red while
+ *                     `dirty` is set and green once editor_save has run.
+ *                     Always visible; driven from the two places that own
+ *                     `dirty`.
  *   undo_stack      — past buffer snapshots, oldest first (see the
  *                     undo/redo section for the whole design).
  *   redo_stack      — snapshots undone and re-doable, oldest first.
@@ -169,6 +174,7 @@ typedef struct {
     gboolean        tags_modified;
     GtkWidget      *status_path;
     GtkWidget      *status_note_id;
+    GtkWidget      *status_dirty;    /* far-right save-state dot            */
     GList          *last_actions;    /* the action-item set last synced to
                                         the action_items table (OnActionItem
                                         list) — editor_save rewrites the
@@ -222,6 +228,7 @@ static const struct {
 /* Forward declarations for callbacks referenced before their definition.   */
 static void     editor_save(OnEditor *ed);
 static void     editor_queue_autosave(OnEditor *ed);
+static void     editor_status_dirty_update(OnEditor *ed);
 static void     tag_capture_end(OnEditor *ed, gboolean apply);
 static void     action_retag_lines(OnEditor *ed, gint start_off,
                                    gint end_off);
@@ -4297,6 +4304,7 @@ editor_save(OnEditor *ed)
         ed->actions_clean = TRUE;
     }
     ed->dirty = FALSE;
+    editor_status_dirty_update(ed);   /* dot turns green                     */
 
     /* Window title mirrors the note title.                                 */
     if (ed->window != NULL) {
@@ -4336,7 +4344,11 @@ on_autosave_timeout(gpointer user_data)
 static void
 editor_queue_autosave(OnEditor *ed)
 {
-    ed->dirty = TRUE;                /* there is now something to save      */
+    if (!ed->dirty) {                /* transition only — this runs per
+                                        keystroke, the label update doesn't  */
+        ed->dirty = TRUE;            /* there is now something to save      */
+        editor_status_dirty_update(ed);              /* dot turns red        */
+    }
     undo_notify_change(ed);          /* every mutation passes through here,
                                         so this is also where undo groups
                                         start (no-op while restoring)       */
@@ -4489,12 +4501,31 @@ editor_status_note_id_update(OnEditor *ed)
     }
 }
 
-/* editor_status_update() — re-render both status-bar labels of one editor. */
+/* ---------------------------------------------------------------------------
+ * editor_status_dirty_update() — paint the far-right save-state dot: red
+ * while the buffer holds edits the database hasn't seen, green once the
+ * autosave (or the close-time flush) has written them.  Called from the two
+ * places that own ed->dirty, and at window build for the initial green.
+ * ------------------------------------------------------------------------- */
+static void
+editor_status_dirty_update(OnEditor *ed)
+{
+    if (ed->status_dirty == NULL)
+        return;
+    gtk_label_set_text(GTK_LABEL(ed->status_dirty),
+                       ed->dirty ? "\xF0\x9F\x94\xB4"   /* 🔴 unsaved edits  */
+                                 : "\xF0\x9F\x9F\xA2"); /* 🟢 saved         */
+    gtk_widget_set_tooltip_text(ed->status_dirty,
+                                ed->dirty ? "Unsaved changes" : "Saved");
+}
+
+/* editor_status_update() — re-render all status-bar labels of one editor.   */
 static void
 editor_status_update(OnEditor *ed)
 {
     editor_status_path_update(ed);
     editor_status_note_id_update(ed);
+    editor_status_dirty_update(ed);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4917,7 +4948,7 @@ editor_build_layout(OnEditor *ed)
     gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(ed->view));
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
-    /* --- status bar: note location (left), note id (right) -------------- */
+    /* --- status bar: note location (left), note id, save-state dot ------ */
     ed->status_path = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(ed->status_path), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(ed->status_path),
@@ -4931,12 +4962,19 @@ editor_build_layout(OnEditor *ed)
     on_app_widget_add_css(ed->status_note_id, "label { font-size: 85%; }");
     gtk_widget_set_no_show_all(ed->status_note_id, TRUE);
 
-    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    /* Save-state dot — the very last thing on the bar, always shown.        */
+    ed->status_dirty = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(ed->status_dirty), 1.0);
+    on_app_widget_add_css(ed->status_dirty, "label { font-size: 70%; }");
+
+    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_margin_start(status_bar, 8);
     gtk_widget_set_margin_end(status_bar, 8);
     gtk_widget_set_margin_top(status_bar, 3);
     gtk_widget_set_margin_bottom(status_bar, 3);
     gtk_box_pack_start(GTK_BOX(status_bar), ed->status_path,  TRUE,  TRUE,  0);
+    /* pack_end reverses, so: … note id  dot                                */
+    gtk_box_pack_end(GTK_BOX(status_bar),   ed->status_dirty,  FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(status_bar),   ed->status_note_id, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox),

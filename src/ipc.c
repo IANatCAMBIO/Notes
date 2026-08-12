@@ -13,6 +13,7 @@
  * =========================================================================== */
 
 #include "ipc.h"
+#include "app.h"                     /* on_app_read_stream                  */
 #include "cli.h"
 #include "db.h"
 #include "editor_window.h"
@@ -337,21 +338,6 @@ static GSocketService *ipc_service = NULL;   /* live listener, or NULL       */
 static gchar          *ipc_bound_path = NULL;/* socket file to unlink at exit */
 
 /* ---------------------------------------------------------------------------
- * ipc_read_file_all() — read a whole (rewound) FILE* into a new string.
- * ------------------------------------------------------------------------- */
-static gchar *
-ipc_read_file_all(FILE *f)
-{
-    GString *s = g_string_new(NULL);
-    rewind(f);
-    char   buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        g_string_append_len(s, buf, (gssize)n);
-    return g_string_free(s, FALSE);
-}
-
-/* ---------------------------------------------------------------------------
  * ipc_capture_run() — execute a data command against the live database with
  * its stdout/stderr redirected to temp files, so the text can be shipped back
  * to the remote CLI.  Safe because we run synchronously on the main loop (no
@@ -389,8 +375,8 @@ ipc_capture_run(OnApp *app, int argc, char **argv, const gchar *stdin_data,
         fflush(stderr);
         dup2(saved_out, 1);
         dup2(saved_err, 2);
-        *out_text = ipc_read_file_all(fo);
-        *err_text = ipc_read_file_all(fe);
+        *out_text = on_app_read_stream(fo, TRUE);
+        *err_text = on_app_read_stream(fe, TRUE);
     }
     if (saved_out >= 0) close(saved_out);
     if (saved_err >= 0) close(saved_err);
@@ -663,14 +649,9 @@ on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
     gchar *stdin_data = g_strdup("");/* shipped stdin (owned)               */
     gsize  stdin_len  = 0;
     if (on_cli_command_reads_stdin(argc, argv)) {
-        GString *s = g_string_new(NULL);
-        char   buf[4096];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof buf, stdin)) > 0)
-            g_string_append_len(s, buf, (gssize)n);
-        stdin_len = s->len;
         g_free(stdin_data);
-        stdin_data = g_string_free(s, FALSE);
+        stdin_data = on_app_read_stream(stdin, FALSE);
+        stdin_len  = strlen(stdin_data);
     }
 
     /* Request frame: "RUN", the word count, each word, then stdin.          */

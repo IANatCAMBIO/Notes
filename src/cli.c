@@ -149,12 +149,7 @@ cli_read_content(const gchar *arg)
         if (cli_stdin_data != NULL) {
             text = g_strdup(cli_stdin_data);
         } else {
-            GString *in = g_string_new(NULL);
-            gchar buf[4096];
-            gsize n;
-            while ((n = fread(buf, 1, sizeof buf, stdin)) > 0)
-                g_string_append_len(in, buf, (gssize)n);
-            text = g_string_free(in, FALSE);
+            text = on_app_read_stream(stdin, FALSE);
         }
     } else {
         text = g_strdup(arg);
@@ -165,25 +160,6 @@ cli_read_content(const gchar *arg)
         return NULL;
     }
     return text;
-}
-
-/* ---------------------------------------------------------------------------
- * note_buffer_load() — deserialize note `id`'s stored content into a new
- * offscreen GtkTextBuffer (empty buffer if the note has none yet).
- * Requires GTK (cli_require_gtk).  Returns the buffer; g_object_unref() it.
- * ------------------------------------------------------------------------- */
-static GtkTextBuffer *
-note_buffer_load(OnDatabase *db, gint64 id)
-{
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, id, &blob_len);
-    if (blob != NULL) {
-        on_note_deserialize(buffer, blob, blob_len);
-        g_free(blob);
-    }
-    return buffer;
 }
 
 /* ---------------------------------------------------------------------------
@@ -211,30 +187,6 @@ note_buffer_save(OnDatabase *db, gint64 id, GtkTextBuffer *buffer)
     g_free(title);
     g_free(blob);
     return ok;
-}
-
-/* ---------------------------------------------------------------------------
- * note_body_text_cached() — a note's plain text: the body_text cache when
- * filled, otherwise extracted from the BNBF blob (no GTK, images skipped)
- * and written back — the same read path cross-note search uses (see
- * note_plain_text in search_window.c).  Returns a new string; g_free() it.
- * ------------------------------------------------------------------------- */
-static gchar *
-note_body_text_cached(OnDatabase *db, gint64 id)
-{
-    gchar *cached = on_db_note_body_text(db, id);
-    if (cached != NULL)
-        return cached;
-
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, id, &blob_len);
-    if (blob == NULL)
-        return g_strdup("");
-
-    gchar *text = on_note_extract_text(blob, blob_len);
-    g_free(blob);
-    on_db_note_set_body_text(db, id, text);
-    return text;
 }
 
 /* ---------------------------------------------------------------------------
@@ -490,7 +442,7 @@ cmd_cat_note(OnDatabase *db, const gchar *id_str, gboolean markdown)
         app.db = db;
         text = on_export_note_markdown(&app, meta->id);
     } else {
-        text = note_body_text_cached(db, meta->id);
+        text = on_note_text_cached(db, meta->id);
     }
 
     fputs(text, stdout);
@@ -519,7 +471,7 @@ cmd_append_note(OnDatabase *db, const gchar *id_str, const gchar *content)
         return 2;
     }
 
-    GtkTextBuffer *buffer = note_buffer_load(db, meta->id);
+    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
     GtkTextIter end;                 /* append position                     */
     gtk_text_buffer_get_end_iter(buffer, &end);
     if (gtk_text_buffer_get_char_count(buffer) > 0 &&
@@ -619,7 +571,7 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
     }
 
     /* Load the note, append the image on a fresh line, save it back.       */
-    GtkTextBuffer *buffer = note_buffer_load(db, id);
+    GtkTextBuffer *buffer = on_note_buffer_load(db, id, 0);
 
     GtkTextIter end;                 /* append position                     */
     gtk_text_buffer_get_end_iter(buffer, &end);
@@ -684,7 +636,7 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         return 2;
     }
 
-    GtkTextBuffer *buffer = note_buffer_load(db, meta->id);
+    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
     GList *existing = on_buffer_collect_tags(buffer);
     int rc = 0;                      /* process exit code                   */
 
@@ -742,7 +694,7 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         return 2;
     }
 
-    GtkTextBuffer *buffer = note_buffer_load(db, meta->id);
+    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
     GtkTextTagTable *table = gtk_text_buffer_get_tag_table(buffer);
     GtkTextTag *tag = gtk_text_tag_table_lookup(table, ON_TAGNAME_TAG);
 
@@ -1177,7 +1129,7 @@ cmd_search(OnDatabase *db, const gchar *query, gboolean use_regex)
     }
 
     GList      *notes  = on_db_note_list_all(db, FALSE);
-    GHashTable *bodies = on_db_note_body_map(db);    /* id → body text      */
+    GHashTable *bodies = on_db_note_text_map(db, 0);    /* id → body text      */
     GHashTable *paths  = on_db_folder_path_map(db);  /* folder id → path    */
 
     for (GList *l = notes; l != NULL; l = l->next) {
@@ -1185,22 +1137,14 @@ cmd_search(OnDatabase *db, const gchar *query, gboolean use_regex)
         const gchar *body = g_hash_table_lookup(bodies, &m->id);
         gchar *fallback = NULL;      /* extracted text for unfilled rows    */
         if (body == NULL) {
-            fallback = note_body_text_cached(db, m->id);
+            fallback = on_note_text_cached(db, m->id);
             body = fallback;
         }
 
-        gboolean match;              /* does this note match the query?     */
-        if (regex != NULL) {
-            match = g_regex_match(regex, m->title, 0, NULL) ||
-                    g_regex_match(regex, body, 0, NULL);
-        } else {
-            gchar *t = g_utf8_casefold(m->title, -1);
-            gchar *b = g_utf8_casefold(body, -1);
-            match = strstr(t, query_ci) != NULL ||
-                    strstr(b, query_ci) != NULL;
-            g_free(t);
-            g_free(b);
-        }
+        /* Same matcher the search window's worker uses (query casefolded
+         * once above, not per note as this used to do).                     */
+        gboolean match = on_note_text_matches(m->title, body, query,
+                                              query_ci, regex);
         if (match) {
             const gchar *fpath = g_hash_table_lookup(paths, &m->folder_id);
             print_note_line(m, fpath != NULL ? fpath : "");
@@ -1484,17 +1428,28 @@ on_cli_command_mutates(int argc, char **argv)
     return FALSE;         /* search / backup / export-* are read-only       */
 }
 
+/* ---------------------------------------------------------------------------
+ * cli_is_noun() — is `cmd` one of the noun groups that take a verb?  Both
+ * the entry point (deciding whether to handle the command at all) and the
+ * dispatcher (rejecting a bare noun) ask this, and used to spell out the
+ * same four comparisons.
+ * ------------------------------------------------------------------------- */
+static gboolean
+cli_is_noun(const char *cmd)
+{
+    return g_strcmp0(cmd, "tag")    == 0 ||
+           g_strcmp0(cmd, "folder") == 0 ||
+           g_strcmp0(cmd, "note")   == 0 ||
+           g_strcmp0(cmd, "action") == 0;
+}
+
 int
 on_cli_dispatch_db(OnDatabase *db, int argc, char **argv)
 {
     const char *cmd = argv[1];       /* the noun/flat command               */
 
     /* Noun groups need a verb.                                             */
-    gboolean is_noun = g_strcmp0(cmd, "tag") == 0 ||
-                       g_strcmp0(cmd, "folder") == 0 ||
-                       g_strcmp0(cmd, "note") == 0 ||
-                       g_strcmp0(cmd, "action") == 0;
-    if (is_noun && argc < 3)
+    if (cli_is_noun(cmd) && argc < 3)
         return usage(stderr);
 
     if (g_strcmp0(cmd, "tag") == 0)
@@ -1554,15 +1509,11 @@ on_cli_run(int argc, char **argv)
 
     /* Anything that is not a known noun/command falls through to GTK
      * (which has its own option handling for things like --display).       */
-    gboolean is_noun = g_strcmp0(cmd, "tag") == 0 ||
-                       g_strcmp0(cmd, "folder") == 0 ||
-                       g_strcmp0(cmd, "note") == 0 ||
-                       g_strcmp0(cmd, "action") == 0;
     gboolean is_flat = g_strcmp0(cmd, "search") == 0 ||
                        g_strcmp0(cmd, "backup") == 0 ||
                        g_strcmp0(cmd, "export-md") == 0 ||
                        g_strcmp0(cmd, "export-html") == 0;
-    if (!is_noun && !is_flat)
+    if (!cli_is_noun(cmd) && !is_flat)
         return -1;
 
     /* Route every data command through a running instance when one exists,

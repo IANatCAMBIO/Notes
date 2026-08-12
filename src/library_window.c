@@ -47,6 +47,10 @@
 /* Background for even rows in list view (odd rows stay white).              */
 #define ROW_TINT "#e8f2fb"
 
+/* How much of a note's body text is fetched for the Comfortable-density
+ * preview: enough for the first non-blank line after the title.             */
+#define NL_PREVIEW_CHARS 200
+
 /* strftime format of the Modified and Created cells ("Jun 3, 2026 14:05").
  * ONE definition: list_autofit_time_width() bounds the column width from
  * this same pattern, so the two can never disagree about the shape.         */
@@ -794,18 +798,11 @@ refresh_sidebar(OnLibrary *lw)
 static cairo_surface_t *
 render_note_thumb(OnLibrary *lw, gint64 id)
 {
-    /* Load the note into an offscreen buffer.                              */
-    GtkTextBuffer *buf = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buf);
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(lw->app->db, id, &blob_len);
-    if (blob != NULL) {
-        /* Cap image decode at 512px: the card preview is at most ~256
-         * physical pixels wide, so full-resolution decode (potentially
-         * tens of MB per screenshot) is pure waste here.                   */
-        on_note_deserialize_scaled(buf, blob, blob_len, 512);
-        g_free(blob);
-    }
+    /* Load the note into an offscreen buffer, capping image decode at
+     * 512 px: the card preview is at most ~256 physical pixels wide, so a
+     * full-resolution decode (tens of MB per screenshot) is pure waste.
+     * This buffer is never saved, so the scaled pixbufs are fine.          */
+    GtkTextBuffer *buf = on_note_buffer_load(lw->app->db, id, 512);
 
     /* First embedded image, if any (borrowed ref, kept alive by buf).      */
     GdkPixbuf *img = NULL;           /* preview image for the card          */
@@ -1100,7 +1097,7 @@ refresh_notes(OnLibrary *lw)
     /* Body-text previews for the Comfortable list density — ONE query, only
      * when comfortable mode is on; compact mode never shows the preview.    */
     GHashTable *previews = lw->app->comfortable_list
-        ? on_db_note_preview_map(lw->app->db) : NULL;
+        ? on_db_note_text_map(lw->app->db, NL_PREVIEW_CHARS) : NULL;
 
     /* Autofit measuring rides this population loop (no second model
      * walk, no re-fetching the strings) and only while the LIST is the

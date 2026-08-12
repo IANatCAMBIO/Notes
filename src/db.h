@@ -492,20 +492,18 @@ void on_db_totals(OnDatabase *db, gint *notes, gint *folders, gint *tags);
  * g_hash_table_destroy(). Missing keys mean zero.                           */
 GHashTable *on_db_note_count_map(OnDatabase *db);
 
-/* Every filled body_text row in ONE query: note id (gint64*) → owned
- * text.  Cross-note search reads this instead of one SELECT per note —
- * the whole column is ~1 MB of text even for image-heavy databases,
- * and per-query latency is what hurts on shared/network DBs.  Rows with
- * a NULL cache (pre-column saves) are absent; callers fall back to
- * on_db_note_body_text()/extraction for those.
+/* ---------------------------------------------------------------------------
+ * on_db_note_text_map() — every filled body_text row in ONE query: note id
+ * (gint64*) → owned text.  The readers that need many notes' text at once
+ * use this instead of one SELECT per note — the whole column is ~1.5 MB even
+ * for image-heavy databases, and per-query latency is what hurts on
+ * shared/network DBs.
+ *   max_chars — keep only this many leading characters of each value (the
+ *               list-view preview shows one line), or 0 for the full text.
+ * Rows with a NULL cache (pre-column saves) are ABSENT; callers fall back to
+ * on_note_text_cached() for those.
  * Destroy with g_hash_table_destroy().                                      */
-GHashTable *on_db_note_body_map(OnDatabase *db);
-
-/* First 200 characters of body_text for every note that has one, in ONE
- * query: note id (gint64*) → owned truncated text.  Used to populate
- * the list-view preview line in Comfortable density mode.
- * Destroy with g_hash_table_destroy().                                      */
-GHashTable *on_db_note_preview_map(OnDatabase *db);
+GHashTable *on_db_note_text_map(OnDatabase *db, gint max_chars);
 
 /* Per-tag note counts in one query; same shape as above.                    */
 GHashTable *on_db_tag_count_map(OnDatabase *db);

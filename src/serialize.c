@@ -772,6 +772,68 @@ on_note_extract_text(const guint8 *data, gsize len)
     return g_string_free(out, FALSE);
 }
 
+gchar *
+on_note_text_cached(OnDatabase *db, gint64 id)
+{
+    gchar *cached = on_db_note_body_text(db, id);
+    if (cached != NULL)
+        return cached;
+
+    gsize   blob_len = 0;            /* stored blob size                    */
+    guint8 *blob = on_db_note_load(db, id, &blob_len);
+    if (blob == NULL)
+        return g_strdup("");
+
+    gchar *text = on_note_extract_text(blob, blob_len);
+    g_free(blob);
+    on_db_note_set_body_text(db, id, text);
+    return text;
+}
+
+GtkTextBuffer *
+on_note_buffer_load(OnDatabase *db, gint64 id, gint max_img_px)
+{
+    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
+    on_buffer_ensure_tags(buffer);
+    gsize   blob_len = 0;            /* stored blob size                    */
+    guint8 *blob = on_db_note_load(db, id, &blob_len);
+    if (blob != NULL) {
+        on_note_deserialize_scaled(buffer, blob, blob_len, max_img_px);
+        g_free(blob);
+    }
+    return buffer;
+}
+
+/* text_contains() — literal substring test under the caller's case rules:
+ * `needle_ci` non-NULL means case-insensitive, and is already casefolded so
+ * only the haystack is folded here (once per note, not twice).              */
+static gboolean
+text_contains(const gchar *haystack, const gchar *needle,
+              const gchar *needle_ci)
+{
+    if (haystack == NULL)
+        return FALSE;
+    if (needle_ci == NULL)
+        return strstr(haystack, needle) != NULL;
+
+    gchar *folded = g_utf8_casefold(haystack, -1);
+    gboolean hit = strstr(folded, needle_ci) != NULL;
+    g_free(folded);
+    return hit;
+}
+
+gboolean
+on_note_text_matches(const gchar *title, const gchar *body,
+                     const gchar *query, const gchar *query_ci,
+                     GRegex *regex)
+{
+    if (regex != NULL)
+        return (title != NULL && g_regex_match(regex, title, 0, NULL)) ||
+               (body  != NULL && g_regex_match(regex, body,  0, NULL));
+    return text_contains(title, query, query_ci) ||
+           text_contains(body,  query, query_ci);
+}
+
 /* ---------------------------------------------------------------------------
  * parse_due_date() — parse one date string: ISO "YYYY-MM-DD" (the form
  * the app writes) or the shorthand "M/D/YY" / "M/D/YYYY".  On success

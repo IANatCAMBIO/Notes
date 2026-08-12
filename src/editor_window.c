@@ -668,15 +668,10 @@ handle_return_in_list(OnEditor *ed)
             gtk_text_iter_forward_char(&nx);
             prefix_chars = (gtk_text_iter_get_char(&nx) == ' ') ? 2 : 1;
         }
-    } else if (para == ON_FMT_LIST_BULLET) {
-        if (g_str_has_prefix(text, "\xe2\x80\xa2 "))
-            prefix_chars = 2;
     } else {
-        glong d = 0;
-        while (g_ascii_isdigit(text[d]))
-            d++;
-        if (d > 0 && text[d] == '.' && text[d + 1] == ' ')
-            prefix_chars = d + 2;
+        /* "• " or "12. " — the shared parser, so this agrees with
+         * line_strip_list_prefix and the exporter about what a prefix is.   */
+        prefix_chars = on_list_prefix_chars(text);
     }
     /* Length in characters INCLUDING anchors (get_text drops them).        */
     gboolean item_empty =
@@ -2066,6 +2061,28 @@ action_marks_prune(OnEditor *ed, const GtkTextIter *start,
 }
 
 /* ---------------------------------------------------------------------------
+ * action_nth_real_line() — locate the `ord`-th REAL action line, using the
+ * SAME numbering as the extractor and the identity marks (action_real_lines
+ * is the one definition of that order, so the three cannot drift apart).
+ *   ord — position among the real action lines.
+ *   ls  — receives the line start; rs the first char after the '!'; le the
+ *         line end (newline excluded).
+ * Returns TRUE when that many action lines exist.
+ * ------------------------------------------------------------------------- */
+static gboolean
+action_nth_real_line(GtkTextBuffer *buffer, gint ord, GtkTextIter *ls,
+                     GtkTextIter *rs, GtkTextIter *le)
+{
+    GArray *lines = action_real_lines(buffer);
+    gboolean found = ord >= 0 && ord < (gint)lines->len &&
+                     action_line_rest(buffer,
+                                      g_array_index(lines, gint, ord),
+                                      ls, rs, le);
+    g_array_unref(lines);
+    return found;
+}
+
+/* ---------------------------------------------------------------------------
  * action_strike_ord() — strike (or un-strike) the text of the `ord`-th
  * REAL action line of `buffer` (see action_rest_real).  Works on any
  * buffer that has been through on_buffer_ensure_tags — live editors and
@@ -2074,28 +2091,16 @@ action_marks_prune(OnEditor *ed, const GtkTextIter *start,
 static gboolean
 action_strike_ord(GtkTextBuffer *buffer, gint ord, gboolean done)
 {
-    gint n_lines = gtk_text_buffer_get_line_count(buffer);
-    gint seen = 0;                   /* real action lines passed so far     */
-    for (gint line = 0; line < n_lines; line++) {
-        GtkTextIter ls, rs, le;      /* line span (+ rest start)            */
-        if (!action_line_rest(buffer, line, &ls, &rs, &le))
-            continue;
-        gchar *t = gtk_text_buffer_get_text(buffer, &rs, &le, FALSE);
-        gboolean real = action_rest_real(t);
-        g_free(t);
-        if (!real)
-            continue;
-        if (seen++ == ord) {
-            if (done)
-                gtk_text_buffer_apply_tag_by_name(
-                    buffer, ON_TAGNAME_STRIKE, &rs, &le);
-            else
-                gtk_text_buffer_remove_tag_by_name(
-                    buffer, ON_TAGNAME_STRIKE, &rs, &le);
-            return TRUE;
-        }
-    }
-    return FALSE;
+    GtkTextIter ls, rs, le;          /* line span (+ rest start)            */
+    if (!action_nth_real_line(buffer, ord, &ls, &rs, &le))
+        return FALSE;
+    if (done)
+        gtk_text_buffer_apply_tag_by_name(buffer, ON_TAGNAME_STRIKE,
+                                          &rs, &le);
+    else
+        gtk_text_buffer_remove_tag_by_name(buffer, ON_TAGNAME_STRIKE,
+                                           &rs, &le);
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2109,62 +2114,49 @@ action_strike_ord(GtkTextBuffer *buffer, gint ord, gboolean done)
 static gboolean
 action_due_ord(GtkTextBuffer *buffer, gint ord, gint64 due)
 {
-    gint n_lines = gtk_text_buffer_get_line_count(buffer);
-    gint seen = 0;                   /* real action lines passed so far     */
-    for (gint line = 0; line < n_lines; line++) {
-        GtkTextIter ls, rs, le;      /* line span (+ rest start)            */
-        if (!action_line_rest(buffer, line, &ls, &rs, &le))
-            continue;
-        gchar *rest = gtk_text_buffer_get_text(buffer, &rs, &le, FALSE);
-        if (!action_rest_real(rest)) {
-            g_free(rest);
-            continue;
-        }
-        if (seen++ != ord) {
-            g_free(rest);
-            continue;
-        }
+    GtkTextIter ls, rs, le;          /* line span (+ rest start)            */
+    if (!action_nth_real_line(buffer, ord, &ls, &rs, &le))
+        return FALSE;
+    gchar *rest = gtk_text_buffer_get_text(buffer, &rs, &le, FALSE);
 
-        /* Byte length of the item text: everything up to an existing
-         * "due <date>" (or the whole rest), trailing whitespace dropped.   */
-        gsize  text_bytes;
-        gsize  due_start;
-        gint64 old_due;
-        text_bytes = on_action_split_due(rest, &due_start, &old_due)
-                     ? due_start : strlen(rest);
-        while (text_bytes > 0 &&
-               g_ascii_isspace((guchar)rest[text_bytes - 1]))
-            text_bytes--;
-        glong text_chars = g_utf8_strlen(rest, (gssize)text_bytes);
+    /* Byte length of the item text: everything up to an existing
+     * "due <date>" (or the whole rest), trailing whitespace dropped.       */
+    gsize  text_bytes;
+    gsize  due_start;
+    gint64 old_due;
+    text_bytes = on_action_split_due(rest, &due_start, &old_due)
+                 ? due_start : strlen(rest);
+    while (text_bytes > 0 &&
+           g_ascii_isspace((guchar)rest[text_bytes - 1]))
+        text_bytes--;
+    glong text_chars = g_utf8_strlen(rest, (gssize)text_bytes);
 
-        /* Does the item text end struck through?  The new suffix must
-         * match, or setting a due date would "reopen" a done item.         */
-        GtkTextIter del_s = rs;      /* everything after the text goes      */
-        gtk_text_iter_forward_chars(&del_s, (gint)text_chars);
-        gboolean struck = FALSE;
-        if (text_chars > 0) {
-            GtkTextIter probe = del_s;
-            gtk_text_iter_backward_char(&probe);
-            struck = (on_flags_at_iter(buffer, &probe, ON_FMT_INLINE_MASK) &
-                      ON_FMT_STRIKE) != 0;
-        }
-
-        gtk_text_buffer_delete(buffer, &del_s, &le);
-        if (due != 0) {
-            GDateTime *dt = g_date_time_new_from_unix_local(due);
-            gchar *suffix = g_date_time_format(dt, " due %Y-%m-%d");
-            g_date_time_unref(dt);
-            if (struck)
-                gtk_text_buffer_insert_with_tags_by_name(
-                    buffer, &del_s, suffix, -1, ON_TAGNAME_STRIKE, NULL);
-            else
-                gtk_text_buffer_insert(buffer, &del_s, suffix, -1);
-            g_free(suffix);
-        }
-        g_free(rest);
-        return TRUE;
+    /* Does the item text end struck through?  The new suffix must
+     * match, or setting a due date would "reopen" a done item.             */
+    GtkTextIter del_s = rs;          /* everything after the text goes      */
+    gtk_text_iter_forward_chars(&del_s, (gint)text_chars);
+    gboolean struck = FALSE;
+    if (text_chars > 0) {
+        GtkTextIter probe = del_s;
+        gtk_text_iter_backward_char(&probe);
+        struck = (on_flags_at_iter(buffer, &probe, ON_FMT_INLINE_MASK) &
+                  ON_FMT_STRIKE) != 0;
     }
-    return FALSE;
+
+    gtk_text_buffer_delete(buffer, &del_s, &le);
+    if (due != 0) {
+        GDateTime *dt = g_date_time_new_from_unix_local(due);
+        gchar *suffix = g_date_time_format(dt, " due %Y-%m-%d");
+        g_date_time_unref(dt);
+        if (struck)
+            gtk_text_buffer_insert_with_tags_by_name(
+                buffer, &del_s, suffix, -1, ON_TAGNAME_STRIKE, NULL);
+        else
+            gtk_text_buffer_insert(buffer, &del_s, suffix, -1);
+        g_free(suffix);
+    }
+    g_free(rest);
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2211,15 +2203,11 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
         return TRUE;
     }
 
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(app->db, note_id, &blob_len);
-    if (blob == NULL)
-        return FALSE;
-
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    on_note_deserialize(buffer, blob, blob_len);
-    g_free(blob);
+    /* Full resolution: this buffer IS saved again below, and a scaled
+     * pixbuf would no longer match its cached PNG bytes.  A note with no
+     * content yields an empty buffer, where `edit` finds no action line and
+     * fails on its own — no special case needed.                            */
+    GtkTextBuffer *buffer = on_note_buffer_load(app->db, note_id, 0);
 
     gboolean ok = edit(buffer, ord, arg);
     if (ok) {
@@ -5166,18 +5154,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
      * back on resize).                                                     */
     gint win_w = EDITOR_WIN_DEFAULT_W;
     gint win_h = EDITOR_WIN_DEFAULT_H;
-    gchar *w_str = on_app_config_get("editor_win_w");
-    gchar *h_str = on_app_config_get("editor_win_h");
-    if (w_str != NULL && h_str != NULL) {
-        gint w = (gint)g_ascii_strtoll(w_str, NULL, 10);
-        gint h = (gint)g_ascii_strtoll(h_str, NULL, 10);
-        if (w > 0 && h > 0) {
-            win_w = w;
-            win_h = h;
-        }
-    }
-    g_free(w_str);
-    g_free(h_str);
+    on_app_config_get_size("editor_win_w", "editor_win_h", &win_w, &win_h);
     gtk_window_set_default_size(GTK_WINDOW(ed->window), win_w, win_h);
     editor_place_bottom_right(ed, win_w, win_h);
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(ed->window));

@@ -332,6 +332,28 @@ void on_app_apply_touch_assist(OnApp *app);
 void on_app_config_set(const gchar *key, const gchar *value);
 
 /* ---------------------------------------------------------------------------
+ * on_app_config_get_size() — read a persisted window size from two ini keys.
+ * *w and *h are left ALONE unless both keys are present and both parse to a
+ * positive number, so the caller just pre-loads its defaults.  The editor and
+ * the search window each used to spell this out.
+ *   key_w / key_h — the two ini keys (e.g. "search_win_w"/"search_win_h").
+ *   w / h         — in/out: the caller's defaults, replaced on success.
+ * ------------------------------------------------------------------------- */
+void on_app_config_get_size(const gchar *key_w, const gchar *key_h,
+                            gint *w, gint *h);
+
+/* ---------------------------------------------------------------------------
+ * on_app_read_stream() — read a whole stdio stream into a new string.
+ * Used for the CLI's "-" (read stdin) arguments and for collecting a
+ * delegated command's captured output.
+ *   f      — the stream to drain.
+ *   rewind_first — TRUE to rewind() before reading (a temp capture file);
+ *                  FALSE to read from the current position (stdin).
+ * Returns a newly allocated, NUL-terminated string; g_free() it.
+ * ------------------------------------------------------------------------- */
+gchar *on_app_read_stream(FILE *f, gboolean rewind_first);
+
+/* ---------------------------------------------------------------------------
  * on_app_config_load_db_dir() — read the custom database directory from
  * the config file. Returns a new string (g_free() it), or NULL when the
  * default location is in use.

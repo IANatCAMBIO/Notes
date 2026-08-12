@@ -537,15 +537,9 @@ static gboolean
 export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
            OnExportFormat format, GHashTable *used)
 {
-    /* Load and deserialize into an offscreen buffer.                       */
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(app->db, m->id, &blob_len);
-    if (blob != NULL) {
-        on_note_deserialize(buffer, blob, blob_len);
-        g_free(blob);
-    }
+    /* Load and deserialize into an offscreen buffer (full resolution: the
+     * images are re-encoded into the output).                              */
+    GtkTextBuffer *buffer = on_note_buffer_load(app->db, m->id, 0);
 
     /* Compute the output path.                                             */
     const gchar *ext = (format == ON_EXPORT_HTML) ? ".html" : ".md";
@@ -677,14 +671,7 @@ on_export_note_markdown(OnApp *app, gint64 note_id)
 {
     /* Load and deserialize into an offscreen buffer (as export_one does;
      * a missing/empty note renders as an empty string).                     */
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(app->db, note_id, &blob_len);
-    if (blob != NULL) {
-        on_note_deserialize(buffer, blob, blob_len);
-        g_free(blob);
-    }
+    GtkTextBuffer *buffer = on_note_buffer_load(app->db, note_id, 0);
 
     OnExportCtx ctx = {
         .format    = ON_EXPORT_MARKDOWN,

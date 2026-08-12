@@ -443,6 +443,37 @@ on_app_config_set(const gchar *key, const gchar *value)
     config_write();
 }
 
+void
+on_app_config_get_size(const gchar *key_w, const gchar *key_h,
+                       gint *w, gint *h)
+{
+    gchar *w_str = on_app_config_get(key_w);
+    gchar *h_str = on_app_config_get(key_h);
+    if (w_str != NULL && h_str != NULL) {
+        gint pw = (gint)g_ascii_strtoll(w_str, NULL, 10);  /* parsed width  */
+        gint ph = (gint)g_ascii_strtoll(h_str, NULL, 10);  /* parsed height */
+        if (pw > 0 && ph > 0) {      /* both or neither: never a half size  */
+            *w = pw;
+            *h = ph;
+        }
+    }
+    g_free(w_str);
+    g_free(h_str);
+}
+
+gchar *
+on_app_read_stream(FILE *f, gboolean rewind_first)
+{
+    GString *s = g_string_new(NULL);
+    if (rewind_first)
+        rewind(f);
+    gchar  buf[4096];                /* read chunk                          */
+    gsize  n;                        /* bytes in this chunk                 */
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        g_string_append_len(s, buf, (gssize)n);
+    return g_string_free(s, FALSE);
+}
+
 gchar *
 on_app_config_load_db_dir(void)
 {

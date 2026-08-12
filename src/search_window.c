@@ -169,32 +169,6 @@ search_job_cancel(OnSearch *sw)
 }
 
 /* ---------------------------------------------------------------------------
- * note_plain_text() — a note's plain text for matching (title is matched
- * separately by the caller).  Reads the body_text cache when filled;
- * otherwise extracts it from the BNBF blob without decoding images and
- * writes it back so the next search skips the blob entirely.  Runs on
- * the worker thread against the worker's private connection.  Returns a
- * newly allocated string.
- * ------------------------------------------------------------------------- */
-static gchar *
-note_plain_text(OnDatabase *db, gint64 note_id)
-{
-    gchar *cached = on_db_note_body_text(db, note_id);
-    if (cached != NULL)
-        return cached;
-
-    gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, note_id, &blob_len);
-    if (blob == NULL)
-        return g_strdup("");
-
-    gchar *text = on_note_extract_text(blob, blob_len);
-    g_free(blob);
-    on_db_note_set_body_text(db, note_id, text);
-    return text;
-}
-
-/* ---------------------------------------------------------------------------
  * note_full_path() — build the "/Folder/Sub/Title" display path of one
  * result from the pre-fetched folder-path map (one query for the whole
  * search, never per-row — see on_db_folder_path_map).  Returns a newly
@@ -205,26 +179,6 @@ note_full_path(OnNoteMeta *m, GHashTable *paths)
 {
     const gchar *fpath = g_hash_table_lookup(paths, &m->folder_id);
     return g_strdup_printf("%s/%s", fpath != NULL ? fpath : "", m->title);
-}
-
-/* ---------------------------------------------------------------------------
- * text_matches() — does `haystack` contain `needle` under the plain
- * (non-regex) rules?
- *   needle_ci — the casefolded needle for case-insensitive matching
- *               (folded ONCE by the caller, not per note), or NULL for
- *               case-sensitive matching.
- * ------------------------------------------------------------------------- */
-static gboolean
-text_matches(const gchar *haystack, const gchar *needle,
-             const gchar *needle_ci)
-{
-    if (needle_ci == NULL)
-        return strstr(haystack, needle) != NULL;
-
-    gchar *h = g_utf8_casefold(haystack, -1);
-    gboolean hit = strstr(h, needle_ci) != NULL;
-    g_free(h);
-    return hit;
 }
 
 /* ---------------------------------------------------------------------------
@@ -302,7 +256,7 @@ search_worker(gpointer user_data)
     /* All cached note bodies in one query (instead of one SELECT per
      * candidate); the rare pre-column NULL rows fall back below.  The
      * query is casefolded once here, not twice per note.                   */
-    GHashTable *bodies = on_db_note_body_map(db);
+    GHashTable *bodies = on_db_note_text_map(db, 0);
     gchar *query_ci = job->case_sensitive
                       ? NULL : g_utf8_casefold(job->query, -1);
 
@@ -313,17 +267,13 @@ search_worker(gpointer user_data)
         const gchar *body = g_hash_table_lookup(bodies, &m->id);
         gchar *extracted = NULL;     /* fallback for uncached rows          */
         if (body == NULL) {
-            extracted = note_plain_text(db, m->id);
+            extracted = on_note_text_cached(db, m->id);
             body = extracted;
         }
 
-        gboolean match;              /* does this note match the query?     */
-        if (job->regex != NULL)
-            match = g_regex_match(job->regex, m->title, 0, NULL) ||
-                    g_regex_match(job->regex, body, 0, NULL);
-        else
-            match = text_matches(m->title, job->query, query_ci) ||
-                    text_matches(body, job->query, query_ci);
+        gboolean match =             /* does this note match the query?     */
+            on_note_text_matches(m->title, body, job->query, query_ci,
+                                 job->regex);
         g_free(extracted);
         if (!match)
             continue;
@@ -493,18 +443,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     /* Open at whatever size the last search window was left at.            */
     gint win_w = SEARCH_WIN_DEFAULT_W;
     gint win_h = SEARCH_WIN_DEFAULT_H;
-    gchar *w_str = on_app_config_get("search_win_w");
-    gchar *h_str = on_app_config_get("search_win_h");
-    if (w_str != NULL && h_str != NULL) {
-        gint w = (gint)g_ascii_strtoll(w_str, NULL, 10);
-        gint h = (gint)g_ascii_strtoll(h_str, NULL, 10);
-        if (w > 0 && h > 0) {
-            win_w = w;
-            win_h = h;
-        }
-    }
-    g_free(w_str);
-    g_free(h_str);
+    on_app_config_get_size("search_win_w", "search_win_h", &win_w, &win_h);
     gtk_window_set_default_size(GTK_WINDOW(sw->window), win_w, win_h);
 
     gtk_window_set_transient_for(GTK_WINDOW(sw->window),

@@ -156,16 +156,7 @@ bind_id_or_null(sqlite3_stmt *stmt, int idx, gint64 id)
  * Returns TRUE when the statement completed.
  * ------------------------------------------------------------------------- */
 static gboolean
-stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
-{
-    if (stmt == NULL)
-        return FALSE;
-    gboolean ok = sqlite3_step(stmt) == SQLITE_DONE;
-    if (!ok)
-        g_warning("db: statement failed: %s", sqlite3_errmsg(db->handle));
-    sqlite3_finalize(stmt);
-    return ok;
-}
+stmt_done(OnDatabase *db, sqlite3_stmt *stmt);      /* see stmt_finish below */
 
 /* stmt_cache_finalize() — GDestroyNotify wrapper for sqlite3_finalize,
  * used as the value-destroy function of stmt_cache.                          */
@@ -202,24 +193,43 @@ cached_prepare(OnDatabase *db, const char *sql)
 }
 
 /* ---------------------------------------------------------------------------
- * cached_stmt_done() — execute a cached DML statement then reset it for
- * reuse.  Unlike stmt_done(), the statement is NOT finalized.
- *   db   — open database (for the error message).
- *   stmt — prepared and bound cached statement, or NULL (a failed prepare).
- * Steps once and logs a g_warning() on anything but SQLITE_DONE.
- * Returns TRUE when the statement completed.
+ * stmt_finish() — run a fully-bound single DML statement to completion and
+ * dispose of it according to who owns it.  The shared body of stmt_done()
+ * and cached_stmt_done(), which differ only in that.
+ *   cached — TRUE for a statement the cache owns (reset + clear bindings,
+ *            never finalize); FALSE for a one-off (finalize).
  * ------------------------------------------------------------------------- */
 static gboolean
-cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
+stmt_finish(OnDatabase *db, sqlite3_stmt *stmt, gboolean cached)
 {
     if (stmt == NULL)
         return FALSE;
     gboolean ok = sqlite3_step(stmt) == SQLITE_DONE;
     if (!ok)
         g_warning("db: statement failed: %s", sqlite3_errmsg(db->handle));
-    sqlite3_reset(stmt);
-    sqlite3_clear_bindings(stmt);
+    if (cached) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    } else {
+        sqlite3_finalize(stmt);
+    }
     return ok;
+}
+
+static gboolean
+stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
+{
+    return stmt_finish(db, stmt, FALSE);
+}
+
+/* ---------------------------------------------------------------------------
+ * cached_stmt_done() — execute a cached DML statement then reset it for
+ * reuse.  Unlike stmt_done(), the statement is NOT finalized.
+ * ------------------------------------------------------------------------- */
+static gboolean
+cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
+{
+    return stmt_finish(db, stmt, TRUE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -519,6 +529,90 @@ on_db_folder_move(OnDatabase *db, gint64 id, gint64 parent_id)
 }
 
 /* ---------------------------------------------------------------------------
+ * BULK ID OPERATIONS
+ *
+ * Four callers (delete, trash, move, reorder) all need the same shape: one
+ * transaction around a statement stepped once per id, rolled back whole on
+ * the first failure.  Only the binding differs, so that is the callback.
+ *
+ * The transaction matters for more than atomicity: in autocommit mode SQLite
+ * fsyncs per statement, which froze the GUI on a big multi-note drop.
+ * ------------------------------------------------------------------------- */
+
+/* BulkBind — bind one row's parameters.  `i` is the row's index in `ids`
+ * (reorder uses it as the sort_order), `id` the row id, `data` the caller's
+ * context (the destination folder for a move, NULL otherwise).              */
+typedef void (*BulkBind)(sqlite3_stmt *stmt, gsize i, gint64 id,
+                         gpointer data);
+
+/* ---------------------------------------------------------------------------
+ * bulk_ids() — run `sql` once per id inside one transaction.
+ *   begin     — "BEGIN" or "BEGIN IMMEDIATE" (the latter takes the write
+ *               lock up front, for the destructive paths).
+ *   sql       — the statement to step per id.
+ *   ids / n   — the rows to act on.
+ *   bind      — binds one row's parameters.
+ *   data      — passed through to `bind`.
+ *   after_sql — a parameterless statement to run inside the SAME transaction
+ *               once every row succeeded (the orphan-tag prune), or NULL.
+ * Returns TRUE when everything committed.  n == 0 is a successful no-op that
+ * opens no transaction at all.
+ * ------------------------------------------------------------------------- */
+static gboolean
+bulk_ids(OnDatabase *db, const char *begin, const char *sql,
+         const gint64 *ids, gsize n, BulkBind bind, gpointer data,
+         const char *after_sql)
+{
+    if (n == 0)
+        return TRUE;
+    if (!exec_simple(db, begin))
+        return FALSE;
+
+    sqlite3_stmt *stmt = prepare(db, sql);
+    if (stmt == NULL) {
+        exec_simple(db, "ROLLBACK");
+        return FALSE;
+    }
+
+    gboolean ok = TRUE;                  /* set FALSE on first failure      */
+    for (gsize i = 0; i < n && ok; i++) {
+        bind(stmt, i, ids[i], data);
+        ok = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_reset(stmt);
+    }
+    if (!ok)
+        g_warning("db: bulk statement failed: %s",
+                  sqlite3_errmsg(db->handle));
+    sqlite3_finalize(stmt);
+
+    if (ok && after_sql != NULL)
+        ok = exec_simple(db, after_sql);
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
+    return ok;
+}
+
+/* bind_id_only() — BulkBind for statements whose only parameter is the id.  */
+static void
+bind_id_only(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
+{
+    (void)i; (void)data;
+    sqlite3_bind_int64(stmt, 1, id);
+}
+
+/* bind_order_id() — BulkBind for the reorder UPDATEs: sort_order = the row's
+ * index in the caller's array, then the id.                                 */
+static void
+bind_order_id(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
+{
+    (void)data;
+    sqlite3_bind_int(stmt, 1, (int)i);
+    sqlite3_bind_int64(stmt, 2, id);
+}
+
+/* ---------------------------------------------------------------------------
  * reorder_rows() — persist an explicit row ordering in one transaction.
  *   sql — an UPDATE with two placeholders: sort_order, then row id.
  *   ids — row ids in the desired order (sort_order = array index).
@@ -529,27 +623,7 @@ on_db_folder_move(OnDatabase *db, gint64 id, gint64 parent_id)
 static gboolean
 reorder_rows(OnDatabase *db, const char *sql, const gint64 *ids, gsize n)
 {
-    if (!exec_simple(db, "BEGIN"))
-        return FALSE;
-    sqlite3_stmt *stmt = prepare(db, sql);
-    if (stmt == NULL) {
-        exec_simple(db, "ROLLBACK");
-        return FALSE;
-    }
-
-    gboolean ok = TRUE;                  /* set FALSE on first failure      */
-    for (gsize i = 0; i < n && ok; i++) {
-        sqlite3_bind_int(stmt, 1, (int)i);
-        sqlite3_bind_int64(stmt, 2, ids[i]);
-        ok = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_reset(stmt);
-    }
-    sqlite3_finalize(stmt);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return bulk_ids(db, "BEGIN", sql, ids, n, bind_order_id, NULL, NULL);
 }
 
 gboolean
@@ -725,67 +799,39 @@ on_db_note_create(OnDatabase *db, gint64 folder_id)
 gboolean
 on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n)
 {
-    if (n == 0)
-        return TRUE;
+    /* One transaction for the lot — autocommit would fsync per note — and
+     * the orphan-tag prune runs once at the end instead of per note.        */
+    return bulk_ids(db, "BEGIN IMMEDIATE", "DELETE FROM notes WHERE id=?",
+                    ids, n, bind_id_only, NULL, PRUNE_ORPHAN_TAGS_SQL);
+}
 
-    /* One transaction for the lot — autocommit would fsync per note —
-     * and the orphan-tag prune runs once at the end instead of per note.   */
-    if (!exec_simple(db, "BEGIN IMMEDIATE"))
-        return FALSE;
-
-    sqlite3_stmt *stmt = prepare(db, "DELETE FROM notes WHERE id=?");
-    gboolean ok = stmt != NULL;      /* every delete succeeded so far?      */
-    for (gsize i = 0; ok && i < n; i++) {
-        sqlite3_bind_int64(stmt, 1, ids[i]);
-        ok = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_reset(stmt);
-    }
-    if (stmt != NULL)
-        sqlite3_finalize(stmt);
-
-    if (ok)
-        ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+/* bind_move() — BulkBind for on_db_notes_move: the destination folder twice
+ * (column and MAX subselect), then the note id.  `data` points at the
+ * destination folder id.                                                    */
+static void
+bind_move(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
+{
+    (void)i;
+    gint64 folder_id = *(const gint64 *)data;
+    bind_id_or_null(stmt, 1, folder_id);
+    bind_id_or_null(stmt, 2, folder_id);
+    sqlite3_bind_int64(stmt, 3, id);
 }
 
 gboolean
 on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
                  gint64 folder_id)
 {
-    if (!exec_simple(db, "BEGIN"))
-        return FALSE;
     /* trashed=0: dragging a note out of the Trash into a folder is a
      * restore — a moved note is always meant to be visible where it
      * lands.  The MAX subselect re-evaluates per row inside the
      * transaction, so the notes land appended in array order.               */
-    sqlite3_stmt *stmt = prepare(db,
-        "UPDATE notes SET folder_id=?, trashed=0, sort_order="
-        "  COALESCE((SELECT MAX(sort_order)+1 FROM notes "
-        "            WHERE folder_id IS ?), 0) "
-        "WHERE id=?");
-    if (stmt == NULL) {
-        exec_simple(db, "ROLLBACK");
-        return FALSE;
-    }
-
-    gboolean ok = TRUE;                  /* set FALSE on first failure      */
-    for (gsize i = 0; i < n && ok; i++) {
-        bind_id_or_null(stmt, 1, folder_id);
-        bind_id_or_null(stmt, 2, folder_id);
-        sqlite3_bind_int64(stmt, 3, note_ids[i]);
-        ok = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_reset(stmt);
-    }
-    sqlite3_finalize(stmt);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return bulk_ids(db, "BEGIN",
+                    "UPDATE notes SET folder_id=?, trashed=0, sort_order="
+                    "  COALESCE((SELECT MAX(sort_order)+1 FROM notes "
+                    "            WHERE folder_id IS ?), 0) "
+                    "WHERE id=?",
+                    note_ids, n, bind_move, &folder_id, NULL);
 }
 
 gboolean
@@ -912,16 +958,39 @@ on_db_note_get(OnDatabase *db, gint64 id)
     return meta;
 }
 
-/* run_meta_query() — collect every row of `stmt` into a list of
- * OnNoteMeta* (columns must match meta_from_row) and finalize it.           */
+/* ---------------------------------------------------------------------------
+ * collect_meta() — drain `stmt` (columns = NOTE_META_COLS) into a list of
+ * OnNoteMeta*, disposing of the statement by ownership: a cached one is
+ * reset for reuse, a one-off is finalized.  The shared body of the four
+ * meta-query entry points below.
+ * ------------------------------------------------------------------------- */
 static GList *
-run_meta_query(sqlite3_stmt *stmt)
+collect_meta(sqlite3_stmt *stmt, gboolean cached)
 {
     GList *out = NULL;                   /* accumulated OnNoteMeta* rows    */
     while (sqlite3_step(stmt) == SQLITE_ROW)
         out = g_list_prepend(out, meta_from_row(stmt));
-    sqlite3_finalize(stmt);
+    if (cached) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    } else {
+        sqlite3_finalize(stmt);
+    }
     return g_list_reverse(out);
+}
+
+/* run_meta_query() — collect a one-off stmt's rows and finalize it.         */
+static GList *
+run_meta_query(sqlite3_stmt *stmt)
+{
+    return collect_meta(stmt, FALSE);
+}
+
+/* run_meta_query_cached() — collect a cached stmt's rows and reset it.      */
+static GList *
+run_meta_query_cached(sqlite3_stmt *stmt)
+{
+    return collect_meta(stmt, TRUE);
 }
 
 /* meta_query() — prepare a parameterless note-metadata SELECT (columns =
@@ -932,19 +1001,6 @@ meta_query(OnDatabase *db, const char *sql)
 {
     sqlite3_stmt *stmt = prepare(db, sql);
     return (stmt != NULL) ? run_meta_query(stmt) : NULL;
-}
-
-/* run_meta_query_cached() — collect every row of a cached stmt into a list
- * of OnNoteMeta*, then reset+clear the stmt for reuse (not finalized).       */
-static GList *
-run_meta_query_cached(sqlite3_stmt *stmt)
-{
-    GList *out = NULL;
-    while (sqlite3_step(stmt) == SQLITE_ROW)
-        out = g_list_prepend(out, meta_from_row(stmt));
-    sqlite3_reset(stmt);
-    sqlite3_clear_bindings(stmt);
-    return g_list_reverse(out);
 }
 
 /* meta_query_cached() — look up or compile a parameterless note-metadata
@@ -1497,17 +1553,16 @@ on_db_action_uids_fill(OnDatabase *db)
     return ok;
 }
 
-GList *
-on_db_action_list(OnDatabase *db)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid "
-        "FROM action_items a JOIN notes n ON n.id = a.note_id "
-        "WHERE n." NOTE_VISIBLE_SQL " "
-        "ORDER BY n.updated_at DESC, a.ord");
-    if (stmt == NULL)
-        return NULL;
+/* Column list shared by the action-item queries, matching
+ * run_action_query()'s expectations.                                        */
+#define ACTION_COLS "note_id, ord, text, done, due, uid"
 
+/* run_action_query() — collect every row of `stmt` (columns: ACTION_COLS)
+ * into a list of OnActionItem* and finalize it — the action-item counterpart
+ * of run_meta_query()/run_tag_query().                                      */
+static GList *
+run_action_query(sqlite3_stmt *stmt)
+{
     GList *out = NULL;                   /* accumulated OnActionItem rows   */
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         OnActionItem *it = g_new0(OnActionItem, 1);
@@ -1524,28 +1579,28 @@ on_db_action_list(OnDatabase *db)
 }
 
 GList *
+on_db_action_list(OnDatabase *db)
+{
+    /* The join needs the "a." qualifier, so the column list is spelled with
+     * the alias here; the order still matches ACTION_COLS.                  */
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid "
+        "FROM action_items a JOIN notes n ON n.id = a.note_id "
+        "WHERE n." NOTE_VISIBLE_SQL " "
+        "ORDER BY n.updated_at DESC, a.ord");
+    return (stmt != NULL) ? run_action_query(stmt) : NULL;
+}
+
+GList *
 on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, ord, text, done, due, uid FROM action_items "
+        "SELECT " ACTION_COLS " FROM action_items "
         "WHERE note_id=? ORDER BY ord");
     if (stmt == NULL)
         return NULL;
     sqlite3_bind_int64(stmt, 1, note_id);
-
-    GList *out = NULL;                    /* accumulated OnActionItem rows   */
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        OnActionItem *it = g_new0(OnActionItem, 1);
-        it->note_id = sqlite3_column_int64(stmt, 0);
-        it->ord     = sqlite3_column_int(stmt, 1);
-        it->text    = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
-        it->done    = sqlite3_column_int(stmt, 3) != 0;
-        it->due     = sqlite3_column_int64(stmt, 4);
-        it->uid     = sqlite3_column_int64(stmt, 5);
-        out = g_list_prepend(out, it);
-    }
-    sqlite3_finalize(stmt);
-    return g_list_reverse(out);
+    return run_action_query(stmt);
 }
 
 gboolean
@@ -1626,27 +1681,10 @@ on_db_set_user_version(OnDatabase *db, gint version)
 gboolean
 on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n)
 {
-    if (n == 0)
-        return TRUE;
-
     /* One transaction for the lot, like on_db_notes_delete.                 */
-    if (!exec_simple(db, "BEGIN IMMEDIATE"))
-        return FALSE;
-
-    sqlite3_stmt *stmt = prepare(db, "UPDATE notes SET trashed=1 WHERE id=?");
-    gboolean ok = stmt != NULL;      /* every update succeeded so far?      */
-    for (gsize i = 0; ok && i < n; i++) {
-        sqlite3_bind_int64(stmt, 1, ids[i]);
-        ok = sqlite3_step(stmt) == SQLITE_DONE;
-        sqlite3_reset(stmt);
-    }
-    if (stmt != NULL)
-        sqlite3_finalize(stmt);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return bulk_ids(db, "BEGIN IMMEDIATE",
+                    "UPDATE notes SET trashed=1 WHERE id=?",
+                    ids, n, bind_id_only, NULL, NULL);
 }
 
 gboolean
@@ -1861,34 +1899,23 @@ on_db_tag_count_map(OnDatabase *db)
 }
 
 GHashTable *
-on_db_note_body_map(OnDatabase *db)
+on_db_note_text_map(OnDatabase *db, gint max_chars)
 {
     GHashTable *map = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                             g_free, g_free);
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT id, body_text FROM notes WHERE body_text IS NOT NULL");
+    /* One statement, two uses: full text for searching, a leading slice for
+     * the list-view previews.  The truncated form used to be a second,
+     * near-identical function.                                              */
+    sqlite3_stmt *stmt = (max_chars > 0)
+        ? prepare(db, "SELECT id, SUBSTR(body_text, 1, ?) FROM notes "
+                      "WHERE body_text IS NOT NULL")
+        : prepare(db, "SELECT id, body_text FROM notes "
+                      "WHERE body_text IS NOT NULL");
     if (stmt == NULL)
         return map;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        gint64 *key = g_new(gint64, 1);
-        *key = sqlite3_column_int64(stmt, 0);
-        g_hash_table_insert(map, key,
-            g_strdup((const gchar *)sqlite3_column_text(stmt, 1)));
-    }
-    sqlite3_finalize(stmt);
-    return map;
-}
+    if (max_chars > 0)
+        sqlite3_bind_int(stmt, 1, max_chars);
 
-GHashTable *
-on_db_note_preview_map(OnDatabase *db)
-{
-    GHashTable *map = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                            g_free, g_free);
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT id, SUBSTR(body_text, 1, 200) FROM notes "
-        "WHERE body_text IS NOT NULL AND body_text != ''");
-    if (stmt == NULL)
-        return map;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         gint64 *key = g_new(gint64, 1);
         *key = sqlite3_column_int64(stmt, 0);

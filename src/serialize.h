@@ -40,6 +40,8 @@
 
 #include <gtk/gtk.h>
 
+#include "db.h"                      /* OnDatabase, OnActionItem            */
+
 /* ---------------------------------------------------------------------------
  * Formatting flag bits used in BNBF TEXT records.  Each bit corresponds to
  * exactly one named GtkTextTag (see ON_TAGNAME_* below).
@@ -216,6 +218,53 @@ gboolean on_note_deserialize_scaled(GtkTextBuffer *buffer,
  * ------------------------------------------------------------------------- */
 gchar *on_note_extract_text(const guint8 *data, gsize len);
 
+/* ---------------------------------------------------------------------------
+ * on_note_text_cached() — one note's plain text, read the cheap way: the
+ * notes.body_text cache when it is filled, otherwise extracted from the
+ * blob with on_note_extract_text() (no images decoded) and written back so
+ * the next reader hits the cache.  THE one implementation — the cross-note
+ * search and the CLI both used to carry their own identical copy.
+ *   db — open database (written to when the cache was empty).
+ *   id — the note.
+ * Returns a newly allocated string, "" for a note with no content; g_free().
+ * ------------------------------------------------------------------------- */
+gchar *on_note_text_cached(OnDatabase *db, gint64 id);
+
+/* ---------------------------------------------------------------------------
+ * on_note_buffer_load() — deserialize note `id`'s stored content into a new
+ * offscreen GtkTextBuffer with the standard tag set applied (an empty buffer
+ * when the note has no content yet).  The shared preamble of every offscreen
+ * consumer: the exporter, the grid-thumbnail renderer, the CLI's content
+ * commands and the editor's offscreen action rewrites.
+ *   db          — open database.
+ *   id          — the note to load.
+ *   max_img_px  — cap on the longest side of decoded images, 0 for full
+ *                 resolution.  Thumbnail callers pass a small cap so a note
+ *                 full of screenshots is not decoded at full size; anything
+ *                 that may SAVE the buffer again must pass 0, since a scaled
+ *                 pixbuf no longer matches its cached PNG bytes.
+ * Returns the buffer; g_object_unref() it.
+ * ------------------------------------------------------------------------- */
+GtkTextBuffer *on_note_buffer_load(OnDatabase *db, gint64 id,
+                                   gint max_img_px);
+
+/* ---------------------------------------------------------------------------
+ * on_note_text_matches() — does a note match a search query?  Title or body
+ * counts as a hit.  THE matching rule, shared by the search window's worker
+ * thread and the headless `search` command, which each used to spell it out
+ * (and disagree about how much casefolding to do).
+ *   title    — the note's title.
+ *   body     — its plain text (see on_note_text_cached).
+ *   query    — the literal needle; ignored when `regex` is non-NULL.
+ *   query_ci — `query` pre-casefolded ONCE by the caller for
+ *              case-insensitive literal matching, or NULL for a
+ *              case-sensitive comparison.  Ignored when `regex` is set.
+ *   regex    — compiled pattern for regex mode, or NULL for literal mode.
+ *              GRegex is immutable, so one may be shared across threads.
+ * ------------------------------------------------------------------------- */
+gboolean on_note_text_matches(const gchar *title, const gchar *body,
+                              const gchar *query, const gchar *query_ci,
+                              GRegex *regex);
 
 /* ---------------------------------------------------------------------------
  * on_note_extract_actions() — pull the ACTION ITEMS out of a BNBF blob

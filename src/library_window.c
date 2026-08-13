@@ -400,6 +400,47 @@ sb_kind_is_section(gint kind)
            kind == SB_KIND_ACTIONS;
 }
 
+/* ---------------------------------------------------------------------------
+ * sb_folder_append() — add one folder row to the sidebar, formatting its
+ * display text the one way folder rows are formatted: an optional emoji
+ * prefix separated by two spaces, and an optional "(n)" note count.  Shared
+ * by the normal tree and the Trash section, which differ only in SB_KIND.
+ *   parent_iter — row to nest under (the Notes root, a folder, or Trash).
+ *   f           — the folder.
+ *   kind        — SB_KIND_FOLDER or SB_KIND_TRASH_FOLDER.
+ *   note_counts — count map, or NULL while counts are hidden.
+ *   iter        — receives the new row (for recursing into it); may be NULL.
+ * ------------------------------------------------------------------------- */
+static void
+sb_folder_append(OnLibrary *lw, GtkTreeIter *parent_iter, const OnFolder *f,
+                 gint kind, GHashTable *note_counts, GtkTreeIter *iter)
+{
+    gboolean has_emoji = f->emoji != NULL && *f->emoji != '\0';
+    gchar   *display;                /* name (+ emoji prefix, + count)      */
+    if (lw->app->sidebar_counts) {
+        gint count = count_from_map(note_counts, f->id);
+        display = has_emoji
+            ? g_strdup_printf("%s  %s (%d)", f->emoji, f->name, count)
+            : g_strdup_printf("%s (%d)", f->name, count);
+    } else {
+        display = has_emoji
+            ? g_strdup_printf("%s  %s", f->emoji, f->name)
+            : g_strdup(f->name);
+    }
+
+    GtkTreeIter local;               /* used when the caller passed NULL    */
+    if (iter == NULL)
+        iter = &local;
+    gtk_tree_store_append(lw->sidebar_store, iter, parent_iter);
+    gtk_tree_store_set(lw->sidebar_store, iter,
+                       SB_KIND, kind,
+                       SB_ID,   f->id,
+                       SB_NAME, display,
+                       SB_RAW,  f->name,
+                       -1);
+    g_free(display);
+}
+
 static void
 add_folder_rows(OnLibrary *lw, gint64 parent_id, GtkTreeIter *parent_iter,
                 GHashTable *note_counts, GHashTable *children)
@@ -408,27 +449,10 @@ add_folder_rows(OnLibrary *lw, gint64 parent_id, GtkTreeIter *parent_iter,
      * tree, instead of one per folder as this recursion used to do.         */
     GList *folders = on_db_folder_children(children, parent_id);
     for (GList *l = folders; l != NULL; l = l->next) {
-        OnFolder *f = l->data;       /* one child folder                    */
-        gboolean has_emoji = f->emoji != NULL && *f->emoji != '\0';
-        gint     count     = count_from_map(note_counts, f->id);
-        gchar   *display;            /* name (+ emoji prefix, + count)      */
-        if (lw->app->sidebar_counts)
-            display = has_emoji
-                ? g_strdup_printf("%s  %s (%d)", f->emoji, f->name, count)
-                : g_strdup_printf("%s (%d)", f->name, count);
-        else
-            display = has_emoji
-                ? g_strdup_printf("%s  %s", f->emoji, f->name)
-                : g_strdup(f->name);
-        GtkTreeIter iter;
-        gtk_tree_store_append(lw->sidebar_store, &iter, parent_iter);
-        gtk_tree_store_set(lw->sidebar_store, &iter,
-                           SB_KIND, SB_KIND_FOLDER,
-                           SB_ID,   f->id,
-                           SB_NAME, display,
-                           SB_RAW,  f->name,
-                           -1);
-        g_free(display);
+        OnFolder   *f = l->data;     /* one child folder                    */
+        GtkTreeIter iter;            /* its new row, to recurse under       */
+        sb_folder_append(lw, parent_iter, f, SB_KIND_FOLDER, note_counts,
+                         &iter);
         add_folder_rows(lw, f->id, &iter, note_counts, children);
     }
     /* `folders` belongs to the child map — nothing to free here.            */
@@ -654,29 +678,9 @@ refresh_sidebar(OnLibrary *lw)
         g_free(label);
 
         GList *trashed = on_db_folder_list_trashed(lw->app->db);
-        for (GList *l = trashed; l != NULL; l = l->next) {
-            OnFolder *f = l->data;   /* one trashed folder                  */
-            gboolean has_emoji = f->emoji != NULL && *f->emoji != '\0';
-            gint     count     = count_from_map(note_counts, f->id);
-            gchar   *display;
-            if (lw->app->sidebar_counts)
-                display = has_emoji
-                    ? g_strdup_printf("%s  %s (%d)", f->emoji, f->name, count)
-                    : g_strdup_printf("%s (%d)", f->name, count);
-            else
-                display = has_emoji
-                    ? g_strdup_printf("%s  %s", f->emoji, f->name)
-                    : g_strdup(f->name);
-            GtkTreeIter iter;
-            gtk_tree_store_append(lw->sidebar_store, &iter, &trash_iter);
-            gtk_tree_store_set(lw->sidebar_store, &iter,
-                               SB_KIND, SB_KIND_TRASH_FOLDER,
-                               SB_ID,   f->id,
-                               SB_NAME, display,
-                               SB_RAW,  f->name,
-                               -1);
-            g_free(display);
-        }
+        for (GList *l = trashed; l != NULL; l = l->next)
+            sb_folder_append(lw, &trash_iter, l->data,
+                             SB_KIND_TRASH_FOLDER, note_counts, NULL);
         on_db_folder_list_free(trashed);
     }
 

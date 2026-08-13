@@ -133,13 +133,15 @@ sees the new flags.
   Keys: `db_dir`, `toolbar_style_library`, `toolbar_style_editor`
   (`text|icons|both`, default icons), `code_copy_button` (`1|0`),
   `code_line_numbers` (`1|0`), `native_menubar` (`1|0`),
-  `db_integrity_check` (`1|0`, default 1 — hash-compare the DB file at
-  startup, offering Open Anyway / Run Integrity Check when it changed;
-  `db_hash` is the stored snapshot, written at clean GUI exit AND after
-  every successful headless CLI mutation.  The startup comparison uses
-  `app->db_hash_at_open`, hashed in main() BEFORE on_db_open — schema
-  migrations and backfills legitimately rewrite the file at open, so
-  hashing afterwards false-alarmed on every upgrading launch),
+  `db_integrity_check` (`1|0`, default 1 — run `PRAGMA integrity_check` and
+  `PRAGMA foreign_key_check` against the database at startup, warning in a
+  dialog if either reports problems; see `startup_integrity_check()` in
+  main.c.  This was ONCE a file-hash comparison instead — a `db_hash` key
+  snapshotted at clean exit, compared against an `app->db_hash_at_open`
+  taken before `on_db_open`, offering Open Anyway / Run Integrity Check when
+  the file had changed underneath.  All of that is GONE from the code; a
+  leftover `db_hash=` line in an existing ini is simply ignored, and nothing
+  writes one any more),
   `sidebar_counts` (`1|0`, default 0 — folder/tag counts in the
   sidebar), `first_line_title` (`1|0`, default 1 — treat line 0 as the
   note's title: the editor CENTERS it and renders it heading-sized,
@@ -226,7 +228,12 @@ sees the new flags.
   the expected location (first launch / emptied dir),
   `startup_first_run()` asks — "Open a notes.db File" (persists the
   new db_dir) or "Create a New notes.db" — instead of silently creating
-  an empty DB; both paths clear any stale db_hash.
+  an empty DB.  **RENAMING OR MOVING THE DB DIRECTORY BY HAND puts you
+  here**: `db_dir` still names the old path, nothing is found, and the
+  Welcome dialog appears — answering "Create a New notes.db" at that
+  point leaves the real database orphaned at its new path.  Fix the
+  `db_dir` line in the ini (or use "Open a notes.db File", which
+  persists it) rather than creating one.
 - **Folder emoji** (`folders.emoji` TEXT, default `''`): each folder
   can have an optional emoji set via its Info dialog (right-click a
   folder → Info, or via New Folder). GTK's built-in emoji chooser opens

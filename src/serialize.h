@@ -178,6 +178,43 @@ const gchar *on_tag_name_for_flag(guint32 flag);
 void on_buffer_ensure_tags(GtkTextBuffer *buffer);
 
 /* ---------------------------------------------------------------------------
+ * BUFFER WALK — the ONE decomposition of a GtkTextBuffer into the pieces
+ * that get stored: styled text runs plus the three kinds of embedded object.
+ *
+ * The serializer and the editor's undo snapshot need exactly the same
+ * traversal (anchors interrupt runs, runs split where the flag set changes,
+ * payloadless anchors and stray U+FFFC characters are dropped) and used to
+ * carry a copy each, with comments warning that the two must stay in step.
+ * Now only the per-segment action differs.
+ * ------------------------------------------------------------------------- */
+typedef struct OnTable OnTable;      /* defined with the table API below     */
+
+typedef enum {
+    ON_SEG_TEXT,                     /* a run of identically-styled text    */
+    ON_SEG_IMAGE,                    /* an embedded image                   */
+    ON_SEG_CHECK,                    /* a task-list checkbox                */
+    ON_SEG_TABLE,                    /* an embedded table                   */
+} OnBufferSegKind;
+
+/* One segment.  Only the fields belonging to `kind` are meaningful, and
+ * every pointer is BORROWED — valid only for the duration of the callback.  */
+typedef struct {
+    OnBufferSegKind kind;
+    guint32      flags;              /* ON_FMT_* on the run / anchor char    */
+    const gchar *text;               /* TEXT: bytes, NOT NUL-terminated      */
+    gsize        n_text;
+    GdkPixbuf   *pixbuf;             /* IMAGE                                */
+    gint         display_width;      /* IMAGE: chosen on-screen width        */
+    gboolean     checked;            /* CHECK                                */
+    OnTable     *table;              /* TABLE: owned by its anchor           */
+} OnBufferSeg;
+
+typedef void (*OnBufferSegFn)(const OnBufferSeg *seg, gpointer data);
+
+/* Walk `buffer` start to end, calling `cb` once per segment, in order.      */
+void on_buffer_walk(GtkTextBuffer *buffer, OnBufferSegFn cb, gpointer data);
+
+/* ---------------------------------------------------------------------------
  * on_note_serialize() — flatten a buffer into a newly allocated BNBF blob.
  *   buffer  — source buffer (must have been through on_buffer_ensure_tags).
  *   out_len — receives the blob size in bytes.
@@ -355,12 +392,12 @@ GdkPixbuf *on_anchor_get_image(GtkTextChildAnchor *anchor,
  *   cells     — rows*cols owned strings, row-major (never NULL entries;
  *               cell text may contain newlines).
  * ------------------------------------------------------------------------- */
-typedef struct {
+struct OnTable {
     gint       rows;
     gint       cols;
     gboolean   header;
     GPtrArray *cells;
-} OnTable;
+};
 
 /* on_table_new() — a rows×cols table of empty cells.                        */
 OnTable *on_table_new(gint rows, gint cols);

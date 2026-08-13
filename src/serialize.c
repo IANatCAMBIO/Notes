@@ -198,24 +198,221 @@ put_u32(GByteArray *buf, guint32 v)
     g_byte_array_append(buf, b, 4);
 }
 
-/* ---------------------------------------------------------------------------
- * flush_text_run() — emit one TEXT record if the pending run is non-empty,
- * then reset the run accumulator.
- *   out   — the BNBF blob under construction.
- *   run   — pending UTF-8 text (emptied by this call).
- *   flags — formatting bits for the whole run.
+/* ===========================================================================
+ * BUFFER WALK
+ *
+ * ONE traversal of a GtkTextBuffer, shared by the serializer and the
+ * editor's undo snapshot.  Both need exactly the same decomposition —
+ * anchors interrupt text runs, runs split where the flag set changes,
+ * payloadless anchors and stray U+FFFC characters are dropped — and each
+ * used to carry its own copy, with comments warning they must stay in step.
+ * Now they differ only in what they do with a segment.
  * ------------------------------------------------------------------------- */
+
+/* UTF-8 encoding of U+FFFC, the object-replacement character a child anchor
+ * or embedded pixbuf occupies in a text slice.                              */
+#define OBJ_REPLACEMENT "\xef\xbf\xbc"
+
+/* seg_flush() — hand the pending text run to the callback and reset it.     */
 static void
-flush_text_run(GByteArray *out, GString *run, guint32 flags)
+seg_flush(OnBufferSeg *seg, GString *run, guint32 flags,
+          OnBufferSegFn cb, gpointer data)
 {
     if (run->len == 0)
         return;
-    guint8 rec = REC_TEXT;           /* record type byte                    */
-    g_byte_array_append(out, &rec, 1);
-    put_u32(out, flags);
-    put_u32(out, (guint32)run->len);
-    g_byte_array_append(out, (const guint8 *)run->str, run->len);
+    memset(seg, 0, sizeof *seg);
+    seg->kind   = ON_SEG_TEXT;
+    seg->flags  = flags;
+    seg->text   = run->str;
+    seg->n_text = run->len;
+    cb(seg, data);
     g_string_truncate(run, 0);
+}
+
+void
+on_buffer_walk(GtkTextBuffer *buffer, OnBufferSegFn cb, gpointer data)
+{
+    GtkTextIter iter;                /* walk position                       */
+    gtk_text_buffer_get_start_iter(buffer, &iter);
+
+    GString  *run       = g_string_new(NULL);  /* text of the pending run   */
+    guint32   run_flags = 0;                   /* formatting of the run     */
+    OnFlagRun frun;                            /* per-run flag probing      */
+    OnBufferSeg seg;                           /* reused, copied by callers */
+    on_flag_run_init(&frun, buffer, ~0u);
+
+    while (!gtk_text_iter_is_end(&iter)) {
+        /* Images and tables live on child anchors (raw pixbufs are also
+         * accepted for robustness against buffers built elsewhere).        */
+        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
+
+        gboolean checked;            /* the checkbox's state                */
+        if (anchor != NULL && on_anchor_is_checkbox(anchor, &checked)) {
+            seg_flush(&seg, run, run_flags, cb, data);
+            memset(&seg, 0, sizeof seg);
+            seg.kind    = ON_SEG_CHECK;
+            seg.checked = checked;
+            seg.flags   = on_flag_run_at(&frun, &iter);
+            cb(&seg, data);
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+
+        OnTable *table = (anchor != NULL)
+                         ? on_anchor_get_table(anchor) : NULL;
+        if (table != NULL) {
+            seg_flush(&seg, run, run_flags, cb, data);
+            memset(&seg, 0, sizeof seg);
+            seg.kind  = ON_SEG_TABLE;
+            seg.table = table;       /* borrowed: the anchor owns it        */
+            seg.flags = on_flag_run_at(&frun, &iter);
+            cb(&seg, data);
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+
+        GdkPixbuf *original = NULL;  /* full-resolution image               */
+        gint display_width = 0;      /* the user's chosen display width     */
+        if (anchor != NULL) {
+            original = on_anchor_get_image(anchor, &display_width);
+        } else {
+            original = gtk_text_iter_get_pixbuf(&iter);
+            if (original != NULL)
+                display_width = gdk_pixbuf_get_width(original);
+        }
+        if (original != NULL) {
+            seg_flush(&seg, run, run_flags, cb, data);
+            memset(&seg, 0, sizeof seg);
+            seg.kind          = ON_SEG_IMAGE;
+            seg.pixbuf        = original;   /* borrowed                     */
+            seg.display_width = display_width;
+            seg.flags         = on_flag_run_at(&frun, &iter);
+            cb(&seg, data);
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+        if (anchor != NULL) {        /* payloadless anchor: skip its 0xFFFC
+                                        WITHOUT breaking the run           */
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+
+        /* A plain text position.  The formatting holds until the next tag
+         * toggle, so take the whole stretch at once instead of one
+         * character at a time — measured 6.9 ms -> 0.1 ms across a 20 000
+         * character note.  A stretch containing an anchor (U+FFFC in the
+         * slice) falls back to the careful path so the anchor branches
+         * above still see it.                                              */
+        guint32 flags = on_flag_run_at(&frun, &iter);
+        if (flags != run_flags) {
+            seg_flush(&seg, run, run_flags, cb, data);
+            run_flags = flags;
+        }
+
+        GtkTextIter stop = iter;     /* end of this same-formatting stretch */
+        if (!gtk_text_iter_forward_to_tag_toggle(&stop, NULL))
+            gtk_text_buffer_get_end_iter(buffer, &stop);
+        gchar *slice = gtk_text_buffer_get_slice(buffer, &iter, &stop, TRUE);
+        const gchar *obj = strstr(slice, OBJ_REPLACEMENT);
+        if (obj == NULL) {
+            g_string_append(run, slice);
+            iter = stop;
+        } else if (obj == slice) {
+            /* An object sits right here.  Anchors were handled above, so
+             * this is a stray replacement character from a paste: drop it. */
+            gtk_text_iter_forward_char(&iter);
+        } else {
+            /* Take the text up to the object and STOP THERE, so the next
+             * turn of the loop meets the object in the branches above.
+             * Advancing a single character here instead would re-slice the
+             * rest of the stretch per character — quadratic on a long run
+             * that happens to contain an image.                            */
+            g_string_append_len(run, slice, (gssize)(obj - slice));
+            gtk_text_iter_forward_chars(
+                &iter, (gint)g_utf8_strlen(slice, obj - slice));
+        }
+        g_free(slice);
+    }
+    seg_flush(&seg, run, run_flags, cb, data);
+    g_string_free(run, TRUE);
+}
+
+/* ---------------------------------------------------------------------------
+ * serialize_seg() — OnBufferSegFn writing each segment out as a BNBF record.
+ * ------------------------------------------------------------------------- */
+static void
+serialize_seg(const OnBufferSeg *seg, gpointer data)
+{
+    GByteArray *out = data;          /* the growing BNBF blob               */
+    guint8 rec;                      /* record type byte                    */
+
+    switch (seg->kind) {
+    case ON_SEG_TEXT:
+        rec = REC_TEXT;
+        g_byte_array_append(out, &rec, 1);
+        put_u32(out, seg->flags);
+        put_u32(out, (guint32)seg->n_text);
+        g_byte_array_append(out, (const guint8 *)seg->text,
+                            (guint)seg->n_text);
+        break;
+
+    case ON_SEG_CHECK: {
+        rec = REC_CHECK;
+        g_byte_array_append(out, &rec, 1);
+        guint8 state = seg->checked ? 1 : 0;
+        g_byte_array_append(out, &state, 1);
+        break;
+    }
+
+    case ON_SEG_TABLE:
+        rec = REC_TABLE;
+        g_byte_array_append(out, &rec, 1);
+        put_u32(out, seg->table->header ? TABLE_FLAG_HEADER : 0);
+        put_u32(out, (guint32)seg->table->rows);
+        put_u32(out, (guint32)seg->table->cols);
+        for (gint i = 0; i < seg->table->rows * seg->table->cols; i++) {
+            const gchar *cell = g_ptr_array_index(seg->table->cells, i);
+            put_u32(out, (guint32)strlen(cell));
+            g_byte_array_append(out, (const guint8 *)cell,
+                                (guint)strlen(cell));
+        }
+        break;
+
+    case ON_SEG_IMAGE: {
+        /* The pixbuf never changes once attached, so its PNG encoding is
+         * cached on it as "on-png" (attached at load time, or here on the
+         * first save of a freshly pasted image).  Without the cache every
+         * autosave re-compressed every image — the editor's biggest
+         * main-loop stall on image-heavy notes.                            */
+        GBytes *png_bytes =
+            g_object_get_data(G_OBJECT(seg->pixbuf), "on-png");
+        if (png_bytes == NULL) {
+            gchar *png   = NULL;     /* PNG bytes for the original          */
+            gsize  n_png = 0;        /* PNG byte count                      */
+            GError *err  = NULL;
+            if (gdk_pixbuf_save_to_buffer(seg->pixbuf, &png, &n_png,
+                                          "png", &err, NULL)) {
+                png_bytes = g_bytes_new_take(png, n_png);
+                g_object_set_data_full(G_OBJECT(seg->pixbuf), "on-png",
+                                       png_bytes,
+                                       (GDestroyNotify)g_bytes_unref);
+            } else {
+                g_warning("serialize: image save failed: %s", err->message);
+                g_clear_error(&err);
+            }
+        }
+        if (png_bytes != NULL) {
+            gsize n_png = 0;         /* PNG byte count                      */
+            gconstpointer png = g_bytes_get_data(png_bytes, &n_png);
+            rec = REC_IMAGE;
+            g_byte_array_append(out, &rec, 1);
+            put_u32(out, (guint32)seg->display_width);
+            put_u32(out, (guint32)n_png);
+            g_byte_array_append(out, (const guint8 *)png, n_png);
+        }
+        break;
+    }
+    }
 }
 
 guint8 *
@@ -225,123 +422,7 @@ on_note_serialize(GtkTextBuffer *buffer, gsize *out_len)
     g_byte_array_append(out, BNBF_MAGIC, 4);
     put_u32(out, BNBF_VERSION);
 
-    GtkTextIter iter;                /* walk position                       */
-    gtk_text_buffer_get_start_iter(buffer, &iter);
-
-    GString *run       = g_string_new(NULL); /* text of the pending run     */
-    guint32  run_flags = 0;                  /* formatting of the run       */
-    OnFlagRun frun;                          /* per-run flag probing        */
-    on_flag_run_init(&frun, buffer, ~0u);
-
-    while (!gtk_text_iter_is_end(&iter)) {
-        /* Images and tables live on child anchors (raw pixbufs are also
-         * accepted for robustness against buffers built elsewhere).        */
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
-
-        /* Checkbox anchor?  Emit a CHECK record.                           */
-        gboolean checked;            /* the checkbox's state                */
-        if (anchor != NULL && on_anchor_is_checkbox(anchor, &checked)) {
-            flush_text_run(out, run, run_flags);
-            guint8 rec = REC_CHECK;
-            g_byte_array_append(out, &rec, 1);
-            guint8 state = checked ? 1 : 0;
-            g_byte_array_append(out, &state, 1);
-            gtk_text_iter_forward_char(&iter);
-            continue;
-        }
-
-        /* Table anchor?  Emit a TABLE record.                              */
-        OnTable *table = (anchor != NULL)
-                         ? on_anchor_get_table(anchor) : NULL;
-        if (table != NULL) {
-            flush_text_run(out, run, run_flags);
-            guint8 rec = REC_TABLE;
-            g_byte_array_append(out, &rec, 1);
-            put_u32(out, table->header ? TABLE_FLAG_HEADER : 0);
-            put_u32(out, (guint32)table->rows);
-            put_u32(out, (guint32)table->cols);
-            for (gint i = 0; i < table->rows * table->cols; i++) {
-                const gchar *cell =
-                    g_ptr_array_index(table->cells, i);
-                put_u32(out, (guint32)strlen(cell));
-                g_byte_array_append(out, (const guint8 *)cell,
-                                    strlen(cell));
-            }
-            gtk_text_iter_forward_char(&iter);
-            continue;
-        }
-
-        GdkPixbuf *original = NULL;  /* full-resolution image to store      */
-        gint display_width = 0;      /* the user's chosen display width     */
-        if (anchor != NULL) {
-            original = on_anchor_get_image(anchor, &display_width);
-        } else {
-            original = gtk_text_iter_get_pixbuf(&iter);
-            if (original != NULL)
-                display_width = gdk_pixbuf_get_width(original);
-        }
-
-        if (original != NULL) {
-            /* An embedded image interrupts any text run.                   */
-            flush_text_run(out, run, run_flags);
-
-            /* The pixbuf never changes once attached, so its PNG encoding
-             * is cached on it as "on-png" (attached at load time, or here
-             * on the first save of a freshly pasted image).  Without the
-             * cache every autosave re-compressed every image — the
-             * editor's biggest main-loop stall on image-heavy notes.       */
-            GBytes *png_bytes =
-                g_object_get_data(G_OBJECT(original), "on-png");
-            if (png_bytes == NULL) {
-                gchar *png   = NULL; /* PNG bytes for the original          */
-                gsize  n_png = 0;    /* PNG byte count                      */
-                GError *err  = NULL;
-                if (gdk_pixbuf_save_to_buffer(original, &png, &n_png,
-                                              "png", &err, NULL)) {
-                    png_bytes = g_bytes_new_take(png, n_png);
-                    g_object_set_data_full(G_OBJECT(original), "on-png",
-                                           png_bytes,
-                                           (GDestroyNotify)g_bytes_unref);
-                } else {
-                    g_warning("serialize: image save failed: %s",
-                              err->message);
-                    g_clear_error(&err);
-                }
-            }
-            if (png_bytes != NULL) {
-                gsize n_png = 0;     /* PNG byte count                      */
-                gconstpointer png = g_bytes_get_data(png_bytes, &n_png);
-                guint8 rec = REC_IMAGE;
-                g_byte_array_append(out, &rec, 1);
-                put_u32(out, (guint32)display_width);
-                put_u32(out, (guint32)n_png);
-                g_byte_array_append(out, (const guint8 *)png, n_png);
-            }
-            gtk_text_iter_forward_char(&iter);
-            continue;
-        }
-        if (anchor != NULL) {        /* imageless anchor: skip its 0xFFFC   */
-            gtk_text_iter_forward_char(&iter);
-            continue;
-        }
-
-        /* Regular character: extend the current run, or flush and start a
-         * new one when the formatting changes under the cursor.            */
-        guint32 flags = on_flag_run_at(&frun, &iter);
-        if (flags != run_flags) {
-            flush_text_run(out, run, run_flags);
-            run_flags = flags;
-        }
-        gunichar ch = gtk_text_iter_get_char(&iter);
-        /* Real anchors/pixbufs were handled above, so a U+FFFC here is a
-         * stray object-replacement char in pasted text — drop it rather
-         * than save a placeholder with nothing behind it.                */
-        if (ch != 0xFFFC)
-            g_string_append_unichar(run, ch);
-        gtk_text_iter_forward_char(&iter);
-    }
-    flush_text_run(out, run, run_flags);
-    g_string_free(run, TRUE);
+    on_buffer_walk(buffer, serialize_seg, out);
 
     guint8 end = REC_END;            /* terminating record                  */
     g_byte_array_append(out, &end, 1);
@@ -369,6 +450,159 @@ get_u32(const guint8 *data, gsize len, gsize *pos, guint32 *out)
          | ((guint32)data[*pos + 3] << 24);
     *pos += 4;
     return TRUE;
+}
+
+/* ===========================================================================
+ * BNBF READER
+ *
+ * One cursor over a blob's records, so the header validation, the
+ * per-record-type framing and every truncation check exist ONCE.  Both
+ * consumers drive it: the full deserializer (which builds a GtkTextBuffer)
+ * and the extractor (which only wants text and '!' lines).  They used to
+ * carry their own copy of this dispatch, which is how a format tweak could
+ * be applied to one and forgotten in the other.
+ *
+ * The reader never warns; it records why it stopped in `error` and lets the
+ * caller decide (the deserializer reports, the extractor stops quietly).
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+    const guint8 *data;              /* the blob                            */
+    gsize         len;               /* its size                            */
+    gsize         pos;               /* read cursor                         */
+    guint32       version;           /* format version from the header      */
+    gboolean      saw_end;           /* a REC_END was reached               */
+    const gchar  *error;             /* why the walk stopped, or NULL       */
+} OnBnbfReader;
+
+/* One record, as handed to the caller.  Only the fields belonging to
+ * `type` are meaningful.                                                    */
+typedef struct {
+    guint8        type;              /* REC_TEXT / IMAGE / TABLE / CHECK    */
+    guint32       flags;             /* TEXT: ON_FMT_* bits of the run      */
+    const gchar  *text;              /* TEXT: run bytes (NOT terminated)    */
+    guint32       n_text;
+    const guint8 *png;               /* IMAGE: encoded bytes                */
+    guint32       n_png;
+    guint32       display_width;     /* IMAGE: stored display width (v2+)   */
+    gboolean      checked;           /* CHECK: the box's state              */
+    OnTable      *table;             /* TABLE: parsed; the CALLER owns it   */
+} OnBnbfRecord;
+
+/* bnbf_open() — validate the header and position at the first record.
+ * Returns FALSE (with reader->error set) on a bad magic or version.         */
+static gboolean
+bnbf_open(OnBnbfReader *r, const guint8 *data, gsize len)
+{
+    r->data = data;
+    r->len  = len;
+    r->pos  = 4;                     /* past the magic                      */
+    r->version = 0;
+    r->saw_end = FALSE;
+    r->error   = NULL;
+
+    if (!magic_ok(data, len)) {
+        r->error = "bad or missing BNBF header";
+        return FALSE;
+    }
+    if (!get_u32(data, len, &r->pos, &r->version) ||
+        r->version < 1 || r->version > BNBF_VERSION) {
+        r->error = "unsupported BNBF version";
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * bnbf_next() — read the next record, fully consuming it.
+ * Returns FALSE at REC_END (reader->saw_end set), when the blob runs out, or
+ * on a malformed record (reader->error set).  A TABLE record arrives with
+ * rec->table allocated; the caller frees it with on_table_free().
+ * ------------------------------------------------------------------------- */
+static gboolean
+bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
+{
+    if (r->error != NULL || r->pos >= r->len)
+        return FALSE;
+
+    memset(rec, 0, sizeof *rec);
+    rec->type = r->data[r->pos++];
+
+    switch (rec->type) {
+    case REC_END:
+        r->saw_end = TRUE;
+        return FALSE;
+
+    case REC_TEXT:
+        if (!get_u32(r->data, r->len, &r->pos, &rec->flags) ||
+            !get_u32(r->data, r->len, &r->pos, &rec->n_text) ||
+            r->pos + rec->n_text > r->len) {
+            r->error = "truncated TEXT record";
+            return FALSE;
+        }
+        rec->text = (const gchar *)r->data + r->pos;
+        r->pos += rec->n_text;
+        return TRUE;
+
+    case REC_IMAGE:
+        if (r->version >= 2 &&
+            !get_u32(r->data, r->len, &r->pos, &rec->display_width)) {
+            r->error = "truncated IMAGE record";
+            return FALSE;
+        }
+        if (!get_u32(r->data, r->len, &r->pos, &rec->n_png) ||
+            r->pos + rec->n_png > r->len) {
+            r->error = "truncated IMAGE record";
+            return FALSE;
+        }
+        rec->png = r->data + r->pos;
+        r->pos += rec->n_png;
+        return TRUE;
+
+    case REC_CHECK:
+        if (r->pos >= r->len) {
+            r->error = "truncated CHECK record";
+            return FALSE;
+        }
+        rec->checked = r->data[r->pos++] != 0;
+        return TRUE;
+
+    case REC_TABLE: {
+        guint32 tflags = 0, rows, cols;
+        if (r->version >= 4 &&
+            !get_u32(r->data, r->len, &r->pos, &tflags)) {
+            r->error = "truncated TABLE record";
+            return FALSE;
+        }
+        if (!get_u32(r->data, r->len, &r->pos, &rows) ||
+            !get_u32(r->data, r->len, &r->pos, &cols) ||
+            rows == 0 || cols == 0 || rows > 1024 || cols > 1024) {
+            r->error = "bad TABLE record";
+            return FALSE;
+        }
+        OnTable *t = on_table_new((gint)rows, (gint)cols);
+        t->header = (tflags & TABLE_FLAG_HEADER) != 0;
+        for (guint32 i = 0; i < rows * cols; i++) {
+            guint32 n;               /* cell byte length                    */
+            if (!get_u32(r->data, r->len, &r->pos, &n) ||
+                r->pos + n > r->len) {
+                on_table_free(t);
+                r->error = "truncated TABLE cell";
+                return FALSE;
+            }
+            gchar *cell = g_strndup((const gchar *)r->data + r->pos, n);
+            on_table_set(t, (gint)(i / cols), (gint)(i % cols), cell);
+            g_free(cell);
+            r->pos += n;
+        }
+        rec->table = t;              /* caller owns it                      */
+        return TRUE;
+    }
+
+    default:
+        r->error = "unknown record type";
+        return FALSE;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -436,47 +670,21 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
     on_buffer_ensure_tags(buffer);
     gtk_text_buffer_set_text(buffer, "", -1);
 
-    /* Validate header.                                                     */
-    if (!magic_ok(data, len)) {
-        g_warning("deserialize: bad or missing BNBF header");
-        return FALSE;
-    }
-    gsize   pos = 4;                 /* read cursor, past the magic         */
-    guint32 version;                 /* format version from the header      */
-    if (!get_u32(data, len, &pos, &version) ||
-        version < 1 || version > BNBF_VERSION) {
-        g_warning("deserialize: unsupported BNBF version");
+    OnBnbfReader r;                  /* the one record walker               */
+    if (!bnbf_open(&r, data, len)) {
+        g_warning("deserialize: %s", r.error);
         return FALSE;
     }
 
-    while (pos < len) {
-        guint8 rec = data[pos++];    /* record type byte                    */
-        if (rec == REC_END)
-            return TRUE;
+    OnBnbfRecord rec;                /* the record being built from         */
+    while (bnbf_next(&r, &rec)) {
+        switch (rec.type) {
+        case REC_TEXT:
+            insert_with_flags(buffer, rec.text, (gssize)rec.n_text,
+                              rec.flags);
+            break;
 
-        if (rec == REC_TEXT) {
-            guint32 flags, n;        /* run formatting and byte length      */
-            if (!get_u32(data, len, &pos, &flags) ||
-                !get_u32(data, len, &pos, &n)     ||
-                pos + n > len) {
-                g_warning("deserialize: truncated TEXT record");
-                return FALSE;
-            }
-            insert_with_flags(buffer, (const gchar *)data + pos,
-                              (gssize)n, flags);
-            pos += n;
-        } else if (rec == REC_IMAGE) {
-            guint32 display_width = 0;   /* stored display width (v2+)      */
-            if (version >= 2 &&
-                !get_u32(data, len, &pos, &display_width)) {
-                g_warning("deserialize: truncated IMAGE record");
-                return FALSE;
-            }
-            guint32 n;               /* PNG byte length                     */
-            if (!get_u32(data, len, &pos, &n) || pos + n > len) {
-                g_warning("deserialize: truncated IMAGE record");
-                return FALSE;
-            }
+        case REC_IMAGE: {
             /* Decode the PNG bytes and embed an image-carrying anchor.
              * Widgets (for on-screen display) are attached separately by
              * the editor; offscreen consumers just read the anchor data.   */
@@ -486,7 +694,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
                                  G_CALLBACK(on_size_prepared),
                                  GINT_TO_POINTER(max_img_px));
             GError *err = NULL;
-            if (gdk_pixbuf_loader_write(loader, data + pos, n, &err) &&
+            if (gdk_pixbuf_loader_write(loader, rec.png, rec.n_png, &err) &&
                 gdk_pixbuf_loader_close(loader, &err)) {
                 GdkPixbuf *pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
                 if (pixbuf != NULL) {
@@ -495,7 +703,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
                     GtkTextChildAnchor *anchor =
                         gtk_text_buffer_create_child_anchor(buffer, &end);
                     on_anchor_set_image(anchor, pixbuf,
-                                        (gint)display_width);
+                                        (gint)rec.display_width);
                     /* Full-resolution load: keep the source PNG bytes on
                      * the pixbuf so saves emit them verbatim instead of
                      * re-encoding (see the "on-png" cache in
@@ -504,7 +712,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
                      * bytes — skip those.                                  */
                     if (max_img_px == 0)
                         g_object_set_data_full(G_OBJECT(pixbuf), "on-png",
-                            g_bytes_new(data + pos, n),
+                            g_bytes_new(rec.png, rec.n_png),
                             (GDestroyNotify)g_bytes_unref);
                 }
             } else {
@@ -513,59 +721,42 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
                 g_clear_error(&err);
             }
             g_object_unref(loader);
-            pos += n;
-        } else if (rec == REC_TABLE) {
-            guint32 tflags = 0;      /* table flags (v4+)                   */
-            if (version >= 4 && !get_u32(data, len, &pos, &tflags)) {
-                g_warning("deserialize: truncated TABLE record");
-                return FALSE;
-            }
-            guint32 rows, cols;      /* table dimensions                    */
-            if (!get_u32(data, len, &pos, &rows) ||
-                !get_u32(data, len, &pos, &cols) ||
-                rows == 0 || cols == 0 || rows > 1024 || cols > 1024) {
-                g_warning("deserialize: bad TABLE record");
-                return FALSE;
-            }
-            OnTable *table = on_table_new((gint)rows, (gint)cols);
-            table->header = (tflags & TABLE_FLAG_HEADER) != 0;
-            for (guint32 i = 0; i < rows * cols; i++) {
-                guint32 n;           /* cell byte length                    */
-                if (!get_u32(data, len, &pos, &n) || pos + n > len) {
-                    g_warning("deserialize: truncated TABLE cell");
-                    on_table_free(table);
-                    return FALSE;
-                }
-                gchar *cell = g_strndup((const gchar *)data + pos, n);
-                on_table_set(table, (gint)(i / cols), (gint)(i % cols),
-                             cell);
-                g_free(cell);
-                pos += n;
-            }
+            break;
+        }
+
+        case REC_TABLE: {
             GtkTextIter end;
             gtk_text_buffer_get_end_iter(buffer, &end);
             GtkTextChildAnchor *anchor =
                 gtk_text_buffer_create_child_anchor(buffer, &end);
-            on_anchor_set_table(anchor, table);
-        } else if (rec == REC_CHECK) {
-            if (pos >= len) {
-                g_warning("deserialize: truncated CHECK record");
-                return FALSE;
-            }
-            guint8 state = data[pos++];  /* 0 = unchecked, 1 = checked      */
+            on_anchor_set_table(anchor, rec.table);   /* takes ownership    */
+            break;
+        }
+
+        case REC_CHECK: {
             GtkTextIter end;
             gtk_text_buffer_get_end_iter(buffer, &end);
             GtkTextChildAnchor *anchor =
                 gtk_text_buffer_create_child_anchor(buffer, &end);
-            on_anchor_set_checkbox(anchor, state != 0);
-        } else {
-            g_warning("deserialize: unknown record type 0x%02x", rec);
-            return FALSE;
+            on_anchor_set_checkbox(anchor, rec.checked);
+            break;
+        }
+
+        default:
+            break;                   /* bnbf_next only yields the four      */
         }
     }
-    /* Ran off the end without seeing REC_END — tolerate but report.        */
-    g_warning("deserialize: missing end marker");
-    return FALSE;
+
+    if (r.error != NULL) {
+        g_warning("deserialize: %s", r.error);
+        return FALSE;
+    }
+    if (!r.saw_end) {
+        /* Ran off the end without seeing REC_END — tolerate but report.    */
+        g_warning("deserialize: missing end marker");
+        return FALSE;
+    }
+    return TRUE;
 }
 
 void
@@ -689,41 +880,6 @@ on_anchor_get_image(GtkTextChildAnchor *anchor, gint *display_width)
         *display_width = GPOINTER_TO_INT(
             g_object_get_data(G_OBJECT(anchor), "on-display-width"));
     return g_object_get_data(G_OBJECT(anchor), "on-original");
-}
-
-/* ---------------------------------------------------------------------------
- * read_table_record() — parse a TABLE record body from a BNBF stream.
- *   data    — blob start.
- *   len     — blob length.
- *   pos     — read cursor; advanced past the whole record on success.
- *   version — BNBF version (tflags only present in version >= 4).
- *   collect — if non-NULL, each cell's text is appended here followed by
- *             a space; if NULL the cells are skipped silently.
- * Returns FALSE if the record is truncated or malformed (caller should
- * break its record loop).
- * ------------------------------------------------------------------------- */
-static gboolean
-read_table_record(const guint8 *data, gsize len, gsize *pos,
-                  guint32 version, GString *collect)
-{
-    guint32 tflags = 0, rows, cols;
-    if (version >= 4 && !get_u32(data, len, pos, &tflags))
-        return FALSE;
-    if (!get_u32(data, len, pos, &rows) ||
-        !get_u32(data, len, pos, &cols) ||
-        rows == 0 || cols == 0 || rows > 1024 || cols > 1024)
-        return FALSE;               /* same clamp as the full deserializer     */
-    for (guint32 i = 0; i < rows * cols; i++) {
-        guint32 n;
-        if (!get_u32(data, len, pos, &n) || *pos + n > len)
-            return FALSE;
-        if (collect != NULL) {
-            g_string_append_len(collect, (const gchar *)data + *pos, n);
-            g_string_append_c(collect, ' ');
-        }
-        *pos += n;
-    }
-    return TRUE;
 }
 
 gchar *
@@ -907,76 +1063,59 @@ on_note_extract(const guint8 *data, gsize len, gchar **out_text,
     ActionScan s = { TRUE, FALSE, TRUE, FALSE, g_string_new(NULL) };
     gboolean want_actions = out_actions != NULL;
 
-    gsize   pos = 4;                 /* read cursor, past the magic         */
-    guint32 version;
-    if (!magic_ok(data, len) ||
-        !get_u32(data, len, &pos, &version) ||
-        version < 1 || version > BNBF_VERSION)
-        goto done;                   /* unreadable: empty text, no items    */
-
-    while (pos < len) {
-        guint8 rec = data[pos++];    /* record type byte                    */
-        if (rec == REC_END)
-            break;
-
-        if (rec == REC_TEXT) {
-            guint32 flags, n;
-            if (!get_u32(data, len, &pos, &flags) ||
-                !get_u32(data, len, &pos, &n) || pos + n > len)
-                break;
-            const gchar *run = (const gchar *)data + pos;
-            if (text != NULL)
-                g_string_append_len(text, run, n);
-            for (guint32 i = 0; want_actions && i < n; i++) {
-                gchar c = run[i];    /* one BYTE — '\n'/'!' are ASCII, and
+    OnBnbfReader r;                  /* the same walker the loader uses     */
+    OnBnbfRecord rec;
+    if (bnbf_open(&r, data, len)) {
+        while (bnbf_next(&r, &rec)) {
+            if (rec.type == REC_TEXT) {
+                if (text != NULL)
+                    g_string_append_len(text, rec.text, rec.n_text);
+                for (guint32 i = 0; want_actions && i < rec.n_text; i++) {
+                    gchar c = rec.text[i];
+                                     /* one BYTE — '\n'/'!' are ASCII, and
                                         UTF-8 tail bytes are all >= 0x80    */
-                if (c == '\n') {
-                    action_finish_line(&s, &items, &ord);
-                } else if (s.at_start) {
-                    s.at_start  = FALSE;
-                    s.is_action = c == '!' &&
-                                  (flags & ON_FMT_CODEBLOCK) == 0;
-                    if (s.is_action) {   /* the '!' itself is not item text */
-                        s.struck    = TRUE;
-                        s.have_rest = FALSE;
-                    }
-                } else if (s.is_action) {
-                    g_string_append_c(s.text, c);
-                    if (!g_ascii_isspace((guchar)c)) {
-                        s.have_rest = TRUE;
-                        if ((flags & ON_FMT_STRIKE) == 0)
-                            s.struck = FALSE;
+                    if (c == '\n') {
+                        action_finish_line(&s, &items, &ord);
+                    } else if (s.at_start) {
+                        s.at_start  = FALSE;
+                        s.is_action = c == '!' &&
+                                      (rec.flags & ON_FMT_CODEBLOCK) == 0;
+                        if (s.is_action) {  /* the '!' is not item text     */
+                            s.struck    = TRUE;
+                            s.have_rest = FALSE;
+                        }
+                    } else if (s.is_action) {
+                        g_string_append_c(s.text, c);
+                        if (!g_ascii_isspace((guchar)c)) {
+                            s.have_rest = TRUE;
+                            if ((rec.flags & ON_FMT_STRIKE) == 0)
+                                s.struck = FALSE;
+                        }
                     }
                 }
+            } else {
+                /* Images, tables and checkboxes all occupy the line's first
+                 * slot like any character, so such a line is never an
+                 * action line.  Table cells additionally join the text,
+                 * space-separated.                                         */
+                if (rec.type == REC_TABLE) {
+                    if (text != NULL)
+                        for (gint cell = 0;
+                             cell < rec.table->rows * rec.table->cols;
+                             cell++) {
+                            g_string_append(text,
+                                g_ptr_array_index(rec.table->cells, cell));
+                            g_string_append_c(text, ' ');
+                        }
+                    on_table_free(rec.table);
+                }
+                s.at_start = FALSE;
             }
-            pos += n;
-        } else if (rec == REC_IMAGE) {
-            guint32 dw = 0, n;
-            if (version >= 2 && !get_u32(data, len, &pos, &dw))
-                break;
-            if (!get_u32(data, len, &pos, &n) || pos + n > len)
-                break;
-            pos += n;                /* skip the PNG payload                */
-            s.at_start = FALSE;      /* the object occupies the first slot  */
-        } else if (rec == REC_TABLE) {
-            /* Cells join the plain text (space-separated); for the action
-             * scanner the table just fills the line's first slot.          */
-            if (!read_table_record(data, len, &pos, version, text))
-                break;
-            s.at_start = FALSE;
-        } else if (rec == REC_CHECK) {
-            if (pos >= len)
-                break;
-            pos += 1;                /* skip the state byte                 */
-            s.at_start = FALSE;      /* checkbox lines never start with '!' */
-        } else {
-            break;                   /* unknown record: stop safely         */
         }
     }
     if (want_actions)
         action_finish_line(&s, &items, &ord);   /* line without trailing \n */
 
-done:
     g_string_free(s.text, TRUE);
     if (out_text != NULL)
         *out_text = g_string_free(text, FALSE);

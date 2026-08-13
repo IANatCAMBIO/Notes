@@ -3189,28 +3189,49 @@ undo_table_copy(OnTable *src)
     return copy;
 }
 
-/* undo_flush_run() — append the pending text run (if any) as a segment.     */
-static void
-undo_flush_run(UndoSnap *snap, GString *run, guint32 flags)
-{
-    if (run->len == 0)
-        return;
-    UndoSeg *seg = g_new0(UndoSeg, 1);
-    seg->kind  = UNDO_SEG_TEXT;
-    seg->flags = flags;
-    seg->text  = g_strndup(run->str, run->len);
-    g_ptr_array_add(snap->segs, seg);
-    if (flags & ON_FMT_TAG)
-        snap->has_tags = TRUE;
-    g_string_truncate(run, 0);
-}
-
 /* ---------------------------------------------------------------------------
  * undo_snapshot_capture() — walk the buffer into a new snapshot.  Same
  * traversal as on_note_serialize(): anchors interrupt text runs; runs
  * split where the flag set changes; imageless anchors and stray 0xFFFC
  * chars are dropped (as on save).
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * undo_capture_seg() — OnBufferSegFn turning one walked segment into an
+ * UndoSeg.  Images are held by REFERENCE (shared with the live buffer and
+ * every other snapshot, so no PNG bytes are copied); tables are deep-copied
+ * because the anchor's OnTable is mutated in place by its cell views.
+ * ------------------------------------------------------------------------- */
+static void
+undo_capture_seg(const OnBufferSeg *in, gpointer data)
+{
+    UndoSnap *snap = data;
+    UndoSeg  *seg  = g_new0(UndoSeg, 1);
+    seg->flags = in->flags;
+
+    switch (in->kind) {
+    case ON_SEG_TEXT:
+        seg->kind = UNDO_SEG_TEXT;
+        seg->text = g_strndup(in->text, in->n_text);
+        if (in->flags & ON_FMT_TAG)
+            snap->has_tags = TRUE;
+        break;
+    case ON_SEG_CHECK:
+        seg->kind    = UNDO_SEG_CHECK;
+        seg->checked = in->checked;
+        break;
+    case ON_SEG_TABLE:
+        seg->kind  = UNDO_SEG_TABLE;
+        seg->table = undo_table_copy(in->table);
+        break;
+    case ON_SEG_IMAGE:
+        seg->kind          = UNDO_SEG_IMAGE;
+        seg->pixbuf        = g_object_ref(in->pixbuf);
+        seg->display_width = in->display_width;
+        break;
+    }
+    g_ptr_array_add(snap->segs, seg);
+}
+
 static UndoSnap *
 undo_snapshot_capture(OnEditor *ed)
 {
@@ -3222,58 +3243,9 @@ undo_snapshot_capture(OnEditor *ed)
                                      gtk_text_buffer_get_insert(ed->buffer));
     snap->cursor = gtk_text_iter_get_offset(&ins);
 
-    GtkTextIter iter;                /* walk position                       */
-    gtk_text_buffer_get_start_iter(ed->buffer, &iter);
-
-    GString *run       = g_string_new(NULL); /* pending text run            */
-    guint32  run_flags = 0;                  /* its formatting              */
-    OnFlagRun frun;                          /* per-run flag probing        */
-    on_flag_run_init(&frun, ed->buffer, ~0u);
-
-    while (!gtk_text_iter_is_end(&iter)) {
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
-        if (anchor != NULL) {
-            UndoSeg   *seg = NULL;   /* segment for this anchor             */
-            gboolean   checked;      /* checkbox state                      */
-            gint       dw;           /* image display width                 */
-            GdkPixbuf *pixbuf;       /* anchor's image, if any              */
-            OnTable   *table;        /* anchor's table, if any              */
-
-            if (on_anchor_is_checkbox(anchor, &checked)) {
-                seg = g_new0(UndoSeg, 1);
-                seg->kind    = UNDO_SEG_CHECK;
-                seg->checked = checked;
-            } else if ((table = on_anchor_get_table(anchor)) != NULL) {
-                seg = g_new0(UndoSeg, 1);
-                seg->kind  = UNDO_SEG_TABLE;
-                seg->table = undo_table_copy(table);
-            } else if ((pixbuf = on_anchor_get_image(anchor, &dw)) != NULL) {
-                seg = g_new0(UndoSeg, 1);
-                seg->kind          = UNDO_SEG_IMAGE;
-                seg->pixbuf        = g_object_ref(pixbuf);
-                seg->display_width = dw;
-            }
-            if (seg != NULL) {       /* payloadless anchors are dropped     */
-                undo_flush_run(snap, run, run_flags);
-                seg->flags = on_flag_run_at(&frun, &iter);
-                g_ptr_array_add(snap->segs, seg);
-            }
-            gtk_text_iter_forward_char(&iter);
-            continue;
-        }
-
-        guint32 flags = on_flag_run_at(&frun, &iter);
-        if (flags != run_flags) {
-            undo_flush_run(snap, run, run_flags);
-            run_flags = flags;
-        }
-        gunichar ch = gtk_text_iter_get_char(&iter);
-        if (ch != 0xFFFC)
-            g_string_append_unichar(run, ch);
-        gtk_text_iter_forward_char(&iter);
-    }
-    undo_flush_run(snap, run, run_flags);
-    g_string_free(run, TRUE);
+    /* THE buffer traversal — the same one the serializer uses, so a
+     * snapshot can never disagree with what a save would write.            */
+    on_buffer_walk(ed->buffer, undo_capture_seg, snap);
     return snap;
 }
 

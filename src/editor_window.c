@@ -230,7 +230,20 @@ static void     editor_save(OnEditor *ed);
 static void     editor_queue_autosave(OnEditor *ed);
 static void     editor_status_dirty_update(OnEditor *ed);
 static void     tag_capture_end(OnEditor *ed, gboolean apply);
+/* Which editor-only DERIVED passes editor_rederive() should run over a
+ * range.  None of these are ever serialized (see editor_rederive).          */
+typedef enum {
+    RD_ACTION   = 1 << 0,            /* blue tint on '!' action lines       */
+    RD_TITLE    = 1 << 1,            /* line 0's centering + heading size   */
+    RD_EMOJI    = 1 << 2,            /* macOS emoji letter-spacing          */
+    RD_CODE_TAG = 1 << 3,            /* strip #tag spans inside code blocks */
+} OnRederive;
+
 static void     action_retag_lines(OnEditor *ed, gint start_off,
+                                   gint end_off);
+static gboolean editor_rederive(OnEditor *ed, gint start_off, gint end_off,
+                                   guint what);
+static void     tag_emoji_in_range(OnEditor *ed, gint start_off,
                                    gint end_off);
 static void     title_line_sync(OnEditor *ed, gint start_off,
                                    gint end_off);
@@ -557,24 +570,20 @@ apply_paragraph_format(OnEditor *ed, guint32 flag)
 
     /* Becoming (or ceasing to be) a code block flips whether a '!' line
      * counts as an action item — re-derive the tint for the range.         */
+    /* Styling a line can insert a newline or a list prefix, either of which
+     * shifts lines under the passes.  Becoming (or ceasing to be) a code
+     * block also flips whether a '!' line counts as an action item, and
+     * whether line 0 still gets the derived title size: a style picked by
+     * hand suppresses it, plain body text (¶) brings it back.  And text
+     * inside a code block is never a #tag, so tag spans the range carried
+     * into the block are stripped (the queued save drops their links).     */
     GtkTextIter rs, rls, rle;        /* range bounds                        */
     gtk_text_buffer_get_iter_at_line(ed->buffer, &rs, first_line);
     line_span(ed->buffer, last_line, &rls, &rle);
-    action_retag_lines(ed, gtk_text_iter_get_offset(&rs),
-                       gtk_text_iter_get_offset(&rle));
-    /* Styling a line can insert a newline or a list prefix, either of which
-     * shifts lines under the pass — re-derive the title look too.  It also
-     * decides whether line 0 still gets the derived size: a style picked by
-     * hand suppresses it, plain body text (¶) brings it back.              */
-    title_line_sync(ed, gtk_text_iter_get_offset(&rs),
-                       gtk_text_iter_get_offset(&rle));
-
-    /* Text inside a code block is never a #tag: strip any tag spans the
-     * range carried into the block, and let the queued save drop their
-     * note_tags links.                                                     */
-    if (flag == ON_FMT_CODEBLOCK &&
-        strip_tags_in_code_blocks(ed, gtk_text_iter_get_offset(&rs),
-                                  gtk_text_iter_get_offset(&rle)))
+    if (editor_rederive(ed, gtk_text_iter_get_offset(&rs),
+                        gtk_text_iter_get_offset(&rle),
+                        RD_ACTION | RD_TITLE |
+                        (flag == ON_FMT_CODEBLOCK ? RD_CODE_TAG : 0)))
         ed->tags_modified = TRUE;
 
     editor_queue_autosave(ed);
@@ -1753,6 +1762,44 @@ action_line_rest(GtkTextBuffer *buffer, gint line, GtkTextIter *ls,
 }
 
 /* ---------------------------------------------------------------------------
+ * line_range_for_offsets() — the inclusive line range two buffer offsets
+ * cover.  Every derived-tag pass works in lines, so the conversion happens
+ * ONCE per pass rather than once per pass component.
+ * ------------------------------------------------------------------------- */
+static void
+line_range_for_offsets(OnEditor *ed, gint start_off, gint end_off,
+                       gint *first, gint *last)
+{
+    GtkTextIter it;                  /* offset → line resolution            */
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, start_off);
+    *first = gtk_text_iter_get_line(&it);
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, end_off);
+    *last = gtk_text_iter_get_line(&it);
+}
+
+/* ---------------------------------------------------------------------------
+ * action_retag_line() — re-derive the blue on-action styling for ONE line.
+ * The single definition of that rule; the range walkers just loop it.
+ * ------------------------------------------------------------------------- */
+static void
+action_retag_line(OnEditor *ed, gint line)
+{
+    GtkTextIter ls, rs, le;          /* line span (+ rest start)            */
+    gboolean is = action_line_rest(ed->buffer, line, &ls, &rs, &le);
+    if (!is) {
+        gtk_text_buffer_get_iter_at_line(ed->buffer, &ls, line);
+        le = ls;
+        if (!gtk_text_iter_ends_line(&le))
+            gtk_text_iter_forward_to_line_end(&le);
+    }
+    if (is)
+        gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-action", &ls, &le);
+    else
+        gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-action",
+                                           &ls, &le);
+}
+
+/* ---------------------------------------------------------------------------
  * action_retag_lines() — re-derive the blue on-action styling for every
  * line between the two buffer OFFSETS (their lines, inclusive).  Cheap
  * enough to run per edit: the affected range is normally one line.
@@ -1760,28 +1807,10 @@ action_line_rest(GtkTextBuffer *buffer, gint line, GtkTextIter *ls,
 static void
 action_retag_lines(OnEditor *ed, gint start_off, gint end_off)
 {
-    GtkTextIter it;                  /* offset → line resolution            */
-    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, start_off);
-    gint first = gtk_text_iter_get_line(&it);
-    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, end_off);
-    gint last = gtk_text_iter_get_line(&it);
-
-    for (gint line = first; line <= last; line++) {
-        GtkTextIter ls, rs, le;      /* line span (+ rest start)            */
-        gboolean is = action_line_rest(ed->buffer, line, &ls, &rs, &le);
-        if (!is) {
-            gtk_text_buffer_get_iter_at_line(ed->buffer, &ls, line);
-            le = ls;
-            if (!gtk_text_iter_ends_line(&le))
-                gtk_text_iter_forward_to_line_end(&le);
-        }
-        if (is)
-            gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-action",
-                                              &ls, &le);
-        else
-            gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-action",
-                                               &ls, &le);
-    }
+    gint first, last;                /* affected line range                 */
+    line_range_for_offsets(ed, start_off, end_off, &first, &last);
+    for (gint line = first; line <= last; line++)
+        action_retag_line(ed, line);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1815,8 +1844,13 @@ action_retag_lines(OnEditor *ed, gint start_off, gint end_off)
  * has that can carry a tag (or hold a leaked one, which is why the clearing
  * branch follows the same rule).
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * title_view_sync() — the VIEW-level half of the title look, which applies
+ * to the whole widget rather than a line: justification and the font-size
+ * class that style the caret while the buffer is empty (see the banner).
+ * ------------------------------------------------------------------------- */
 static void
-title_line_sync(OnEditor *ed, gint start_off, gint end_off)
+title_view_sync(OnEditor *ed)
 {
     gboolean on    = ed->app->first_line_title;   /* feature gate          */
     gboolean empty = gtk_text_buffer_get_char_count(ed->buffer) == 0;
@@ -1839,36 +1873,87 @@ title_line_sync(OnEditor *ed, gint start_off, gint end_off)
         else
             gtk_style_context_remove_class(sc, "on-title-empty");
     }
+}
 
-    GtkTextIter it;                  /* offset → line resolution            */
-    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, start_off);
-    gint first = gtk_text_iter_get_line(&it);
-    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, end_off);
-    gint last = gtk_text_iter_get_line(&it);
+/* ---------------------------------------------------------------------------
+ * title_sync_line() — the per-line half: give line 0 the derived title tags
+ * and take them off every other line in range.  Single definition of that
+ * rule (see the title_line_sync banner for why the spans differ between an
+ * empty line and one with text).
+ * ------------------------------------------------------------------------- */
+static void
+title_sync_line(OnEditor *ed, gint line)
+{
+    gboolean on = ed->app->first_line_title;      /* feature gate          */
+    GtkTextIter ls, le;              /* line span (see banner)              */
+    gtk_text_buffer_get_iter_at_line(ed->buffer, &ls, line);
+    le = ls;
+    if (gtk_text_iter_ends_line(&le))
+        gtk_text_iter_forward_char(&le);          /* empty line: its '\n'   */
+    else
+        gtk_text_iter_forward_to_line_end(&le);
 
-    for (gint line = first; line <= last; line++) {
-        GtkTextIter ls, le;          /* line span (see banner)              */
-        gtk_text_buffer_get_iter_at_line(ed->buffer, &ls, line);
-        le = ls;
-        if (gtk_text_iter_ends_line(&le))
-            gtk_text_iter_forward_char(&le);      /* empty line: its '\n'   */
-        else
-            gtk_text_iter_forward_to_line_end(&le);
-        gboolean title = on && line == 0;
-        if (title)
-            gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-center",
-                                              &ls, &le);
-        else
-            gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-center",
-                                               &ls, &le);
-        /* Size only where no paragraph style of its own would multiply it.  */
-        if (title && on_flags_at_iter(ed->buffer, &ls, ON_FMT_PARA_MASK) == 0)
-            gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-size",
-                                              &ls, &le);
-        else
-            gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-size",
-                                               &ls, &le);
+    gboolean title = on && line == 0;
+    if (title)
+        gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-center",
+                                          &ls, &le);
+    else
+        gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-center",
+                                           &ls, &le);
+    /* Size only where no paragraph style of its own would multiply it.      */
+    if (title && on_flags_at_iter(ed->buffer, &ls, ON_FMT_PARA_MASK) == 0)
+        gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-title-size",
+                                          &ls, &le);
+    else
+        gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-title-size",
+                                           &ls, &le);
+}
+
+static void
+title_line_sync(OnEditor *ed, gint start_off, gint end_off)
+{
+    title_view_sync(ed);
+    gint first, last;                /* affected line range                 */
+    line_range_for_offsets(ed, start_off, end_off, &first, &last);
+    for (gint line = first; line <= last; line++)
+        title_sync_line(ed, line);
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_rederive() — run the editor-only DERIVED passes over one range.
+ *
+ * None of these are stored in the note: the action tint, the title look and
+ * the emoji padding are re-derived from the text every time it changes, and
+ * #tag spans have no business inside a code block.  Every edit needs some
+ * combination of them, and they were spelled out separately at four call
+ * sites — easy to update three and forget the fourth.  This is the one
+ * place that knows the set, and it resolves the line range once instead of
+ * once per pass.
+ *   what — which passes to run (OnRederive bits).
+ * Returns TRUE when RD_CODE_TAG actually stripped a #tag span, which means
+ * the note's tag set changed and the next save must rewrite note_tags.
+ * ------------------------------------------------------------------------- */
+static gboolean
+editor_rederive(OnEditor *ed, gint start_off, gint end_off, guint what)
+{
+    if (what & RD_EMOJI)
+        tag_emoji_in_range(ed, start_off, end_off);
+    if (what & RD_TITLE)
+        title_view_sync(ed);
+
+    if (what & (RD_ACTION | RD_TITLE)) {
+        gint first, last;            /* affected line range, resolved once  */
+        line_range_for_offsets(ed, start_off, end_off, &first, &last);
+        for (gint line = first; line <= last; line++) {
+            if (what & RD_ACTION)
+                action_retag_line(ed, line);
+            if (what & RD_TITLE)
+                title_sync_line(ed, line);
+        }
     }
+
+    return (what & RD_CODE_TAG)
+           ? strip_tags_in_code_blocks(ed, start_off, end_off) : FALSE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2189,14 +2274,18 @@ typedef gboolean (*ActionEdit)(GtkTextBuffer *buffer, gint ord, gint64 arg);
 
 static gboolean
 action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
-                     gint ord, gint64 arg)
+                     gint ord, gint64 arg, gboolean *synced)
 {
+    if (synced != NULL)
+        *synced = FALSE;
+
     /* Headless callers (the CLI) have no open-editors table at all.        */
     GtkWidget *win = app->editors != NULL
         ? g_hash_table_lookup(app->editors, &note_id) : NULL;
     OnEditor  *ed  = win != NULL
         ? g_object_get_data(G_OBJECT(win), "on-editor") : NULL;
     if (ed != NULL) {
+        /* Live buffer: the autosave writes content AND the mirror later.    */
         if (!edit(ed->buffer, ord, arg))
             return FALSE;
         editor_queue_autosave(ed);
@@ -2214,10 +2303,13 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
         gsize   out_len;             /* re-serialized blob size             */
         guint8 *out = on_note_serialize(buffer, &out_len);
         gchar  *title = on_buffer_first_line(buffer);
-        gchar  *body = on_note_extract_text(out, out_len);
-        GList  *actions = on_note_extract_actions(out, out_len);
+        gchar  *body = NULL;         /* searchable plain text               */
+        GList  *actions = NULL;      /* the rewritten '!' lines             */
+        on_note_extract(out, out_len, &body, &actions);
         ok = on_db_note_save(app->db, note_id, title, out, out_len, body) &&
              on_db_note_set_actions(app->db, note_id, actions);
+        if (ok && synced != NULL)
+            *synced = TRUE;          /* the mirror is already up to date    */
         on_db_action_list_free(actions);
         g_free(body);
         g_free(title);
@@ -2236,16 +2328,17 @@ action_strike_edit(GtkTextBuffer *buffer, gint ord, gint64 arg)
 
 gboolean
 on_editor_action_set_done(OnApp *app, gint64 note_id, gint ord,
-                          gboolean done)
+                          gboolean done, gboolean *synced)
 {
     return action_apply_to_note(app, note_id, action_strike_edit,
-                                ord, done ? 1 : 0);
+                                ord, done ? 1 : 0, synced);
 }
 
 gboolean
 on_editor_action_set_due(OnApp *app, gint64 note_id, gint ord, gint64 due)
 {
-    return action_apply_to_note(app, note_id, action_due_ord, ord, due);
+    return action_apply_to_note(app, note_id, action_due_ord, ord, due,
+                                NULL);
 }
 
 /* ===========================================================================
@@ -3493,9 +3586,8 @@ undo_restore(OnEditor *ed, const UndoSnap *from, const UndoSnap *to)
         gtk_text_buffer_get_iter_at_offset(ed->buffer, &ee, emo_e);
         gtk_text_buffer_remove_tag_by_name(ed->buffer, "on-emoji",
                                            &es, &ee);
-        tag_emoji_in_range(ed, emo_s, emo_e);
-        /* The action-line tint is derived, not snapshotted, either.        */
-        action_retag_lines(ed, emo_s, emo_e);
+        /* Neither the emoji padding nor the action tint is snapshotted.    */
+        editor_rederive(ed, emo_s, emo_e, RD_EMOJI | RD_ACTION);
     }
     /* Nor is the title centering: the restored text comes back untagged,
      * so re-derive it over the head of the buffer.                         */
@@ -3637,9 +3729,8 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
     /* Pad any emoji in the insertion so they don't overlap neighbours,
      * and re-derive the action-line tint for every line the insertion
      * touched (a paste can create or split '!' lines anywhere).            */
-    tag_emoji_in_range(ed, end_off - (gint)n_chars, end_off);
-    action_retag_lines(ed, end_off - (gint)n_chars, end_off);
-    title_line_sync(ed, end_off - (gint)n_chars, end_off);
+    editor_rederive(ed, end_off - (gint)n_chars, end_off,
+                    RD_EMOJI | RD_ACTION | RD_TITLE);
     /* A '!' or newline can create an action line; a paste can too.          */
     if (n_chars > 1 || memchr(text, '!', (size_t)len) ||
         memchr(text, '\n', (size_t)len))
@@ -3757,7 +3848,7 @@ on_buffer_insert_text_after(GtkTextBuffer *buffer, GtkTextIter *location,
      * line (same-buffer paste keeps tags), and typing inside a span kept
      * from before the no-tags-in-code-blocks rule extends it — text in a
      * code block is never a tag, so strip the styling.                      */
-    if (strip_tags_in_code_blocks(ed, end_off - (gint)n_chars, end_off))
+    if (editor_rederive(ed, end_off - (gint)n_chars, end_off, RD_CODE_TAG))
         ed->tags_modified = TRUE;
 
     /* --- undo group caps: a linebreak closes the pending group at once,
@@ -3879,8 +3970,8 @@ on_buffer_delete_range_after(GtkTextBuffer *buffer, GtkTextIter *start,
 
     /* start == end after the deletion: retag the collapse-point line.      */
     gint off = gtk_text_iter_get_offset(start);
-    action_retag_lines(ed, off, off);
-    title_line_sync(ed, off, off);   /* a merge can pull a line up to 0  */
+    /* A merge can pull a line up to 0, so the title look is re-derived too. */
+    editor_rederive(ed, off, off, RD_ACTION | RD_TITLE);
     ed->actions_clean = FALSE;    /* deletes can create/destroy '!' lines   */
 
     if (ed->tag_start == NULL)
@@ -4255,7 +4346,15 @@ editor_save(OnEditor *ed)
     gsize   blob_len = 0;            /* BNBF blob size                      */
     guint8 *blob = on_note_serialize(ed->buffer, &blob_len);
     gchar  *title = on_buffer_first_line(ed->buffer);
-    gchar  *body = on_note_extract_text(blob, blob_len);
+
+    /* ONE walk of the fresh blob for both derived values.  The action list
+     * is only wanted when the set might have changed (see below); asking for
+     * it here costs nothing extra, since the walk happens either way.       */
+    gboolean want_actions = ed->last_actions != NULL || !ed->actions_clean;
+    gchar  *body = NULL;             /* searchable plain text               */
+    GList  *fresh_actions = NULL;    /* '!' lines, when wanted              */
+    on_note_extract(blob, blob_len, &body,
+                    want_actions ? &fresh_actions : NULL);
 
     on_db_note_save(ed->app->db, ed->note_id, title, blob, blob_len, body);
     g_free(body);
@@ -4276,8 +4375,8 @@ editor_save(OnEditor *ed)
      * no action line existed before and no insert/delete that could have
      * created one has occurred since the last extract.                      */
     gboolean actions_changed = FALSE;
-    if (ed->last_actions != NULL || !ed->actions_clean) {
-        GList *actions = on_note_extract_actions(blob, blob_len);
+    if (want_actions) {
+        GList *actions = fresh_actions;   /* from the walk above            */
         actions_changed = !action_lists_equal(actions, ed->last_actions);
         if (actions_changed) {
             /* Hint from the marks (identifies reworded items), let the
@@ -4314,7 +4413,7 @@ editor_save(OnEditor *ed)
             ed->app->notify_notes_changed(ed->app);
     } else {
         if (ed->app->notify_note_saved != NULL)
-            ed->app->notify_note_saved(ed->app);
+            ed->app->notify_note_saved(ed->app, ed->note_id);
     }
 }
 

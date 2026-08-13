@@ -94,10 +94,16 @@ void on_editor_status_refresh_all(OnApp *app);
  *   note_id — the note holding the item.
  *   ord     — the item's position among the note's action lines.
  *   done    — the new state.
+ *   synced  — optional out: TRUE when the action_items mirror was rewritten
+ *             as part of this call (the offscreen path), FALSE when a live
+ *             editor deferred the content save to its autosave.  A caller
+ *             that wants the flag durable NOW only has to write it itself in
+ *             the FALSE case; doing it unconditionally meant two
+ *             transactions for one tick.  May be NULL.
  * Returns TRUE when the item was found and updated.
  * ------------------------------------------------------------------------- */
 gboolean on_editor_action_set_done(OnApp *app, gint64 note_id, gint ord,
-                                   gboolean done);
+                                   gboolean done, gboolean *synced);
 
 /* ---------------------------------------------------------------------------
  * on_editor_action_set_due() — rewrite an action item's due date in its

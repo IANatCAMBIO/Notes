@@ -177,7 +177,18 @@ void on_db_close(OnDatabase *db);
  *   parent_id — id of the parent folder, or 0 for top level.
  *   name      — display name for the new folder.
  * Returns the new folder's id, or 0 on failure.                             */
-gint64 on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name);
+/* Create a folder under `parent_id` (0 = top level), appended after its
+ * existing siblings.  ai_mode (ON_AI_MODE_*) and emoji ("" or NULL for none)
+ * are written by the same INSERT.
+ * Returns the new folder's id, or 0 on failure.                              */
+gint64 on_db_folder_create(OnDatabase *db, gint64 parent_id,
+                           const gchar *name, gint ai_mode,
+                           const gchar *emoji);
+
+/* Set a folder's name, AI mode and emoji in ONE statement (the Info dialog
+ * can change all three).  Returns TRUE on success.                          */
+gboolean on_db_folder_update(OnDatabase *db, gint64 id, const gchar *name,
+                             gint ai_mode, const gchar *emoji);
 
 /* Rename folder `id` to `name`. Returns TRUE on success.                    */
 gboolean on_db_folder_rename(OnDatabase *db, gint64 id, const gchar *name);

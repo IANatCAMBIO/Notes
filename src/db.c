@@ -403,10 +403,14 @@ on_db_close(OnDatabase *db)
  * ========================================================================= */
 
 gint64
-on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name)
+on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name,
+                    gint ai_mode, const gchar *emoji)
 {
+    /* ai_mode and emoji ride the INSERT: setting them afterwards meant
+     * three separate statements (and fsyncs) to create one folder.          */
     sqlite3_stmt *stmt = prepare(db,
-        "INSERT INTO folders (parent_id, name, sort_order) VALUES (?, ?, "
+        "INSERT INTO folders (parent_id, name, ai_mode, emoji, sort_order) "
+        "VALUES (?, ?, ?, ?, "
         "  COALESCE((SELECT MAX(sort_order)+1 FROM folders "
         "            WHERE parent_id IS ?), 0))");
     if (stmt == NULL)
@@ -414,7 +418,10 @@ on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name)
 
     bind_id_or_null(stmt, 1, parent_id);
     sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
-    bind_id_or_null(stmt, 3, parent_id);
+    sqlite3_bind_int(stmt, 3, ai_mode);
+    sqlite3_bind_text(stmt, 4, emoji != NULL ? emoji : "", -1,
+                      SQLITE_TRANSIENT);
+    bind_id_or_null(stmt, 5, parent_id);
 
     gint64 new_id = 0;                   /* id of the inserted row          */
     if (sqlite3_step(stmt) == SQLITE_DONE)
@@ -480,6 +487,24 @@ on_db_folder_rename(OnDatabase *db, gint64 id, const gchar *name)
     if (stmt != NULL) {
         sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 2, id);
+    }
+    return stmt_done(db, stmt);
+}
+
+gboolean
+on_db_folder_update(OnDatabase *db, gint64 id, const gchar *name,
+                    gint ai_mode, const gchar *emoji)
+{
+    /* The Info dialog can change all three at once; one UPDATE instead of a
+     * rename plus two setters.                                              */
+    sqlite3_stmt *stmt = prepare(db,
+        "UPDATE folders SET name=?, ai_mode=?, emoji=? WHERE id=?");
+    if (stmt != NULL) {
+        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 2, ai_mode);
+        sqlite3_bind_text(stmt, 3, emoji != NULL ? emoji : "", -1,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 4, id);
     }
     return stmt_done(db, stmt);
 }

@@ -281,6 +281,19 @@ gboolean on_note_text_matches(const gchar *title, const gchar *body,
 GList *on_note_extract_actions(const guint8 *data, gsize len);
 
 /* ---------------------------------------------------------------------------
+ * on_note_extract() — the ONE record walk behind on_note_extract_text() and
+ * on_note_extract_actions(), able to produce both in a single pass.  Every
+ * save needs both (body_text cache + action mirror), and walking the blob
+ * twice for them was pure duplication of a walk over the whole note.
+ *   out_text    — receives the plain text (g_free), or NULL to skip it.
+ *   out_actions — receives the action items (on_db_action_list_free), or
+ *                 NULL to skip them.
+ * An unreadable blob yields "" and no items, never a failure.
+ * ------------------------------------------------------------------------- */
+void on_note_extract(const guint8 *data, gsize len, gchar **out_text,
+                     GList **out_actions);
+
+/* ---------------------------------------------------------------------------
  * on_action_split_due() — locate a trailing "due <date>" in an action
  * item's rest-of-line text.  The date is ISO "YYYY-MM-DD" (what the app
  * writes) or "M/D/YY" / "M/D/YYYY"; the last word-boundary "due" whose

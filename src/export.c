@@ -622,6 +622,9 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
                                              g_free, NULL);
     GHashTable *dirs = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                              g_free, g_free);
+    /* Every folder's path in ONE query, rather than walking the parent
+     * chain per folder with a statement per level.                         */
+    GHashTable *paths = on_db_folder_path_map(app->db);
 
     for (GList *l = notes; l != NULL; l = l->next) {
         OnNoteMeta *m = l->data;     /* the note being exported             */
@@ -629,11 +632,11 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
         /* Mirror the folder hierarchy under the destination.               */
         gchar *note_dir = g_hash_table_lookup(dirs, &m->folder_id);
         if (note_dir == NULL) {
-            gchar *rel_dir = on_db_folder_path(app->db, m->folder_id);
-            note_dir = (*rel_dir != '\0')
+            const gchar *rel_dir = (m->folder_id != 0)
+                ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
+            note_dir = (rel_dir != NULL && *rel_dir != '\0')
                        ? g_build_filename(dest_dir, rel_dir, NULL)
                        : g_strdup(dest_dir);
-            g_free(rel_dir);
             g_mkdir_with_parents(note_dir, 0755);
             gint64 *key = g_new(gint64, 1);
             *key = m->folder_id;
@@ -644,6 +647,7 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
             exported++;
     }
 
+    g_hash_table_destroy(paths);
     g_hash_table_destroy(dirs);
     g_hash_table_destroy(used);
     on_db_note_list_free(notes);

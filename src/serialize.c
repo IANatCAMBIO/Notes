@@ -729,47 +729,9 @@ read_table_record(const guint8 *data, gsize len, gsize *pos,
 gchar *
 on_note_extract_text(const guint8 *data, gsize len)
 {
-    GString *out = g_string_new(NULL);
-
-    if (!magic_ok(data, len))
-        return g_string_free(out, FALSE);
-    gsize   pos = 4;                 /* read cursor, past the magic         */
-    guint32 version;
-    if (!get_u32(data, len, &pos, &version) ||
-        version < 1 || version > BNBF_VERSION)
-        return g_string_free(out, FALSE);
-
-    while (pos < len) {
-        guint8 rec = data[pos++];    /* record type byte                    */
-        if (rec == REC_END)
-            break;
-
-        if (rec == REC_TEXT) {
-            guint32 flags, n;
-            if (!get_u32(data, len, &pos, &flags) ||
-                !get_u32(data, len, &pos, &n) || pos + n > len)
-                break;
-            g_string_append_len(out, (const gchar *)data + pos, n);
-            pos += n;
-        } else if (rec == REC_IMAGE) {
-            guint32 dw = 0, n;
-            if (version >= 2 && !get_u32(data, len, &pos, &dw))
-                break;
-            if (!get_u32(data, len, &pos, &n) || pos + n > len)
-                break;
-            pos += n;                /* skip the PNG payload                */
-        } else if (rec == REC_TABLE) {
-            if (!read_table_record(data, len, &pos, version, out))
-                break;
-        } else if (rec == REC_CHECK) {
-            if (pos >= len)
-                break;
-            pos += 1;                /* skip the state byte                 */
-        } else {
-            break;                   /* unknown record: stop safely         */
-        }
-    }
-    return g_string_free(out, FALSE);
+    gchar *text = NULL;              /* the concatenated plain text         */
+    on_note_extract(data, len, &text, NULL);
+    return text;
 }
 
 gchar *
@@ -930,17 +892,27 @@ action_finish_line(ActionScan *s, GList **items, gint *ord)
 GList *
 on_note_extract_actions(const guint8 *data, gsize len)
 {
-    if (!magic_ok(data, len))
-        return NULL;
+    GList *actions = NULL;           /* collected OnActionItem*             */
+    on_note_extract(data, len, NULL, &actions);
+    return actions;
+}
+
+void
+on_note_extract(const guint8 *data, gsize len, gchar **out_text,
+                GList **out_actions)
+{
+    GString *text = (out_text != NULL) ? g_string_new(NULL) : NULL;
+    GList   *items = NULL;           /* collected OnActionItem*, reversed   */
+    gint     ord   = 0;              /* next item's position index          */
+    ActionScan s = { TRUE, FALSE, TRUE, FALSE, g_string_new(NULL) };
+    gboolean want_actions = out_actions != NULL;
+
     gsize   pos = 4;                 /* read cursor, past the magic         */
     guint32 version;
-    if (!get_u32(data, len, &pos, &version) ||
+    if (!magic_ok(data, len) ||
+        !get_u32(data, len, &pos, &version) ||
         version < 1 || version > BNBF_VERSION)
-        return NULL;
-
-    GList *items = NULL;             /* collected OnActionItem*, reversed   */
-    gint   ord   = 0;                /* next item's position index          */
-    ActionScan s = { TRUE, FALSE, TRUE, FALSE, g_string_new(NULL) };
+        goto done;                   /* unreadable: empty text, no items    */
 
     while (pos < len) {
         guint8 rec = data[pos++];    /* record type byte                    */
@@ -953,7 +925,9 @@ on_note_extract_actions(const guint8 *data, gsize len)
                 !get_u32(data, len, &pos, &n) || pos + n > len)
                 break;
             const gchar *run = (const gchar *)data + pos;
-            for (guint32 i = 0; i < n; i++) {
+            if (text != NULL)
+                g_string_append_len(text, run, n);
+            for (guint32 i = 0; want_actions && i < n; i++) {
                 gchar c = run[i];    /* one BYTE — '\n'/'!' are ASCII, and
                                         UTF-8 tail bytes are all >= 0x80    */
                 if (c == '\n') {
@@ -985,7 +959,9 @@ on_note_extract_actions(const guint8 *data, gsize len)
             pos += n;                /* skip the PNG payload                */
             s.at_start = FALSE;      /* the object occupies the first slot  */
         } else if (rec == REC_TABLE) {
-            if (!read_table_record(data, len, &pos, version, NULL))
+            /* Cells join the plain text (space-separated); for the action
+             * scanner the table just fills the line's first slot.          */
+            if (!read_table_record(data, len, &pos, version, text))
                 break;
             s.at_start = FALSE;
         } else if (rec == REC_CHECK) {
@@ -997,10 +973,15 @@ on_note_extract_actions(const guint8 *data, gsize len)
             break;                   /* unknown record: stop safely         */
         }
     }
-    action_finish_line(&s, &items, &ord);   /* line without trailing '\n'   */
+    if (want_actions)
+        action_finish_line(&s, &items, &ord);   /* line without trailing \n */
 
+done:
     g_string_free(s.text, TRUE);
-    return g_list_reverse(items);
+    if (out_text != NULL)
+        *out_text = g_string_free(text, FALSE);
+    if (out_actions != NULL)
+        *out_actions = g_list_reverse(items);
 }
 
 gchar *

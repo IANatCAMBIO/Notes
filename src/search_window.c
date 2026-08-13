@@ -77,6 +77,11 @@ typedef struct {
     gint           win_h;
 } OnSearch;
 
+/* Above this many candidate notes, one bulk body_text query beats reading
+ * the rows one at a time; at or below it the bulk fetch would pull the whole
+ * column to inspect a handful of notes (a folder- or tag-scoped search).    */
+#define SEARCH_BULK_TEXT_MIN 64
+
 /* Fallback dimensions before any search window has been resized.            */
 #define SEARCH_WIN_DEFAULT_W 575
 #define SEARCH_WIN_DEFAULT_H 360
@@ -253,10 +258,15 @@ search_worker(gpointer user_data)
     /* Folder-id → path strings, all fetched in one query.                  */
     GHashTable *paths = on_db_folder_path_map(db);
 
-    /* All cached note bodies in one query (instead of one SELECT per
-     * candidate); the rare pre-column NULL rows fall back below.  The
-     * query is casefolded once here, not twice per note.                   */
-    GHashTable *bodies = on_db_note_text_map(db, 0);
+    /* Note bodies: ONE query for the whole column beats a SELECT per
+     * candidate when searching everything — but a folder- or tag-scoped
+     * search may have only a handful of candidates, and fetching all
+     * ~1.5 MB of body_text for those was most of the work.  Above the
+     * threshold the bulk map wins; below it, read the few notes directly.  */
+    guint n_candidates = g_list_length(notes);
+    GHashTable *bodies = (n_candidates > SEARCH_BULK_TEXT_MIN)
+                         ? on_db_note_text_map(db, 0) : NULL;
+    /* The query is casefolded once here, not twice per note.               */
     gchar *query_ci = job->case_sensitive
                       ? NULL : g_utf8_casefold(job->query, -1);
 
@@ -264,8 +274,9 @@ search_worker(gpointer user_data)
         if (g_atomic_int_get(&job->cancelled))
             break;                   /* superseded/closed: stop early       */
         OnNoteMeta *m = l->data;     /* one candidate                       */
-        const gchar *body = g_hash_table_lookup(bodies, &m->id);
-        gchar *extracted = NULL;     /* fallback for uncached rows          */
+        const gchar *body = (bodies != NULL)
+                            ? g_hash_table_lookup(bodies, &m->id) : NULL;
+        gchar *extracted = NULL;     /* small scope, or an uncached row     */
         if (body == NULL) {
             extracted = on_note_text_cached(db, m->id);
             body = extracted;
@@ -287,7 +298,8 @@ search_worker(gpointer user_data)
         g_ptr_array_add(job->hits, h);
     }
     g_free(query_ci);
-    g_hash_table_destroy(bodies);
+    if (bodies != NULL)
+        g_hash_table_destroy(bodies);
     g_hash_table_destroy(paths);
     on_db_note_list_free(notes);
     on_db_close(db);

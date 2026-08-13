@@ -291,6 +291,7 @@ static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
+static guint   selected_note_count(OnLibrary *lw);
 static void    list_autofit_set(OnLibrary *lw, PangoLayout *lay,
                                 const gchar *key, gint content_w);
 static gboolean list_column_shown(OnLibrary *lw, const gchar *key);
@@ -1024,6 +1025,34 @@ refresh_actions(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * notes_preview_line() — the Comfortable-density preview for one note: the
+ * first non-blank line of its body text AFTER the title line.  body_text
+ * starts with the title followed by '\n', so that first line is skipped.
+ *   body — the note's cached body text (may be NULL or truncated).
+ * Returns a newly allocated line, or NULL when there is nothing to show.
+ * ------------------------------------------------------------------------- */
+static gchar *
+notes_preview_line(const gchar *body)
+{
+    if (body == NULL)
+        return NULL;
+    const gchar *pos = strchr(body, '\n');
+    if (pos != NULL)
+        pos++;                       /* step past the title's newline        */
+    while (pos != NULL && *pos != '\0') {
+        const gchar *eol = strchr(pos, '\n');
+        gchar *line = (eol != NULL) ? g_strndup(pos, eol - pos)
+                                    : g_strdup(pos);
+        g_strstrip(line);
+        if (*line != '\0')
+            return line;
+        g_free(line);
+        pos = (eol != NULL) ? eol + 1 : NULL;
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------------------
  * refresh_notes() — repopulate the notes model from the current sidebar
  * selection (a folder's notes, or a tag's notes).  When the selection is
  * the same one already shown — a content refresh (autosave, editor
@@ -1094,9 +1123,10 @@ refresh_notes(OnLibrary *lw)
         lw->folder_path_cache = on_db_folder_path_map(lw->app->db);
     GHashTable *paths = lw->folder_path_cache;
 
-    /* Body-text previews for the Comfortable list density — ONE query, only
-     * when comfortable mode is on; compact mode never shows the preview.    */
-    GHashTable *previews = lw->app->comfortable_list
+    /* Body-text previews for the Comfortable list density — ONE query, and
+     * only where the preview is actually drawn: compact density never shows
+     * it, and the grid draws thumbnails and the title, never NL_PREVIEW.    */
+    GHashTable *previews = (lw->app->comfortable_list && !want_thumbs)
         ? on_db_note_text_map(lw->app->db, NL_PREVIEW_CHARS) : NULL;
 
     /* Autofit measuring rides this population loop (no second model
@@ -1172,28 +1202,8 @@ refresh_notes(OnLibrary *lw)
             thumb_todo = e == NULL || e->updated_at != m->updated_at;
         }
 
-        /* First non-blank line of body text AFTER the title line, for the
-         * Comfortable density preview.  body_text starts with the title
-         * followed by '\n', so skip that first line entirely.               */
-        gchar *preview = NULL;
-        const gchar *body = previews ? g_hash_table_lookup(previews, &m->id) : NULL;
-        if (body != NULL) {
-            const gchar *pos = strchr(body, '\n');
-            if (pos != NULL)
-                pos++;               /* step past the title's newline         */
-            while (pos != NULL && *pos != '\0') {
-                const gchar *eol = strchr(pos, '\n');
-                gchar *line = eol != NULL ? g_strndup(pos, eol - pos)
-                                          : g_strdup(pos);
-                g_strstrip(line);
-                if (*line != '\0') {
-                    preview = line;
-                    break;
-                }
-                g_free(line);
-                pos = eol != NULL ? eol + 1 : NULL;
-            }
-        }
+        gchar *preview = notes_preview_line(
+            previews ? g_hash_table_lookup(previews, &m->id) : NULL);
 
         GtkTreeIter iter;
         gtk_list_store_append(lw->notes_store, &iter);
@@ -1473,8 +1483,13 @@ on_action_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         gtk_list_store_remove(lw->actions_store, &iter);
     else
         gtk_list_store_set(lw->actions_store, &iter, AL_DONE, done, -1);
-    on_db_action_set_done(lw->app->db, note_id, ord, done);
-    on_editor_action_set_done(lw->app, note_id, ord, done);
+    /* The content rewrite is authoritative and normally rebuilds the
+     * mirror itself; only a LIVE editor defers that to its autosave, and
+     * only then does the flag need writing here as well.                    */
+    gboolean synced = FALSE;         /* did the rewrite update the table?   */
+    if (on_editor_action_set_done(lw->app, note_id, ord, done, &synced) &&
+        !synced)
+        on_db_action_set_done(lw->app->db, note_id, ord, done);
     if (lw->app->sidebar_counts)
         refresh_sidebar(lw);         /* the section's open count changed    */
 }
@@ -1820,10 +1835,9 @@ on_notes_drag_begin(GtkWidget *widget, GdkDragContext *context,
      * never as a button-release on the view.                               */
     notes_sel_unblock(lw, FALSE);
 
-    GArray *ids = selected_note_ids(lw);
     cairo_surface_t *icon = on_app_icon_surface(
-        lw->app, ids->len > 1 ? "documents" : "file", DRAG_ICON_SIZE);
-    g_array_free(ids, TRUE);
+        lw->app, selected_note_count(lw) > 1 ? "documents" : "file",
+        DRAG_ICON_SIZE);
     if (icon != NULL) {
         gtk_drag_set_icon_surface(context, icon);
         cairo_surface_destroy(icon);
@@ -2315,12 +2329,8 @@ on_new_folder(GtkWidget *widget, gpointer user_data)
                                      ON_AI_MODE_NORMAL, &mode,
                                      NULL, &emoji);
     if (name != NULL) {
-        gint64 fid = on_db_folder_create(lw->app->db,
-                                         current_folder_id(lw), name);
-        if (fid && mode != ON_AI_MODE_NORMAL)
-            on_db_folder_set_ai_mode(lw->app->db, fid, mode);
-        if (fid && emoji != NULL && *emoji != '\0')
-            on_db_folder_set_emoji(lw->app->db, fid, emoji);
+        on_db_folder_create(lw->app->db, current_folder_id(lw), name,
+                            mode, emoji);
         g_free(name);
         refresh_sidebar(lw);
     }
@@ -2359,6 +2369,25 @@ selected_note_ids(OnLibrary *lw)
     }
     g_list_free_full(paths, (GDestroyNotify)gtk_tree_path_free);
     return ids;
+}
+
+/* ---------------------------------------------------------------------------
+ * selected_note_count() — how many notes are selected in the active view.
+ * Cheaper than selected_note_ids() when only the count is wanted (the drag
+ * icon just needs "one or several").
+ * ------------------------------------------------------------------------- */
+static guint
+selected_note_count(OnLibrary *lw)
+{
+    if (g_strcmp0(gtk_stack_get_visible_child_name(GTK_STACK(lw->stack)),
+                  "grid") == 0) {
+        GList *paths = gtk_icon_view_get_selected_items(lw->notes_grid);
+        guint n = g_list_length(paths);
+        g_list_free_full(paths, (GDestroyNotify)gtk_tree_path_free);
+        return n;
+    }
+    return (guint)gtk_tree_selection_count_selected_rows(
+        gtk_tree_view_get_selection(lw->notes_list));
 }
 
 /* ---------------------------------------------------------------------------
@@ -2572,10 +2601,7 @@ on_rename_folder(GtkWidget *widget, gpointer user_data)
                                      cur_emoji, &emoji);
     g_free(cur_emoji);
     if (name != NULL) {
-        on_db_folder_rename(lw->app->db, lw->sel_id, name);
-        on_db_folder_set_ai_mode(lw->app->db, lw->sel_id, mode);
-        on_db_folder_set_emoji(lw->app->db, lw->sel_id,
-                               emoji != NULL ? emoji : "");
+        on_db_folder_update(lw->app->db, lw->sel_id, name, mode, emoji);
         g_free(name);
         refresh_sidebar(lw);
     }
@@ -3972,18 +3998,102 @@ library_notify_notes_changed(OnApp *app)
 }
 
 /* ---------------------------------------------------------------------------
- * library_notify_note_saved() — installed as app->notify_note_saved; the
- * light editor-save refresh: titles and modified times in the notes pane
- * only.  Editing a note can't change folder counts, so the sidebar (and
- * its scroll position) is deliberately left alone; a save that changed
- * the note's tag set uses the full notify_notes_changed instead.
+ * library_notify_note_saved() — installed as app->notify_note_saved: update
+ * the ONE row the saved note owns, instead of rebuilding the notes pane.
+ *
+ * A save can change a note's title, its modified time and its preview line —
+ * never WHICH notes are listed.  Membership in every view the light path can
+ * be reached from is decided by things a save leaves alone: the folder tree,
+ * the pinned flag, the trashed flag, and the tag set (a tag change takes the
+ * full notify instead).  So the model, the selection and the scroll position
+ * can all stay exactly as they are.
+ *
+ * That matters because this fires on every autosave — roughly every 1.2 s of
+ * continuous typing.  The old full repopulate re-queried the note list,
+ * re-formatted two timestamps and re-measured Pango widths for every row,
+ * then walked the model again to restore the selection: ~93 ms of per-row
+ * work at 1300 notes, for one changed row.
  * ------------------------------------------------------------------------- */
 static void
-library_notify_note_saved(OnApp *app)
+library_notify_note_saved(OnApp *app, gint64 note_id)
 {
     OnLibrary *lw = lw_from_app(app);
-    if (lw != NULL)
+    if (lw == NULL)
+        return;
+
+    /* The Action Items view lists items, not notes, and orders them by the
+     * owning note's modified time — a save can reshuffle it, so that view
+     * still takes the full repopulate (it is not the typing-hot case).      */
+    if (lw->sel_kind == SB_KIND_ACTIONS) {
         refresh_notes(lw);
+        return;
+    }
+
+    /* Find the row.  Absent means the note is not in the current view, and
+     * a save cannot have changed that — nothing to do.                     */
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->notes_store);
+    GtkTreeIter   iter;              /* the saved note's row                */
+    gboolean      found = FALSE;
+    gboolean      valid = gtk_tree_model_get_iter_first(model, &iter);
+    /* NOT a for loop: its increment would run after the match and advance
+     * `iter` off the row we just found — invalidating it outright when the
+     * match is the last row, which is where a just-saved note usually is.   */
+    while (valid && !found) {
+        gint64 id;                   /* this row's note id                  */
+        gtk_tree_model_get(model, &iter, NL_ID, &id, -1);
+        if (id == note_id)
+            found = TRUE;            /* leave `iter` ON the match           */
+        else
+            valid = gtk_tree_model_iter_next(model, &iter);
+    }
+    if (!found)
+        return;
+
+    OnNoteMeta *m = on_db_note_get(lw->app->db, note_id);
+    if (m == NULL)
+        return;
+
+    GDateTime *dt = g_date_time_new_from_unix_local(m->updated_at);
+    gchar *when = g_date_time_format(dt, LIST_TIME_FORMAT);
+    g_date_time_unref(dt);
+
+    /* Preview only where it is shown (Comfortable density, list view).      */
+    gchar *preview = NULL;
+    if (lw->app->comfortable_list) {
+        gchar *body = on_db_note_body_text(lw->app->db, note_id);
+        preview = notes_preview_line(body);
+        g_free(body);
+    }
+
+    /* Setting NL_UPDATED is what re-sorts the row to the top under the
+     * default Modified ordering — the same place the old repopulate's
+     * "ORDER BY updated_at DESC" put it.  populating stays DOWN: this is a
+     * real content change and the selection handlers should see it.         */
+    gtk_list_store_set(lw->notes_store, &iter,
+                       NL_TITLE,    m->title,
+                       NL_MODIFIED, when,
+                       NL_UPDATED,  m->updated_at,
+                       NL_PREVIEW,  preview,
+                       -1);
+
+    /* The grid's thumbnail for this note is now stale; re-render it in idle
+     * time exactly as a repopulate would have (list mode pays nothing).     */
+    if (g_strcmp0(gtk_stack_get_visible_child_name(GTK_STACK(lw->stack)),
+                  "grid") == 0) {
+        GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
+        ThumbJob *job = g_new0(ThumbJob, 1);
+        job->row        = gtk_tree_row_reference_new(model, path);
+        job->id         = note_id;
+        job->updated_at = m->updated_at;
+        g_queue_push_tail(&lw->thumb_pending, job);
+        gtk_tree_path_free(path);
+        if (lw->thumb_idle == 0)
+            lw->thumb_idle = g_idle_add(thumb_fill_idle, lw);
+    }
+
+    g_free(preview);
+    g_free(when);
+    on_db_note_meta_free(m);
 }
 
 void

@@ -36,11 +36,15 @@
  *                    deleted, database switched/restored, tag set
  *                    edited.  May be NULL.
  *   notify_note_saved — lighter hook, also installed by the library
- *                    window: refreshes only the notes pane (titles,
- *                    modified times).  Editor saves use this unless the
- *                    note's tag set changed — editing a note can never
- *                    change folder counts, so the sidebar is left
- *                    untouched (and its scrollbar unmoved).  May be NULL.
+ *                    window: updates the ONE row of the notes pane that
+ *                    the saved note owns (title, modified time, preview),
+ *                    leaving the rest of the model, the selection and the
+ *                    scroll position alone.  Editor saves use this unless
+ *                    the note's tag set or action set changed — a save can
+ *                    change neither which notes are listed nor the folder
+ *                    counts, so neither the sidebar nor a full repopulate
+ *                    is warranted.  Takes the note's id so the row can be
+ *                    found without rebuilding the model.  May be NULL.
  *   notify_status  — hook installed by the library window: shows an event
  *                    message ("DB saved", …) on the right side of its
  *                    status bar.  Post through on_app_status(), which
@@ -123,7 +127,7 @@ typedef struct OnApp {
     GHashTable      *editors;
     GtkWidget       *library_window;
     void           (*notify_notes_changed)(struct OnApp *app);
-    void           (*notify_note_saved)(struct OnApp *app);
+    void           (*notify_note_saved)(struct OnApp *app, gint64 note_id);
     void           (*notify_status)(struct OnApp *app, const gchar *message);
     GtkToolbarStyle  toolbar_style[ON_TOOLBAR_N_KINDS];
     GPtrArray       *toolbars[ON_TOOLBAR_N_KINDS];

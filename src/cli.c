@@ -91,7 +91,8 @@ on_cli_resolve_folder_path(OnDatabase *db, const gchar *path, gboolean create,
         on_db_folder_list_free(children);
 
         if (found == 0 && create)
-            found = on_db_folder_create(db, parent, parts[i]);
+            found = on_db_folder_create(db, parent, parts[i],
+                                        ON_AI_MODE_NORMAL, NULL);
         if (found == 0)
             ok = FALSE;
         parent = found;
@@ -173,16 +174,17 @@ note_buffer_save(OnDatabase *db, gint64 id, GtkTextBuffer *buffer)
     gsize blob_len;                  /* serialized content size             */
     guint8 *blob = on_note_serialize(buffer, &blob_len);
     gchar *title = on_buffer_first_line(buffer);
-    gchar *body = on_note_extract_text(blob, blob_len);
+    /* One walk for both derived values.                                   */
+    gchar *body = NULL;              /* searchable plain text               */
+    GList *actions = NULL;           /* the note's '!' lines                */
+    on_note_extract(blob, blob_len, &body, &actions);
     gboolean ok = on_db_note_save(db, id, title, blob, blob_len, body);
     /* CLI saves are rare enough to sync the '!' action-item mirror
      * unconditionally (the editor compares against its last set instead).
      * Propagate failure so callers can report it.                        */
-    if (ok) {
-        GList *actions = on_note_extract_actions(blob, blob_len);
+    if (ok)
         ok = on_db_note_set_actions(db, id, actions);
-        on_db_action_list_free(actions);
-    }
+    on_db_action_list_free(actions);
     g_free(body);
     g_free(title);
     g_free(blob);
@@ -1017,7 +1019,7 @@ cmd_action_done(OnDatabase *db, const gchar *token, gboolean done)
 
     OnApp app = { 0 };               /* headless context: db only           */
     app.db = db;
-    if (!on_editor_action_set_done(&app, note_id, ord, done)) {
+    if (!on_editor_action_set_done(&app, note_id, ord, done, NULL)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         return 2;
     }

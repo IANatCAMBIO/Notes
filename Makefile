@@ -69,6 +69,7 @@ SRCS     := src/main.c \
             src/serialize.c \
             src/editor_window.c \
             src/library_window.c \
+            src/media_window.c \
             src/search_window.c \
             src/settings_window.c \
             src/export.c

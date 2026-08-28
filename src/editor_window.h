@@ -47,6 +47,23 @@ GtkWidget *on_editor_window_open_search(OnApp *app, gint64 note_id,
                                         const gchar *search_term);
 
 /* ---------------------------------------------------------------------------
+ * on_editor_window_open_image() — like on_editor_window_open(), but also
+ * scrolls the note to one of its embedded images and puts the caret there.
+ * Used by the media window, where double-clicking a thumbnail opens the note
+ * it came from at that picture.
+ *
+ *   app       — global application context.
+ *   note_id   — id of the note to edit.
+ *   image_ord — 0-based position of the image among the note's embedded
+ *               images (the same ordinal on_note_count_images() counts);
+ *               a negative value behaves exactly like
+ *               on_editor_window_open().
+ * Returns the editor's GtkWindow, or NULL if the note does not exist.
+ * ------------------------------------------------------------------------- */
+GtkWidget *on_editor_window_open_image(OnApp *app, gint64 note_id,
+                                       gint image_ord);
+
+/* ---------------------------------------------------------------------------
  * on_editor_rebuild_code_buttons_all() — re-evaluate the code-block copy
  * buttons in every open editor window.  Called by the settings window
  * when the "show copy button" preference changes.

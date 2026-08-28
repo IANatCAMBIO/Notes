@@ -29,6 +29,7 @@
 #include "library_window.h"
 #include "editor_window.h"
 #include "export.h"
+#include "media_window.h"
 #include "search_window.h"
 #include "serialize.h"
 #include "settings_window.h"
@@ -1029,6 +1030,35 @@ refresh_actions(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * notes_for_selection() — the notes the current sidebar selection lists, in
+ * display order.  THE one place that maps a selection onto a note set: the
+ * notes pane populates from it, and so does the media browser, so the two
+ * can never disagree about what "this folder" means.
+ *   lw — the library window.
+ * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().
+ * ------------------------------------------------------------------------- */
+static GList *
+notes_for_selection(OnLibrary *lw)
+{
+    if (lw->sel_kind == SB_KIND_TAG)
+        return on_db_notes_by_tag(lw->app->db, lw->sel_id);
+    if (lw->sel_kind == SB_KIND_PINNED)
+        return on_db_note_list_pinned(lw->app->db);
+    if (lw->sel_kind == SB_KIND_ALL)
+        return on_db_note_list_recent(lw->app->db);
+    if (lw->sel_kind == SB_KIND_TRASH)
+        return on_db_note_list_trashed(lw->app->db);
+    if (lw->sel_kind == SB_KIND_ACTIONS)
+        return on_db_note_list_recent(lw->app->db);
+                                     /* the Action Items view spans every
+                                        note; refresh_notes never asks (it
+                                        swaps in its own model first), but
+                                        the media browser does             */
+    return on_db_note_list(lw->app->db, lw->sel_id);
+                                     /* root, folder, or trashed folder     */
+}
+
+/* ---------------------------------------------------------------------------
  * notes_preview_line() — the Comfortable-density preview for one note: the
  * first non-blank line of its body text AFTER the title line.  body_text
  * starts with the title followed by '\n', so that first line is skipped.
@@ -1107,17 +1137,7 @@ refresh_notes(OnLibrary *lw)
     gtk_list_store_clear(lw->notes_store);
 
     /* Pick the note list matching the selection.                           */
-    GList *notes;                    /* OnNoteMeta* list to display         */
-    if (lw->sel_kind == SB_KIND_TAG)
-        notes = on_db_notes_by_tag(lw->app->db, lw->sel_id);
-    else if (lw->sel_kind == SB_KIND_PINNED)
-        notes = on_db_note_list_pinned(lw->app->db);
-    else if (lw->sel_kind == SB_KIND_ALL)
-        notes = on_db_note_list_recent(lw->app->db);
-    else if (lw->sel_kind == SB_KIND_TRASH)
-        notes = on_db_note_list_trashed(lw->app->db);
-    else                             /* root, folder, or trashed folder     */
-        notes = on_db_note_list(lw->app->db, lw->sel_id);
+    GList *notes = notes_for_selection(lw);
 
     /* Folder paths for the list view's Path column — ONE query for all
      * folders, never per note (shared/network DBs).  The result is cached
@@ -2626,6 +2646,29 @@ on_open_search(GtkWidget *widget, gpointer user_data)
                       lw->sel_kind == SB_KIND_TAG ||
                       lw->sel_kind == SB_KIND_TRASH_FOLDER;
     on_search_window_open(lw->app, scoped);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_open_media() — toolbar Media: open the media browser over EXACTLY the
+ * notes the notes pane is currently listing (notes_for_selection), so
+ * "the images in this folder" means the same thing the pane does.  The
+ * window takes a snapshot, so the list is fetched once here.
+ * ------------------------------------------------------------------------- */
+static void
+on_open_media(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    OnLibrary *lw = user_data;       /* owning library window               */
+
+    /* The Action Items view is not a place, and its media set is every
+     * note's — say so rather than naming a row that isn't a folder.        */
+    const gchar *label = (lw->sel_kind == SB_KIND_ACTIONS)
+        ? "All Notes"
+        : (lw->sel_name != NULL ? lw->sel_name : "Notes");
+
+    GList *notes = notes_for_selection(lw);
+    on_media_window_open(lw->app, label, notes);
+    on_db_note_list_free(notes);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4789,6 +4832,8 @@ build_menubar(OnLibrary *lw)
     add_menu_item(view_menu, "Notes as _Grid", G_CALLBACK(on_view_grid), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
+    add_menu_item(view_menu, "_Media\xe2\x80\xa6",
+                  G_CALLBACK(on_open_media), lw);
     add_menu_item(view_menu, "_Search Notes\xe2\x80\xa6",
                   G_CALLBACK(on_open_search), lw);
 
@@ -4822,10 +4867,11 @@ add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
 
 /* ---------------------------------------------------------------------------
  * build_action_bar() — the single unified toolbar spanning the window:
- * a folder-actions area, a drawn separator, a note-actions area, another
- * separator, Settings and Search, a third separator, the AI Summary button
- * (shown only while AI is enabled) — and the search entry pinned to the
- * right edge by an expanding spacer.
+ * a folder-actions area, a drawn separator, a note-actions area (ending
+ * with the List/Grid toggle and Media), another separator, Settings and
+ * Search, a third separator, the AI Summary button (shown only while AI is
+ * enabled) — and the search entry pinned to the right edge by an expanding
+ * spacer.
  * Returns the toolbar widget.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
@@ -4865,6 +4911,10 @@ build_action_bar(OnLibrary *lw)
     add_tool_button(lw, toolbar, "view", "\xe2\x8a\x9e",
                     "List/Grid", "Toggle between list and grid view",
                     G_CALLBACK(on_toggle_view));
+    add_tool_button(lw, toolbar, "images", "\xf0\x9f\x96\xbc",
+                    "Media",
+                    "Show every image in the listed notes as thumbnails",
+                    G_CALLBACK(on_open_media));
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
@@ -4923,7 +4973,7 @@ build_action_bar(OnLibrary *lw)
 /* ---------------------------------------------------------------------------
  * on_library_key_press() — window-level shortcuts: Ctrl/Cmd+N creates a
  * note in the currently selected folder; Ctrl/Cmd+F opens the search
- * window.
+ * window; Ctrl/Cmd+M opens the media browser.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_library_key_press(GtkWidget *widget, GdkEventKey *event,
@@ -4939,6 +4989,10 @@ on_library_key_press(GtkWidget *widget, GdkEventKey *event,
         }
         if (key == GDK_KEY_f) {
             on_open_search(NULL, lw);
+            return TRUE;
+        }
+        if (key == GDK_KEY_m) {
+            on_open_media(NULL, lw);
             return TRUE;
         }
     }

@@ -47,10 +47,11 @@ sees the new flags.
 | `src/main.c` | GtkApplication entry; config init; sets `icons/composition.png` as default window icon |
 | `src/app.[ch]` | Shared `OnApp` context: db handle, open-editors map, per-family toolbar styles, icon loading, toolbar registry + right-click style menu |
 | `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering |
-| `src/serialize.[ch]` | BNBF binary format ⇄ GtkTextBuffer; image anchors; shared GtkTextTag set (`on_buffer_ensure_tags`) |
-| `src/editor_window.[ch]` | WYSIWYG editor: new windows open in the screen's bottom-right corner, 12 px clear of the work area (`editor_place_bottom_right`, quirk #21); inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block copy buttons, title line (line 0 centered + heading-sized, both derived by `title_line_sync`, gated by `first_line_title`), debounced autosave |
+| `src/serialize.[ch]` | BNBF binary format ⇄ GtkTextBuffer; image anchors; shared GtkTextTag set (`on_buffer_ensure_tags`); the cheap image API the media browser needs — `on_note_count_images` (record walk, decodes nothing) and `on_note_image_nth` (decode ONE image by ordinal, capped), both on the same `bnbf_*` reader as everything else, with `png_decode_capped` now the ONE decode path (the full deserializer included) |
+| `src/editor_window.[ch]` | WYSIWYG editor: new windows open in the screen's bottom-right corner, 12 px clear of the work area (`editor_place_bottom_right`, quirk #21); inline/paragraph formatting, list continuation, #tag autocomplete popup (never inside code blocks — capture is suppressed there, and `strip_tags_in_code_blocks` removes tag spans carried in by code-block formatting or paste), image paste/context menu, floating code-block "copy" links (plain labels hit-tested from the view's own press/motion handlers — quirk #22), title line (line 0 centered + heading-sized, both derived by `title_line_sync`, gated by `first_line_title`), debounced autosave; `on_editor_window_open_image()` opens a note scrolled to its Nth image (`editor_reveal_image` counts image ANCHORS, the same order `on_note_count_images` counts IMAGE records — that shared ordinal is the media browser's whole addressing scheme; deferred through an idle on a fresh window like the search-term open, immediate on an already-open one) |
 | `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+), sortable headers, context menus, one unified toolbar (folder area \| notes area, whose Quicknote button (archive.png) calls `on_library_quicknote()` — a note in the ROOT folder whatever is selected, editor to the front; THE one implementation, also behind the `notes quicknote` CLI/IPC command \| Search …; the About button that used to sit at the far right, with its expanding spacer and per-style child swap, was removed 2026-08 — About lives in the File menu only), menubar (File/View), native-menubar hook, bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
 | `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options |
+| `src/media_window.[ch]` | Media browser (library toolbar's images.png button, View \| Media…, Ctrl/Cmd+M): every image embedded in the notes the pane is listing, as a GtkFlowBox of square-boxed thumbnails captioned with their note. Note set comes from `notes_for_selection()` in library_window.c — THE one selection→note-list mapping, shared with `refresh_notes` — and is SNAPSHOTTED at open (id+title only). Scanning runs in 40 ms idle slices (`media_scan_idle`), one image per step, holding the current note's blob across yields; image counts come from `on_note_count_images` (record walk, no decode) and each thumbnail from `on_note_image_nth` at thumb size. Capped at MEDIA_MAX_IMAGES (500) with the truncation said in the status line — every cell holds its own decoded pixels. A single click opens the ONE modal viewer (a GtkOverlay child, dark event box covering the grid so it swallows every click, image fitted to the window less MEDIA_VIEWER_INSET on each side, re-rendered on a 150 ms debounce after a resize); clicking it or Escape closes it. Getting to the note is the "Show in source note" LINK (a GtkLabel with `<a>` markup + activate-link) under the image's bottom-right corner, NOT a double click — the first press of a double click dismisses the panel its second press was aimed at, and before the modal design the same collision made a double click open the wrong note (the in-grid expand reflowed the grid under the pointer). A GtkLabel carrying links owns an input-only window and takes the press before the enclosing event box, so the link works despite the click-to-close — `media_viewer_press` checks the link's allocation anyway rather than trusting that. Calls `on_editor_window_open_image()` |
 | `src/settings_window.[ch]` | Toolbar styles, list density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar, database location |
 | `src/export.[ch]` | HTML + Markdown export (all notes mirroring folder tree, or single note) |
 | `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/done/undone/due` (items addressed `NOTEID:ORD` **or** by stable `UID` — `action_token_parse` tells them apart BY SHAPE, a ':' means the positional form, a bare decimal means a uid; `action list --uid` prepends the uid as a further FIRST column, leaving the default output byte-identical because text must stay last, and an unknown flag exits 1 so a caller can probe an older build; done/due rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the offscreen path); `note new/append/set` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`) |
@@ -176,6 +177,8 @@ sees the new flags.
   touchscreen classification driving all three — restart to change;
   costs XI2 smooth scrolling; no-op off X11), `image_viewer` (program
   path; unset = system default),
+  `media_win_w`/`media_win_h` (last media-window size, same contract as
+  the search window's),
   `search_win_w`/`search_win_h` (last search-window size, the default
   for the next one), `editor_win_w`/`editor_win_h` (default editor
   window CLIENT size, 640×509 when unset — read at editor open only,
@@ -551,8 +554,46 @@ sees the new flags.
     the monitor rect: the work area already excludes the menu bar, Dock and
     Linux panels.
 
+22. **The text window's CURSOR has exactly one owner, so a clickable
+    region inside a GtkTextView must be served from the VIEW's own
+    handlers, not from a wrapper widget.**  The code blocks' "copy" links
+    were once a GtkLabel inside a `gtk_event_box_set_visible_window(FALSE)`
+    GtkEventBox whose realize handler set the "pointer" cursor, on the
+    theory that the event box owns a GdkWindow the cursor could be scoped
+    to.  It does not: `visible_window` FALSE clears the widget's
+    has-window flag, so `gtk_widget_get_window()` returns the PARENT —
+    the view's bin window (verified: `has_window=0`, and get_window ==
+    `gtk_text_view_get_window(GTK_TEXT_WINDOW_TEXT)`).  The realize
+    handler was therefore setting the cursor for the WHOLE text area, and
+    `on_view_motion_notify` (connected after, so it wins) put the text
+    cursor straight back on the next motion — the hand cursor never
+    appeared anywhere.  Motion reaches the view even over the event box
+    because GtkEventBox's input-only window asks for BUTTON_MOTION_MASK
+    only, never POINTER_MOTION_MASK.  So: the links are plain GtkLabels
+    with no input window at all, and both the click
+    (`on_view_button_press`) and the hover cursor (`on_view_motion_notify`)
+    hit-test them via `code_link_at_view_pos`.
+    Hit-test against the child's **ALLOCATION**: in-window children are
+    POSITIONED in buffer coordinates (quirk #1), but GTK re-allocates them
+    as the view scrolls (measured: `move_child(300,200)` with a 12 px top
+    margin allocates at y=212, and at y=92 once scrolled 120), so an
+    allocation is always in the same window coordinates `event->x/y`
+    arrives in — no `window_to_buffer_coords` conversion, and correct at
+    any scroll offset.  Consume the press (return TRUE) so the caret does
+    not move under the link.
+
 ## Performance decisions
 
+- The media browser never deserializes a note: counting a note's images
+  is a record walk that skips PNG payloads, and each thumbnail decodes
+  exactly one image at thumbnail size (`on_note_image_nth`, which caps
+  the decode via the loader's size-prepared, so a 12 MP screenshot is
+  never inflated).  The scan yields every 40 ms and keeps the current
+  note's blob across yields, so a note with twenty screenshots is read
+  from SQLite once.  Measured on the 1296-note/600 MB database: All
+  Notes fills 500 thumbnails in ~30 s with the window fully responsive
+  throughout.  The 500 cap is a MEMORY bound, not a speed one — every
+  cell holds its own decoded pixels.
 - Grid thumbnails render ONLY while grid view is visible (`want_thumbs`
   in refresh_notes; on_view_grid refreshes) — the thumb cache keys on
   updated_at, so without the gate the edited note re-rendered on every
@@ -669,6 +710,7 @@ then change the files in the "Change" column.
 | Change AI summary behaviour | `library_window.c` (`run_ai_summary`, `build_ai_pane`) | `library_window.c` |
 | Modify export output | `export.c` | `export.c` |
 | Modify search behaviour | `search_window.c` | `search_window.c` |
+| Modify the media browser | `media_window.c`, `serialize.h` (image API) | `media_window.c` |
 
 ## Rename cleanup TODO
 

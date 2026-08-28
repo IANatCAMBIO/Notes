@@ -384,6 +384,34 @@ GdkPixbuf *on_anchor_get_image(GtkTextChildAnchor *anchor,
 #define ON_IMAGE_THUMB_H 125
 
 /* ---------------------------------------------------------------------------
+ * on_note_count_images() — how many IMAGE records a BNBF blob holds, found
+ * by the same cheap record walk as on_note_extract_text(): the PNG payloads
+ * are skipped, never decoded.  The media view asks this of every note in a
+ * folder, so it must not pay per-image decode costs just to know the count.
+ *   data — BNBF bytes (NULL is answered 0).
+ *   len  — length of `data`.
+ * Returns the number of embedded images, 0 for an unreadable blob.
+ * ------------------------------------------------------------------------- */
+gint on_note_count_images(const guint8 *data, gsize len);
+
+/* ---------------------------------------------------------------------------
+ * on_note_image_nth() — decode ONE embedded image out of a BNBF blob,
+ * addressed by its position among the blob's IMAGE records (the same 0-based
+ * ordinal on_note_count_images() counts, and the same order the editor's
+ * image anchors appear in).  Only that one PNG is decoded; every other
+ * payload is walked past.
+ *   data   — BNBF bytes (NULL yields NULL).
+ *   len    — length of `data`.
+ *   ord    — 0-based image ordinal within the note.
+ *   max_px — cap on the longest side of the decoded pixbuf (0 = full
+ *            resolution); never upscales.
+ * Returns a new pixbuf reference (g_object_unref() it), or NULL when the
+ * note has no such image or the payload will not decode.
+ * ------------------------------------------------------------------------- */
+GdkPixbuf *on_note_image_nth(const guint8 *data, gsize len, gint ord,
+                             gint max_px);
+
+/* ---------------------------------------------------------------------------
  * OnTable — the data behind an embedded table anchor.
  *
  * Fields:

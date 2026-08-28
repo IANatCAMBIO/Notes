@@ -657,6 +657,44 @@ on_size_prepared(GdkPixbufLoader *loader, gint width, gint height,
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * png_decode_capped() — decode one IMAGE record's payload into a pixbuf,
+ * shrinking it during decode to at most `max_px` on its longest side.  THE
+ * one decode path: the full deserializer, the media view's thumbnails and
+ * on_note_image_nth() all come through here, so the size cap and the
+ * failure reporting exist once.
+ *   png    — encoded bytes (PNG as written by the serializer).
+ *   n_png  — their length.
+ *   max_px — longest-side cap in pixels, 0 for full resolution.
+ * Returns a new pixbuf reference (g_object_unref() it), or NULL when the
+ * payload will not decode.
+ * ------------------------------------------------------------------------- */
+static GdkPixbuf *
+png_decode_capped(const guint8 *png, gsize n_png, gint max_px)
+{
+    GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
+    if (max_px > 0)
+        g_signal_connect(loader, "size-prepared",
+                         G_CALLBACK(on_size_prepared),
+                         GINT_TO_POINTER(max_px));
+
+    GdkPixbuf *out = NULL;           /* the decoded image, owned            */
+    GError    *err = NULL;           /* decode failure, if any              */
+    if (gdk_pixbuf_loader_write(loader, png, n_png, &err) &&
+        gdk_pixbuf_loader_close(loader, &err)) {
+        GdkPixbuf *pixbuf =          /* borrowed from the loader            */
+            gdk_pixbuf_loader_get_pixbuf(loader);
+        if (pixbuf != NULL)
+            out = g_object_ref(pixbuf);
+    } else {
+        g_warning("image: bad image data: %s",
+                  err != NULL ? err->message : "unknown");
+        g_clear_error(&err);
+    }
+    g_object_unref(loader);
+    return out;
+}
+
 gboolean
 on_note_deserialize(GtkTextBuffer *buffer, const guint8 *data, gsize len)
 {
@@ -688,39 +726,27 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
             /* Decode the PNG bytes and embed an image-carrying anchor.
              * Widgets (for on-screen display) are attached separately by
              * the editor; offscreen consumers just read the anchor data.   */
-            GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
-            if (max_img_px > 0)
-                g_signal_connect(loader, "size-prepared",
-                                 G_CALLBACK(on_size_prepared),
-                                 GINT_TO_POINTER(max_img_px));
-            GError *err = NULL;
-            if (gdk_pixbuf_loader_write(loader, rec.png, rec.n_png, &err) &&
-                gdk_pixbuf_loader_close(loader, &err)) {
-                GdkPixbuf *pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
-                if (pixbuf != NULL) {
-                    GtkTextIter end;
-                    gtk_text_buffer_get_end_iter(buffer, &end);
-                    GtkTextChildAnchor *anchor =
-                        gtk_text_buffer_create_child_anchor(buffer, &end);
-                    on_anchor_set_image(anchor, pixbuf,
-                                        (gint)rec.display_width);
-                    /* Full-resolution load: keep the source PNG bytes on
-                     * the pixbuf so saves emit them verbatim instead of
-                     * re-encoding (see the "on-png" cache in
-                     * on_note_serialize).  Scaled loads (thumbnails)
-                     * never save, and their pixbuf no longer matches the
-                     * bytes — skip those.                                  */
-                    if (max_img_px == 0)
-                        g_object_set_data_full(G_OBJECT(pixbuf), "on-png",
-                            g_bytes_new(rec.png, rec.n_png),
-                            (GDestroyNotify)g_bytes_unref);
-                }
-            } else {
-                g_warning("deserialize: bad image data: %s",
-                          err != NULL ? err->message : "unknown");
-                g_clear_error(&err);
+            GdkPixbuf *pixbuf =      /* owned; the anchor takes its own ref */
+                png_decode_capped(rec.png, rec.n_png, max_img_px);
+            if (pixbuf != NULL) {
+                GtkTextIter end;
+                gtk_text_buffer_get_end_iter(buffer, &end);
+                GtkTextChildAnchor *anchor =
+                    gtk_text_buffer_create_child_anchor(buffer, &end);
+                on_anchor_set_image(anchor, pixbuf,
+                                    (gint)rec.display_width);
+                /* Full-resolution load: keep the source PNG bytes on the
+                 * pixbuf so saves emit them verbatim instead of
+                 * re-encoding (see the "on-png" cache in
+                 * on_note_serialize).  Scaled loads (thumbnails) never
+                 * save, and their pixbuf no longer matches the bytes —
+                 * skip those.                                              */
+                if (max_img_px == 0)
+                    g_object_set_data_full(G_OBJECT(pixbuf), "on-png",
+                        g_bytes_new(rec.png, rec.n_png),
+                        (GDestroyNotify)g_bytes_unref);
+                g_object_unref(pixbuf);
             }
-            g_object_unref(loader);
             break;
         }
 
@@ -880,6 +906,45 @@ on_anchor_get_image(GtkTextChildAnchor *anchor, gint *display_width)
         *display_width = GPOINTER_TO_INT(
             g_object_get_data(G_OBJECT(anchor), "on-display-width"));
     return g_object_get_data(G_OBJECT(anchor), "on-original");
+}
+
+gint
+on_note_count_images(const guint8 *data, gsize len)
+{
+    OnBnbfReader r;                  /* the shared record walker            */
+    if (data == NULL || !bnbf_open(&r, data, len))
+        return 0;
+
+    gint n = 0;                      /* images seen so far                  */
+    OnBnbfRecord rec;                /* the record being walked past        */
+    while (bnbf_next(&r, &rec)) {
+        if (rec.type == REC_IMAGE)
+            n++;
+        else if (rec.type == REC_TABLE)
+            on_table_free(rec.table);    /* the reader hands ownership over */
+    }
+    return n;
+}
+
+GdkPixbuf *
+on_note_image_nth(const guint8 *data, gsize len, gint ord, gint max_px)
+{
+    OnBnbfReader r;                  /* the shared record walker            */
+    if (data == NULL || ord < 0 || !bnbf_open(&r, data, len))
+        return NULL;
+
+    gint n = 0;                      /* images seen so far                  */
+    OnBnbfRecord rec;                /* the record being walked past        */
+    GdkPixbuf *out = NULL;           /* the one image we decode             */
+    while (bnbf_next(&r, &rec)) {
+        if (rec.type == REC_TABLE) {
+            on_table_free(rec.table);
+        } else if (rec.type == REC_IMAGE && n++ == ord) {
+            out = png_decode_capped(rec.png, rec.n_png, max_px);
+            break;
+        }
+    }
+    return out;
 }
 
 gchar *

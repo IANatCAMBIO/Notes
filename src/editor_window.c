@@ -89,9 +89,10 @@
  *                     being typed; NULL when no capture is active.
  *   tag_popup       — popup window listing matching tags (lazily built).
  *   tag_listbox     — GtkListBox inside tag_popup holding suggestions.
- *   code_buttons    — floating "copy" buttons, one per code block, added
+ *   code_buttons    — floating "copy" links, one per code block, added
  *                     as children of the text window (upper-right corner
- *                     of each block).
+ *                     of each block); hit-tested by the view's own
+ *                     button-press and motion handlers.
  *   code_btn_idle   — idle source id for a pending code-button rebuild.
  *   popup_x/popup_y — text-window coordinates of the last right click,
  *                     used by the populate-popup handler to find the
@@ -170,6 +171,11 @@ typedef struct {
     GtkWidget      *search_entry;
     gchar          *pending_search;   /* initial in-note query, applied once */
     guint           initial_search_idle;
+    gint            pending_image;    /* image ordinal to reveal once the
+                                       * fresh window is allocated, -1 = no
+                                       * image was asked for (see the media
+                                       * window's double-click)             */
+    guint           initial_image_idle;
     gboolean        dirty;
     gboolean        tags_modified;
     GtkWidget      *status_path;
@@ -739,47 +745,58 @@ handle_return_in_list(OnEditor *ed)
 }
 
 /* ===========================================================================
- * code blocks — floating per-block copy buttons
+ * code blocks — floating per-block "copy" links
  *
- * Every contiguous code-block span gets a small clipboard button pinned
- * to its upper-right corner.  The buttons are children of the text view's
- * TEXT window (which does NOT scroll with the buffer), so their positions
- * are recomputed whenever the buffer changes, the view resizes, or the
- * user scrolls.  Each button carries a left-gravity GtkTextMark at its
- * block's start as object data "on-mark".
+ * Every contiguous code-block span gets a small "copy" link pinned to its
+ * upper-right corner.  The links are plain GtkLabels added as children of
+ * the text view's TEXT window, positioned in buffer coordinates (so they
+ * ride scrolling on their own — quirk #1) and repositioned whenever the
+ * buffer changes or the view resizes.  Each carries a left-gravity
+ * GtkTextMark at its block's start as object data "on-mark".
+ *
+ * They deliberately have NO input window of their own: the click and the
+ * hover cursor both come from the text view's button-press and motion
+ * handlers via code_link_at_view_pos(), for the reasons in quirk #22.
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * on_copy_link_realize() — set a pointer cursor on the EventBox's own
- * GdkWindow.  GtkButton has no window (windowless widget in GTK3), so
- * the realize handler must live on the EventBox wrapper, not the button,
- * to avoid setting the cursor on the whole text-view text window.
+ * code_link_at_view_pos() — the "copy" link under a pointer position, or
+ * NULL when that position is not on one.
+ *   ed     — the editor.
+ *   wx, wy — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
+ *
+ * The links are plain labels with no input window of their own, so both
+ * their clicks and their hover cursor are driven from the text view's own
+ * handlers (see quirk #22) — this is the shared hit test.  Comparing
+ * against the ALLOCATION is what makes it scroll-proof: GTK re-allocates
+ * in-window children as the view scrolls, so an allocation is in the same
+ * window coordinates a pointer event arrives in, even though the links
+ * are POSITIONED in buffer coordinates.
  * ------------------------------------------------------------------------- */
-static void
-on_copy_link_realize(GtkWidget *widget, gpointer user_data)
+static GtkWidget *
+code_link_at_view_pos(OnEditor *ed, gint wx, gint wy)
 {
-    (void)user_data;
-    GdkDisplay *display = gtk_widget_get_display(widget);
-    GdkCursor  *cursor  = gdk_cursor_new_from_name(display, "pointer");
-    if (cursor != NULL) {
-        gdk_window_set_cursor(gtk_widget_get_window(widget), cursor);
-        g_object_unref(cursor);
+    for (GSList *l = ed->code_buttons; l != NULL; l = l->next) {
+        GtkWidget *link = l->data;   /* one floating copy link              */
+        GtkAllocation al;            /* where it sits in the text window    */
+        gtk_widget_get_allocation(link, &al);
+        if (wx >= al.x && wx < al.x + al.width &&
+            wy >= al.y && wy < al.y + al.height)
+            return link;
     }
+    return NULL;
 }
 
 /* ---------------------------------------------------------------------------
- * on_code_copy_pressed() — copy the whole code block whose start mark is
- * attached to the EventBox wrapper and post a status confirmation.
+ * code_copy_link_activate() — copy the whole code block whose start mark is
+ * attached to `link` and post a status confirmation.
+ * Returns TRUE when something was copied.
  * ------------------------------------------------------------------------- */
 static gboolean
-on_code_copy_pressed(GtkWidget *widget, GdkEventButton *event,
-                     gpointer user_data)
+code_copy_link_activate(OnEditor *ed, GtkWidget *link)
 {
-    if (event->button != GDK_BUTTON_PRIMARY)
-        return FALSE;
-    OnEditor *ed = user_data;        /* owning editor                       */
-    GtkTextMark *mark =              /* block-start mark on the EventBox    */
-        g_object_get_data(G_OBJECT(widget), "on-mark");
+    GtkTextMark *mark =              /* block-start mark on the link        */
+        g_object_get_data(G_OBJECT(link), "on-mark");
     GtkTextTag *tag = lookup_tag(ed->buffer, ON_TAGNAME_CODEBLOCK);
     if (mark == NULL || tag == NULL)
         return FALSE;
@@ -940,29 +957,22 @@ code_buttons_rebuild(OnEditor *ed)
         }
 
         /* One block starts here: build its "copy" hyperlink overlay.
-         * GtkButton is windowless in GTK3, so we wrap in an EventBox
-         * (which has its own GdkWindow) to scope the pointer cursor to
-         * just the link region instead of the whole text-view window.   */
-        GtkWidget *evbox = gtk_event_box_new();
-        gtk_event_box_set_visible_window(GTK_EVENT_BOX(evbox), FALSE);
-        GtkWidget *lbl = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(lbl),
+         * A PLAIN label on purpose — it owns no input window, so its
+         * clicks and its hover cursor both come from the text view's own
+         * button-press and motion handlers (quirk #22).                 */
+        GtkWidget *link = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(link),
             "<span size=\"8192\" foreground=\"#0066cc\""
             " underline=\"single\">copy</span>");
-        gtk_container_add(GTK_CONTAINER(evbox), lbl);
-        g_signal_connect(evbox, "realize",
-                         G_CALLBACK(on_copy_link_realize), NULL);
 
         GtkTextMark *mark = gtk_text_buffer_create_mark(ed->buffer, NULL,
                                                         &it, TRUE);
-        g_object_set_data(G_OBJECT(evbox), "on-mark", mark);
-        g_signal_connect(evbox, "button-press-event",
-                         G_CALLBACK(on_code_copy_pressed), ed);
+        g_object_set_data(G_OBJECT(link), "on-mark", mark);
 
-        gtk_text_view_add_child_in_window(ed->view, evbox,
+        gtk_text_view_add_child_in_window(ed->view, link,
                                           GTK_TEXT_WINDOW_TEXT, 0, 0);
-        gtk_widget_show_all(evbox);
-        ed->code_buttons = g_slist_prepend(ed->code_buttons, evbox);
+        gtk_widget_show_all(link);
+        ed->code_buttons = g_slist_prepend(ed->code_buttons, link);
 
         /* Jump past this block and continue scanning.                      */
         if (!gtk_text_iter_forward_to_tag_toggle(&it, tag))
@@ -1538,11 +1548,15 @@ editor_hand_cursor(OnEditor *ed, gboolean hand)
 }
 
 /* ---------------------------------------------------------------------------
- * on_view_motion_notify() — hand cursor over embedded images.
+ * on_view_motion_notify() — hand cursor over embedded images and over the
+ * code blocks' floating "copy" links.
  *
  * Connected AFTER the class handler on purpose: GtkTextView hides the
  * pointer while the user types and restores the text cursor from its own
- * motion handler, which would undo ours if we ran first.
+ * motion handler, which would undo ours if we ran first.  The copy links
+ * MUST be served from here rather than from a wrapper widget of their own:
+ * the cursor of the text window has exactly one owner, and whoever sets it
+ * last per motion event wins (quirk #22).
  * ------------------------------------------------------------------------- */
 static gboolean
 on_view_motion_notify(GtkWidget *widget, GdkEventMotion *event,
@@ -1550,18 +1564,20 @@ on_view_motion_notify(GtkWidget *widget, GdkEventMotion *event,
 {
     (void)widget;
     OnEditor *ed = user_data;        /* owning editor                       */
-    editor_hand_cursor(ed, image_at_view_pos(ed, (gint)event->x,
-                                             (gint)event->y,
-                                             NULL, NULL) != NULL);
+    gint wx = (gint)event->x;        /* pointer, text-window coordinates    */
+    gint wy = (gint)event->y;
+    editor_hand_cursor(ed,
+                       code_link_at_view_pos(ed, wx, wy) != NULL ||
+                       image_at_view_pos(ed, wx, wy, NULL, NULL) != NULL);
     return FALSE;                    /* never consume: default handling     */
 }
 
 /* ---------------------------------------------------------------------------
  * on_view_button_press() — remember where right clicks land (in the text
  * window's coordinates) so on_view_populate_popup() can tell whether the
- * click was on an embedded image; toggle an image between thumbnail and
- * full size on a plain left click (the same pair of states its context
- * menu offers).
+ * click was on an embedded image; run a code block's floating "copy" link,
+ * or toggle an image between thumbnail and full size, on a plain left click
+ * (the same pair of states the image's context menu offers).
  * ------------------------------------------------------------------------- */
 static gboolean
 on_view_button_press(GtkWidget *widget, GdkEventButton *event,
@@ -1578,10 +1594,21 @@ on_view_button_press(GtkWidget *widget, GdkEventButton *event,
      * meanings, and the 2BUTTON/3BUTTON events of a double click must not
      * toggle a second and third time (which would land back where it
      * started, looking like the click did nothing).                       */
-    if (event->type == GDK_BUTTON_PRESS &&
-        event->button == GDK_BUTTON_PRIMARY &&
-        (event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) == 0 &&
-        image_toggle_display_at(ed, (gint)event->x, (gint)event->y))
+    if (event->type != GDK_BUTTON_PRESS ||
+        event->button != GDK_BUTTON_PRIMARY ||
+        (event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) != 0)
+        return FALSE;                /* never consume: default handling     */
+
+    /* The copy links sit ON TOP of their block's shading, so they are
+     * tested before anything that reads the text under the pointer.       */
+    GtkWidget *link =                /* copy link under the pointer         */
+        code_link_at_view_pos(ed, (gint)event->x, (gint)event->y);
+    if (link != NULL) {
+        code_copy_link_activate(ed, link);
+        return TRUE;                 /* consumed: no caret move, no drag    */
+    }
+
+    if (image_toggle_display_at(ed, (gint)event->x, (gint)event->y))
         return TRUE;                 /* consumed: no caret move, no drag    */
     return FALSE;                    /* never consume: default handling     */
 }
@@ -4300,6 +4327,53 @@ on_initial_search_idle(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+/* ---------------------------------------------------------------------------
+ * editor_reveal_image() — put the caret at the note's `ord`-th embedded
+ * image and scroll it into view, a third of the way down the window.  The
+ * ordinal counts image anchors in buffer order, which is exactly the order
+ * on_note_count_images()/on_note_image_nth() count IMAGE records in — that
+ * is what lets the media window address a thumbnail's source by number.
+ *   ed  — the editor to scroll.
+ *   ord — 0-based image ordinal; < 0 is a no-op.
+ * Returns TRUE when the image was found and revealed.
+ * ------------------------------------------------------------------------- */
+static gboolean
+editor_reveal_image(OnEditor *ed, gint ord)
+{
+    if (ord < 0)
+        return FALSE;
+
+    gint n = 0;                      /* images passed so far                */
+    GtkTextIter it;                  /* scan cursor                         */
+    gtk_text_buffer_get_start_iter(ed->buffer, &it);
+    do {
+        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
+        if (anchor == NULL || on_anchor_get_image(anchor, NULL) == NULL)
+            continue;
+        if (n++ != ord)
+            continue;
+        /* Caret only — no selection: the user never asked for one, and the
+         * next keystroke would replace the image.                          */
+        gtk_text_buffer_place_cursor(ed->buffer, &it);
+        gtk_text_view_scroll_to_iter(ed->view, &it, 0.0, TRUE, 0.0, 0.3);
+        return TRUE;
+    } while (gtk_text_iter_forward_char(&it));
+    return FALSE;
+}
+
+/* on_initial_image_idle() — reveal ed->pending_image once the freshly opened
+ * window is realized and allocated, so the scroll lands (same deferral as
+ * on_initial_search_idle).                                                   */
+static gboolean
+on_initial_image_idle(gpointer user_data)
+{
+    OnEditor *ed = user_data;        /* owning editor                       */
+    ed->initial_image_idle = 0;
+    editor_reveal_image(ed, ed->pending_image);
+    ed->pending_image = -1;
+    return G_SOURCE_REMOVE;
+}
+
 /* ===========================================================================
  * saving
  * =========================================================================== */
@@ -4471,6 +4545,10 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
     if (ed->initial_search_idle != 0) {
         g_source_remove(ed->initial_search_idle);
         ed->initial_search_idle = 0;
+    }
+    if (ed->initial_image_idle != 0) {
+        g_source_remove(ed->initial_image_idle);
+        ed->initial_image_idle = 0;
     }
     if (ed->undo_commit_source != 0) {
         g_source_remove(ed->undo_commit_source);
@@ -5183,24 +5261,31 @@ editor_place_bottom_right(OnEditor *ed, gint win_w, gint win_h)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_window_open_full() — shared implementation behind the two public
- * open functions.  `search_term` (may be NULL) pre-populates the in-note
- * search box and jumps to the first match, so a note opened from the library
- * search window lands with its hit highlighted.
+ * editor_window_open_full() — shared implementation behind the three public
+ * open functions.  Both extras are optional and mutually independent:
+ *   search_term — pre-populates the in-note search box and jumps to the
+ *                 first match, so a note opened from the library search
+ *                 window lands with its hit highlighted (NULL for none).
+ *   image_ord   — scrolls to that image of the note, so a note opened from
+ *                 the media window lands on the thumbnail that was
+ *                 double-clicked (-1 for none).
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
+editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
+                        gint image_ord)
 {
     /* Already open?  Just raise the existing window (and re-run the search
-     * if one was requested — the note may already be up from a prior open). */
+     * or the scroll if one was requested — the note may already be up from a
+     * prior open).  Its buffer is long since allocated, so the reveal needs
+     * no idle deferral here.                                               */
     GtkWidget *existing = g_hash_table_lookup(app->editors, &note_id);
     if (existing != NULL) {
         gtk_window_present(GTK_WINDOW(existing));
-        if (search_term != NULL && *search_term != '\0') {
-            OnEditor *ed = g_object_get_data(G_OBJECT(existing), "on-editor");
-            if (ed != NULL)
-                editor_apply_search_term(ed, search_term);
-        }
+        OnEditor *ed = g_object_get_data(G_OBJECT(existing), "on-editor");
+        if (ed != NULL && search_term != NULL && *search_term != '\0')
+            editor_apply_search_term(ed, search_term);
+        if (ed != NULL && image_ord >= 0)
+            editor_reveal_image(ed, image_ord);
         return existing;
     }
 
@@ -5214,6 +5299,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
     OnEditor *ed = g_new0(OnEditor, 1);
     ed->app     = app;
     ed->note_id = note_id;
+    ed->pending_image = -1;          /* no image reveal unless asked for    */
     /* Identity marks for the '!' lines; seeded by editor_load_content.     */
     ed->action_marks = g_ptr_array_new_with_free_func(g_free);
 
@@ -5254,6 +5340,13 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
         ed->initial_search_idle = g_idle_add(on_initial_search_idle, ed);
     }
 
+    /* Opened from the media window: same deferral, so the scroll to the
+     * image lands on an allocated view.                                    */
+    if (image_ord >= 0) {
+        ed->pending_image = image_ord;
+        ed->initial_image_idle = g_idle_add(on_initial_image_idle, ed);
+    }
+
     on_db_note_meta_free(meta);
     gtk_widget_show_all(ed->window);
     gtk_widget_grab_focus(GTK_WIDGET(ed->view));
@@ -5263,12 +5356,18 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term)
 GtkWidget *
 on_editor_window_open(OnApp *app, gint64 note_id)
 {
-    return editor_window_open_full(app, note_id, NULL);
+    return editor_window_open_full(app, note_id, NULL, -1);
 }
 
 GtkWidget *
 on_editor_window_open_search(OnApp *app, gint64 note_id,
                              const gchar *search_term)
 {
-    return editor_window_open_full(app, note_id, search_term);
+    return editor_window_open_full(app, note_id, search_term, -1);
+}
+
+GtkWidget *
+on_editor_window_open_image(OnApp *app, gint64 note_id, gint image_ord)
+{
+    return editor_window_open_full(app, note_id, NULL, image_ord);
 }

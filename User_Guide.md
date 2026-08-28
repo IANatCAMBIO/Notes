@@ -26,6 +26,15 @@ for the database schema and file formats see [Internals](Internals.md).
   what is selected, and opens its editor straight away — for the thought
   you want written down before deciding where it belongs. The
   `notes quicknote` command does exactly the same thing.
+- **Media** (toolbar, *View → Media…*, **Ctrl/Cmd+M**) opens a browser
+  showing every image embedded in the notes the pane is currently
+  listing — one folder, one tag, All Notes, whatever is selected — as a
+  grid of thumbnails captioned with the note each came from. Click a
+  thumbnail to see that picture full-window (click it again, or press
+  Escape, to go back); the **Show in source note** link under the
+  picture opens the note it lives in, scrolled to the image. The grid
+  fills progressively while you browse, and stops at 500 images —
+  narrow the selection to see the rest.
 - **File → About** shows program info plus live database statistics.
 - **Action Items** — a sidebar section (below the folders and tags,
   shown while any exist) listing every `!` action item from all your

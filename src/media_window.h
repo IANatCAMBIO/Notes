@@ -5,13 +5,13 @@
  * embedded in the notes the library is currently listing, laid out as a
  * reflowing grid of thumbnails.
  *
- *   +--------------------------------------------------+     +-------------+
- *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  |     |  +-------+  |
- *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  | --> |  | image |  |
- *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  |     |  +-------+  |
- *   |--------------------------------------------------|     | cap  [link] |
- *   | 37 images in 12 notes                            |     +-------------+
- *   +--------------------------------------------------+
+ *   +--------------------------------------------------+     +---------------+
+ *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  |     |  +---------+  |
+ *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  | --> |  |  image  |  |
+ *   | [thumb] [thumb] [thumb] [thumb] [thumb] [thumb]  |     |  +---------+  |
+ *   |--------------------------------------------------|     | cap    [link] |
+ *   | 37 images in 12 notes                            |     | Previous|Next |
+ *   +--------------------------------------------------+     +---------------+
  *
  * A single click on a thumbnail shows that picture in a modal panel over the
  * whole grid, fitted to the window less a 20 px margin on every side; the
@@ -19,6 +19,11 @@
  * closes it, and it holds one picture at a time.  A "Show in source note"
  * link under the picture's bottom-right corner opens the note the image is
  * in, scrolled to that image.
+ *
+ * The open panel walks the grid without going back to it: the Left and Right
+ * arrow keys, or the "Previous | Next" links centred under the picture, put
+ * the neighbouring cell's image in the panel.  Neither wraps around — at
+ * either end the word is dim plain text and the key does nothing.
  *
  * Images are addressed as (note id, ordinal): the position of the image
  * among that note's embedded images.  Nothing is copied into the window but

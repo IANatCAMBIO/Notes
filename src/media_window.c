@@ -47,6 +47,9 @@
 /* Height reserved under the viewer's image for its caption (logical px).    */
 #define MEDIA_VIEWER_CAPTION_H 30
 
+/* ...and for the "Previous | Next" row under that (logical px).             */
+#define MEDIA_VIEWER_NAV_H 24
+
 /* Hard cap on how many thumbnails one window will build.  Every cell holds
  * its own decoded pixels, so an unbounded "All Notes" browse of a database
  * full of screenshots would grow without limit; the status line says when
@@ -89,6 +92,10 @@ typedef struct {
  *   note_id  — note the image lives in.
  *   ord      — the image's 0-based position among that note's images.
  *   n_img    — how many images that note holds (for the captions).
+ *   idx      — the cell's own position in mw->cells, which is grid order and
+ *              therefore the order the viewer's Previous/Next walk.  Cells
+ *              are only ever APPENDED (the scan never removes one), so this
+ *              is fixed for the cell's life.
  *   title    — the note's title (owned).
  *   thumb    — the thumbnail surface (owned).
  * Widgets are deliberately absent: a cell never has to touch its own after
@@ -99,6 +106,7 @@ typedef struct {
     gint64           note_id;
     gint             ord;
     gint             n_img;
+    gint             idx;
     gchar           *title;
     cairo_surface_t *thumb;
 } MediaCell;
@@ -116,6 +124,8 @@ typedef struct {
  *   viewer_img  — the GtkImage inside it.
  *   viewer_cap  — the caption under that image.
  *   viewer_link — the "Show in source note" link beside that caption.
+ *   viewer_nav  — the "Previous | Next" row centred under the image; one
+ *                 label carrying both links (see media_viewer_nav_sync).
  *   viewer_cell — the cell currently on show, or NULL when closed.
  *   viewer_resize — pending re-render timer after a window resize, 0 if none.
  *   status      — status label under the grid.
@@ -147,6 +157,7 @@ struct OnMedia {
     GtkWidget  *viewer_img;
     GtkWidget  *viewer_cap;
     GtkWidget  *viewer_link;
+    GtkWidget  *viewer_nav;
     MediaCell  *viewer_cell;
     guint       viewer_resize;
     GtkWidget  *status;
@@ -334,8 +345,10 @@ media_viewer_render(OnMedia *mw)
     gtk_widget_get_allocation(mw->overlay, &alloc);
     gint box_w = alloc.width  - 2 * MEDIA_VIEWER_INSET;
     gint box_h = alloc.height - 2 * MEDIA_VIEWER_INSET
-                              - MEDIA_VIEWER_CAPTION_H;
-                                      /* the caption + link strip under it  */
+                              - MEDIA_VIEWER_CAPTION_H
+                              - MEDIA_VIEWER_NAV_H;
+                                      /* the caption + link strip under it,
+                                         then the Previous | Next row       */
     /* A window shrunk to almost nothing still shows something rather than
      * an empty panel.                                                      */
     box_w = MAX(box_w, 32);
@@ -363,6 +376,42 @@ media_viewer_resize_done(gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
+ * media_viewer_nav_sync() — rewrite the "Previous | Next" row for the picture
+ * currently on show.  Each side is a live link only while the grid holds a
+ * cell that way; at either end the word stays put as dim plain text, so the
+ * row never changes width under the pointer and a dead end is visible rather
+ * than silent.  With a single picture in the whole grid neither side could
+ * ever lead anywhere, so the row is hidden outright.
+ *
+ * Called on every open (the row is per-picture) and, while the scan is still
+ * running, when a cell lands directly after the one on show — that is the
+ * one moment a greyed-out "Next" becomes reachable.
+ * ------------------------------------------------------------------------- */
+static void
+media_viewer_nav_sync(OnMedia *mw)
+{
+    MediaCell *c = mw->viewer_cell;   /* the picture on show                */
+    if (c == NULL)
+        return;
+    if (mw->cells->len <= 1) {
+        gtk_widget_hide(mw->viewer_nav);
+        return;
+    }
+
+    gboolean has_prev = c->idx > 0;
+    gboolean has_next = c->idx + 1 < (gint)mw->cells->len;
+    gchar *markup = g_strdup_printf(
+        "%s   <span alpha=\"40%%\">|</span>   %s",
+        has_prev ? "<a href=\"prev\">Previous</a>"
+                 : "<span alpha=\"40%\">Previous</span>",
+        has_next ? "<a href=\"next\">Next</a>"
+                 : "<span alpha=\"40%\">Next</span>");
+    gtk_label_set_markup(GTK_LABEL(mw->viewer_nav), markup);
+    g_free(markup);
+    gtk_widget_show(mw->viewer_nav);
+}
+
+/* ---------------------------------------------------------------------------
  * media_viewer_open() — show one cell's image in the modal panel, replacing
  * whatever was on show.  A picture that will not decode leaves the grid as
  * it was.
@@ -373,10 +422,12 @@ media_viewer_open(OnMedia *mw, MediaCell *c)
     mw->viewer_cell = c;
 
     gchar *cap = g_strdup_printf(
-        "%s \xe2\x80\x94 image %d of %d      click anywhere to close",
+        "%s \xe2\x80\x94 image %d of %d      "
+        "\xe2\x86\x90 \xe2\x86\x92 to move, click to close",
         c->title, c->ord + 1, c->n_img);
     gtk_label_set_text(GTK_LABEL(mw->viewer_cap), cap);
     g_free(cap);
+    media_viewer_nav_sync(mw);
 
     gtk_widget_show(mw->viewer);
     /* Rendering needs the panel's allocation, which the show above has not
@@ -386,6 +437,40 @@ media_viewer_open(OnMedia *mw, MediaCell *c)
     if (mw->viewer_cell == NULL)      /* render failed and closed it again   */
         return;
     gtk_widget_grab_focus(mw->viewer);
+}
+
+/* ---------------------------------------------------------------------------
+ * media_viewer_step() — move the open panel `delta` cells through the grid
+ * (−1 = previous, +1 = next), in the grid's own order.  A step past either
+ * end does nothing: the panel is never closed by navigating, and it never
+ * wraps around — with up to MEDIA_MAX_IMAGES cells, jumping from the last
+ * picture to the first reads as a glitch rather than a move.
+ * ------------------------------------------------------------------------- */
+static void
+media_viewer_step(OnMedia *mw, gint delta)
+{
+    MediaCell *c = mw->viewer_cell;   /* the picture on show                */
+    if (c == NULL)
+        return;
+
+    gint i = c->idx + delta;          /* where the step lands               */
+    if (i < 0 || i >= (gint)mw->cells->len)
+        return;
+    media_viewer_open(mw, g_ptr_array_index(mw->cells, i));
+}
+
+/* ---------------------------------------------------------------------------
+ * media_viewer_nav_link() — the "Previous"/"Next" links, told apart by the
+ * href media_viewer_nav_sync gave them (one label carries both).
+ * Returns TRUE so GtkLabel does not try to launch the href as a URI.
+ * ------------------------------------------------------------------------- */
+static gboolean
+media_viewer_nav_link(GtkWidget *label, const gchar *uri, gpointer user_data)
+{
+    (void)label;
+    OnMedia *mw = user_data;          /* owning media window                */
+    media_viewer_step(mw, (g_strcmp0(uri, "prev") == 0) ? -1 : +1);
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -411,9 +496,38 @@ media_viewer_link(GtkWidget *label, const gchar *uri, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * media_viewer_press() — a click anywhere on the panel closes it.  The link
- * is a child label with its own handling, so a click there never reaches
- * here.  Only the plain press acts: a stray GDK_2BUTTON_PRESS (from someone
+ * media_hit() — does a press on the viewer panel land on one of its link
+ * labels?  Both the event and the child allocations are in the panel event
+ * box's window coordinates (a visible-window GtkEventBox allocates its child
+ * at its own border width), so they compare directly.  A hidden child is
+ * never hit, whatever allocation it is still carrying.
+ *   child — a label inside the panel.
+ *   event — the press, in panel coordinates.
+ * Returns TRUE when the press is inside the child.
+ * ------------------------------------------------------------------------- */
+static gboolean
+media_hit(GtkWidget *child, const GdkEventButton *event)
+{
+    if (!gtk_widget_get_visible(child))
+        return FALSE;
+
+    GtkAllocation a;                  /* where the child sits               */
+    gtk_widget_get_allocation(child, &a);
+    return event->x >= a.x && event->x < a.x + a.width &&
+           event->y >= a.y && event->y < a.y + a.height;
+}
+
+/* ---------------------------------------------------------------------------
+ * media_viewer_press() — a click anywhere on the panel closes it, except on
+ * the link labels.  Those are child labels with their own handling, so a
+ * click there never reaches here — a GtkLabel carrying links puts its own
+ * input-only window over itself and takes the press first.  Closing the
+ * panel out from under a link would make it unclickable, though, so the
+ * geometry is checked rather than trusted.  A dead-end "Previous"/"Next"
+ * carries no link and so does reach here: it is left inert on purpose
+ * rather than closing the panel the way the backdrop does.
+ *
+ * Only the plain press acts: a stray GDK_2BUTTON_PRESS (from someone
  * double-clicking out of habit) must not close a panel the first press has
  * already closed and the grid re-opened.
  * ------------------------------------------------------------------------- */
@@ -427,18 +541,8 @@ media_viewer_press(GtkWidget *widget, GdkEventButton *event,
         event->type   != GDK_BUTTON_PRESS)
         return FALSE;
 
-    /* Hands off the link.  A GtkLabel carrying links puts its own
-     * input-only window over itself and takes the press first, so this
-     * normally never sees one — but closing the panel out from under the
-     * link would make it unclickable, so the geometry is checked rather
-     * than trusted.  Both the event and the child allocations are in this
-     * event box's window coordinates (a visible-window GtkEventBox
-     * allocates its child at its own border width), so they compare
-     * directly.                                                            */
-    GtkAllocation link;               /* where the link sits                */
-    gtk_widget_get_allocation(mw->viewer_link, &link);
-    if (event->x >= link.x && event->x < link.x + link.width &&
-        event->y >= link.y && event->y < link.y + link.height)
+    if (media_hit(mw->viewer_link, event) ||
+        media_hit(mw->viewer_nav,  event))
         return FALSE;
 
     media_viewer_close(mw);
@@ -499,6 +603,7 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
     c->note_id = note->id;
     c->ord     = ord;
     c->n_img   = n_img;
+    c->idx     = (gint)mw->cells->len;  /* appended below; grid order        */
     c->title   = g_strdup(note->title);
     c->thumb   = thumb;
 
@@ -555,6 +660,11 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
     gtk_widget_show_all(child);
 
     g_ptr_array_add(mw->cells, c);
+    /* A picture landing directly after the one on show turns that panel's
+     * greyed-out "Next" into a live link (and the second cell of all reveals
+     * the row itself) — the only way the nav row changes while a scan runs.  */
+    if (mw->viewer_cell != NULL && mw->viewer_cell->idx == c->idx - 1)
+        media_viewer_nav_sync(mw);
     return TRUE;
 }
 
@@ -668,18 +778,36 @@ media_scan_idle(gpointer user_data)
  * window
  * =========================================================================== */
 
-/* on_media_key_press() — Escape closes the viewer panel (and only then: with
- * no panel open the key is left to the rest of GTK).                         */
+/* ---------------------------------------------------------------------------
+ * on_media_key_press() — the viewer panel's keys: Escape closes it, Left and
+ * Right walk the grid.  All of them act ONLY while a panel is open, so with
+ * the grid on show every key is left to the rest of GTK.  A step past either
+ * end is still consumed — the arrows belong to the panel while it is up, and
+ * letting one through would scroll the grid hidden behind it.
+ * ------------------------------------------------------------------------- */
 static gboolean
 on_media_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
 {
     (void)widget;
     OnMedia *mw = user_data;         /* owning media window                 */
-    if (event->keyval == GDK_KEY_Escape && mw->viewer_cell != NULL) {
+    if (mw->viewer_cell == NULL)
+        return FALSE;
+
+    switch (event->keyval) {
+    case GDK_KEY_Escape:
         media_viewer_close(mw);
         return TRUE;
+    case GDK_KEY_Left:
+    case GDK_KEY_KP_Left:
+        media_viewer_step(mw, -1);
+        return TRUE;
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Right:
+        media_viewer_step(mw, +1);
+        return TRUE;
+    default:
+        return FALSE;
     }
-    return FALSE;
 }
 
 /* on_media_configure() — track the live size (persisted at close) and, when
@@ -789,6 +917,21 @@ media_build_viewer(OnMedia *mw)
     g_signal_connect(mw->viewer_link, "activate-link",
                      G_CALLBACK(media_viewer_link), mw);
 
+    /* The "Previous | Next" row: ONE label carrying both links, so the two
+     * words and their separator can never drift apart and the whole row
+     * centres as a single widget.  Its markup — and its visibility — belong
+     * to media_viewer_nav_sync, hence no-show-all.                          */
+    mw->viewer_nav = gtk_label_new(NULL);
+    gtk_label_set_track_visited_links(GTK_LABEL(mw->viewer_nav), FALSE);
+    gtk_widget_set_no_show_all(mw->viewer_nav, TRUE);
+    gtk_widget_set_halign(mw->viewer_nav, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text(mw->viewer_nav,
+        "Show the previous or next image (or press the \xe2\x86\x90 and "
+        "\xe2\x86\x92 keys)");
+    label_small(mw->viewer_nav);
+    g_signal_connect(mw->viewer_nav, "activate-link",
+                     G_CALLBACK(media_viewer_nav_link), mw);
+
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(grid), 18);
     gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
@@ -802,6 +945,9 @@ media_build_viewer(OnMedia *mw)
     gtk_grid_attach(GTK_GRID(grid), mw->viewer_img,  0, 0, 2, 1);
     gtk_grid_attach(GTK_GRID(grid), mw->viewer_cap,  0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), mw->viewer_link, 1, 1, 1, 1);
+    /* Spanning both columns, so the row is as wide as the picture above it
+     * and GTK_ALIGN_CENTER puts the links under the picture's middle.       */
+    gtk_grid_attach(GTK_GRID(grid), mw->viewer_nav,  0, 2, 2, 1);
 
     mw->viewer = gtk_event_box_new();
     gtk_event_box_set_visible_window(GTK_EVENT_BOX(mw->viewer), TRUE);

@@ -26,6 +26,7 @@
  * =========================================================================== */
 
 #include "editor_window.h"
+#include "image_viewer.h"
 #include "serialize.h"
 
 #include <gdk/gdkkeysyms.h>
@@ -153,6 +154,10 @@ typedef struct {
     GtkWidget      *toggle_buttons[4];
     GtkWidget      *toolbar;          /* the formatting toolbar              */
     GtkWidget      *toolbar_box;      /* vbox it sits in (for live rebuild)  */
+    GtkWidget      *overlay;          /* stacks img_viewer over the text     */
+    OnImageViewer  *img_viewer;       /* the modal panel a click on an
+                                       * embedded image opens — the same
+                                       * one the media browser uses         */
 
     GtkTextMark    *tag_start;
     GtkWidget      *tag_popup;
@@ -1313,6 +1318,80 @@ anchor_at_offset(OnEditor *ed, gint offset)
     return gtk_text_iter_get_child_anchor(&it);
 }
 
+/* ===========================================================================
+ * image ORDINALS — the note's images numbered in buffer order
+ *
+ * That order is the app's ONE way of addressing a note's images: it is the
+ * order on_note_count_images() walks the blob's IMAGE records in, so the
+ * media browser, the editor's modal viewer and
+ * on_editor_window_open_image() all agree on which picture is "image 3".
+ * Keep these three walks the only definition of it.
+ * =========================================================================== */
+
+/* editor_image_count() — how many images the note holds.                    */
+static gint
+editor_image_count(OnEditor *ed)
+{
+    gint n = 0;                      /* images seen so far                  */
+    GtkTextIter it;                  /* scan cursor                         */
+    gtk_text_buffer_get_start_iter(ed->buffer, &it);
+    do {
+        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
+        if (anchor != NULL && on_anchor_get_image(anchor, NULL) != NULL)
+            n++;
+    } while (gtk_text_iter_forward_char(&it));
+    return n;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_image_nth() — the note's `ord`-th image anchor, or NULL when there
+ * is no such image.  `offset_out` gets its buffer offset when non-NULL.
+ * ------------------------------------------------------------------------- */
+static GtkTextChildAnchor *
+editor_image_nth(OnEditor *ed, gint ord, gint *offset_out)
+{
+    if (ord < 0)
+        return NULL;
+
+    gint n = 0;                      /* images passed so far                */
+    GtkTextIter it;                  /* scan cursor                         */
+    gtk_text_buffer_get_start_iter(ed->buffer, &it);
+    do {
+        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
+        if (anchor == NULL || on_anchor_get_image(anchor, NULL) == NULL)
+            continue;
+        if (n++ != ord)
+            continue;
+        if (offset_out != NULL)
+            *offset_out = gtk_text_iter_get_offset(&it);
+        return anchor;
+    } while (gtk_text_iter_forward_char(&it));
+    return NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_image_ord() — the ordinal of the image at buffer offset `offset`,
+ * or -1 when that position holds no image.  The inverse of
+ * editor_image_nth(), for turning a click's offset into the number the modal
+ * viewer addresses pictures by.
+ * ------------------------------------------------------------------------- */
+static gint
+editor_image_ord(OnEditor *ed, gint offset)
+{
+    gint n = 0;                      /* images passed so far                */
+    GtkTextIter it;                  /* scan cursor                         */
+    gtk_text_buffer_get_start_iter(ed->buffer, &it);
+    do {
+        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
+        if (anchor == NULL || on_anchor_get_image(anchor, NULL) == NULL)
+            continue;
+        if (gtk_text_iter_get_offset(&it) == offset)
+            return n;
+        n++;
+    } while (gtk_text_iter_forward_char(&it));
+    return -1;
+}
+
 /* ---------------------------------------------------------------------------
  * image_at_view_pos() — the embedded image under a pointer position, or
  * NULL when that position is not inside one.
@@ -1393,30 +1472,6 @@ replace_image_display(OnEditor *ed, gint offset, gint display_width)
     code_buttons_queue_rebuild(ed);
 }
 
-/* ---------------------------------------------------------------------------
- * image_toggle_display_at() — switch the image under a pointer position
- * between thumbnail and full size, the same two states the context menu
- * offers.  Returns TRUE when an image was there (and toggled), so the
- * caller knows to consume the click.
- *   ed     — the editor.
- *   wx, wy — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
- * ------------------------------------------------------------------------- */
-static gboolean
-image_toggle_display_at(OnEditor *ed, gint wx, gint wy)
-{
-    gint offset;                     /* the image's buffer offset           */
-    gint dw;                         /* stored display width                */
-    GdkPixbuf *orig = image_at_view_pos(ed, wx, wy, &offset, &dw);
-    if (orig == NULL)
-        return FALSE;
-
-    replace_image_display(ed, offset,
-                          image_shown_full(orig, dw)
-                              ? 0    /* 0 = the default thumbnail width     */
-                              : gdk_pixbuf_get_width(orig));
-    return TRUE;
-}
-
 /* image_from_menu_item() — resolve an image context-menu item back to
  * its full-resolution pixbuf via the "on-offset" it was built with.
  * Returns the pixbuf (anchor-owned, do not unref) or NULL; the offset is
@@ -1450,8 +1505,8 @@ on_img_copy(GtkMenuItem *item, gpointer user_data)
  * temporary PNG file and hand it to an image viewer — the program
  * configured under Settings ("image_viewer" setting), or the platform
  * opener (macOS `open`, otherwise `xdg-open`) which launches the system's
- * default viewer.  Shared by the "Open" menu item and the click-to-open
- * handler.                                                                  */
+ * default viewer.  Shared by the "Open" menu item and the modal viewer's
+ * action link.                                                              */
 static void
 image_open_external(GdkPixbuf *orig)
 {
@@ -1522,6 +1577,94 @@ on_img_display_thumb(GtkMenuItem *item, gpointer user_data)
         0);                          /* 0 = the default thumbnail width     */
 }
 
+/* ===========================================================================
+ * the modal image viewer — this window's side of image_viewer.[ch]
+ *
+ * The identical panel the media browser opens, over the text view instead of
+ * over a thumbnail grid.  Pictures are addressed by ORDINAL (see the image
+ * ordinals section above), looked up in the buffer on every call: the panel
+ * holds no pixbuf of its own, so an edit underneath it can only make an op
+ * return NULL — which closes the panel — never dangle.
+ * =========================================================================== */
+
+/* editor_viewer_count() — how many pictures the panel may walk.             */
+static gint
+editor_viewer_count(gpointer host)
+{
+    return editor_image_count((OnEditor *)host);
+}
+
+/* editor_viewer_pixbuf() — the full-resolution image at `ord`, or NULL.
+ * Anchor-owned; do not unref.                                               */
+static GdkPixbuf *
+editor_viewer_pixbuf(OnEditor *ed, gint ord)
+{
+    GtkTextChildAnchor *anchor = editor_image_nth(ed, ord, NULL);
+    return (anchor != NULL) ? on_anchor_get_image(anchor, NULL) : NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_viewer_render() — the panel's image.  The pixbuf is already in
+ * memory on its anchor (the editor never holds images any other way), so
+ * this is a scale-and-wrap with no decode at all — unlike the media
+ * browser's op, which reads the note's blob.
+ * ------------------------------------------------------------------------- */
+static cairo_surface_t *
+editor_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
+{
+    OnEditor  *ed   = host;          /* owning editor                       */
+    GdkPixbuf *orig = editor_viewer_pixbuf(ed, idx);
+    if (orig == NULL)
+        return NULL;
+    return on_image_viewer_fit(GTK_WIDGET(ed->view), orig, box_w, box_h);
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_viewer_caption() — "<note> — image N of M — W x H".
+ *
+ * The note is NAMED even though its own titlebar is right there: "of M"
+ * counts every image in the note, including ones scrolled out of sight, so
+ * the panel can legitimately walk to a picture the user cannot currently see
+ * — and without the note's name that looks indistinguishable from the panel
+ * having wandered into another note.  It matches the media browser's caption,
+ * which names the note for the same reason.  The pixel size is the one thing
+ * the editor knows that the fitted picture no longer shows.
+ * ------------------------------------------------------------------------- */
+static gchar *
+editor_viewer_caption(gpointer host, gint idx)
+{
+    OnEditor  *ed   = host;          /* owning editor                       */
+    GdkPixbuf *orig = editor_viewer_pixbuf(ed, idx);
+    if (orig == NULL)
+        return NULL;
+
+    gchar *note = on_buffer_first_line(ed->buffer);
+    gchar *cap  = g_strdup_printf(
+        "%s \xe2\x80\x94 image %d of %d \xe2\x80\x94 %d \xc3\x97 %d",
+        (note != NULL && *note != '\0') ? note : "Untitled",
+        idx + 1, editor_image_count(ed),
+        gdk_pixbuf_get_width(orig), gdk_pixbuf_get_height(orig));
+    g_free(note);
+    return cap;
+}
+
+/* editor_viewer_action() — "Open in image viewer": hand the picture to the
+ * external viewer, exactly as the context menu's Open does.  "Show in source
+ * note", the media browser's action, would be a no-op here — the source note
+ * is the window the panel is sitting on.                                    */
+static void
+editor_viewer_action(gpointer host, gint idx)
+{
+    image_open_external(editor_viewer_pixbuf((OnEditor *)host, idx));
+}
+
+static const OnImageViewerOps editor_viewer_ops = {
+    .count   = editor_viewer_count,
+    .render  = editor_viewer_render,
+    .caption = editor_viewer_caption,
+    .action  = editor_viewer_action,
+};
+
 /* ---------------------------------------------------------------------------
  * editor_hand_cursor() — show the hand ("pointer") cursor over the text
  * window while the pointer sits on an image, and the ordinary
@@ -1576,8 +1719,7 @@ on_view_motion_notify(GtkWidget *widget, GdkEventMotion *event,
  * on_view_button_press() — remember where right clicks land (in the text
  * window's coordinates) so on_view_populate_popup() can tell whether the
  * click was on an embedded image; run a code block's floating "copy" link,
- * or toggle an image between thumbnail and full size, on a plain left click
- * (the same pair of states the image's context menu offers).
+ * or show an embedded image in the modal viewer, on a plain left click.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_view_button_press(GtkWidget *widget, GdkEventButton *event,
@@ -1608,8 +1750,16 @@ on_view_button_press(GtkWidget *widget, GdkEventButton *event,
         return TRUE;                 /* consumed: no caret move, no drag    */
     }
 
-    if (image_toggle_display_at(ed, (gint)event->x, (gint)event->y))
+    /* A click on an embedded image shows it big in the shared modal viewer.
+     * It used to toggle that image's INLINE size between thumbnail and full
+     * instead; those two states are still on its context menu, where they no
+     * longer compete with the obvious reading of a click on a picture.      */
+    gint offset;                     /* the image's buffer offset           */
+    if (image_at_view_pos(ed, (gint)event->x, (gint)event->y, &offset,
+                          NULL) != NULL) {
+        on_image_viewer_open(ed->img_viewer, editor_image_ord(ed, offset));
         return TRUE;                 /* consumed: no caret move, no drag    */
+    }
     return FALSE;                    /* never consume: default handling     */
 }
 
@@ -4340,25 +4490,17 @@ on_initial_search_idle(gpointer user_data)
 static gboolean
 editor_reveal_image(OnEditor *ed, gint ord)
 {
-    if (ord < 0)
+    gint offset;                     /* the image's buffer offset           */
+    if (editor_image_nth(ed, ord, &offset) == NULL)
         return FALSE;
 
-    gint n = 0;                      /* images passed so far                */
-    GtkTextIter it;                  /* scan cursor                         */
-    gtk_text_buffer_get_start_iter(ed->buffer, &it);
-    do {
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
-        if (anchor == NULL || on_anchor_get_image(anchor, NULL) == NULL)
-            continue;
-        if (n++ != ord)
-            continue;
-        /* Caret only — no selection: the user never asked for one, and the
-         * next keystroke would replace the image.                          */
-        gtk_text_buffer_place_cursor(ed->buffer, &it);
-        gtk_text_view_scroll_to_iter(ed->view, &it, 0.0, TRUE, 0.0, 0.3);
-        return TRUE;
-    } while (gtk_text_iter_forward_char(&it));
-    return FALSE;
+    GtkTextIter it;                  /* the image's position                */
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, offset);
+    /* Caret only — no selection: the user never asked for one, and the next
+     * keystroke would replace the image.                                   */
+    gtk_text_buffer_place_cursor(ed->buffer, &it);
+    gtk_text_view_scroll_to_iter(ed->view, &it, 0.0, TRUE, 0.0, 0.3);
+    return TRUE;
 }
 
 /* on_initial_image_idle() — reveal ed->pending_image once the freshly opened
@@ -4555,6 +4697,8 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
         ed->undo_commit_source = 0;
     }
     undo_free_history(ed);
+    on_image_viewer_free(ed->img_viewer);
+    ed->img_viewer = NULL;
     g_clear_pointer(&ed->pending_search, g_free);
     g_slist_free(ed->code_buttons);  /* widgets die with the window         */
     ed->code_buttons = NULL;
@@ -5085,7 +5229,14 @@ editor_build_layout(OnEditor *ed)
     gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll),
                                               FALSE);
     gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(ed->view));
-    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+
+    /* The modal image viewer stacks over the text, so the scroll goes in an
+     * overlay.  Only the text area is covered: the toolbar and status bar
+     * stay live, which is fine — the panel is about looking at a picture,
+     * not about locking the window.                                        */
+    ed->overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(ed->overlay), scroll);
+    gtk_box_pack_start(GTK_BOX(vbox), ed->overlay, TRUE, TRUE, 0);
 
     /* --- status bar: note location (left), note id, save-state dot ------ */
     ed->status_path = gtk_label_new(NULL);
@@ -5123,7 +5274,38 @@ editor_build_layout(OnEditor *ed)
     editor_status_update(ed);
 
     gtk_container_add(GTK_CONTAINER(ed->window), vbox);
+
+    /* Built last, once the overlay can reach the toplevel: the panel installs
+     * its styling for that window's SCREEN.                                */
+    ed->img_viewer = on_image_viewer_new(
+        ed->overlay, &editor_viewer_ops, ed, "Open in image viewer",
+        "Open this image at full size in an external viewer");
 }
+
+/* ---------------------------------------------------------------------------
+ * on_editor_window_key_press() — offer every key to the modal image viewer
+ * first: Escape closes it, the arrows walk the note's images.  It takes none
+ * while it is closed, so editing keeps all of its own keys.
+ *
+ * On the WINDOW, not on the view: a plain g_signal_connect here runs before
+ * GtkWindow's class handler forwards the key to the focus widget, which is
+ * what lets the panel claim keys off the text view.  The view KEEPS the
+ * focus while the panel is up (deliberately — see image_viewer.c), so every
+ * key the panel does not want is swallowed here as well: without that,
+ * typing at a picture would edit the note blind behind it.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_editor_window_key_press(GtkWidget *widget, GdkEventKey *event,
+                           gpointer user_data)
+{
+    (void)widget;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    if (on_image_viewer_key_press(ed->img_viewer, event))
+        return TRUE;
+    return on_image_viewer_is_open(ed->img_viewer);   /* modal: eat the rest */
+}
+
+
 
 /* ---------------------------------------------------------------------------
  * editor_connect_signals() — connect all buffer/view/window signals.  Called
@@ -5158,6 +5340,8 @@ editor_connect_signals(OnEditor *ed)
                      G_CALLBACK(on_view_size_allocate), ed);
     g_signal_connect_after(ed->view, "draw",
                            G_CALLBACK(on_view_draw), ed);
+    g_signal_connect(ed->window, "key-press-event",
+                     G_CALLBACK(on_editor_window_key_press), ed);
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);
     g_signal_connect(ed->window, "focus-in-event",
@@ -5165,6 +5349,7 @@ editor_connect_signals(OnEditor *ed)
 
     /* Give existing code blocks their floating copy buttons.               */
     code_buttons_queue_rebuild(ed);
+
 }
 
 /* ---------------------------------------------------------------------------

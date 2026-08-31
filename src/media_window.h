@@ -13,17 +13,15 @@
  *   | 37 images in 12 notes                            |     | Previous|Next |
  *   +--------------------------------------------------+     +---------------+
  *
- * A single click on a thumbnail shows that picture in a modal panel over the
- * whole grid, fitted to the window less a 20 px margin on every side; the
- * thumbnails themselves never change size.  Clicking the panel (or Escape)
- * closes it, and it holds one picture at a time.  A "Show in source note"
- * link under the picture's bottom-right corner opens the note the image is
- * in, scrolled to that image.
- *
- * The open panel walks the grid without going back to it: the Left and Right
- * arrow keys, or the "Previous | Next" links centred under the picture, put
- * the neighbouring cell's image in the panel.  Neither wraps around — at
- * either end the word is dim plain text and the key does nothing.
+ * A single click on a thumbnail shows that picture in the SHARED modal image
+ * viewer (image_viewer.[ch]) over the whole grid — the same panel a click on
+ * an image in the note editor opens, so the two look and behave identically.
+ * The thumbnails themselves never change size.  Clicking the panel (or
+ * Escape) closes it; the Left and Right arrow keys, and the
+ * "Previous | Next" links centred under the picture, walk the grid without
+ * going back to it.  This window's own contribution is the image set (its
+ * cells, addressed by index), the caption, and the action link: "Show in
+ * source note", which opens the note the picture is in, scrolled to it.
  *
  * Images are addressed as (note id, ordinal): the position of the image
  * among that note's embedded images.  Nothing is copied into the window but

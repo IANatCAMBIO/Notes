@@ -8,7 +8,12 @@
  *   - inline styles: bold, italic, underline, strikethrough
  *   - paragraph styles: heading 1/2, bulleted list, numbered list,
  *     monospace code blocks (with a one-click "copy code block" button)
- *   - inline images pasted from the clipboard or inserted from a file
+ *   - inline images pasted from the clipboard or inserted from a file;
+ *     clicking one shows it big in the shared modal image viewer
+ *     (image_viewer.[ch]), the same panel the media browser opens, with the
+ *     arrow keys and its Previous | Next links walking the note's images.
+ *     Its INLINE size (thumbnail or full) is the context menu's business
+ *     now, not the click's
  *   - inline #tags with an autocomplete popup (space ends the tag)
  *   - debounced autosave to SQLite via the BNBF serializer
  * =========================================================================== */

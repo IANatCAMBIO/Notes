@@ -15,7 +15,9 @@ for the database schema and file formats see [Internals](Internals.md).
   *View → Hide Sidebar* both put the pane away so the notes take the
   whole window; the menu item then reads *Show Sidebar*.
 - Notes display as a list or as a grid of square thumbnail cards (first
-  image + text preview, title underneath) — switch via *View → Notes as
+  image + text preview, title underneath). The toolbar's view button shows
+  the layout it will switch you TO — a grid while you are in the list, a
+  list while you are in the grid — or switch via *View → Notes as
   List / Notes as Grid*. List rows alternate white/light-blue; clicking
   the Title header sorts alphabetically, the Modified header sorts
   most-recent-first (drag-reordering works while unsorted).

@@ -18,9 +18,10 @@ is missing or cannot be decoded, the button falls back to a text glyph.
 | `delete.png`             | Delete Note                    |
 | `new-folder.png`         | New Folder                     |
 | `delete-folder.png`      | Delete Folder                  |
-| `view.png`               | List/Grid view toggle          |
+| `grid.png`               | List/Grid toggle, while the LIST is showing |
+| `list.png`               | List/Grid toggle, while the GRID is showing |
 | `images.png`             | Media (image browser)          |
-| `web.png`                | Show/hide the folder pane      |
+| `sidebar.png`            | Show/hide the folder pane      |
 | `search.png`             | Search                         |
 | `settings.png`           | Settings                       |
 | `copy.png`               | Code-block copy button         |
@@ -32,6 +33,12 @@ is missing or cannot be decoded, the button falls back to a text glyph.
 
 `file.png` doubles as the drag-under-cursor icon when dragging a
 single note.
+
+The List/Grid toggle takes TWO files because its icon names the view a
+click switches TO, not the one on screen: `grid.png` while the list is
+showing, `list.png` while the grid is.  Replace both or the button will
+look inconsistent halfway through a toggle.  (`view.png`, the single
+icon it used until 2026-09-12, is in `unused/`.)
 
 These names are looked up but have no bundled file — the editor's
 formatting buttons deliberately use crisp Pango text glyphs (B/I/U/S,

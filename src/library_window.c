@@ -160,6 +160,9 @@ static const GtkTargetEntry ROW_TARGET =
  *   view_sidebar_item — the View menu's Show/Hide Sidebar item, kept so
  *                   its label can be re-pointed at whichever action it
  *                   currently offers (see sidebar_menu_sync()).
+ *   view_btn      — the toolbar's List/Grid toggle, kept so its ICON can
+ *                   be re-pointed at whichever view a click switches TO
+ *                   (see view_button_sync()).
  *   status_path   — status-bar label (bottom left): the path of the
  *                   current sidebar selection.
  *   status_event  — status-bar label (bottom right): the latest event
@@ -213,6 +216,8 @@ typedef struct {
     GtkWidget    *status_event;
     GtkWidget    *status_revealer;
     guint         status_timeout;
+    GtkToolItem  *view_btn;            /* List/Grid toggle; icon names the
+                                        * view a click switches TO           */
     GtkToolItem  *ai_btn;              /* microchip AI toolbar button          */
     GtkWidget    *ai_pane;             /* output pane below the notes stack    */
     GtkWidget    *ai_text;             /* non-editable text view inside it     */
@@ -3144,19 +3149,85 @@ on_toggle_sidebar(GtkWidget *widget, gpointer user_data)
     sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
 }
 
+/* ---------------------------------------------------------------------------
+ * view_shows_grid() — is the notes pane showing the GRID?
+ *
+ * THE one reading of that, shared by the toolbar button's icon and by the
+ * click it performs, so the picture can never promise a switch the click
+ * will not deliver (the same rule img_nav_delta keeps for the image
+ * viewer's Previous/Next).
+ *
+ * The stack has a THIRD child: the Action Items view is neither list nor
+ * grid, and the button there is about the mode the notes pane will come
+ * BACK to — which is grid_pref, the preference on_view_list/on_view_grid
+ * keep updating while that view is up.
+ *
+ * Inputs:
+ *   lw — the library window.
+ *
+ * Output:
+ *   TRUE when a click should switch to the list, FALSE when it should
+ *   switch to the grid.
+ * ------------------------------------------------------------------------- */
+static gboolean
+view_shows_grid(OnLibrary *lw)
+{
+    const gchar *mode =              /* "list", "grid" or "actions"         */
+        gtk_stack_get_visible_child_name(GTK_STACK(lw->stack));
+    return g_strcmp0(mode, "actions") == 0 ? lw->grid_pref
+                                           : g_strcmp0(mode, "grid") == 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * view_button_sync() — point the toolbar's List/Grid button at the view a
+ * click switches TO: grid.png while the list is showing, list.png while the
+ * grid is.  The button pictures the DESTINATION, not the current state —
+ * the same contract the View menu's Show/Hide Sidebar label keeps.
+ *
+ * Driven by the stack's own "notify::visible-child-name" rather than called
+ * from each place that switches views: the child is set from five of them
+ * (the two View actions, entering and leaving the Action Items view, and
+ * construction), and a sixth added later would silently skip a call.
+ *
+ * NULL-safe, so the stack can be built before the toolbar.
+ * ------------------------------------------------------------------------- */
+static void
+view_button_sync(OnLibrary *lw)
+{
+    if (lw->view_btn == NULL)
+        return;
+    gboolean grid = view_shows_grid(lw);   /* what is on screen now         */
+    /* Fallback glyphs stand in for a missing file, so they must flip too:
+     * \xe2\x98\xb0 is a list, \xe2\x8a\x9e a grid.                                 */
+    on_app_tool_item_set_icon(lw->app, lw->view_btn,
+                              grid ? "list" : "grid",
+                              grid ? "\xe2\x98\xb0" : "\xe2\x8a\x9e");
+    gtk_tool_button_set_label(GTK_TOOL_BUTTON(lw->view_btn),
+                              grid ? "List" : "Grid");
+    gtk_tool_item_set_tooltip_text(lw->view_btn,
+        grid ? "Switch to list view" : "Switch to grid view");
+}
+
+/* on_view_stack_changed() — the stack switched children: re-point the
+ * List/Grid button's icon.  One connection covers every route in.           */
+static void
+on_view_stack_changed(GObject *stack, GParamSpec *pspec, gpointer user_data)
+{
+    (void)stack; (void)pspec;
+    view_button_sync(user_data);
+}
+
 /* on_toggle_view() — toolbar List/Grid button: switch to whichever notes
- * view is not currently showing.                                            */
+ * view the button is currently picturing.                                   */
 static void
 on_toggle_view(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
     OnLibrary *lw = user_data;       /* owning library window               */
-    const gchar *mode =              /* "list" or "grid"                    */
-        gtk_stack_get_visible_child_name(GTK_STACK(lw->stack));
-    if (g_strcmp0(mode, "list") == 0)
-        on_view_grid(NULL, lw);
-    else
+    if (view_shows_grid(lw))
         on_view_list(NULL, lw);
+    else
+        on_view_grid(NULL, lw);
 }
 
 /* pick_export_dir() — run the "Choose Export Folder" chooser shared by
@@ -4903,8 +4974,10 @@ build_menubar(OnLibrary *lw)
  *   label    — button text label.
  *   tooltip  — hover help.
  *   cb       — "clicked" handler.
+ * Returns the button, for the callers that need to keep it (the List/Grid
+ * toggle re-points its own icon); most ignore it.
  * ------------------------------------------------------------------------- */
-static void
+static GtkToolItem *
 add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
                 const gchar *fallback, const gchar *label,
                 const gchar *tooltip, GCallback cb)
@@ -4913,6 +4986,7 @@ add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
                                              fallback, label, tooltip);
     g_signal_connect(item, "clicked", cb, lw);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
+    return item;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4959,8 +5033,11 @@ build_action_bar(OnLibrary *lw)
                     "Delete Note",
                     "Move the selected notes to the Trash",
                     G_CALLBACK(on_delete_note));
-    add_tool_button(lw, toolbar, "view", "\xe2\x8a\x9e",
-                    "List/Grid", "Toggle between list and grid view",
+    /* Icon, label and tooltip are all set by view_button_sync() below,
+     * from the view actually showing; these are only what it is built
+     * with before the stack can be read.                                   */
+    lw->view_btn = add_tool_button(lw, toolbar, "grid", "\xe2\x8a\x9e",
+                    "Grid", "Switch to grid view",
                     G_CALLBACK(on_toggle_view));
     add_tool_button(lw, toolbar, "images", "\xf0\x9f\x96\xbc",
                     "Media",
@@ -5654,6 +5731,8 @@ library_build_notes_pane(OnLibrary *lw)
     gtk_stack_add_named(GTK_STACK(lw->stack), grid_scroll,    "grid");
     gtk_stack_add_named(GTK_STACK(lw->stack), actions_scroll, "actions");
     gtk_stack_set_visible_child_name(GTK_STACK(lw->stack), "list");
+    g_signal_connect(lw->stack, "notify::visible-child-name",
+                     G_CALLBACK(on_view_stack_changed), lw);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5810,6 +5889,9 @@ on_library_window_create(OnApp *app)
      * visibility, and until show_all has run nothing in the window is
      * visible yet.  The label it was built with is only a placeholder.      */
     sidebar_menu_sync(lw);
+    /* Likewise the List/Grid button: the toolbar is built after the stack,
+     * so it missed the stack's construction-time child change.            */
+    view_button_sync(lw);
 
     /* Fit the sidebar pane to its content width on first show.  Done in an
      * idle so the tree view is fully realized and has measured its rows.     */

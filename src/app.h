@@ -261,6 +261,21 @@ GtkToolItem *on_app_tool_item_new(OnApp *app, gboolean toggle,
                                   const gchar *tooltip);
 
 /* ---------------------------------------------------------------------------
+ * on_app_tool_item_set_icon() — re-point an existing toolbar button at a
+ * different icon, for a button whose image names the ACTION it offers
+ * rather than a fixed command (the library's List/Grid toggle).  Follows
+ * the same icon-file-else-fallback-markup rule as on_app_tool_item_new,
+ * and keeps the button's label and tooltip untouched.
+ *   app             — the application context.
+ *   item            — the tool button to re-point.
+ *   icon_name       — local icon file basename, or NULL.
+ *   fallback_markup — markup shown when the file is missing.
+ * ------------------------------------------------------------------------- */
+void on_app_tool_item_set_icon(OnApp *app, GtkToolItem *item,
+                               const gchar *icon_name,
+                               const gchar *fallback_markup);
+
+/* ---------------------------------------------------------------------------
  * on_app_config_init() — resolve the application config file once
  * ("notes.ini" in the same directory as the binary, from `argv0`)
  * and load it into memory.  All later reads are served from memory; the

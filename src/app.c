@@ -179,18 +179,26 @@ on_app_icon_image(OnApp *app, const gchar *name)
     return on_app_icon_image_sized(app, name, 24);
 }
 
-GtkToolItem *
-on_app_tool_item_new(OnApp *app, gboolean toggle, const gchar *icon_name,
-                     const gchar *fallback_markup, const gchar *label,
-                     const gchar *tooltip)
+/*
+ * tool_icon_widget — the icon widget for a toolbar button: the local image
+ * if one loads, else the fallback markup rendered as a label standing in
+ * for it.  THE one place that rule lives, shared by on_app_tool_item_new
+ * and on_app_tool_item_set_icon, so a button built with an icon and a
+ * button RE-pointed at one cannot come to disagree about the fallback.
+ *
+ * Inputs:
+ *   app             — application context (holds icons_dir)
+ *   icon_name       — icon file basename, or NULL for markup only
+ *   fallback_markup — Pango markup when the file does not load, or NULL
+ *   label           — last-resort text when both are absent
+ *
+ * Output:
+ *   a shown, floating GtkWidget for the caller to parent.  Never NULL.
+ */
+static GtkWidget *
+tool_icon_widget(OnApp *app, const gchar *icon_name,
+                 const gchar *fallback_markup, const gchar *label)
 {
-    GtkToolItem *item = toggle
-        ? GTK_TOOL_ITEM(gtk_toggle_tool_button_new())
-        : GTK_TOOL_ITEM(gtk_tool_button_new(NULL, NULL));
-    gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), label);
-
-    /* Icon: the local PNG if present, else the fallback markup rendered
-     * as a label standing in for the icon.                                 */
     GtkWidget *icon = (icon_name != NULL)
                       ? on_app_icon_image(app, icon_name) : NULL;
     if (icon == NULL) {
@@ -200,10 +208,34 @@ on_app_tool_item_new(OnApp *app, gboolean toggle, const gchar *icon_name,
                                                      : label);
     }
     gtk_widget_show(icon);
-    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), icon);
+    return icon;
+}
 
+GtkToolItem *
+on_app_tool_item_new(OnApp *app, gboolean toggle, const gchar *icon_name,
+                     const gchar *fallback_markup, const gchar *label,
+                     const gchar *tooltip)
+{
+    GtkToolItem *item = toggle
+        ? GTK_TOOL_ITEM(gtk_toggle_tool_button_new())
+        : GTK_TOOL_ITEM(gtk_tool_button_new(NULL, NULL));
+    gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), label);
+    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item),
+        tool_icon_widget(app, icon_name, fallback_markup, label));
     gtk_tool_item_set_tooltip_text(item, tooltip);
     return item;
+}
+
+void
+on_app_tool_item_set_icon(OnApp *app, GtkToolItem *item,
+                          const gchar *icon_name,
+                          const gchar *fallback_markup)
+{
+    /* GTK unparents and drops the old icon widget, which held the only
+     * reference to it, so the previous image is freed by this call.       */
+    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item),
+        tool_icon_widget(app, icon_name, fallback_markup,
+                         gtk_tool_button_get_label(GTK_TOOL_BUTTON(item))));
 }
 
 /* ---------------------------------------------------------------------------

@@ -394,8 +394,233 @@ on_db_close(OnDatabase *db)
     }
     if (db->handle != NULL)
         sqlite3_close(db->handle);
+    g_free(db->health.detail);
     g_free(db->path);
     g_free(db);
+}
+
+/* =========================================================================
+ * health: is this database structurally sound, and what file is it?
+ * ========================================================================= */
+
+/*
+ * integrity_collect — sqlite3_exec callback: accumulate every non-"ok" row
+ * of a PRAGMA integrity_check result into the GString passed as `data`.
+ *
+ * Inputs:
+ *   data      — the GString to append to
+ *   argc/argv — one result row
+ *   col_names — unused
+ *
+ * Output:
+ *   0 always (never abort the exec: the later rows are the findings).
+ */
+static int
+integrity_collect(void *data, int argc, char **argv, char **col_names)
+{
+    (void)col_names;
+    GString *out = data;             /* where the findings accumulate       */
+    for (int i = 0; i < argc; i++) {
+        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
+            if (out->len > 0)
+                g_string_append_c(out, '\n');
+            g_string_append(out, argv[i]);
+        }
+    }
+    return 0;
+}
+
+/*
+ * fk_collect — sqlite3_exec callback for PRAGMA foreign_key_check.
+ *
+ * Its own collector because those columns (table, rowid, parent, fkid) are
+ * a RECORD rather than a message: integrity_collect would spill each field
+ * onto a line of its own and lose which table the row belongs to.
+ *
+ * Inputs:
+ *   data      — the GString to append to
+ *   argc/argv — one violation row
+ *   col_names — unused
+ *
+ * Output:
+ *   0 always.
+ */
+static int
+fk_collect(void *data, int argc, char **argv, char **col_names)
+{
+    (void)col_names;
+    GString *out = data;             /* where the violations accumulate     */
+    if (argc >= 3 && argv[0] != NULL) {
+        if (out->len > 0)
+            g_string_append_c(out, '\n');
+        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
+                               argv[0],
+                               argv[1] != NULL ? argv[1] : "?",
+                               argv[2] != NULL ? argv[2] : "?");
+    }
+    return 0;
+}
+
+/*
+ * db_check_pragmas — run PRAGMA integrity_check then PRAGMA
+ * foreign_key_check on `sq`, honoring BOTH exec return codes.
+ *
+ * The ONE spelling of "is this database structurally sound?".  Three
+ * callers want that answer about different connections — on_db_verify_file
+ * about a file nothing has open, on_db_health_check about the live one, and
+ * through the latter the startup check in main.c — and the rule they must
+ * all follow is the same: a PRAGMA that never RAN collects no rows, which
+ * is indistinguishable from a clean result if you only look at the
+ * collector.  Reporting "verified" when nothing was checked is the one
+ * answer this must never give — it is what a caller is about to delete the
+ * original on.
+ *
+ * Inputs:
+ *   sq     — an open connection, must not be NULL
+ *   ran    — optional out: TRUE when both PRAGMAs actually executed
+ *   detail — optional out: sqlite's own words on failure (g_free), set to
+ *            NULL on success
+ *
+ * Output:
+ *   TRUE only when both RAN and both came back clean.
+ */
+static gboolean
+db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
+{
+    if (detail != NULL)
+        *detail = NULL;
+
+    /* Two GStrings, because what a check REPORTED and why a check STOPPED
+     * are the two different answers this function has to keep apart.       */
+    GString  *found = g_string_new(NULL);  /* the checks' own findings      */
+    GString  *errs  = g_string_new(NULL);  /* why one gave up              */
+    gboolean  broke = FALSE;               /* an exec returned an error     */
+    gchar    *msg   = NULL;                /* sqlite's exec message         */
+
+    if (sqlite3_exec(sq, "PRAGMA integrity_check", integrity_collect, found,
+                     &msg) != SQLITE_OK) {
+        broke = TRUE;
+        g_string_append_printf(errs, "integrity_check stopped: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    msg = NULL;
+
+    /* Skipped once the first check has errored: over pages sqlite could not
+     * read, this reports the same damage in a second vocabulary.           */
+    GString *fk = g_string_new(NULL);      /* foreign key violations        */
+    if (!broke && sqlite3_exec(sq, "PRAGMA foreign_key_check", fk_collect,
+                               fk, &msg) != SQLITE_OK) {
+        broke = TRUE;
+        g_string_append_printf(errs, "foreign_key_check stopped: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    if (fk->len > 0) {
+        if (found->len > 0)
+            g_string_append_c(found, '\n');
+        g_string_append(found, "Foreign key violations:\n");
+        g_string_append(found, fk->str);
+    }
+    g_string_free(fk, TRUE);
+
+    /* The verdict, decided ONCE at the end.
+     *
+     * A CORRUPT file makes integrity_check do both things at once: it
+     * reports the damage it found and THEN returns an error, having given
+     * up on the page that caused it.  So the error code alone cannot mean
+     * "did not run" — what means that is coming back having learned
+     * NOTHING, which is the locked or unreadable file this distinction
+     * exists for.  Deciding per-exec reported real corruption as "the check
+     * did not complete", which sends someone looking for a lock that was
+     * never the problem.                                                   */
+    gboolean any  = found->len > 0;  /* we learned something                */
+    gboolean done = !broke || any;   /* the checks got somewhere            */
+    gboolean ok   = !broke && !any;  /* and found nothing wrong             */
+
+    if (!ok && detail != NULL) {
+        if (errs->len > 0) {
+            if (found->len > 0)
+                g_string_append_c(found, '\n');
+            g_string_append(found, errs->str);
+        }
+        *detail = g_strdup(found->str);
+    }
+    if (ran != NULL)
+        *ran = done;
+    g_string_free(found, TRUE);
+    g_string_free(errs, TRUE);
+    return ok;
+}
+
+gboolean
+on_db_verify_file(const gchar *path, gchar **detail)
+{
+    if (detail != NULL)
+        *detail = NULL;
+    gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
+    sqlite3 *sq  = NULL;             /* the read-only connection            */
+    if (sqlite3_open_v2(uri, &sq, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+                        NULL) != SQLITE_OK) {
+        if (detail != NULL)
+            *detail = g_strdup_printf("cannot open %s: %s", path,
+                sq != NULL ? sqlite3_errmsg(sq) : "?");
+        sqlite3_close(sq);
+        g_free(uri);
+        return FALSE;
+    }
+    g_free(uri);
+
+    gboolean ok = db_check_pragmas(sq, NULL, detail);
+    sqlite3_close(sq);
+    return ok;
+}
+
+gboolean
+on_db_health_check(OnDatabase *db)
+{
+    gboolean  ran    = FALSE;        /* did both PRAGMAs execute?           */
+    gchar    *detail = NULL;         /* sqlite's words on failure           */
+    gboolean  ok = db_check_pragmas(db->handle, &ran, &detail);
+
+    g_free(db->health.detail);
+    db->health.ok     = ok;
+    db->health.ran    = ran;
+    db->health.detail = detail;      /* handed over                         */
+    db->health.when   = g_get_real_time() / G_USEC_PER_SEC;
+    return ok;
+}
+
+const OnDbHealth *
+on_db_health(OnDatabase *db)
+{
+    return db->health.when != 0 ? &db->health : NULL;
+}
+
+/* Bytes per read when hashing.  The file is read in fixed-size chunks
+ * rather than slurped: this runs against the live database, whose size is
+ * the user's business and not ours to hold in memory twice.              */
+#define SHA_CHUNK 65536
+
+gchar *
+on_db_file_sha256(const gchar *path)
+{
+    FILE *f = g_fopen(path, "rb");
+    if (f == NULL)
+        return NULL;
+
+    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
+    guchar    *buf = g_malloc(SHA_CHUNK);
+    gsize      n;                    /* bytes in the current chunk          */
+    while ((n = fread(buf, 1, SHA_CHUNK, f)) > 0)
+        g_checksum_update(sum, buf, (gssize)n);
+    gboolean bad = ferror(f) != 0;   /* a short read that was an error      */
+    g_free(buf);
+    fclose(f);
+
+    gchar *hex = bad ? NULL : g_strdup(g_checksum_get_string(sum));
+    g_checksum_free(sum);
+    return hex;
 }
 
 /* =========================================================================

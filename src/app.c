@@ -362,13 +362,6 @@ on_app_config_load_db_dir(void)
     return on_app_config_get("db_dir");
 }
 
-/* config_save_db_dir() — persist (or clear, with NULL) the custom db dir.   */
-static void
-config_save_db_dir(const gchar *dir)
-{
-    on_app_config_set("db_dir", dir);
-}
-
 void
 on_app_apply_touch_assist(OnApp *app)
 {
@@ -425,28 +418,6 @@ on_app_close_all_editors(OnApp *app)
     g_list_free(windows);
 }
 
-/* ---------------------------------------------------------------------------
- * copy_file() — overwrite-copy `src` to `dest` via GIO.
- * Returns TRUE on success (warning logged otherwise).
- * ------------------------------------------------------------------------- */
-static gboolean
-copy_file(const gchar *src, const gchar *dest)
-{
-    GFile *fsrc  = g_file_new_for_path(src);
-    GFile *fdest = g_file_new_for_path(dest);
-    GError *err = NULL;
-    gboolean ok = g_file_copy(fsrc, fdest, G_FILE_COPY_OVERWRITE,
-                              NULL, NULL, NULL, &err);
-    if (!ok) {
-        g_warning("config: copy %s -> %s failed: %s", src, dest,
-                  err->message);
-        g_clear_error(&err);
-    }
-    g_object_unref(fsrc);
-    g_object_unref(fdest);
-    return ok;
-}
-
 /* The user_version that says the action_items table has been backfilled
  * from pre-existing note content.  2: re-indexed once after the
  * due-date-blind change comparison left due-only edits stale in the
@@ -500,117 +471,5 @@ on_app_action_uids_backfill(OnDatabase *db)
         return;
     if (on_db_action_uids_fill(db))
         on_db_set_user_version(db, DB_VERSION_ACTION_UIDS);
-}
-
-
-gboolean
-on_app_switch_database(OnApp *app, const gchar *new_dir)
-{
-    /* Resolve the target file inside the requested directory.              */
-    gchar *target;                   /* path of the db at the new home      */
-    if (new_dir != NULL) {
-        g_mkdir_with_parents(new_dir, 0755);
-        target = g_build_filename(new_dir, ON_DB_FILENAME, NULL);
-    } else {
-        target = on_db_default_path();
-    }
-    if (g_strcmp0(target, app->db->path) == 0) {
-        g_free(target);
-        return TRUE;                 /* already there: nothing to do        */
-    }
-
-    /* A database already living at the target must never be adopted (or
-     * destroyed) silently: ask BEFORE anything is torn down, so Cancel
-     * leaves the running app completely untouched.                         */
-    gboolean overwrite = FALSE;      /* replace the target file?            */
-    if (g_file_test(target, G_FILE_TEST_EXISTS)) {
-        GtkWidget *dialog = gtk_message_dialog_new(
-            app->library_window != NULL
-                ? GTK_WINDOW(app->library_window) : NULL,
-            GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
-            "That folder already contains a notes database.\n\n"
-            "Use the notes stored there, or overwrite it with a copy "
-            "of your current database?\n"
-            "(Overwriting permanently replaces the file at %s.)",
-            target);
-        gtk_window_set_title(GTK_WINDOW(dialog),
-                             "Notes - Existing Database");
-        gtk_dialog_add_buttons(GTK_DIALOG(dialog),
-                               "_Cancel",                GTK_RESPONSE_CANCEL,
-                               "_Use Existing Database", 1,
-                               "_Overwrite It",          2,
-                               NULL);
-        gint response = gtk_dialog_run(GTK_DIALOG(dialog));
-        gtk_widget_destroy(dialog);
-        if (response != 1 && response != 2) {
-            g_free(target);
-            return FALSE;            /* cancelled: nothing was touched      */
-        }
-        overwrite = response == 2;
-    }
-
-    /* Flush and detach everything that touches the current database.       */
-    on_app_close_all_editors(app);
-
-    gchar *old_path = g_strdup(app->db->path);   /* current db file         */
-    on_db_close(app->db);
-    app->db = NULL;
-
-    /* Copy to the new location when needed.  Fail fast on copy error so we
-     * never delete old_path without having a good copy at target.  The
-     * "Use Existing" path skips the copy entirely — deletion on success is
-     * the new intended behaviour there, not a side-effect of a failed copy. */
-    if (g_file_test(old_path, G_FILE_TEST_EXISTS) &&
-        (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))) {
-        if (!copy_file(old_path, target)) {
-            on_app_notice(app->library_window != NULL
-                              ? GTK_WINDOW(app->library_window) : NULL,
-                          GTK_MESSAGE_ERROR, NULL,
-                          "Could not copy the database to that location.\n"
-                          "The previous database is still in use.");
-            app->db = on_db_open(old_path);
-            g_free(target);
-            g_free(old_path);
-            return FALSE;
-        }
-    }
-
-    app->db = on_db_open(target);
-    on_app_actions_backfill(app->db);   /* adopted dbs may predate actions  */
-    on_app_action_uids_backfill(app->db);   /* ...and predate their uids    */
-    gboolean ok = app->db != NULL;   /* did the new location work?          */
-
-    if (!ok) {
-        /* Fall back to the previous database so the app stays usable.      */
-        g_warning("config: cannot use %s; reverting to %s",
-                  target, old_path);
-        on_app_notice(app->library_window != NULL
-                          ? GTK_WINDOW(app->library_window) : NULL,
-                      GTK_MESSAGE_ERROR, NULL,
-                      "Could not open a database at that location.\n"
-                      "The previous database is still in use.");
-        app->db = on_db_open(old_path);
-    } else {
-        /* Delete the original file: either we copied it to the new path,
-         * or the user chose to switch to an existing database there.       */
-        if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
-            GFile *fold = g_file_new_for_path(old_path);
-            if (!g_file_delete(fold, NULL, NULL))
-                g_warning("config: could not remove old db at %s", old_path);
-            g_object_unref(fold);
-        }
-        g_free(app->db_dir);
-        app->db_dir = g_strdup(new_dir);
-        app->db_transient = FALSE;
-        config_save_db_dir(new_dir);
-    }
-
-    g_free(target);
-    g_free(old_path);
-    if (app->notify_notes_changed != NULL)
-        app->notify_notes_changed(app);
-    if (ok)
-        on_app_status(app, "DB at %s loaded", app->db->path);
-    return ok;
 }
 

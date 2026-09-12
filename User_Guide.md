@@ -11,7 +11,9 @@ for the database schema and file formats see [Internals](Internals.md).
   per-tag counts, in the sidebar. The sidebar toolbar holds New Folder,
   Delete Folder and Search; renaming lives in the folder's right-click
   menu (New Subfolder, Rename, Delete, and "Search Here…" — a search
-  pre-scoped to that folder or tag).
+  pre-scoped to that folder or tag). The **Folders** toolbar button and
+  *View → Hide Sidebar* both put the pane away so the notes take the
+  whole window; the menu item then reads *Show Sidebar*.
 - Notes display as a list or as a grid of square thumbnail cards (first
   image + text preview, title underneath) — switch via *View → Notes as
   List / Notes as Grid*. List rows alternate white/light-blue; clicking
@@ -111,25 +113,36 @@ header bars anywhere). The first line of the note becomes its title.
 
 ## Settings (*File → Settings…*)
 
-- **Appearance** — toolbar button style (text / icons / icons above
-  text), set separately for library and editor windows (also available
-  by right-clicking any toolbar); note counts next to folders and tags;
-  whether the Action Items view lists completed items (on by default);
-  and — when built with gtk-mac-integration — a native macOS menu bar
-  option.
+- **Appearance** — list density (Compact or Comfortable, the latter
+  showing a bold title over a preview of the note's first line); note
+  counts next to folders and tags; whether the Action Items view lists
+  completed items (on by default); whether each window's status bar
+  prefixes the folder path with the database file's path (handy when you
+  juggle more than one database); and — when built with
+  gtk-mac-integration — a native macOS menu bar option.
 - **Editor** — show/hide the code-block copy button and code-block line
-  numbers; auto-style the first line of a new note as Heading 1; a
-  compact toolbar that collapses the style and list buttons into menus;
-  show the note's database id at the right of the editor status bar
-  (off by default — handy with the command line, which addresses notes
-  by id); re-enable GTK's touch assistance (selection drag handles,
-  magnifier, and the tap cut/copy/paste popup — all off by default;
-  fully applies after a restart); and a custom image-viewer program for
-  opening images.
-- **Database** — store the database in a custom folder (see Storage),
-  toggle the startup integrity check, and show or hide the database
-  path shown before the folder path in each window's status bar (on by
-  default — handy when you juggle more than one database).
+  numbers; format the first line of every note as its title; a compact
+  toolbar that collapses the style and list buttons into menus; show the
+  note's database id at the right of the editor status bar (off by
+  default — handy with the command line, which addresses notes by id);
+  re-enable GTK's touch assistance (selection drag handles, magnifier,
+  and the tap cut/copy/paste popup — all off by default; fully applies
+  after a restart); and a custom image-viewer program for opening
+  images.
+- **Database** — a plate of five facts about the file that is open:
+  its **Health** (a coloured dot plus the verdict and when it was
+  reached — hover for sqlite's own words), the **current database**
+  path, how much is in it, its **size on disk**, and its **SHA-256**
+  (click the digest to copy the whole of it — it is the fingerprint of
+  the file as it stands, comparable with `shasum -a 256` or with a
+  backup). **Update** underneath renews every line, re-running
+  `PRAGMA integrity_check` and `PRAGMA foreign_key_check` as it goes.
+  Below that, optional **rotating backups** — see Storage.
+
+  There is no setting here for *where* the database lives: that is
+  *File → Open Database File…*. Nor is there an off switch for the startup
+  integrity check, which runs every launch — a check you can switch off
+  can only ever report silence that means "nobody looked".
 
 All changes apply live and persist (in `notes.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
@@ -140,23 +153,32 @@ dropping in files, see `icons/README.md`.
 Everything lives in a single SQLite database:
 
 - `~/.local/share/notes/notes.db` by default (GLib's user-data
-  directory). *File → Settings… → Database* can point the app at a custom
-  folder instead — e.g. a shared drive used by two machines (never open
-  it from both at once). The choice is stored in `notes.ini` in
-  the same directory as the binary (created on first launch from
-  `notes.ini.defaults`). If the configured database cannot be
-  opened at startup, the app reports the error and exits — it never
-  silently opens a different database.
-- *File → Back Up Database…* snapshots the live database to a file;
-  *File → Restore Database…* replaces the current data with a backup
-  (keeping the old file as `notes.db.pre-restore`).
+  directory). *File → Open Database File…* points the app at any other `.db`
+  file — e.g. a shared drive used by two machines (never open it from
+  both at once) — either for the session or as the new default. A new
+  default is stored in `notes.ini` in the same directory as the binary
+  (created on first launch from `notes.ini.defaults`). If the configured
+  database cannot be opened at startup, the app reports the error and
+  exits — it never silently opens a different database.
+- **Rotating backups** (*Settings… → Database*, off by default) write a
+  verified copy of the database on a timer, keeping only the most recent
+  few. Each pass copies the live file, **verifies the copy** before it
+  counts, and discards it if it does not pass; only then does it remove
+  the oldest, so a run of failing backups can never erode the history
+  already on disk. A pass whose database has not changed since the last
+  backup writes nothing, so an idle app is silent. Set the interval to
+  0 to back up only when you press **Back Up Now**.
+
+  Copies land in a `backups/` folder beside the default database unless
+  you press **Change Folder…**. Worth pointing at a disk *independent*
+  of wherever the database itself lives — the default is tidy, not
+  independent, and Settings says so when the two share a fate.
+- *`notes backup FILE.db`* takes a one-off snapshot from the command
+  line.
 - **CLI and GUI cooperate over a socket** — while the GUI is running,
   `notes` command-line invocations are forwarded to it over a unix
   socket instead of opening the database a second time, so the two never
-  write concurrently. If the database file changed on disk since the
-  last clean exit (shared folder, crash), startup offers **Open Anyway**
-  or **Run Integrity Check** before proceeding (the check can be turned
-  off in Settings).
+  write concurrently.
 
 Note content is stored as a compact binary blob ("BNBF", currently
 version 5) holding styled text runs, PNG image records, tables and task

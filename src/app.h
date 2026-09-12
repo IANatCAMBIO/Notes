@@ -78,9 +78,6 @@
  *                    config FILE (notes.ini next to the binary), not
  *                    the database — the database's own location cannot
  *                    live inside it.
- *   db_integrity_check — when TRUE, PRAGMA integrity_check and PRAGMA
- *                    foreign_key_check are run against the database at
- *                    startup; a warning dialog is shown if issues are found.
  *   statusbar_db_path — whether the library/editor status bars prefix
  *                    the folder path with the database file's path;
  *                    persisted as the "statusbar_db_path" setting
@@ -105,6 +102,11 @@
  *   touch_css      — GtkCssProvider that hides the touch drag handles and
  *                    magnifier (applied when touch assistance is disabled);
  *                    NULL when touch assistance is shown.
+ *   backup_running — TRUE while a rotating-backup pass is on its worker
+ *                    thread (see backup.h), so a timer tick cannot start a
+ *                    second one over a manual "Back Up Now".
+ *   backup_timer   — GLib source id of the periodic backup timer, or 0 when
+ *                    backups are switched off or set to manual only.
  * ------------------------------------------------------------------------- */
 
 typedef struct OnApp {
@@ -123,7 +125,6 @@ typedef struct OnApp {
     gboolean         compact_editor_toolbar;
     gboolean         comfortable_list;
     gchar           *db_dir;
-    gboolean         db_integrity_check;
     gboolean         statusbar_db_path;
     gboolean         statusbar_note_id;
     gboolean         show_done_actions;
@@ -137,6 +138,11 @@ typedef struct OnApp {
     GtkCssProvider  *touch_css;        /* screen CSS hiding the touch aids
                                         * (selection handles + magnifier);
                                         * NULL = touch assistance shown       */
+    gboolean         backup_running;   /* a rotating-backup pass is in flight
+                                        * (see backup.h); the guard that keeps
+                                        * a timer tick off a manual press     */
+    guint            backup_timer;     /* the periodic backup timer's source
+                                        * id, or 0 when backups are off       */
 } OnApp;
 
 /* ---------------------------------------------------------------------------
@@ -334,22 +340,6 @@ gchar *on_app_config_load_db_dir(void);
  * restoring the database.
  * ------------------------------------------------------------------------- */
 void on_app_close_all_editors(OnApp *app);
-
-/* ---------------------------------------------------------------------------
- * on_app_switch_database() — move the app onto a different database
- * location, live: closes all editors, closes the current database, opens
- * notes.db inside `new_dir` (NULL = the default location), and
- * persists the choice in the config file.  If the target has no
- * notes.db yet, the current database file is copied there first, so
- * notes follow the move.  If the target ALREADY has a notes.db, the
- * user is asked first — use the existing database, overwrite it with a
- * copy of the current one, or cancel (which leaves everything untouched).
- * Failures are reported in a dialog and the old database is reopened.
- *   app     — the application context.
- *   new_dir — directory to hold notes.db, or NULL for the default.
- * Returns TRUE if the switch happened.
- * ------------------------------------------------------------------------- */
-gboolean on_app_switch_database(OnApp *app, const gchar *new_dir);
 
 /* ---------------------------------------------------------------------------
  * on_app_actions_backfill() — one-time population of the action_items

@@ -11,6 +11,7 @@
 #include <glib-unix.h>
 
 #include "app.h"
+#include "backup.h"
 #include "cli.h"
 #include "db.h"
 #include "ipc.h"
@@ -57,79 +58,38 @@ quartz_log_filter(const gchar   *domain,
 #endif /* __APPLE__ */
 
 /* ---------------------------------------------------------------------------
- * integrity_collect() — sqlite3_exec callback: accumulates non-"ok" rows
- * from a PRAGMA integrity_check result into the GString passed as `data`.
+ * startup_integrity_check() — verify the database at launch and show a
+ * warning dialog when the checks find (or cannot reach) the truth.
+ *
+ * It runs EVERY launch and has no off switch, deliberately: a health check
+ * that can be switched off can only ever report silence that means "not
+ * looked", which is the one answer it must never give.  The verdict is
+ * recorded on the connection, so Settings → Database can say when it was
+ * reached without checking again.
+ *
+ * Inputs:
+ *   app — the application context, its database already open.
+ *
+ * Output:
+ *   TRUE when both checks ran and both passed.
  * ------------------------------------------------------------------------- */
-static int
-integrity_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;
-    for (int i = 0; i < argc; i++) {
-        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
-            if (out->len > 0)
-                g_string_append_c(out, '\n');
-            g_string_append(out, argv[i]);
-        }
-    }
-    return 0;
-}
-
-/* fk_collect() — sqlite3_exec callback: formats PRAGMA foreign_key_check
- * rows (table, rowid, parent, fkid) into human-readable lines.             */
-static int
-fk_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;
-    if (argc >= 3 && argv[0] != NULL) {
-        if (out->len > 0)
-            g_string_append_c(out, '\n');
-        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
-                               argv[0],
-                               argv[1] != NULL ? argv[1] : "?",
-                               argv[2] != NULL ? argv[2] : "?");
-    }
-    return 0;
-}
-
-/* startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
- * foreign_key_check against the open database.  Shows a warning dialog if
- * either check reports problems.  Returns TRUE if both passed.             */
 static gboolean
 startup_integrity_check(OnApp *app)
 {
-    GString *ic_errors = g_string_new(NULL);
-    sqlite3_exec(app->db->handle, "PRAGMA integrity_check",
-                 integrity_collect, ic_errors, NULL);
+    if (on_db_health_check(app->db))
+        return TRUE;
 
-    GString *fk_errors = g_string_new(NULL);
-    sqlite3_exec(app->db->handle, "PRAGMA foreign_key_check",
-                 fk_collect, fk_errors, NULL);
-
-    gboolean ok = (ic_errors->len == 0 && fk_errors->len == 0);
-    if (!ok) {
-        GString *msg = g_string_new(NULL);
-        if (ic_errors->len > 0) {
-            g_string_append(msg, "Integrity check errors:\n");
-            g_string_append(msg, ic_errors->str);
-        }
-        if (fk_errors->len > 0) {
-            if (msg->len > 0)
-                g_string_append(msg, "\n\n");
-            g_string_append(msg, "Foreign key violations:\n");
-            g_string_append(msg, fk_errors->str);
-        }
-        on_app_notice(NULL, GTK_MESSAGE_WARNING,
-                      "Notes - Database Integrity Check",
-                      "The database integrity check found issues:\n\n%s",
-                      msg->str);
-        g_string_free(msg, TRUE);
-    }
-
-    g_string_free(ic_errors, TRUE);
-    g_string_free(fk_errors, TRUE);
-    return ok;
+    const OnDbHealth *h = on_db_health(app->db);
+    on_app_notice(NULL, GTK_MESSAGE_WARNING,
+                  "Notes - Database Integrity Check",
+                  "%s\n\n%s",
+                  h != NULL && h->ran
+                      ? "The database integrity check found issues:"
+                      : "The database integrity check could not be "
+                        "completed:",
+                  h != NULL && h->detail != NULL ? h->detail
+                                                 : "no detail reported");
+    return FALSE;
 }
 
 /* startup_first_run() — no notes.db exists at the expected location:
@@ -233,14 +193,20 @@ on_activate(GtkApplication *gtk_app, gpointer user_data)
     /* Hide the touch aids (selection handles, magnifier) unless enabled.   */
     on_app_apply_touch_assist(app);
 
-    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.  */
-    gboolean db_ok = !app->db_integrity_check || startup_integrity_check(app);
+    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.
+     * Every launch, with no switch — see startup_integrity_check().        */
+    gboolean db_ok = startup_integrity_check(app);
 
     on_library_window_create(app);
 
-    if (app->db_integrity_check && db_ok)
+    if (db_ok)
         on_app_status(app, "DB at %s loaded, integrity check passed",
                       app->db->path);
+
+    /* Arm the rotating backup timer (a no-op while backups are off).  It
+     * carries the db path, so it must be re-armed after File → Open
+     * Database… — which is what on_backup_auto_start is for.            */
+    on_backup_auto_start(app, app->db->path);
 
     /* Listen for "quicknote"/"note open" from later CLI invocations, then
      * run any action a CLI already queued because no instance was running.  */
@@ -394,8 +360,6 @@ main(int argc, char *argv[])
         on_app_config_get_bool("compact_editor_toolbar", TRUE);
     app.comfortable_list =
         on_app_config_get_bool("list_density_comfortable", FALSE);
-    app.db_integrity_check =
-        on_app_config_get_bool("db_integrity_check",     TRUE);
     app.statusbar_db_path =
         on_app_config_get_bool("statusbar_db_path",      FALSE);
     app.statusbar_note_id =

@@ -10,14 +10,15 @@ and the BNBF note format. For everyday use see the
 | File                      | Purpose                                             |
 |---------------------------|-----------------------------------------------------|
 | `src/main.c`              | GtkApplication entry point; settings/config loading |
-| `src/app.[ch]`            | Shared `OnApp` context, icon loading, toolbar styles, DB switching/restore |
+| `src/app.[ch]`            | Shared `OnApp` context, icon loading, toolbar styles, config file |
 | `src/cli.[ch]`            | Headless noun-verb command-line interface           |
-| `src/db.[ch]`             | SQLite layer: folders, notes, tags, backup          |
+| `src/db.[ch]`             | SQLite layer: folders, notes, tags, snapshot copies, health checks |
 | `src/serialize.[ch]`      | BNBF binary format ⇄ GtkTextBuffer conversion       |
 | `src/editor_window.[ch]`  | WYSIWYG editor: formatting, images, tables, tasks, code blocks, find-in-note |
 | `src/library_window.[ch]` | Sidebar, list & grid views, drag & drop, menus, About |
 | `src/search_window.[ch]`  | Cross-note search window                            |
 | `src/settings_window.[ch]`| The Settings window                                 |
+| `src/backup.[ch]`         | Optional rotating database backups (worker thread)  |
 | `src/export.[ch]`         | HTML and Markdown exporters                         |
 | `icons/`                  | Bundled PNG icons + app logo (see its README)       |
 | `tools/import-apple-notes.sh` | Apple Notes migration script                    |

@@ -8,7 +8,6 @@ code_line_numbers=1
 native_menubar=1
 sidebar_counts=0
 image_viewer=
-db_integrity_check=1
 search_win_w=538
 search_win_h=299
 first_line_title=1
@@ -24,3 +23,10 @@ statusbar_note_id=0
 show_done_actions=1
 list_density_comfortable=1
 bold_list_titles=1
+# Rotating database backups (see Settings -> Database): off by
+# default.  An empty backup_dir means a backups/ folder inside the
+# default database location.
+backup_enabled=0
+backup_dir=
+backup_interval_min=60
+backup_keep=10

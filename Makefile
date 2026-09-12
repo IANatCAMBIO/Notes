@@ -74,7 +74,8 @@ SRCS     := src/main.c \
             src/search_query.c \
             src/search_window.c \
             src/settings_window.c \
-            src/export.c
+            src/export.c \
+            src/backup.c
 
 # Object files derived from the source list (build/ mirrors src/).
 OBJS     := $(SRCS:src/%.c=build/%.o)

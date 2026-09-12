@@ -27,6 +27,7 @@
  * =========================================================================== */
 
 #include "library_window.h"
+#include "backup.h"
 #include "editor_window.h"
 #include "export.h"
 #include "media_window.h"
@@ -156,6 +157,9 @@ static const GtkTargetEntry ROW_TARGET =
  *                   jumping back to the top.
  *   sidebar_box   — the whole folder/tag pane, so the toolbar's
  *                   show/hide toggle can flip its visibility.
+ *   view_sidebar_item — the View menu's Show/Hide Sidebar item, kept so
+ *                   its label can be re-pointed at whichever action it
+ *                   currently offers (see sidebar_menu_sync()).
  *   status_path   — status-bar label (bottom left): the path of the
  *                   current sidebar selection.
  *   status_event  — status-bar label (bottom right): the latest event
@@ -203,6 +207,7 @@ typedef struct {
     gint          shown_kind;
     gint64        shown_id;
     GtkWidget    *sidebar_box;
+    GtkWidget    *view_sidebar_item;     /* View menu's Show/Hide Sidebar   */
     GtkWidget    *sidebar_paned;         /* horizontal paned holding the sidebar */
     GtkWidget    *status_path;
     GtkWidget    *status_event;
@@ -2777,6 +2782,10 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(old_path);
     g_free(file_path);
 
+    /* The backup timer carries the db path, so it must be re-armed onto
+     * the file that is now open (see backup.h).                           */
+    on_backup_auto_start(app, app->db->path);
+
     if (app->notify_notes_changed != NULL)
         app->notify_notes_changed(app);
     on_app_status(app, "DB at %s loaded", app->db->path);
@@ -3074,15 +3083,65 @@ on_view_grid(GtkWidget *widget, gpointer user_data)
     refresh_notes(lw);               /* fill the thumbnails list mode skips */
 }
 
-/* on_toggle_sidebar() — toolbar show/hide button for the folder/tag
- * pane: the notes view takes the whole window while it is hidden.           */
+/* The View menu's sidebar item is an ACTION, not a state: its label names
+ * what a click DOES.  Two labels, so the item can be re-pointed at
+ * whichever one is on offer.                                               */
+#define SIDEBAR_LABEL_TO_HIDE "Hide Sidebar"
+#define SIDEBAR_LABEL_TO_SHOW "Show Sidebar"
+
+/* ---------------------------------------------------------------------------
+ * sidebar_menu_sync() — point the View menu's sidebar item at the action it
+ * offers, read from the pane's LIVE visibility: "Hide Sidebar" while the
+ * folder pane is up, "Show Sidebar" while it is not.
+ *
+ * No handler blocking is needed — an action item's label carries no state to
+ * feed back, and gtk_menu_item_set_label cannot emit "activate".  NULL-safe,
+ * so the toolbar button works during construction, before the menu exists.
+ *
+ * Inputs:
+ *   lw — the library window.
+ *
+ * Output:
+ *   none.
+ * ------------------------------------------------------------------------- */
+static void
+sidebar_menu_sync(OnLibrary *lw)
+{
+    if (lw->view_sidebar_item == NULL)
+        return;
+    gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
+        gtk_widget_get_visible(lw->sidebar_box) ? SIDEBAR_LABEL_TO_HIDE
+                                                : SIDEBAR_LABEL_TO_SHOW);
+}
+
+/* ---------------------------------------------------------------------------
+ * sidebar_set_visible() — show or hide the folder/tag pane and keep the View
+ * menu's label in step.  THE one place that changes that visibility: the
+ * toolbar button and the menu item both route through here, so the two can
+ * never come to disagree about what the sidebar is doing.
+ *
+ * Inputs:
+ *   lw   — the library window.
+ *   show — TRUE to show the pane, FALSE to hide it.
+ *
+ * Output:
+ *   none.
+ * ------------------------------------------------------------------------- */
+static void
+sidebar_set_visible(OnLibrary *lw, gboolean show)
+{
+    gtk_widget_set_visible(lw->sidebar_box, show);
+    sidebar_menu_sync(lw);
+}
+
+/* on_toggle_sidebar() — the toolbar button AND the View menu item: the
+ * notes view takes the whole window while the folder pane is hidden.        */
 static void
 on_toggle_sidebar(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gtk_widget_set_visible(lw->sidebar_box,
-                           !gtk_widget_get_visible(lw->sidebar_box));
+    sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
 }
 
 /* on_toggle_view() — toolbar List/Grid button: switch to whichever notes
@@ -4776,31 +4835,31 @@ build_menubar(OnLibrary *lw)
 {
     GtkWidget *bar = gtk_menu_bar_new();
 
-    /* File menu.                                                           */
+    /* File menu.
+     *
+     * ONE separator in this menu, and it goes after the group below.
+     * What acts on the NOTES is New Note, New Folder and the two Export
+     * All items; everything after the rule is about the app or the file it
+     * keeps — the database, Settings, About, Quit.  A rule between every
+     * pair of items (which is what this was) divides nothing, so it
+     * stopped reading as grouping at all.  Same shape as the sister Tasks
+     * app's File menu.                                                     */
     GtkWidget *file_menu = gtk_menu_new();
     add_menu_item(file_menu, "_New Note",
                   G_CALLBACK(on_new_note), lw);
     add_menu_item(file_menu, "New _Folder\xe2\x80\xa6",
                   G_CALLBACK(on_new_folder), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     add_menu_item(file_menu, "Export All as _HTML\xe2\x80\xa6",
                   G_CALLBACK(on_export_html), lw);
     add_menu_item(file_menu, "Export All as _Markdown\xe2\x80\xa6",
                   G_CALLBACK(on_export_markdown), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
-    add_menu_item(file_menu, "_Open Database\xe2\x80\xa6",
+    add_menu_item(file_menu, "_Open Database File\xe2\x80\xa6",
                   G_CALLBACK(on_open_db), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     add_menu_item(file_menu, "_Settings\xe2\x80\xa6",
                   G_CALLBACK(on_open_settings), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     add_menu_item(file_menu, "_About", G_CALLBACK(on_about), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     add_menu_item(file_menu, "_Quit", G_CALLBACK(on_quit), lw);
 
     GtkWidget *file_root = gtk_menu_item_new_with_mnemonic("_File");
@@ -4811,6 +4870,16 @@ build_menubar(OnLibrary *lw)
     GtkWidget *view_menu = gtk_menu_new();
     add_menu_item(view_menu, "Notes as _List", G_CALLBACK(on_view_list), lw);
     add_menu_item(view_menu, "Notes as _Grid", G_CALLBACK(on_view_grid), lw);
+    /* Above the rule is what the WINDOW looks like — the notes pane's two
+     * modes, and whether the folder pane is up.  Show/Hide Sidebar mirrors
+     * the toolbar's Folders button; both route through
+     * sidebar_set_visible(), so the label cannot drift from the pane.
+     * Below the rule are the two items that open a window of their own.    */
+    lw->view_sidebar_item =
+        gtk_menu_item_new_with_label(SIDEBAR_LABEL_TO_HIDE);
+    g_signal_connect(lw->view_sidebar_item, "activate",
+                     G_CALLBACK(on_toggle_sidebar), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), lw->view_sidebar_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
     add_menu_item(view_menu, "_Media\xe2\x80\xa6",
@@ -5736,6 +5805,11 @@ on_library_window_create(OnApp *app)
     on_app_status(app, "DB at %s loaded", app->db->path);
 
     gtk_widget_show_all(lw->window);
+
+    /* AFTER show_all: the View item's label is read from the pane's live
+     * visibility, and until show_all has run nothing in the window is
+     * visible yet.  The label it was built with is only a placeholder.      */
+    sidebar_menu_sync(lw);
 
     /* Fit the sidebar pane to its content width on first show.  Done in an
      * idle so the tree view is fully realized and has measured its rows.     */

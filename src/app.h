@@ -58,6 +58,14 @@
  *   sidebar_counts — whether the library sidebar shows note counts next
  *                    to folders and tags; persisted as the
  *                    "sidebar_counts" setting (default off).
+ *   sidebar_fit_content — whether the sidebar sizes itself to the rows
+ *                    currently on show: expanding a folder widens it so
+ *                    the revealed rows are not ellipsized, collapsing one
+ *                    gives the width back.  While it is on the divider
+ *                    belongs to the app, so a width the user dragged does
+ *                    not survive the next expand or collapse — which is
+ *                    why it ships off.  Persisted as "sidebar_fit_content"
+ *                    (default off = today's fixed-width sidebar).
  *   first_line_title — whether line 0 of a note is treated as its title:
  *                    the editor centers that line and auto-formats it as
  *                    Heading 1 while a brand-new (or emptied) note's title
@@ -121,6 +129,7 @@ typedef struct OnApp {
     gboolean         code_copy_buttons;
     gboolean         code_line_numbers;
     gboolean         sidebar_counts;
+    gboolean         sidebar_fit_content;
     gboolean         first_line_title;
     gboolean         compact_editor_toolbar;
     gboolean         comfortable_list;

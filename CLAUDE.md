@@ -142,7 +142,35 @@ button's icons/sidebar.png.  Its Quicknote button (archive.png) calls `on_librar
   `backup_source_stamp` (the rotating backups — see `backup.h` for all
   five),
   `sidebar_counts` (`1|0`, default 0 — folder/tag counts in the
-  sidebar), `first_line_title` (`1|0`, default 1 — treat line 0 as the
+  sidebar),
+  `sidebar_fit_content` (`1|0`, default 0 — the sidebar sizes itself to the
+  rows ON SHOW: expanding a folder widens the divider so the revealed rows
+  are not ellipsized, collapsing one gives the width back
+  (`sidebar_fit_apply`, symmetric by deliberate choice — while the setting
+  is on the divider belongs to the app, so a width the user dragged does
+  not survive the next expand or collapse.  That is the deal the setting
+  makes, and it is why it ships OFF; unticking the box leaves the width
+  where the last fit put it rather than restoring anything).  Bounded by
+  `SB_FIT_MIN_WIDTH` (also the startup fit's floor — ONE constant, not two
+  spellings of 160) and `SB_FIT_MAX_PERCENT` of the paned, so neither a
+  library of short names nor a deep branch can make the other pane
+  unusable.  Triggered by the tree view's own `row-expanded` +
+  `row-collapsed` (one handler); the expanded half covers a model rebuild
+  too, since refresh_sidebar's expansion-restore walk expands through that
+  same signal, and the handler is idle-coalesced because that walk fires it
+  once per restored row.  Measurement shares `sb_fit_measure` with the
+  one-shot startup fit, switched by `SbFitCtx.view`: set = on-screen rows
+  only (`sb_row_onscreen` walks the ancestors, since
+  `gtk_tree_view_row_expanded` answers only for the node itself and GTK
+  remembers the flag of a row inside a collapsed parent), NULL = the whole
+  model, which is what the startup fit has always measured.  The fit
+  applies the DIFFERENCE to the current position rather than setting the
+  measured width, so the scrolled window's vertical scrollbar — which comes
+  and goes as folders open and close — is carried along without being
+  measured; that is what makes the same arithmetic correct in both
+  directions, and it reads the scrollbar as it IS because the idle is
+  default-priority, which GTK services after its own resize
+  (HIGH_IDLE+10) has re-laid-out the tree), `first_line_title` (`1|0`, default 1 — treat line 0 as the
   note's title: the editor CENTERS it and renders it heading-sized,
   unconditionally and whatever it holds, so a line becomes the title just
   by landing on line 0 (delete the title line and the body line under it

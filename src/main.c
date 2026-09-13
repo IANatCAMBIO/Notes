@@ -354,6 +354,8 @@ main(int argc, char *argv[])
         on_app_config_get_bool("code_line_numbers",      FALSE);
     app.sidebar_counts =
         on_app_config_get_bool("sidebar_counts",         FALSE);
+    app.sidebar_fit_content =
+        on_app_config_get_bool("sidebar_fit_content",    FALSE);
     app.first_line_title =
         on_app_config_get_bool("first_line_title",       TRUE);
     app.compact_editor_toolbar =

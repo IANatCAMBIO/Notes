@@ -62,6 +62,16 @@ void on_library_get_scope(OnApp *app, OnSearchScope *scope, gint64 *id,
                           gchar **name);
 
 /* ---------------------------------------------------------------------------
+ * on_library_sidebar_fit() — size the library sidebar so the folder rows
+ * on show fit exactly, honouring the "sidebar_fit_content" setting (a
+ * no-op while it is off, or with no library window open).  Settings calls
+ * this on every toggle; ticking the box fits at once, unticking leaves the
+ * width where the last fit put it.
+ *   app — global application context.
+ * ------------------------------------------------------------------------- */
+void on_library_sidebar_fit(OnApp *app);
+
+/* ---------------------------------------------------------------------------
  * on_library_apply_native_menubar() — move the library's menu into the
  * native macOS menu bar (hiding the in-window one), or restore it.
  * Compiled in only when the gtk-mac-integration library is available

@@ -212,6 +212,10 @@ typedef struct {
     GtkWidget    *sidebar_box;
     GtkWidget    *view_sidebar_item;     /* View menu's Show/Hide Sidebar   */
     GtkWidget    *sidebar_paned;         /* horizontal paned holding the sidebar */
+    guint         sb_fit_idle;           /* pending sidebar_fit_grow(), or 0;
+                                            coalesces the row-expanded burst
+                                            a model rebuild's re-expansion
+                                            walk fires                      */
     GtkWidget    *status_path;
     GtkWidget    *status_event;
     GtkWidget    *status_revealer;
@@ -5151,6 +5155,8 @@ library_free(gpointer data)
     OnLibrary *lw = data;
     if (lw->status_timeout != 0)
         g_source_remove(lw->status_timeout);
+    if (lw->sb_fit_idle != 0)
+        g_source_remove(lw->sb_fit_idle);
     /* Cancel any in-flight AI subprocess before freeing lw.  The
      * GCancellable keeps the callback safe after the pointer is gone.    */
     ai_throbber_stop(lw);
@@ -5168,15 +5174,51 @@ library_free(gpointer data)
     g_free(lw);
 }
 
+/* Narrowest the sidebar is ever fitted to: a library of short folder names
+ * must not leave a sliver of a pane.  Shared by the one-shot startup fit
+ * and by sidebar_fit_apply().                                              */
+#define SB_FIT_MIN_WIDTH 160
+
+/* The most of the paned the sidebar may take when fitting itself to its
+ * content.  A deeply nested branch can be arbitrarily wide, and the notes
+ * pane still has to be usable.                                             */
+#define SB_FIT_MAX_PERCENT 50
+
 /* sb_fit_ctx — working state passed through gtk_tree_model_foreach() for
  * the sidebar width measurement walk.                                       */
 typedef struct {
     PangoLayout *lay;   /* reused layout (same font as the sidebar)          */
     gint         max_w; /* running maximum row pixel width                   */
+    GtkTreeView *view;  /* set to measure only rows the user can SEE (every
+                         * ancestor expanded); NULL measures the whole model */
 } SbFitCtx;
 
+/* sb_row_onscreen() — TRUE when every ANCESTOR of `path` is expanded, i.e.
+ * the row is actually drawn.  gtk_tree_view_row_expanded() answers only for
+ * the node itself, and GTK remembers the expanded flag of a row nested
+ * inside a collapsed parent, so the whole chain has to be walked.
+ *   view — the sidebar tree view.
+ *   path — the row to test.
+ * Returns TRUE if the row is on screen (top-level rows always are).         */
+static gboolean
+sb_row_onscreen(GtkTreeView *view, GtkTreePath *path)
+{
+    GtkTreePath *up  = gtk_tree_path_copy(path);
+    gboolean     vis = TRUE;
+    while (gtk_tree_path_get_depth(up) > 1) {
+        gtk_tree_path_up(up);
+        if (!gtk_tree_view_row_expanded(view, up)) {
+            vis = FALSE;
+            break;
+        }
+    }
+    gtk_tree_path_free(up);
+    return vis;
+}
+
 /* sb_fit_measure() — foreach callback: measure one sidebar row and update
- * the running maximum in ctx->max_w.
+ * the running maximum in ctx->max_w.  Rows hidden inside a collapsed
+ * parent are skipped when ctx->view is set.
  *   model / path / iter — standard foreach signature.
  *   data                — SbFitCtx *.
  * Returns FALSE to continue the walk.                                       */
@@ -5187,6 +5229,10 @@ sb_fit_measure(GtkTreeModel *model, GtkTreePath *path,
     SbFitCtx *ctx  = data;
     gchar    *name = NULL;
     gint      kind;
+
+    if (ctx->view != NULL && !sb_row_onscreen(ctx->view, path))
+        return FALSE;
+
     gtk_tree_model_get(model, iter, SB_NAME, &name, SB_KIND, &kind, -1);
     if (name && *name) {
         PangoAttrList *al = pango_attr_list_new();
@@ -5221,12 +5267,117 @@ on_sidebar_fit_to_content(gpointer user_data)
     OnLibrary *lw = user_data;
     SbFitCtx ctx;
     ctx.lay   = gtk_widget_create_pango_layout(GTK_WIDGET(lw->sidebar), NULL);
-    ctx.max_w = 160;   /* floor: never collapse the sidebar to unusable width */
+    ctx.max_w = SB_FIT_MIN_WIDTH;   /* never collapse to an unusable width */
+    ctx.view  = NULL;  /* first show: size to the whole tree, collapsed or not */
     gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
                            sb_fit_measure, &ctx);
     g_object_unref(ctx.lay);
     gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), ctx.max_w);
     return G_SOURCE_REMOVE;
+}
+
+/* ---------------------------------------------------------------------------
+ * sidebar_fit_apply() — size the sidebar divider so the VISIBLE rows fit
+ * exactly, when the "fit to content" setting is on.
+ *
+ * Symmetric: expanding a folder widens the pane, collapsing one gives the
+ * width back.  Turning the setting ON therefore hands the divider over to
+ * this function, and a width the user dragged is not preserved across the
+ * next expand or collapse — that is the deal the setting makes, and it is
+ * why it ships off.
+ *
+ *   lw — library window state.
+ * ------------------------------------------------------------------------- */
+static void
+sidebar_fit_apply(OnLibrary *lw)
+{
+    if (!lw->app->sidebar_fit_content)
+        return;
+
+    SbFitCtx ctx;
+    ctx.lay   = gtk_widget_create_pango_layout(GTK_WIDGET(lw->sidebar), NULL);
+    ctx.max_w = SB_FIT_MIN_WIDTH;    /* the floor doubles as the start      */
+    ctx.view  = lw->sidebar;         /* on-screen rows only                 */
+    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
+                           sb_fit_measure, &ctx);
+    g_object_unref(ctx.lay);
+
+    gint avail = gtk_widget_get_allocated_width(GTK_WIDGET(lw->sidebar));
+    if (avail <= 1)
+        return;                      /* not realized yet                    */
+
+    /* The DIFFERENCE is applied to the current divider position rather than
+     * the measured width being used as the position: whatever sits between
+     * the pane edge and the tree view — the scrolled window's vertical
+     * scrollbar, which comes and goes as folders are expanded and collapsed
+     * — is then carried along without being measured.  Correct in both
+     * directions, and it reads the scrollbar as it IS: this runs from a
+     * default-priority idle, which GTK services after its own resize
+     * (HIGH_IDLE+10) has re-laid-out the tree.                             */
+    gint pos  = gtk_paned_get_position(GTK_PANED(lw->sidebar_paned));
+    gint want = pos + (ctx.max_w - avail);
+
+    gint full = gtk_widget_get_allocated_width(lw->sidebar_paned);
+    if (full > 0) {
+        gint cap = full * SB_FIT_MAX_PERCENT / 100;
+        if (want > cap)
+            want = cap;
+    }
+    if (want < SB_FIT_MIN_WIDTH)
+        want = SB_FIT_MIN_WIDTH;
+    if (want != pos)
+        gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), want);
+}
+
+/* sidebar_fit_idle() — idle body of sidebar_fit_queue().                    */
+static gboolean
+sidebar_fit_idle(gpointer user_data)
+{
+    OnLibrary *lw = user_data;
+    lw->sb_fit_idle = 0;
+    sidebar_fit_apply(lw);
+    return G_SOURCE_REMOVE;
+}
+
+/* sidebar_fit_queue() — run sidebar_fit_apply() once the expand or collapse
+ * has been laid out.  Deferred because the signals fire before the tree view
+ * has re-measured, and coalesced because a model rebuild's expansion-restore
+ * walk emits row-expanded once per restored row.
+ *   lw — library window state.                                             */
+static void
+sidebar_fit_queue(OnLibrary *lw)
+{
+    if (!lw->app->sidebar_fit_content || lw->sb_fit_idle != 0)
+        return;
+    lw->sb_fit_idle = g_idle_add(sidebar_fit_idle, lw);
+}
+
+/* on_sidebar_row_toggled() — "row-expanded" and "row-collapsed" handler:
+ * between them, THE trigger for fitting the sidebar to its content.  The
+ * expanded half also covers a model rebuild, whose expansion-restore walk
+ * expands rows through the same signal.                                    */
+static void
+on_sidebar_row_toggled(GtkTreeView *view, GtkTreeIter *iter,
+                       GtkTreePath *path, gpointer user_data)
+{
+    (void)view;
+    (void)iter;
+    (void)path;
+    sidebar_fit_queue(user_data);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_library_sidebar_fit() — public: re-fit the library sidebar, used by
+ * Settings when the "fit to content" box is ticked so it takes effect on
+ * the spot.  No-op with the setting off, or with no library window.
+ *   app — global application context.
+ * ------------------------------------------------------------------------- */
+void
+on_library_sidebar_fit(OnApp *app)
+{
+    OnLibrary *lw = lw_from_app(app);
+    if (lw != NULL)
+        sidebar_fit_queue(lw);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5326,6 +5477,10 @@ library_build_sidebar(OnLibrary *lw)
                            G_CALLBACK(on_sidebar_drag_begin), lw);
     g_signal_connect(lw->sidebar, "button-press-event",
                      G_CALLBACK(on_sidebar_button_press), lw);
+    g_signal_connect(lw->sidebar, "row-expanded",
+                     G_CALLBACK(on_sidebar_row_toggled), lw);
+    g_signal_connect(lw->sidebar, "row-collapsed",
+                     G_CALLBACK(on_sidebar_row_toggled), lw);
 
     GtkWidget *sidebar_scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),

@@ -79,6 +79,7 @@ apply_statusbar_db_path(OnApp *app)
  * ------------------------------------------------------------------------- */
 typedef enum {
     BS_SIDEBAR_COUNTS,               /* Appearance                          */
+    BS_SIDEBAR_FIT,
     BS_BOLD_LIST_TITLES,
     BS_SHOW_DONE_ACTIONS,
     BS_CODE_COPY,                    /* Editor                              */
@@ -101,6 +102,10 @@ static const BoolSetting BOOL_SETTINGS[] = {
         "Show note counts next to folders and tags",
         "sidebar_counts", offsetof(OnApp, sidebar_counts),
         apply_notes_changed },
+    [BS_SIDEBAR_FIT] = {
+        "Fit the sidebar width to the folders on show",
+        "sidebar_fit_content", offsetof(OnApp, sidebar_fit_content),
+        on_library_sidebar_fit },
     [BS_BOLD_LIST_TITLES] = {
         "Bold titles in comfortable list density",
         "bold_list_titles", offsetof(OnApp, bold_list_titles),
@@ -864,6 +869,9 @@ on_settings_window_open(OnApp *app)
 
     gtk_box_pack_start(GTK_BOX(vbox),
                        bool_check_new(app, BS_SIDEBAR_COUNTS),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       bool_check_new(app, BS_SIDEBAR_FIT),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox),
                        bool_check_new(app, BS_BOLD_LIST_TITLES),

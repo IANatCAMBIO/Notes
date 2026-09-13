@@ -12,10 +12,18 @@ The app loads each icon by filename (`<name>.svg`, then `<name>.png`) —
 drop in any 24×24-ish image with the right name to replace one. If a file
 is missing or cannot be decoded, the button falls back to a text glyph.
 
+**Run `tools/icon-prep.py` over anything you drop in here.**  Exports
+tend to arrive at 2048×2048 with the background painted flat white
+rather than left transparent, which shows on the toolbar as a white tile
+around the artwork; the script fits the file to the 512×512 everything
+else uses and keys that background out.  It rewrites in place and is
+safe to re-run.
+
 | File                     | Used for                       |
 |--------------------------|--------------------------------|
-| `file.png`               | New Note                       |
-| `delete.png`             | Delete Note                    |
+| `newnote.png`            | New Note                       |
+| `deletenote.png`         | Delete Note                    |
+| `file.png`               | Drag icon: dragging one note   |
 | `new-folder.png`         | New Folder                     |
 | `delete-folder.png`      | Delete Folder                  |
 | `grid.png`               | List/Grid toggle, while the LIST is showing |
@@ -31,14 +39,20 @@ is missing or cannot be decoded, the button falls back to a text glyph.
 | `folder.png`             | Drag icon: dragging a folder   |
 | `documents.png`          | Drag icon: dragging 2+ notes   |
 
-`file.png` doubles as the drag-under-cursor icon when dragging a
-single note.
+`file.png` is ONLY the drag-under-cursor icon now.  New Note used to
+share it, which meant restyling the button silently restyled the drag
+cursor as well; the button has its own `newnote.png` since 2026-09-13
+(`unused/addnote.png` is the corner-badged alternative, never shipped).
+
+Replaced 2026-09-13, previous artwork in `unused/`: `delete-folder.png`
+(`delete-folder-old.png`), `sidebar.png` (`sidebar-old.png`), and the
+old Delete Note icon (`delete-note-old.png`, formerly `delete.png`).
 
 The List/Grid toggle takes TWO files because its icon names the view a
 click switches TO, not the one on screen: `grid.png` while the list is
 showing, `list.png` while the grid is.  Replace both or the button will
 look inconsistent halfway through a toggle.  (`view.png`, the single
-icon it used until 2026-09-12, is in `unused/`.)
+icon it used until 2026-09-12, is now `sidebar.png`.)
 
 These names are looked up but have no bundled file — the editor's
 formatting buttons deliberately use crisp Pango text glyphs (B/I/U/S,

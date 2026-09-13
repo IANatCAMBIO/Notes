@@ -5023,37 +5023,37 @@ build_action_bar(OnLibrary *lw)
                        gtk_separator_tool_item_new(), -1);
 
     /* --- notes area ------------------------------------------------------*/
-    add_tool_button(lw, toolbar, "file", "+", "New Note",
-                    "Create a note in the current folder",
-                    G_CALLBACK(on_new_note));
     add_tool_button(lw, toolbar, "archive", "\xe2\x9a\xa1", "Quicknote",
                     "Create a note in the root folder",
                     G_CALLBACK(on_quicknote));
-    add_tool_button(lw, toolbar, "delete", "\xe2\x9c\x95",
+    add_tool_button(lw, toolbar, "newnote", "+", "New Note",
+                    "Create a note in the current folder",
+                    G_CALLBACK(on_new_note));
+    add_tool_button(lw, toolbar, "deletenote", "\xe2\x9c\x95",
                     "Delete Note",
                     "Move the selected notes to the Trash",
                     G_CALLBACK(on_delete_note));
+
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
+                       gtk_separator_tool_item_new(), -1);
+
+    /* --- app actions ------------------------------------------------------*/
     /* Icon, label and tooltip are all set by view_button_sync() below,
      * from the view actually showing; these are only what it is built
      * with before the stack can be read.                                   */
     lw->view_btn = add_tool_button(lw, toolbar, "grid", "\xe2\x8a\x9e",
                     "Grid", "Switch to grid view",
                     G_CALLBACK(on_toggle_view));
+    add_tool_button(lw, toolbar, "search", "\xf0\x9f\x94\x8d",
+                    "Search", "Open search window",
+                    G_CALLBACK(on_open_search));
     add_tool_button(lw, toolbar, "images", "\xf0\x9f\x96\xbc",
                     "Media",
                     "Show every image in the listed notes as thumbnails",
                     G_CALLBACK(on_open_media));
-
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
-
-    /* --- app actions ------------------------------------------------------*/
     add_tool_button(lw, toolbar, "settings", "\xe2\x9a\x99",
                     "Settings", "Open the settings window",
                     G_CALLBACK(on_open_settings));
-    add_tool_button(lw, toolbar, "search", "\xf0\x9f\x94\x8d",
-                    "Search", "Open search window",
-                    G_CALLBACK(on_open_search));
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);

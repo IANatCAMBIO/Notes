@@ -29,7 +29,7 @@ safe to re-run.
 | `grid.png`               | List/Grid toggle, while the LIST is showing |
 | `list.png`               | List/Grid toggle, while the GRID is showing |
 | `images.png`             | Media (image browser)          |
-| `sidebar.png`            | Show/hide the folder pane      |
+| `sidebar.png`            | Show/hide the folder pane (filing cabinet) |
 | `search.png`             | Search                         |
 | `settings.png`           | Settings                       |
 | `copy.png`               | Code-block copy button         |
@@ -47,6 +47,13 @@ cursor as well; the button has its own `newnote.png` since 2026-09-13
 Replaced 2026-09-13, previous artwork in `unused/`: `delete-folder.png`
 (`delete-folder-old.png`), `sidebar.png` (`sidebar-old.png`), and the
 old Delete Note icon (`delete-note-old.png`, formerly `delete.png`).
+`sidebar.png` changed again 2026-09-14, eye-folder to filing cabinet
+(`unused/sidebar-eye.png`).
+
+Note the filenames here name the button's ROLE, not the artwork — a new
+image is installed UNDER the existing name (the app looks it up by that
+name) rather than added beside it, so there is exactly one file per
+button and no code change to re-point.
 
 The List/Grid toggle takes TWO files because its icon names the view a
 click switches TO, not the one on screen: `grid.png` while the list is

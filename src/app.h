@@ -63,9 +63,9 @@
  *                    the revealed rows are not ellipsized, collapsing one
  *                    gives the width back.  While it is on the divider
  *                    belongs to the app, so a width the user dragged does
- *                    not survive the next expand or collapse — which is
- *                    why it ships off.  Persisted as "sidebar_fit_content"
- *                    (default off = today's fixed-width sidebar).
+ *                    not survive the next expand or collapse; turn it off
+ *                    to keep a hand-set width.  Persisted as
+ *                    "sidebar_fit_content" (default ON).
  *   first_line_title — whether line 0 of a note is treated as its title:
  *                    the editor centers that line and auto-formats it as
  *                    Heading 1 while a brand-new (or emptied) note's title

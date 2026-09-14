@@ -143,14 +143,15 @@ button's icons/sidebar.png.  Its Quicknote button (archive.png) calls `on_librar
   five),
   `sidebar_counts` (`1|0`, default 0 — folder/tag counts in the
   sidebar),
-  `sidebar_fit_content` (`1|0`, default 0 — the sidebar sizes itself to the
+  `sidebar_fit_content` (`1|0`, default 1 — the sidebar sizes itself to the
   rows ON SHOW: expanding a folder widens the divider so the revealed rows
   are not ellipsized, collapsing one gives the width back
   (`sidebar_fit_apply`, symmetric by deliberate choice — while the setting
   is on the divider belongs to the app, so a width the user dragged does
   not survive the next expand or collapse.  That is the deal the setting
-  makes, and it is why it ships OFF; unticking the box leaves the width
-  where the last fit put it rather than restoring anything).  Bounded by
+  makes, and it is ON by default — turn it off to keep a hand-set width;
+  unticking leaves the width where the last fit put it rather than
+  restoring anything).  Bounded by
   `SB_FIT_MIN_WIDTH` (also the startup fit's floor — ONE constant, not two
   spellings of 160) and `SB_FIT_MAX_PERCENT` of the paned, so neither a
   library of short names nor a deep branch can make the other pane

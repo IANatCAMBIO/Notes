@@ -7,6 +7,7 @@ code_copy_button=1
 code_line_numbers=1
 native_menubar=1
 sidebar_counts=0
+sidebar_fit_content=1
 image_viewer=
 search_win_w=538
 search_win_h=299

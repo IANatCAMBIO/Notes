@@ -589,4 +589,42 @@ CLI's GTK initialisation are gone.
 - The AI-summary pane needed nothing: it reads `body_text` and uses a
   GtkTextBuffer only as its display widget.
 
-**Next: step 3** — `doc_layout` + `doc_view` behind `note_view.h`.
+## Step 3 — done 2026-09-15
+
+`src/doc_layout.[ch]` (1.6 k lines) and a rewritten `src/note_view.[ch]`
+(2.7 k, was 4.8 k) replace the GtkTextView engine; `serialize.[ch]` keeps
+only the blob walks (0.34 k, was 1.3 k).  The file is named `note_view`,
+not `doc_view` as planned: the host's contract (`note_view.h`) kept its
+shape, so the file kept its name.  Deviations from the spec above, and
+what testing found:
+
+- **Layout is eager and fast enough**: the largest note (615 blocks,
+  12 k px) lays out in 18 ms — once images stopped being decoded for
+  their size.  `gdk_texture_new_from_bytes` on 17 screenshots was 220 ms;
+  the PNG header (IHDR) gives the size for free and the texture is
+  decoded when first DRAWN, cached on the block (`OnBlock.pixels`).  The
+  73 KB-text note is 64 ms, all Pango; one block per keystroke after.
+- **The clipboard does what the spec promised**: `application/x-notes-bnbf`
+  beside `text/plain`; a table or image round-trips through copy/paste.
+- **No lazy-height machinery, no text DnD, no cell-range editing** beyond
+  Tab selecting the whole next cell — as planned.
+- **Word steps at a block's end land on the next block's start** (GTK's
+  went to the next word's end).  Kept: simpler, and consistent with
+  character steps.
+- **GtkAccessibleText** is implemented over the note's plain text
+  (contents, caret, selection); attributes are reported empty.
+- **The keyboard and pointer are function calls too**
+  (`on_note_view_feed_key/text/click`): GTK4 has no synthetic input, and
+  macOS accessibility clicks never reach a GTK4 window, so
+  `tests/ui_probe.c` drives the view through the same code the
+  controllers run, renders the window to a PNG and checks blocks and
+  caret.  `make ui-test` runs `tests/ui/*.txt` (typing, blocks, objects,
+  navigation); the scripts double as the behaviour spec.
+- **What the probe cannot drive**: the input method's preedit, the
+  context-menu popover, scrolling by wheel, the emoji chooser.  Those are
+  verified by hand in the sandbox.
+
+Measured in the sandbox: a real 686 MB library's notes open with 0
+Gtk-CRITICALs; the grey-backdrop text (quirk #23), the unclickable
+tables (D29), the height race (D27) and the copy-link pool (D17) do not
+exist to fix.

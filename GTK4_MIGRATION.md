@@ -761,6 +761,11 @@ One line per session: date, phase, item, outcome.
   action rewrites and the grid thumbnail read the OnDocument; outputs
   checked byte-for-byte against the old binary (the one difference is an
   old exporter bug: task lines lost their box).  Export 35 s → 2 s.
+- 2026-09-15 — Block model step 3: `doc_layout.[ch]` + `note_view.[ch]`
+  rewritten as a drawn widget; `serialize.[ch]` down to the blob walks;
+  `make ui-test` (tests/ui_probe.c) drives the view from scripts.  No
+  GtkTextView remains in the app; D15–D17, D19–D20, D23–D25, D27, D29–D30
+  describe a widget no longer used.
 - 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
   code block on the last line (D30), `make run-dev` re-seeding the sandbox
   every run (order-only prerequisites).

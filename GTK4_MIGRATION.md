@@ -690,11 +690,40 @@ add a second idiom.
   sizes its columns itself (`table_fit_columns`: widest line per column by
   PangoLayout, capped at 320 px, cells wrap past the cap and rows grow).
 
+- **D26 · 2026-09-15 — Text on macOS: cairo renderer, metric hinting
+  off.**  Compared side by side on a 2x display: GTK's default
+  `gtk-hint-font-metrics` rounds glyph advances to whole logical pixels
+  (uneven text); off, the GL renderer's glyph cache clips the left column
+  of glyphs at fractional positions (a "G" loses a pixel) and its subpixel
+  path avoids that only by drawing heavier; the cairo renderer draws
+  glyphs straight through Pango — even, intact, the same grayscale weight.
+  `main.c` sets `GSK_RENDERER=cairo` (unless set) on macOS and
+  `gtk-hint-font-metrics` FALSE.  GTK 4.22's settings never request
+  subpixel antialiasing (`settings_update_font_options`: NONE/GRAY only),
+  and `gtk_widget_set_font_options` is deprecated — not used.
+- **D27 · 2026-09-15 — An anchored child's height is measured when the
+  layout validates the line, and a table's cells (GtkTextViews) report a
+  stub height until THEY validate — a race the outer layout loses about
+  one run in three.**  A table inserted on an empty last line was drawn
+  past the bottom with no scroll range.  `table_fit_columns` therefore
+  sets every cell's HEIGHT (text wrapped at the column width, measured by
+  PangoLayout) as a size request too, so the grid's size never depends on
+  validation order; and the anchor inserts scroll from the view's
+  `size_allocate` (`scroll_on_allocate`), never from an idle, which raced
+  GTK's validation idle.  Probe: 8/8 correct, was ~4/6.
+- **D28 · 2026-09-15 — Grid hover CSS must not outrank the selection.**  A
+  `.cell:hover` rule beats the theme's `iconview:selected`; a translucent
+  background there hid the white selected text.  Tint only
+  `:hover:not(:selected)`; the outline uses a fixed dark colour, not
+  `currentColor` (white on a selected cell).
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — Text rendering (D26), table sizing and anchor scroll
+  (D27), grid hover (D28), status colour; all verified by hand.
 - 2026-09-15 — Table column fit (D25), CLAUDE.md rewritten, README +
   BUILD.md, `make app` builds against gtk4.  Everything but XFCE done.
 - 2026-09-15 — CSS sweep, icon theme, note-view extraction (D23, D24);

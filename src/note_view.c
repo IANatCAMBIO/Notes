@@ -111,6 +111,12 @@
  *                     block went away is hidden and kept here, and the
  *                     next block that needs one takes it back.
  *   code_btn_idle   — idle source id for a pending code-button rebuild.
+ *   scroll_on_allocate — an anchor (image, table) was just inserted:
+ *                     the caret-follow scroll must run from the NEXT
+ *                     size_allocate, after the layout has measured the new
+ *                     child.  An idle is a race against GTK's own
+ *                     validation idle (measured: the same insert scrolled
+ *                     on one run and not on the next).
  *   scroll_idle     — idle source id of the deferred caret-follow scroll
  *                     (see on_buffer_changed).
  *   join_para       — the paragraph style (ON_FMT_PARA_MASK bits, 0 =
@@ -177,6 +183,7 @@ struct _OnNoteView {
     GSList             *code_button_pool;
     guint               code_btn_idle;
     guint               scroll_idle;
+    gboolean            scroll_on_allocate;
     gint                join_para;
     gint                ctx_offset;
 
@@ -215,6 +222,8 @@ typedef enum {
 
 /* Forward declarations for callbacks referenced before their definition.   */
 static void     tag_capture_end(OnNoteView *v, gboolean apply);
+static void     note_view_scroll_to_caret(OnNoteView *v);
+static void     note_view_scroll_after_layout(OnNoteView *v);
 static void     action_retag_lines(OnNoteView *v, gint start_off,
                                    gint end_off);
 static gboolean note_view_rederive(OnNoteView *v, gint start_off,
@@ -1124,6 +1133,14 @@ on_note_view_size_allocate(GtkWidget *widget, gint width, gint height,
     OnNoteView *v = ON_NOTE_VIEW(widget);
     if (v->tag_popup != NULL)
         gtk_popover_present(GTK_POPOVER(v->tag_popup));
+    if (v->scroll_on_allocate) {
+        /* The layout has just been validated with the new anchored child
+         * measured, so this scroll sees the caret line's true height.     */
+        v->scroll_on_allocate = FALSE;
+        gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(v),
+                                     gtk_text_buffer_get_insert(v->buffer),
+                                     0.08, FALSE, 0.0, 0.0);
+    }
     code_buttons_queue_rebuild(v);
 }
 
@@ -1284,6 +1301,7 @@ on_note_view_insert_image(OnNoteView *v, GdkPixbuf *pixbuf)
     attach_image_widget(v, anchor);
     v->internal_change--;
     note_view_edited(v);
+    note_view_scroll_after_layout(v);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2463,18 +2481,23 @@ insert_checkbox_at(OnNoteView *v, gint at)
 #define TABLE_CELL_MIN_WIDTH 64
 
 /* ---------------------------------------------------------------------------
- * table_fit_columns() — size every column of a table grid to the widest
- * LINE among its cells (header included), capped at TABLE_CELL_MAX_WIDTH.
+ * table_fit_columns() — size every cell of a table grid: each COLUMN to
+ * the widest line among its cells (header included), capped at
+ * TABLE_CELL_MAX_WIDTH, and each CELL to the height of its text wrapped at
+ * that width.  Both are size requests, measured with a PangoLayout in the
+ * cell's own font, so the grid has its true size from its first measure.
  *
- * GTK4's GtkTextView no longer requests its content width: its horizontal
- * measure is margins plus anchored children only (gtktextview.c 4.22
- * gtk_text_view_measure — GTK3 reported the layout width), so a cell with
- * a long line would sit at its minimum and hide the overflow.  The
- * vertical measure DOES use the layout height, so once a column has its
- * width, rows grow with wrapped or multi-line content by themselves.
- * Measured with a PangoLayout in the cell's own font; the width is set as
- * a size request on every cell of the column, so the header and the body
- * cells always agree.
+ * Why the table measures itself instead of letting the cells request:
+ * GTK4's GtkTextView no longer requests its content WIDTH at all (its
+ * horizontal measure is margins plus anchored children — gtktextview.c
+ * 4.22 gtk_text_view_measure; GTK3 reported the layout width), so a long
+ * line sat at the minimum and hid the overflow.  And its HEIGHT is the
+ * layout height, which a freshly attached cell has not computed yet: the
+ * outer view's layout measured the grid before the cells validated, got a
+ * stub height, and cached it — a table inserted on an empty last line was
+ * drawn past the bottom of the view with no scroll range (D25; measured
+ * to be a race, right in about two runs of three).  With explicit
+ * requests nothing depends on validation order.
  *   grid — the table's GtkGrid (frame per cell, cell = frame child).
  *   rows / cols — the table's dimensions.
  * ------------------------------------------------------------------------- */
@@ -2502,11 +2525,33 @@ table_fit_columns(GtkWidget *grid, gint rows, gint cols)
             widest = MAX(widest, w);
         }
         gint width = CLAMP(widest, TABLE_CELL_MIN_WIDTH, TABLE_CELL_MAX_WIDTH);
+
         for (gint r = 0; r < rows; r++) {
             GtkWidget *frame = gtk_grid_get_child_at(GTK_GRID(grid), c, r);
-            if (frame != NULL)
-                gtk_widget_set_size_request(gtk_frame_get_child(GTK_FRAME(frame)),
-                                            width, -1);
+            if (frame == NULL)
+                continue;
+            GtkWidget *cell = gtk_frame_get_child(GTK_FRAME(frame));
+            GtkTextView *tv = GTK_TEXT_VIEW(cell);
+            GtkTextBuffer *buf = gtk_text_view_get_buffer(tv);
+            GtkTextIter s, e;
+            gtk_text_buffer_get_bounds(buf, &s, &e);
+            gchar *text = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+            /* The text's height once wrapped at the column's inner width,
+             * exactly as the cell will lay it out; an empty cell is one
+             * line tall.                                                   */
+            PangoLayout *lay = gtk_widget_create_pango_layout(
+                cell, *text != '\0' ? text : " ");
+            pango_layout_set_wrap(lay, PANGO_WRAP_WORD_CHAR);
+            pango_layout_set_width(lay,
+                (width - gtk_text_view_get_left_margin(tv)
+                       - gtk_text_view_get_right_margin(tv)) * PANGO_SCALE);
+            gint h;                  /* wrapped text height, px             */
+            pango_layout_get_pixel_size(lay, NULL, &h);
+            g_object_unref(lay);
+            g_free(text);
+            h += gtk_text_view_get_top_margin(tv) +
+                 gtk_text_view_get_bottom_margin(tv);
+            gtk_widget_set_size_request(cell, width, h);
         }
     }
 }
@@ -2857,6 +2902,7 @@ on_note_view_insert_table(OnNoteView *v)
     attach_table_widget(v, anchor);
     v->internal_change--;
     note_view_edited(v);
+    note_view_scroll_after_layout(v);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4102,6 +4148,34 @@ on_scroll_idle(gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
+ * note_view_scroll_to_caret() — keep the caret comfortably above the
+ * window's bottom edge: within_margin makes the view scroll a little AHEAD
+ * of the cursor instead of letting it ride the very last pixel row.
+ * Deferred to an idle — at "changed" time the text layout has not
+ * revalidated yet, so an immediate scroll computes against stale extents
+ * and does nothing at the end of the document.  Called by the "changed"
+ * handler for typing, and DIRECTLY by the anchor inserts (image, table):
+ * those run under internal_change, which keeps the handler's scroll off,
+ * and a table inserted on the last line otherwise sat below the viewport.
+ * ------------------------------------------------------------------------- */
+static void
+note_view_scroll_to_caret(OnNoteView *v)
+{
+    if (v->scroll_idle == 0)
+        v->scroll_idle = g_idle_add(on_scroll_idle, v);
+}
+
+/* note_view_scroll_after_layout() — the anchor inserts' variant: scroll
+ * from the next size_allocate, once the new child has been measured (see
+ * scroll_on_allocate in the private struct).                               */
+static void
+note_view_scroll_after_layout(OnNoteView *v)
+{
+    v->scroll_on_allocate = TRUE;
+    gtk_widget_queue_resize(GTK_WIDGET(v));
+}
+
+/* ---------------------------------------------------------------------------
  * on_buffer_changed() — any edit is reported to the host (its autosave).
  * ------------------------------------------------------------------------- */
 static void
@@ -4113,14 +4187,8 @@ on_buffer_changed(GtkTextBuffer *buffer, gpointer user_data)
     /* Text edits can grow, shrink, split or remove code blocks.            */
     code_buttons_queue_rebuild(v);
 
-    /* Keep the caret comfortably above the window's bottom edge while
-     * typing: within_margin makes the view scroll a little AHEAD of the
-     * cursor instead of letting it ride the very last pixel row.  The
-     * scroll is deferred to an idle — at "changed" time the text layout
-     * has not revalidated yet, so an immediate scroll computes against
-     * stale extents and does nothing at the end of the document.           */
-    if (v->internal_change == 0 && v->scroll_idle == 0)
-        v->scroll_idle = g_idle_add(on_scroll_idle, v);
+    if (v->internal_change == 0)
+        note_view_scroll_to_caret(v);
 }
 
 /* ---------------------------------------------------------------------------

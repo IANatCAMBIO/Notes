@@ -6260,7 +6260,8 @@ library_build_status_bar(OnLibrary *lw)
     gtk_label_set_xalign(GTK_LABEL(lw->status_event), 1.0);
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_event),
                             PANGO_ELLIPSIZE_MIDDLE);
-    gtk_widget_add_css_class(lw->status_event, "dim-label");
+    /* Same colour as the path label on the left — no "dim-label": the
+     * message fades on its way OUT (the revealer), it does not start dim. */
 
     /* Event messages fade: the label sits in a crossfading revealer that
      * library_notify_status() opens and a timer closes.                     */
@@ -6347,10 +6348,17 @@ library_install_css(void)
         "window.notes-dialog .dialog-action-area {"
         "  padding: 0 12px 12px 12px;"
         "}"
+        /* The outline on every hovered cell, selected or not; the tint
+         * only on an UNSELECTED one: this rule outranks the theme's
+         * iconview:selected (more specific), and a near-transparent tint
+         * under text the selected state has turned white was an invisible
+         * title until the mouse left the cell.                           */
         "iconview.notes-grid.cell:hover {"
-        "  background-color: alpha(currentColor, 0.06);"
-        "  border: 1px solid alpha(currentColor, 0.35);"
+        "  border: 1px solid alpha(black, 0.4);"   /* not currentColor: that is white on a selected cell */
         "  border-radius: 4px;"
+        "}"
+        "iconview.notes-grid.cell:hover:not(:selected) {"
+        "  background-color: alpha(currentColor, 0.06);"
         "}"
         "treeview.notes-sidebar, box.notes-sidebar-pad {"
         "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"

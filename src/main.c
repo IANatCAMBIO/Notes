@@ -304,6 +304,16 @@ on_startup(GtkApplication *gtk_app, gpointer user_data)
     OnApp *app = user_data;          /* shared application context          */
     on_app_install_accels(gtk_app);
 
+    /* Text rendering, measured on a 2x display (GTK 4.22, macOS):
+     * GTK's default rounds every glyph advance to a whole LOGICAL pixel
+     * (gtk-hint-font-metrics), which puts letters up to a device pixel off
+     * their true position — uneven text.  Off, the layout keeps fractional
+     * advances.  (The GL renderer then clips the left column of some
+     * glyphs — its glyph cache rounds ink extents at fractional positions;
+     * see main() for why the cairo renderer is the default on macOS.)     */
+    g_object_set(gtk_settings_get_default(),
+                 "gtk-hint-font-metrics", FALSE, NULL);
+
     /* The icon theme serves every image the app draws by name:
      *  - icons/ itself, where the toolbar PNGs sit flat by basename — GTK
      *    picks up files at the top of a search-path directory as UNTHEMED
@@ -470,6 +480,19 @@ main(int argc, char *argv[])
         return 1;
     }
 
+#ifdef __APPLE__
+    /* The cairo renderer, unless GSK_RENDERER says otherwise.  Compared
+     * side by side on a Retina display (GTK 4.22): the GL renderer's glyph
+     * cache clips the left column of glyphs drawn at fractional positions
+     * (a "G" loses its leftmost pixel once gtk-hint-font-metrics is off),
+     * and its subpixel-antialiased path avoids that only by drawing
+     * heavier text.  Cairo draws glyphs straight through Pango — no cache,
+     * fractional positions, the same grayscale rasterizer — and looked
+     * best.  This app's costs are PNG decode and SQLite, not compositing,
+     * so the GPU renderer buys it nothing measurable.  Must be set before
+     * GTK creates its first renderer, i.e. before g_application_run.      */
+    g_setenv("GSK_RENDERER", "cairo", FALSE);
+#endif
     app.gtk_app = gtk_application_new("org.example.notes",
                                       G_APPLICATION_DEFAULT_FLAGS);
     /* register-session: Dock → Quit and logout then route through

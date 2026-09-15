@@ -77,7 +77,6 @@ Removed in GTK4 (no shim):
 | `"populate-popup"` | 1 | `gtk_text_view_set_extra_menu` (GMenuModel) |
 | `gtk_container_add` / `show_all` / `no_show_all` / `widget_destroy` | 29 / 23 / 10 / 22 | per-widget append, visible-by-default, `gtk_window_destroy` |
 | `GdkWindow` (cursor, origin, frame extents) | 19 | `gtk_widget_set_cursor`; `GdkSurface` for the rest |
-| `gtk-mac-integration` (`HAVE_GTKOSX`) | 3 files | nothing — GTK3-only library |
 
 Survives, DEPRECATED since 4.10 (gone in GTK5): `GtkTreeView`, `GtkListStore`,
 `GtkTreeStore`, `GtkIconView`, `GtkDialog`, `GtkStatusbar`, `GtkComboBoxText`.
@@ -98,11 +97,11 @@ Survives undeprecated: `GtkTextView` + tags + child anchors, `GtkOverlay`,
    `editor_place_bottom_right`, `editor_window.c:~5490–5545`).  GTK4 has no
    window positioning on any backend.  Delete the code and the quirk; the
    compositor places the window.
-2. **Native macOS menubar** (`HAVE_GTKOSX`: `main.c:216`,
-   `library_window.c:4264`, `settings_window.c:171,891`, the
-   `native_menubar` ini key + Settings toggle).  No GTK4 port of
-   gtk-mac-integration exists.  Delete all of it; the ini key becomes
-   another silently-ignored stale line, like `toolbar_style_*`.
+2. ~~Native macOS menubar~~ — **WRONG, struck 2026-09-14.**  GTK's own
+   quartz backend (`gtkapplication-quartz.c`, present in 3.24 AND 4.22)
+   exports `gtk_application_set_menubar()` to the native bar and builds
+   the app menu from `app.about`/`app.preferences`/`app.quit`.
+   gtk-mac-integration was never needed; Phase 2 removed it on `main`.
 3. **The `#tag` autocomplete as a `GTK_WINDOW_POPUP`** at
    `editor_window.c:3241`, positioned by `gtk_window_move` at `:3346`.
    Becomes a `GtkPopover` on the text view with `set_pointing_to` at the
@@ -186,22 +185,34 @@ delete, check the updater owns visibility · `gtk_container_add` →
 - [ ] `export.c`, `cli.c`
 - [ ] `make` clean; branch compiles (does not run)
 
-### Phase 2 — actions and menus (1 week) — done on `main`, in GTK3
+### Phase 2 — actions and menus — DONE 2026-09-14 on `main` (facad9e)
 
-Convert every menu to `GMenu` models over `GAction`s while still on GTK3:
-GTK3's `gtk_menu_new_from_model` + `gtk_application_set_menubar` make this
-legal, it improves the menu code on its own, and it removes the largest
-single unit from the port.  Merge to `main`, then rebase `gtk4` on it.
+Every menu is a `GMenu` over `GAction`s, on GTK3; CLAUDE.md's "Actions,
+menus and shortcuts" section is the design record.  It was done BEFORE
+Phase 1 so the sweep never touches GtkMenu code (the rebase was clean).
 
-- [ ] `GActionEntry` table on the application (File/View items) and on
-      each window (`win.` scope: per-editor formatting, per-library view)
-- [ ] Library menubar (`library_window.c` ~4200–4300, two `gtk_menu_bar_new`)
-- [ ] Sidebar context menu (folder / tag / trash variants)
-- [ ] Notes list + grid context menu (incl. Trash variants)
-- [ ] Editor context menus ×4 (image, code block, text view `populate-popup`, tag)
-- [ ] `sidebar_menu_sync` label re-pointing → action state / `g_menu_item_set_label` on a rebuilt section
-- [ ] Accelerators via `gtk_application_set_accels_for_action` (replaces `gtk_accel_*`)
-- [ ] Merged to `main`; `gtk4` rebased
+- [x] Action tables: `app.` on the application (menubar; delegate to the
+      library through a weak pointer), `win.` on both windows (toolbar,
+      context menus, every shortcut); windows are GtkApplicationWindows
+- [x] Library menubar as a model → `gtk_application_set_menubar`
+- [x] Sidebar / note / column context menus as per-popup models through
+      one `on_app_menu_popup`
+- [x] Editor: image items (`editor_image_menu` — the model Phase 6 hands
+      to `set_extra_menu`), table-cell menu, Styles/Lists/Insert menu
+      buttons on models; editing actions gated on the view's focus
+- [x] Sidebar Hide/Show: two `hidden-when` items, not a model edit (D10)
+- [x] Accelerators via `gtk_application_set_accels_for_action`, Cmd-only
+      on macOS (user decision)
+- [x] gtk-mac-integration deleted everywhere (Makefile, main, settings)
+- [x] Merged to `main`; `gtk4` rebased
+
+What Phase 1's sweep still meets in this code, and how: `gtk_menu_new_from_model`
+(`on_app_menu_popup`) → `gtk_popover_menu_new_from_model`;
+`gtk_menu_bar_new_from_model` (macOS in-window fallback) →
+`gtk_popover_menu_bar_new_from_model`; `menu_shell_prepend_model` +
+`populate-popup` → `gtk_text_view_set_extra_menu(editor_image_menu())`
+rebuilt from a right-click gesture; `gtk_menu_button_set_use_popover(FALSE)`
+→ delete (always a popover).  Nothing else in the menu layer is GTK3-specific.
 
 ### Phase 3 — dialogs go async (3–4 days)
 
@@ -267,8 +278,9 @@ written into Decisions the day they are measured.
 - [ ] `on_view_draw` (line numbers, `:1015`) → `NotesTextView` subclass
       with a `snapshot` vfunc that chains up then draws; this is the one
       GObject subclass the port introduces
-- [ ] `populate-popup` → `gtk_text_view_set_extra_menu` with a `GMenu`
-      rebuilt on right-click (image / code-block items are contextual)
+- [ ] `populate-popup` → `gtk_text_view_set_extra_menu(editor_image_menu())`,
+      set from a right-click gesture (the model already exists; only the
+      GTK3 glue `menu_shell_prepend_model` goes)
 - [ ] Clipboard: `gtk_clipboard_set_text` ×3 → `gdk_clipboard_set_text`;
       `set_image` → `gdk_clipboard_set_texture`; the macOS image-atom
       probing at `:1818–1860` → `gdk_clipboard_get_formats` +
@@ -283,7 +295,6 @@ written into Decisions the day they are measured.
 
 ### Phase 7 — platform and packaging (1 week)
 
-- [ ] Delete `HAVE_GTKOSX` everywhere + the `native_menubar` setting UI
 - [ ] `.app` bundle: GTK4 quartz needs its own loader/module paths — redo
       `make app` against the MacPorts gtk4 tree
 - [ ] `make deb` / `make rpm` on an XFCE box; runtime deps become `libgtk-4-1`
@@ -378,11 +389,40 @@ add a second idiom.
   GType for that and both views use it.  No MIME types, no `GdkContentFormats`
   matching, nothing cross-process — the sidebar never accepts external drops.
 
+- **D9 · 2026-09-14 — The native macOS menubar is GTK's, not a library's.**
+  Measured: `gtk-shell-shows-menubar` = 1 on quartz, `gtkapplication-quartz.c`
+  in both 3.24.52 and 4.22.4, the app menu bound to `app.about` /
+  `app.preferences` / `app.quit` by `gtkapplication-quartz.ui`.  So
+  `gtk_application_set_menubar` is THE menubar on every platform: native on
+  macOS, drawn by the GtkApplicationWindow on XFCE (editors set
+  `show-menubar` FALSE).  The `native_menubar` setting survives as a macOS
+  choice between that and an in-window bar over the same model.
+- **D10 · 2026-09-14 — Dynamic menu labels are `hidden-when` items, never
+  model edits.**  MacPorts' gtk3 patch (`patch-gtk-menu-crash.diff`) guards
+  `*change_point != NULL` at the top of `gtk_menu_tracker_remove_items()`,
+  which every append to a live section legitimately trips (a Gtk-CRITICAL,
+  harmless — reproduced in 40 lines, in-window and native).  Two items with
+  `hidden-when=action-disabled` go through the tracker's visibility path
+  instead, and GTK4's GtkPopoverMenu honours the attribute the same way.
+  GTK's own `set_menubar` append still prints one; `quartz_log_filter`
+  drops it.
+- **D11 · 2026-09-14 — Editor editing actions are gated on the view's
+  focus** (`editor_actions_set_editing`), because a window accelerator
+  fires for any focus widget and a disabled action is skipped by the accel
+  lookup.  Carries straight into GTK4 (`GtkEventControllerFocus` on the
+  view instead of `focus-in/out-event`).
+- **D12 · 2026-09-14 — Development runs use `make run-dev` only.**  The
+  binary-adjacent ini names the user's real database; the sandbox `dev/`
+  has its own ini + seeded throwaway db, and the IPC socket is per database
+  so a dev instance and the real one coexist.  Applies to every phase.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-14 — Phase 2 complete on `main` (facad9e), verified in the dev
+  sandbox on macOS; D9–D12; "Lost permanently #2" struck.  gtk4 rebased.
 - 2026-09-14 — Phase 0 complete, verdict GO.  gtk4 4.22.4 +quartz installed;
   spike measured Q1/Q2/Q3 (D5–D8); one GTK crash found and worked around
   (D5); `gdk_texture_new_for_pixbuf` deprecation folded into D4.

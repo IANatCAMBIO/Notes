@@ -307,6 +307,25 @@ written into Decisions the day they are measured.
 - [ ] CLAUDE.md rewritten for the branch: quirks table above applied, new
       quirks from Decisions promoted
 - [ ] BUILD.md / README.md dependency lists
+- [ ] **Extract the note view.**  `editor_window.c` (5.8 k lines) is two
+      things braided together: the window (chrome, toolbar, actions,
+      autosave, status bar, the modal viewer host) and the rich-text
+      ENGINE (`NotesTextView` + everything that edits its buffer: inline
+      and paragraph styles, list continuation, code blocks with gutter and
+      copy links, image/table/checkbox anchors, #tag capture, emoji
+      padding, the derived title/action tints, in-note find, snapshot
+      undo).  Move the engine into `src/note_view.[ch]` as a proper GObject
+      — `NotesView`, a `GtkTextView` subclass with a real API: `load(blob)`
+      / `serialize()`, `toggle_inline(flag)` / `toggle_para(flag)`,
+      `insert_image/table/checkbox/date`, `find(text)`, `undo/redo`,
+      signals for "changed", "tags-changed", "actions-changed" — and leave
+      `editor_window.c` as the window that hosts one.  NOT a GTK fork: a
+      subclass using public API is the extension mechanism GTK provides,
+      and this engine never needed GTK's internals (the three places it
+      met private behaviour — D14, D16, D17 — are GTK bugs to file, with
+      the pixel-probe programs as reproducers).  Same code, one boundary;
+      doable on `main` first, and it makes the GTK5 GtkTextView surface
+      one file wide.
 
 ## Port recipe — the per-file pass (Phase 1 as actually run)
 
@@ -422,6 +441,52 @@ and the whole file it owns before editing):
 The join (me, after all seven report): `make`, fix link errors, then
 `make run-dev` in the worktree's own `dev/` and the Phase 4–6 runtime
 checklist by hand.
+
+### Phase 8 — use GTK4 where it now does the job (after Phase 7)
+
+The GTK3 app hand-rolled things GTK3 lacked.  GTK4 grew some of them, and
+keeping a private copy of what the toolkit already links in is both
+wasted memory and a second implementation to maintain.  Each subsystem
+gets a verdict — ADOPT GTK's, or KEEP OURS with the measured reason —
+and the reason goes into CLAUDE.md so the question is not re-asked.
+Verdicts already established while porting:
+
+| Subsystem | Verdict | Why |
+|---|---|---|
+| Undo / redo (snapshot stacks, ~600 lines) | **KEEP** | `GtkTextHistory` records inserts/deletes as PLAIN TEXT (`gtk_text_iter_get_slice`: an image is a bare U+FFFC) and replays them with `gtk_text_buffer_insert` — no tags, no anchors (gtktextbuffer.c `gtk_text_buffer_history_insert`, 4.22.4).  Undoing a deleted image would restore an empty placeholder; undoing a style change is impossible.  `gtk_text_buffer_set_enable_undo(FALSE)` stays, or GTK's copy shadows ours on Ctrl+Z AND records everything twice. |
+| Emoji chooser | ADOPTED | `insert-emoji` |
+| File / message dialogs | ADOPTED | `GtkFileDialog`, `GtkAlertDialog` |
+| Image paste (macOS pasteboard atoms) | ADOPTED | GDK's content deserializers decode any image type to a texture |
+| Image fitting / HiDPI (cairo device scale) | ADOPTED | `GtkPicture` + textures |
+| Context menus, menubar, shortcuts | ADOPTED | `GMenu` + `GAction`, native macOS bar from GTK's quartz backend |
+| Hover cursors (quirk #22's hit-tested motion handler) | ADOPTED | every widget owns its cursor |
+| In-note find | KEEP (scan is GTK's) | `gtk_text_iter_forward_search` does the matching; the highlight tag and entry UI have no GTK equivalent |
+| Lists, checkboxes, tables, images, code blocks, #tags, title/action tints | KEEP | `GtkTextView` has none of these; `GtkSourceView` has gutters/line numbers but is another library and still no lists/anchors |
+| Tag autocomplete popover | KEEP | no completion for text views in GTK4 |
+| Window size persistence, ini config | KEEP | GTK has no settings store |
+
+To audit (unverified candidates, in order of likely payoff):
+
+- [ ] Per-widget CSS providers (`on_app_widget_add_css`, ~21 sites,
+      deprecated API): replace with CSS classes and ONE display stylesheet
+      per module (the library already has `library_install_css`).  Same
+      look, no deprecated calls, greppable selectors.
+- [ ] Toolbar icons: the PNGs are loaded through gdk-pixbuf and wrapped as
+      textures by hand (`on_app_icon_paintable`).  Installing `icons/` as
+      an icon theme and using `gtk_image_new_from_icon_name` would hand
+      HiDPI, recolouring and caching to GTK — check that the PNG-only,
+      swap-a-file-to-retheme contract survives.
+- [ ] `image_texture()` decodes the PNG bytes a second time although the
+      pixbuf already holds the pixels; measure load time on an
+      image-heavy note before choosing `on_app_texture_for_pixbuf`.
+- [ ] `editor_rederive` (emoji pad, action tint, title) runs per
+      keystroke over the touched range — measure; likely fine.
+- [ ] `render_note_thumb` draws cards with cairo — could snapshot an
+      offscreen `NotesView` instead once Phase 7's extraction exists, so
+      thumbnails and the editor can never render a note differently.
+- [ ] Grid + notes list + sidebar on the deprecated tree-view family:
+      the GTK5 item ("After this port") — `GtkColumnView` autosizes
+      columns, retiring `list_autofit`'s PangoLayout measuring.
 
 ## After this port
 

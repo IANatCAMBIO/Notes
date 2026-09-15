@@ -814,6 +814,10 @@ GtkTextView exists in the app.**
 
 ### GTK4 quirks (all measured on 4.22 — details and reproducers in GTK4_MIGRATION.md)
 
+- **An input method's client widget is set at REALIZE** (D31): the macOS
+  method resolves the widget's surface when told, so a widget told at
+  construction (no root yet) never gets a key.  `note_view_realize`.
+
 - **`gtk_tree_view_set_drag_dest_row` segfaults unless
   `gtk_tree_view_enable_model_drag_dest` has run** (D5): the drop
   indicator's CSS node is created only there.  Call it with an EMPTY

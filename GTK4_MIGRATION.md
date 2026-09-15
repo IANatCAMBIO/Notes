@@ -746,6 +746,18 @@ add a second idiom.
   (cursor kept in place), the same as it already did for an EMPTY last
   line.  Harness: "hello" + code + Enter → a second code line.
 
+- **D31 · 2026-09-15 — An input method's client widget is set at REALIZE,
+  never at construction.**  The macOS method resolves the widget's root
+  surface the moment it is told (`gtkimcontextquartz.c`
+  `quartz_set_client_surface`: `gtk_widget_get_root` → `gtk_native_get_
+  surface`); a widget not yet in a window yields NULL, and
+  `quartz_filter_keypress` then refuses every key for the widget's whole
+  life — the drawn note view could not be typed into at all.  GtkTextView
+  sets it in `realize` and clears it in `unrealize`; the note view does the
+  same (`note_view_realize`).  System Events keystrokes DO reach GTK4
+  windows (they doubled every other character in a GtkEntry too — an
+  automation artefact, not a widget bug); accessibility CLICKS do not.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
@@ -765,7 +777,8 @@ One line per session: date, phase, item, outcome.
   rewritten as a drawn widget; `serialize.[ch]` down to the blob walks;
   `make ui-test` (tests/ui_probe.c) drives the view from scripts.  No
   GtkTextView remains in the app; D15–D17, D19–D20, D23–D25, D27, D29–D30
-  describe a widget no longer used.
+  describe a widget no longer used.  D31: typing was dead until the IM's
+  client widget moved to realize.
 - 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
   code block on the last line (D30), `make run-dev` re-seeding the sandbox
   every run (order-only prerequisites).

@@ -503,6 +503,32 @@ note_view_size_allocate(GtkWidget *widget, gint width, gint height,
     }
 }
 
+/* note_view_realize() / unrealize() — the input method learns its client
+ * widget HERE, not at construction: the quartz method resolves the
+ * widget's root surface when told (gtkimcontextquartz.c
+ * quartz_set_client_surface) and a view that is not in a window yet has
+ * none — every key would then be refused for the widget's whole life.
+ * GtkTextView does the same.                                                */
+static void
+note_view_realize(GtkWidget *widget)
+{
+    OnNoteView *v = ON_NOTE_VIEW(widget);
+    GTK_WIDGET_CLASS(on_note_view_parent_class)->realize(widget);
+    gtk_im_context_set_client_widget(v->im, widget);
+    if (gtk_widget_has_focus(widget) && !v->im_focused) {
+        gtk_im_context_focus_in(v->im);
+        v->im_focused = TRUE;
+    }
+}
+
+static void
+note_view_unrealize(GtkWidget *widget)
+{
+    OnNoteView *v = ON_NOTE_VIEW(widget);
+    gtk_im_context_set_client_widget(v->im, NULL);
+    GTK_WIDGET_CLASS(on_note_view_parent_class)->unrealize(widget);
+}
+
 static void
 note_view_snapshot(GtkWidget *widget, GtkSnapshot *snap)
 {
@@ -2486,9 +2512,9 @@ on_note_view_init(OnNoteView *v)
     gtk_widget_set_hexpand(w, TRUE);
     gtk_widget_set_vexpand(w, TRUE);
 
-    /* The input method: every key goes through it first.                  */
+    /* The input method: every key goes through it first.  Its client
+     * widget is set on realize (see note_view_realize).                    */
     v->im = gtk_im_multicontext_new();
-    gtk_im_context_set_client_widget(v->im, w);
     g_signal_connect(v->im, "commit", G_CALLBACK(on_im_commit), v);
     g_signal_connect(v->im, "preedit-changed",
                      G_CALLBACK(on_im_preedit_changed), v);
@@ -2571,6 +2597,8 @@ on_note_view_class_init(OnNoteViewClass *klass)
     wc->measure       = note_view_measure;
     wc->size_allocate = note_view_size_allocate;
     wc->snapshot      = note_view_snapshot;
+    wc->realize       = note_view_realize;
+    wc->unrealize     = note_view_unrealize;
     g_object_class_override_property(oc, PROP_HADJUSTMENT, "hadjustment");
     g_object_class_override_property(oc, PROP_VADJUSTMENT, "vadjustment");
     g_object_class_override_property(oc, PROP_HSCROLL_POLICY,

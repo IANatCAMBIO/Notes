@@ -298,16 +298,18 @@ written into Decisions the day they are measured.
 - [ ] `.app` bundle: GTK4 quartz needs its own loader/module paths — redo
       `make app` against the MacPorts gtk4 tree
 - [ ] `make deb` / `make rpm` on an XFCE box; runtime deps become `libgtk-4-1`
-- [ ] CSS sweep: node names changed (`textview > text`, `button`, `.toolbar`,
-      `treeview.view`, `popover.emoji`), the touch-assist CSS in
-      `on_app_apply_touch_assist` is almost certainly dead on GTK4
+- [x] CSS sweep (cdac73b): every selector checked against the theme
+      compiled into 4.22; the touch-assist CSS turned out CORRECT
+      (`cursor-handle`, `popover.magnifier`, and `-gtk-icon-source` still
+      exists and paints the handle); per-widget providers gone — one
+      display stylesheet per module, rules on `notes-*` classes
 - [ ] `GDK_CORE_DEVICE_EVENTS` / `GTK_OVERLAY_SCROLLING` env in `main.c`:
       neither exists in GTK4 — delete; overlay scrolling is per-scrolled-window
       `gtk_scrolled_window_set_overlay_scrolling`
 - [ ] CLAUDE.md rewritten for the branch: quirks table above applied, new
       quirks from Decisions promoted
 - [ ] BUILD.md / README.md dependency lists
-- [ ] **Extract the note view.**  `editor_window.c` (5.8 k lines) is two
+- [x] **Extract the note view** (233ca43: `src/note_view.[ch]`, `OnNoteView`).  `editor_window.c` (5.8 k lines) is two
       things braided together: the window (chrome, toolbar, actions,
       autosave, status bar, the modal viewer host) and the rich-text
       ENGINE (`NotesTextView` + everything that edits its buffer: inline
@@ -467,15 +469,13 @@ Verdicts already established while porting:
 
 To audit (unverified candidates, in order of likely payoff):
 
-- [ ] Per-widget CSS providers (`on_app_widget_add_css`, ~21 sites,
-      deprecated API): replace with CSS classes and ONE display stylesheet
-      per module (the library already has `library_install_css`).  Same
-      look, no deprecated calls, greppable selectors.
-- [ ] Toolbar icons: the PNGs are loaded through gdk-pixbuf and wrapped as
-      textures by hand (`on_app_icon_paintable`).  Installing `icons/` as
-      an icon theme and using `gtk_image_new_from_icon_name` would hand
-      HiDPI, recolouring and caching to GTK — check that the PNG-only,
-      swap-a-file-to-retheme contract survives.
+- [x] Per-widget CSS providers → classes + one display stylesheet per
+      module (cdac73b).
+- [x] Toolbar icons through the icon theme (12c9789): `icons/` is an
+      UNTHEMED search path (GTK 4.22 still scans a search-path directory's
+      top level by basename — verified in gtkicontheme.c), so the
+      swap-a-PNG contract survives and GTK does the scale-factor loading
+      and caching.
 - [ ] `image_texture()` decodes the PNG bytes a second time although the
       pixbuf already holds the pixels; measure load time on an
       image-heavy note before choosing `on_app_texture_for_pixbuf`.
@@ -656,11 +656,32 @@ add a second idiom.
   spacing at a line end, so a TRAILING emoji sits 2 px under the caret
   until the next character is typed (GTK3 identical).
 
+- **D23 · 2026-09-15 — Presses in an anchored child GtkTextView must be
+  stopped at the child.**  GtkTextView's own press handler calls
+  `gtk_widget_grab_focus` unconditionally and does NOT claim a plain press
+  (gtktextview.c `gtk_text_view_click_gesture_pressed`), so after a table
+  cell took the focus the OUTER view's handler ran and took it back —
+  clicks into cells "took" every third or fourth time.  A bubble-phase
+  legacy controller on the cell returns TRUE for button press/release
+  once the cell's own gesture has run (all of a widget's controllers run
+  before the verdict, gtkwidget.c `gtk_widget_run_controllers`).  Claiming
+  instead would deny the cell's own gesture — and a claim from a
+  CAPTURE-phase ancestor cancels the CHILD's sequences
+  (`gtk_widget_propagate_event_sequence_state`).
+- **D24 · 2026-09-15 — Emoji padding tags the emoji ONLY.**  Measured on
+  4.22's Pango: letter-spacing on the emoji alone widens its advance by the
+  full spacing and clears the overdraw; tagging the following character too
+  (the GTK3 recipe, from when Pango dropped the run-edge half) widens the
+  follower as well — a hole before the next letter.  CLAUDE.md quirk #12's
+  "self + the following char" is therefore wrong for this branch.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — CSS sweep, icon theme, note-view extraction (D23, D24);
+  all verified by hand in the sandbox.
 - 2026-09-15 — Per-file port joined and running in the sandbox; first two
   rounds of hand verification on macOS: menus, shortcuts, DnD, dialogs,
   grid, tables, code blocks, emoji, viewer all pass after D13–D22.

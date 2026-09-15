@@ -46,27 +46,30 @@ folder first if you want a do-over.
 
 ## Building
 
-You'll need a C compiler, the GTK3 and SQLite3 development files, and
-pkg-config. That's it. (librsvg is optional — the toolbar icons are
-PNGs; it only sharpens the few remaining SVG icons, which otherwise
-fall back to text glyphs and GTK's built-in raster icons.)
+You'll need a C compiler, the GTK 4 (4.10 or newer; developed on 4.22)
+and SQLite3 development files, and pkg-config. That's it. (librsvg is
+optional — the toolbar icons are PNGs; it only sharpens the few remaining
+SVG icons, which otherwise fall back to GTK's built-in raster ones.)
 
 macOS (MacPorts):
 
 ```sh
-sudo port install pkgconf gtk3 +quartz librsvg
+sudo port install pkgconf gtk4 +quartz librsvg
 make
 make run
 ```
 
-Debian/Ubuntu:
+Debian/Ubuntu (incl. XFCE desktops):
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libsqlite3-dev \
+sudo apt install build-essential pkg-config libgtk-4-dev libsqlite3-dev \
                  librsvg2-common
 make
 make run
 ```
+
+GTK 4 draws through OpenGL (or Vulkan); on a machine or VM with only
+software GL, `GSK_RENDERER=cairo make run` is the fallback.
 
 The native macOS menu bar needs no extra library — GTK's quartz backend
 provides it (Settings can switch it back into the window).

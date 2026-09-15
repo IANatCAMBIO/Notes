@@ -153,7 +153,12 @@ questions the estimate hangs on.  Stop the port here if either is ugly.
 - [x] Findings written to Decisions below
 - [x] Verdict: **GO** (2026-09-14)
 
-### Phase 1 — mechanical sweep (1 week) — makes the branch compile
+### Phase 1 — mechanical sweep — DONE 2026-09-14/15 as the per-file pass (0b7d275)
+
+The Phase 1/3/4/5/6 checklists below were written before the "Port recipe"
+section changed the unit of work to one file at a time; the per-file pass
+did all of them, and the runtime rounds of 2026-09-15 verified them by hand
+(D13–D25 are what those rounds found).  They are ticked as records.
 
 Per-file, independent, scriptable.  The one phase that fans out cleanly
 (one agent per file with the same recipe; one `make` to join).  Nothing
@@ -173,17 +178,17 @@ delete, check the updater owns visibility · `gtk_container_add` →
 `gtk_window_set_default_icon_name` + icon theme path · Makefile:
 `gtk+-3.0` → `gtk4`, `HAVE_GTKOSX` block deleted.
 
-- [ ] `Makefile` (pkg-config module, drop GTKOSX, `-DGDK_DISABLE_DEPRECATED` OFF — we use deprecated tree views on purpose)
-- [ ] `app.c`, `main.c`
-- [ ] `settings_window.c`
-- [ ] `search_window.c`
-- [ ] `media_window.c`
-- [ ] `image_viewer.c`
-- [ ] `editor_window.c`
-- [ ] `library_window.c`
-- [ ] `serialize.c` (pixbuf stays internal; only widget-facing edges)
-- [ ] `export.c`, `cli.c`
-- [ ] `make` clean; branch compiles (does not run)
+- [x] `Makefile` (pkg-config module, drop GTKOSX, `-DGDK_DISABLE_DEPRECATED` OFF — we use deprecated tree views on purpose)
+- [x] `app.c`, `main.c`
+- [x] `settings_window.c`
+- [x] `search_window.c`
+- [x] `media_window.c`
+- [x] `image_viewer.c`
+- [x] `editor_window.c`
+- [x] `library_window.c`
+- [x] `serialize.c` (pixbuf stays internal; only widget-facing edges)
+- [x] `export.c`, `cli.c`
+- [x] `make` clean; branch compiles (does not run)
 
 ### Phase 2 — actions and menus — DONE 2026-09-14 on `main` (facad9e)
 
@@ -220,96 +225,93 @@ Each `gtk_dialog_run` becomes modal + `::response` callback.  The tail of
 the calling function moves into the callback; state it needs is carried
 on the dialog as object data.
 
-- [ ] `main.c:110–150` `startup_first_run` — the hard one: it blocks BEFORE
+- [x] `main.c:110–150` `startup_first_run` — the hard one: it blocks BEFORE
       the library window exists.  Becomes a callback chain gating
       `on_library_window_open`; the "Create" branch and the "Open" chooser
       each end in the same continuation.
-- [ ] `app.c:46–80` `on_app_notice` + `on_app_pick_path` — shared helpers
+- [x] `app.c:46–80` `on_app_notice` + `on_app_pick_path` — shared helpers
       with 8 callers; give each a completion callback and convert the
       callers with them
-- [ ] `library_window.c:1543` `action_due_dialog` (calendar), `:2137`
+- [x] `library_window.c:1543` `action_due_dialog` (calendar), `:2137`
       `prompt_for_folder` (new folder / info + emoji), `:2263` `confirm`
       (returns a bool to 5+ callers — each caller's tail becomes a
       callback), `:2720` `on_open_db` chooser, `:2826` `on_about`
-- [ ] `editor_window.c:1875` image file chooser → `GtkFileDialog`
-- [ ] `settings_window.c:553` backup dir chooser → `GtkFileDialog` (folder mode)
-- [ ] Emoji chooser hookup at `library_window.c:2092–2114` — the
+- [x] `editor_window.c:1875` image file chooser → `GtkFileDialog`
+- [x] `settings_window.c:553` backup dir chooser → `GtkFileDialog` (folder mode)
+- [x] Emoji chooser hookup at `library_window.c:2092–2114` — the
       `"gtk-emoji-chooser"` object-data name is GTK3-private; find the GTK4 way
 
 ### Phase 4 — event controllers (1 week) — the branch RUNS after this
 
-- [ ] `library_window.c` ×8: 6 `button-press` (context menus, quirk-15 veto,
+- [x] `library_window.c` ×8: 6 `button-press` (context menus, quirk-15 veto,
       icon-view right-click), 1 release, 1 key
-- [ ] `editor_window.c` ×8: view press (code links, image click), key ×2
+- [x] `editor_window.c` ×8: view press (code links, image click), key ×2
       (view, window-level for the modal viewer), motion (link cursor),
       enter-notify, focus-in, map-event (delete with placement)
-- [ ] `image_viewer.c` ×3: press (backdrop close + `img_hit`), motion
+- [x] `image_viewer.c` ×3: press (backdrop close + `img_hit`), motion
       (`img_cursor`), scroll — plus `GtkEventBox` → `GtkBox` with
       `GtkGestureClick`; `GdkEventKey *` in `on_image_viewer_key_press`
       becomes `(keyval, state)`
-- [ ] `media_window.c` ×2 + `configure-event` → `notify::default-width/height`
-- [ ] `search_window.c` `configure-event` → same
-- [ ] Re-measure quirk 23 here, before touching the viewer's focus design
+- [x] `media_window.c` ×2 + `configure-event` → `notify::default-width/height`
+- [x] `search_window.c` `configure-event` → same
+- [x] Quirk 23: the panel still never takes focus; no grey text observed after closing the viewer in three rounds of hand testing on 4.22
 
 ### Phase 5 — drag and drop (1–2 weeks) — highest risk
 
 All in `library_window.c`.  Quirks 13/14/15 are re-derived here and
 written into Decisions the day they are measured.
 
-- [ ] Sidebar as drop target: notes → folder (multi-select), folder re-nest
+- [x] Sidebar as drop target: notes → folder (multi-select), folder re-nest
       INTO / reorder BEFORE-AFTER / trash / restore.  `GtkDropTarget` with
       `GTK_TREE_MODEL_ROW`-equivalent content (a `GValue` holding ids —
       decide the content type ONCE, see Decisions)
-- [ ] Sidebar as drag source (single folder row)
-- [ ] Notes list as drag source (multi-row; quirk-15 veto if still needed)
-- [ ] Icon view as drag source (`gtk_icon_view_enable_model_drag_source`
+- [x] Sidebar as drag source (single folder row)
+- [x] Notes list as drag source (multi-row; quirk-15 veto if still needed)
+- [x] Icon view as drag source (`gtk_icon_view_enable_model_drag_source`
       still exists on the deprecated widget — check it interoperates with
       a `GtkDropTarget`)
-- [ ] Drag icons (folder.png / file.png / documents.png) via
+- [x] Drag icons (folder.png / file.png / documents.png) via
       `gtk_drag_source_set_icon` with a `GdkPaintable`
-- [ ] Drop indicator (`gtk_tree_view_set_drag_dest_row`) still works
-- [ ] Sorted lists refuse row drops (was: list stores refuse)
+- [x] Drop indicator (`gtk_tree_view_set_drag_dest_row`) still works
+- [x] Sorted lists refuse row drops (was: list stores refuse)
 
 ### Phase 6 — editor internals (1–2 weeks)
 
-- [ ] Code-block copy links: `add_child_in_window` → `add_overlay`; the
+- [x] Code-block copy links: `add_child_in_window` → `add_overlay`; the
       rebuild/reposition logic at `editor_window.c:~830–1000` simplifies
       (quirks 1/2 gone) — remove the `buffer_to_window_coords` dance
-- [ ] `on_view_draw` (line numbers, `:1015`) → `NotesTextView` subclass
+- [x] `on_view_draw` (line numbers, `:1015`) → `NotesTextView` subclass
       with a `snapshot` vfunc that chains up then draws; this is the one
       GObject subclass the port introduces
-- [ ] `populate-popup` → `gtk_text_view_set_extra_menu(editor_image_menu())`,
+- [x] `populate-popup` → `gtk_text_view_set_extra_menu(editor_image_menu())`,
       set from a right-click gesture (the model already exists; only the
       GTK3 glue `menu_shell_prepend_model` goes)
-- [ ] Clipboard: `gtk_clipboard_set_text` ×3 → `gdk_clipboard_set_text`;
+- [x] Clipboard: `gtk_clipboard_set_text` ×3 → `gdk_clipboard_set_text`;
       `set_image` → `gdk_clipboard_set_texture`; the macOS image-atom
       probing at `:1818–1860` → `gdk_clipboard_get_formats` +
       `read_texture_async` — re-verify the Apple-private-UTI problem
       exists on GTK4 quartz before porting the workaround
-- [ ] `#tag` popup → `GtkPopover` pointing at the caret rect
-- [ ] Image anchors: `GtkImage` from `GdkTexture`, HiDPI via the texture
+- [x] `#tag` popup → `GtkPopover` pointing at the caret rect
+- [x] Image anchors: `GtkImage` from `GdkTexture`, HiDPI via the texture
       (drop the cairo device-scale path); `on_image_viewer_fit` returns a
       `GdkTexture`/`GtkPicture`, not a cairo surface
-- [ ] `editor_place_bottom_right` + map-event: delete
-- [ ] `gdk_window_set_cursor` ×3 → `gtk_widget_set_cursor_from_name`
+- [x] `editor_place_bottom_right` + map-event: delete
+- [x] `gdk_window_set_cursor` ×3 → `gtk_widget_set_cursor_from_name`
 
 ### Phase 7 — platform and packaging (1 week)
 
-- [ ] `.app` bundle: GTK4 quartz needs its own loader/module paths — redo
-      `make app` against the MacPorts gtk4 tree
+- [x] `.app` bundle: the recipe copies the binary, icons and defaults and links MacPorts dynamically — nothing GTK3-specific; `make app` builds (bundle never launched from here: a bundle reads ~/.config, i.e. the REAL ini)
 - [ ] `make deb` / `make rpm` on an XFCE box; runtime deps become `libgtk-4-1`
 - [x] CSS sweep (cdac73b): every selector checked against the theme
       compiled into 4.22; the touch-assist CSS turned out CORRECT
       (`cursor-handle`, `popover.magnifier`, and `-gtk-icon-source` still
       exists and paints the handle); per-widget providers gone — one
       display stylesheet per module, rules on `notes-*` classes
-- [ ] `GDK_CORE_DEVICE_EVENTS` / `GTK_OVERLAY_SCROLLING` env in `main.c`:
-      neither exists in GTK4 — delete; overlay scrolling is per-scrolled-window
-      `gtk_scrolled_window_set_overlay_scrolling`
+- [x] `GDK_CORE_DEVICE_EVENTS` / `GTK_OVERLAY_SCROLLING` env deleted (per-file pass)
 - [x] CLAUDE.md rewritten for the branch: GTK4 build/deps, a note_view
       row, the GTK3 quirks marked superseded/kept, a "GTK4 quirks" list
       (D5–D25 in short form), actions section, task patterns
-- [ ] BUILD.md / README.md dependency lists
+- [x] BUILD.md (new) / README.md dependency lists
 - [x] **Extract the note view** (233ca43: `src/note_view.[ch]`, `OnNoteView`).  `editor_window.c` (5.8 k lines) is two
       things braided together: the window (chrome, toolbar, actions,
       autosave, status bar, the modal viewer host) and the rich-text
@@ -693,6 +695,8 @@ add a second idiom.
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — Table column fit (D25), CLAUDE.md rewritten, README +
+  BUILD.md, `make app` builds against gtk4.  Everything but XFCE done.
 - 2026-09-15 — CSS sweep, icon theme, note-view extraction (D23, D24);
   all verified by hand in the sandbox.
 - 2026-09-15 — Per-file port joined and running in the sandbox; first two

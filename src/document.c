@@ -26,13 +26,22 @@ on_text_new(void)
     return t;
 }
 
+/* inline_image_clear() — release what an inline image holds.               */
+static void
+inline_image_clear(OnInlineImage *img)
+{
+    if (img->pixels_free != NULL)
+        img->pixels_free(img->pixels);
+    g_bytes_unref(img->png);
+}
+
 void
 on_text_free(OnText *t)
 {
     if (t == NULL)
         return;
     for (guint i = 0; i < t->images->len; i++)
-        g_bytes_unref(g_array_index(t->images, OnInlineImage, i).png);
+        inline_image_clear(&g_array_index(t->images, OnInlineImage, i));
     g_array_free(t->images, TRUE);
     g_array_free(t->runs, TRUE);
     g_string_free(t->text, TRUE);
@@ -48,6 +57,8 @@ on_text_copy(const OnText *t)
     for (guint i = 0; i < t->images->len; i++) {
         OnInlineImage img = g_array_index(t->images, OnInlineImage, i);
         g_bytes_ref(img.png);
+        img.pixels      = NULL;      /* a view's cache is not copied        */
+        img.pixels_free = NULL;
         g_array_append_val(c->images, img);
     }
     return c;
@@ -142,7 +153,7 @@ on_text_delete(OnText *t, gsize off, gsize n)
     for (guint k = 0; k < t->images->len; ) {
         OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
         if (img->offset >= off && img->offset < off + n) {
-            g_bytes_unref(img->png);
+            inline_image_clear(img);
             g_array_remove_index(t->images, k);
             continue;
         }
@@ -190,7 +201,7 @@ on_text_add_image(OnText *t, gsize off, GBytes *png, guint32 display_width)
     g_return_if_fail(off + ON_OBJ_CHAR_LEN <= t->text->len);
     g_return_if_fail(memcmp(t->text->str + off, ON_OBJ_CHAR,
                             ON_OBJ_CHAR_LEN) == 0);
-    OnInlineImage img = { off, g_bytes_ref(png), display_width };
+    OnInlineImage img = { off, g_bytes_ref(png), display_width, NULL, NULL };
     guint k = 0;                     /* keep the array sorted by offset     */
     while (k < t->images->len &&
            g_array_index(t->images, OnInlineImage, k).offset < off)
@@ -261,6 +272,8 @@ on_block_free(OnBlock *b)
     if (b == NULL)
         return;
     on_text_free(b->text);
+    if (b->pixels_free != NULL)
+        b->pixels_free(b->pixels);
     if (b->png != NULL)
         g_bytes_unref(b->png);
     if (b->cells != NULL)
@@ -275,6 +288,8 @@ on_block_copy(const OnBlock *b)
     *c = *b;
     c->text  = (b->text != NULL) ? on_text_copy(b->text) : NULL;
     c->png   = (b->png != NULL) ? g_bytes_ref(b->png) : NULL;
+    c->pixels      = NULL;           /* a view's cache is not copied        */
+    c->pixels_free = NULL;
     c->cells = NULL;
     if (b->cells != NULL) {
         c->cells = g_ptr_array_new_with_free_func(
@@ -314,6 +329,7 @@ struct OnDocument {
     /* change flags */
     gboolean   tags_modified;
     gboolean   actions_modified;
+    OnPos      last_change;          /* see on_document_last_change         */
 };
 
 static void group_free(GPtrArray *group);
@@ -1111,6 +1127,8 @@ text_slice(const OnText *t, gsize off, gsize n)
         if (img.offset >= off && img.offset < off + n) {
             img.offset -= off;
             g_bytes_ref(img.png);
+            img.pixels      = NULL;
+            img.pixels_free = NULL;
             g_array_append_val(f->images, img);
         }
     }
@@ -1459,7 +1477,37 @@ apply_op(OnDocument *d, Op *op)
     if (b != NULL && i < d->blocks->len &&
         (was_action || on_block_is_action(g_ptr_array_index(d->blocks, i))))
         d->actions_modified = TRUE;
+
+    /* Where the caret belongs after this: the op's own position, or for a
+     * removed block the start of what now sits there.                     */
+    d->last_change = op->pos;
+    if (op->kind == OP_INSERT_TEXT) {
+        d->last_change.offset += op->frag->text->len;
+    } else if (op->kind == OP_JOIN || op->kind == OP_SPLIT) {
+        d->last_change.cell = -1;
+        if (op->kind == OP_SPLIT) {
+            d->last_change.block = i + 1;
+            d->last_change.offset = 0;
+        } else {
+            d->last_change.offset = inv->pos.offset;
+        }
+    } else if (op->kind == OP_REMOVE_BLOCK || op->kind == OP_INSERT_BLOCK) {
+        d->last_change.cell = -1;
+        d->last_change.offset = 0;
+        if (d->last_change.block >= d->blocks->len)
+            d->last_change.block = d->blocks->len - 1;
+    } else if (op->kind != OP_DELETE_TEXT && op->kind != OP_SET_FLAGS &&
+               op->kind != OP_RESTORE_RUNS) {
+        d->last_change.cell = -1;
+        d->last_change.offset = 0;
+    }
     return inv;
+}
+
+OnPos
+on_document_last_change(const OnDocument *d)
+{
+    return d->last_change;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1693,6 +1741,282 @@ gboolean
 on_document_table_remove_col(OnDocument *d, guint i, gint at)
 {
     return table_reshape(d, i, OP_TABLE_REMOVE_COL, at);
+}
+
+/* ===========================================================================
+ * RANGES AND FRAGMENTS
+ * ======================================================================== */
+
+gint
+on_pos_cmp(OnPos a, OnPos b)
+{
+    if (a.block != b.block)
+        return a.block < b.block ? -1 : 1;
+    if (a.cell != b.cell)
+        return a.cell < b.cell ? -1 : 1;
+    if (a.offset != b.offset)
+        return a.offset < b.offset ? -1 : 1;
+    return 0;
+}
+
+/* pos_text_ok() — a valid text position (block text or cell).              */
+static gboolean
+pos_text_ok(const OnDocument *d, OnPos p)
+{
+    return pos_ok(d, p, 0) != NULL;
+}
+
+/* pos_valid() — a valid position of any kind: text, or an object block's
+ * 0 / 1.                                                                    */
+static gboolean
+pos_valid(const OnDocument *d, OnPos p)
+{
+    OnBlock *b = on_document_block(d, p.block);
+    if (b == NULL)
+        return FALSE;
+    if (b->kind == ON_BLOCK_IMAGE || (b->kind == ON_BLOCK_TABLE && p.cell < 0))
+        return p.offset <= 1;
+    return pos_text_ok(d, p);
+}
+
+OnDocument *
+on_document_copy_range(const OnDocument *d, OnPos a, OnPos b)
+{
+    OnDocument *out = doc_alloc();
+    if (on_pos_cmp(a, b) > 0) {
+        OnPos t = a; a = b; b = t;
+    }
+    if (!pos_valid(d, a) || !pos_valid(d, b)) {
+        g_ptr_array_add(out->blocks, on_block_new_text(ON_BLOCK_PARA));
+        return out;
+    }
+
+    /* Inside one table: a cell's text, or the whole table.                 */
+    OnBlock *first = on_document_block(d, a.block);
+    if (a.block == b.block && first->kind == ON_BLOCK_TABLE) {
+        if (a.cell == b.cell && a.cell >= 0) {
+            OnBlock *p = on_block_new_text(ON_BLOCK_PARA);
+            OnText *cell = g_ptr_array_index(first->cells, a.cell);
+            OnText *part = text_slice(cell, a.offset, b.offset - a.offset);
+            text_paste(p->text, 0, part);
+            on_text_free(part);
+            g_ptr_array_add(out->blocks, p);
+        } else {
+            OnBlock *c = on_block_copy(first);
+            c->action_uid = 0;
+            g_ptr_array_add(out->blocks, c);
+        }
+        return out;
+    }
+
+    for (guint i = a.block; i <= b.block; i++) {
+        OnBlock *src = on_document_block(d, i);
+        OnBlock *c;
+        if (on_block_kind_is_text(src->kind)) {
+            gsize from = (i == a.block) ? a.offset : 0;
+            gsize to   = (i == b.block) ? b.offset : src->text->text->len;
+            c = on_block_new_text(src->kind);
+            c->checked   = src->checked;
+            c->eol_flags = src->eol_flags;
+            OnText *part = text_slice(src->text, from, to - from);
+            text_paste(c->text, 0, part);
+            on_text_free(part);
+        } else {
+            /* An object block on the range's edge is taken only when the
+             * range reaches across it.                                     */
+            if ((i == a.block && a.offset == 1) ||
+                (i == b.block && b.offset == 0))
+                continue;
+            c = on_block_copy(src);
+            c->action_uid = 0;
+        }
+        g_ptr_array_add(out->blocks, c);
+    }
+    if (out->blocks->len == 0)
+        g_ptr_array_add(out->blocks, on_block_new_text(ON_BLOCK_PARA));
+    return out;
+}
+
+/* remove_block_keeping_one() — remove block i, replacing it with an empty
+ * PARA when it is the document's last block.                                */
+static void
+remove_block_keeping_one(OnDocument *d, guint i)
+{
+    if (d->blocks->len == 1)
+        on_document_insert_block(d, 1, on_block_new_text(ON_BLOCK_PARA));
+    on_document_remove_block(d, i);
+}
+
+gboolean
+on_document_delete_range(OnDocument *d, OnPos a, OnPos b, OnPos *out)
+{
+    if (on_pos_cmp(a, b) > 0) {
+        OnPos t = a; a = b; b = t;
+    }
+    if (on_pos_cmp(a, b) == 0 || !pos_valid(d, a) || !pos_valid(d, b))
+        return FALSE;
+    OnBlock *first = on_document_block(d, a.block);
+
+    on_document_begin_group(d);
+    OnPos after = a;                 /* where the caret lands               */
+
+    if (a.block == b.block) {
+        if (on_block_kind_is_text(first->kind) ||
+            (first->kind == ON_BLOCK_TABLE && a.cell >= 0 && a.cell == b.cell)) {
+            on_document_delete_text(d, a, b.offset - a.offset);
+        } else {
+            /* An object block, or a cell range inside a table: the block. */
+            remove_block_keeping_one(d, a.block);
+            after.cell   = -1;
+            after.offset = 0;
+            if (after.block >= d->blocks->len)
+                after.block = d->blocks->len - 1;
+            /* Land at the END of a text block before, if that is where the
+             * removal left us.                                             */
+            OnBlock *nb = on_document_block(d, after.block);
+            if (after.block == a.block && a.block > 0 && nb != NULL &&
+                !on_block_kind_is_text(nb->kind)) {
+                after.block--;
+                nb = on_document_block(d, after.block);
+                if (nb->text != NULL)
+                    after.offset = nb->text->text->len;
+                else
+                    after.offset = 1;
+            }
+        }
+        on_document_end_group(d);
+        if (out != NULL)
+            *out = after;
+        return TRUE;
+    }
+
+    /* Several blocks.  Trim the last, drop the middle, trim the first,
+     * then join the two edges when both are text.                          */
+    OnBlock *last = on_document_block(d, b.block);
+    gboolean last_text = on_block_kind_is_text(last->kind);
+    gboolean drop_last = !last_text && b.offset == 1;
+    if (last_text && b.offset > 0) {
+        OnPos p = { b.block, -1, 0 };
+        on_document_delete_text(d, p, b.offset);
+    } else if (last->kind == ON_BLOCK_TABLE && b.cell >= 0) {
+        drop_last = TRUE;            /* a range ending inside a table takes
+                                        the table                            */
+    }
+    for (guint i = b.block - 1; i > a.block; i--)
+        on_document_remove_block(d, i);
+    if (drop_last)
+        on_document_remove_block(d, a.block + 1);
+
+    gboolean first_text = on_block_kind_is_text(first->kind);
+    gboolean drop_first = !first_text && (a.offset == 0 || a.cell >= 0);
+    if (first_text) {
+        gsize len = first->text->text->len;
+        if (a.cell >= 0) {           /* cannot happen: text blocks have no
+                                        cells */
+        } else if (a.offset < len) {
+            on_document_delete_text(d, a, len - a.offset);
+        }
+    }
+    if (drop_first) {
+        remove_block_keeping_one(d, a.block);
+        after.cell   = -1;
+        after.offset = 0;
+        if (after.block >= d->blocks->len)
+            after.block = d->blocks->len - 1;
+    } else if (first_text && !drop_last &&
+               a.block + 1 < d->blocks->len &&
+               on_block_kind_is_text(on_document_block(d, a.block + 1)->kind)) {
+        on_document_join_blocks(d, a.block);
+    }
+    on_document_end_group(d);
+    if (out != NULL)
+        *out = after;
+    return TRUE;
+}
+
+gboolean
+on_document_insert_fragment(OnDocument *d, OnPos pos, const OnDocument *frag,
+                            OnPos *out)
+{
+    OnText *t = pos_ok(d, pos, 0);
+    if (t == NULL || frag->blocks->len == 0)
+        return FALSE;
+    OnBlock *host = on_document_block(d, pos.block);
+    guint n = frag->blocks->len;
+    OnPos end = pos;                 /* just after the inserted content     */
+
+    on_document_begin_group(d);
+    if (pos.cell >= 0) {
+        /* A cell takes the fragment's plain text, lines joined by spaces. */
+        gchar *plain = on_document_plain_text(frag);
+        for (gchar *p = plain; *p != '\0'; p++)
+            if (*p == '\n')
+                *p = ' ';
+        on_document_insert_text(d, pos, plain, strlen(plain), 0);
+        end.offset += strlen(plain);
+        g_free(plain);
+        on_document_end_group(d);
+        if (out != NULL)
+            *out = end;
+        return TRUE;
+    }
+
+    const OnBlock *f0 = on_document_block(frag, 0);
+    if (n == 1 && on_block_kind_is_text(f0->kind)) {
+        Op *op = op_new(OP_INSERT_TEXT);
+        op->pos  = pos;
+        op->frag = on_text_copy(f0->text);
+        do_op(d, op);
+        end.offset += f0->text->text->len;
+        on_document_end_group(d);
+        if (out != NULL)
+            *out = end;
+        return TRUE;
+    }
+
+    /* Split the host at pos; the fragment's first text block joins the
+     * head, its last text block the tail, everything else lands between. */
+    on_document_split_block(d, pos, on_text_flags_at(t, pos.offset));
+    guint at = pos.block + 1;        /* where the next block is inserted    */
+    guint first = 0, last = n;       /* fragment blocks placed as blocks    */
+    if (on_block_kind_is_text(f0->kind)) {
+        Op *op = op_new(OP_INSERT_TEXT);
+        op->pos  = pos;
+        op->frag = on_text_copy(f0->text);
+        do_op(d, op);
+        first = 1;
+    }
+    const OnBlock *fl = on_document_block(frag, n - 1);
+    if (n > 1 && on_block_kind_is_text(fl->kind)) {
+        OnPos tail = { pos.block + 1, -1, 0 };
+        Op *op = op_new(OP_INSERT_TEXT);
+        op->pos  = tail;
+        op->frag = on_text_copy(fl->text);
+        do_op(d, op);
+        /* The tail keeps the host's kind unless the host is plain and the
+         * fragment says otherwise.                                         */
+        if (host->kind == ON_BLOCK_PARA && fl->kind != ON_BLOCK_PARA)
+            on_document_set_kind(d, pos.block + 1, fl->kind);
+        end.block  = pos.block + 1;
+        end.offset = fl->text->text->len;
+        last = n - 1;
+    }
+    for (guint k = first; k < last; k++) {
+        OnBlock *c = on_block_copy(on_document_block(frag, k));
+        c->action_uid = 0;
+        on_document_insert_block(d, at++, c);
+        end.block++;
+    }
+    if (n > 1 && !on_block_kind_is_text(fl->kind)) {
+        /* Ends on an object: the caret goes after it, before the tail.    */
+        end.block  = at - 1;
+        end.offset = 1;
+        end.cell   = -1;
+    }
+    on_document_end_group(d);
+    if (out != NULL)
+        *out = end;
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------

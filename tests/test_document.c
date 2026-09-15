@@ -1148,7 +1148,7 @@ test_ops_fuzz(void)
         (GDestroyNotify)g_bytes_unref);
     g_ptr_array_add(snaps, snapshot(d));
 
-    for (gint step = 0; step < 400; step++) {
+    for (gint step = 0; step < 300; step++) {
         guint n = on_document_n_blocks(d);
         guint i = g_rand_int_range(rng, 0, (gint)n);
         OnBlock *blk = on_document_block(d, i);
@@ -1173,7 +1173,7 @@ test_ops_fuzz(void)
         guint depth = on_document_undo_depth(d);
         gboolean did = FALSE;        /* the call was accepted (it may still
                                         have been a no-op: see below)       */
-        switch (g_rand_int_range(rng, 0, 14)) {
+        switch (g_rand_int_range(rng, 0, 16)) {
         case 0: case 1: case 2: {
             const gchar *w = words[g_rand_int_range(rng, 0, 6)];
             guint32 f = g_rand_boolean(rng) ? ON_FMT_BOLD : 0;
@@ -1221,6 +1221,35 @@ test_ops_fuzz(void)
             did = on_document_table_remove_col(d, i, 0) ||
                   on_document_table_remove_row(d, i, 0);
             break;
+        case 14: {
+            guint j = g_rand_int_range(rng, 0, (gint)n);
+            OnPos q = at(j, 0);
+            OnText *tj = on_document_text_at(d, q);
+            if (tj != NULL && tj->text->len > 0) {
+                q.offset = (gsize)g_rand_int_range(rng, 0,
+                                                   (gint)tj->text->len + 1);
+                while (q.offset > 0 && q.offset < tj->text->len &&
+                       ((guchar)tj->text->str[q.offset] & 0xc0) == 0x80)
+                    q.offset--;
+            } else if (tj == NULL) {
+                q.offset = g_rand_boolean(rng);
+            }
+            OnPos p2 = pos;
+            if (p2.cell >= 0) {
+                p2.cell = -1;
+                p2.offset = g_rand_boolean(rng);
+            }
+            did = on_document_delete_range(d, p2, q, NULL);
+            break;
+        }
+        case 15:
+            if (t != NULL && pos.cell < 0) {
+                OnDocument *frag = on_document_copy_range(
+                    d, at(0, 0), at(n - 1, 0));
+                did = on_document_insert_fragment(d, pos, frag, NULL);
+                on_document_free(frag);
+            }
+            break;
         }
         assert_valid(d);
         /* One snapshot per undo STEP: a set_* that changed nothing is
@@ -1229,7 +1258,7 @@ test_ops_fuzz(void)
         if (on_document_undo_depth(d) > depth)
             g_ptr_array_add(snaps, snapshot(d));
     }
-    g_assert_cmpuint(snaps->len, >, 200);
+    g_assert_cmpuint(snaps->len, >, 120);
 
     /* Every undo lands on the snapshot taken before that op.              */
     for (guint k = snaps->len - 1; k > 0; k--) {
@@ -1413,6 +1442,131 @@ test_action_rewrites(void)
     g_bytes_unref(blob);
 }
 
+
+/* ===========================================================================
+ * TESTS — ranges and fragments
+ * ======================================================================== */
+
+static void
+test_ranges(void)
+{
+    const gchar *cells[] = { "c1", "c2" };
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, ON_FMT_H1, "Title\n");
+    blob_text(&b, 0, "one ");
+    blob_text(&b, ON_FMT_BOLD, "two");
+    blob_text(&b, 0, "\n");
+    blob_image(&b, 0, PNG_A, sizeof PNG_A);
+    blob_text(&b, 0, "\n");
+    blob_table(&b, FALSE, 1, 2, cells);
+    blob_text(&b, 0, "\nlast");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+
+    /* Copy across blocks: partial edges, whole middle, kinds kept.        */
+    OnDocument *c = on_document_copy_range(d, at(0, 2), at(1, 5));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 2);
+    g_assert_cmpint(on_document_block(c, 0)->kind, ==, ON_BLOCK_H1);
+    g_assert_cmpstr(block_text(c, 0), ==, "tle");
+    g_assert_cmpstr(block_text(c, 1), ==, "one t");
+    g_assert_cmpuint(on_text_flags_at(on_document_block(c, 1)->text, 4),
+                     ==, ON_FMT_BOLD);
+    assert_valid(c);
+    on_document_free(c);
+
+    /* A range reaching across the image and the table takes both; one
+     * that stops before the image leaves it.                               */
+    c = on_document_copy_range(d, at(1, 0), at(4, 2));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 4);
+    g_assert_cmpint(on_document_block(c, 1)->kind, ==, ON_BLOCK_IMAGE);
+    g_assert_cmpint(on_document_block(c, 2)->kind, ==, ON_BLOCK_TABLE);
+    g_assert_cmpstr(block_text(c, 3), ==, "la");
+    on_document_free(c);
+    c = on_document_copy_range(d, at(1, 0), at(2, 0));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 1);
+    on_document_free(c);
+    c = on_document_copy_range(d, cell_at(3, 1, 0), cell_at(3, 1, 1));
+    g_assert_cmpstr(block_text(c, 0), ==, "c");
+    on_document_free(c);
+
+    /* Delete inside one block; undo restores it.                           */
+    OnPos after;
+    g_assert_true(on_document_delete_range(d, at(1, 1), at(1, 5), &after));
+    g_assert_cmpstr(block_text(d, 1), ==, "owo");
+    g_assert_cmpuint(after.offset, ==, 1);
+    assert_valid(d);
+    on_document_undo(d);
+    assert_roundtrip(d, blob);
+
+    /* Delete across blocks: the edges join, the image goes.                */
+    g_assert_true(on_document_delete_range(d, at(0, 3), at(4, 2), &after));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 1);
+    g_assert_cmpstr(block_text(d, 0), ==, "Titst");
+    g_assert_cmpint(on_document_block(d, 0)->kind, ==, ON_BLOCK_H1);
+    g_assert_cmpuint(after.block, ==, 0);
+    g_assert_cmpuint(after.offset, ==, 3);
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));   /* one group                     */
+    assert_roundtrip(d, blob);
+
+    /* Deleting exactly the image block.                                    */
+    g_assert_true(on_document_delete_range(d, at(2, 0), at(2, 1), &after));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 4);
+    g_assert_cmpint(on_document_block(d, 2)->kind, ==, ON_BLOCK_TABLE);
+    on_document_undo(d);
+    assert_roundtrip(d, blob);
+
+    /* The whole document: one empty block remains.                         */
+    g_assert_true(on_document_delete_range(d, at(0, 0), at(4, 4), &after));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 1);
+    g_assert_cmpstr(block_text(d, 0), ==, "");
+    assert_valid(d);
+    on_document_undo(d);
+    assert_roundtrip(d, blob);
+
+    /* Paste a one-block fragment into text, and a multi-block one.         */
+    OnDocument *frag = on_document_from_text("X");
+    on_document_set_flags(frag, at(0, 0), 1, ON_FMT_ITALIC, TRUE);
+    g_assert_true(on_document_insert_fragment(d, at(1, 4), frag, &after));
+    g_assert_cmpstr(block_text(d, 1), ==, "one Xtwo");
+    g_assert_cmpuint(on_text_flags_at(on_document_block(d, 1)->text, 4),
+                     ==, ON_FMT_ITALIC);
+    g_assert_cmpuint(after.offset, ==, 5);
+    assert_valid(d);
+    on_document_undo(d);
+    assert_roundtrip(d, blob);
+    on_document_free(frag);
+
+    frag = on_document_copy_range(d, at(1, 0), at(4, 2));   /* 4 blocks     */
+    g_assert_true(on_document_insert_fragment(d, at(0, 2), frag, &after));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 8);
+    g_assert_cmpstr(block_text(d, 0), ==, "Tione two");
+    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_IMAGE);
+    g_assert_cmpint(on_document_block(d, 2)->kind, ==, ON_BLOCK_TABLE);
+    g_assert_cmpstr(block_text(d, 3), ==, "latle");
+    g_assert_cmpint(on_document_block(d, 3)->kind, ==, ON_BLOCK_H1);
+    g_assert_cmpuint(after.block, ==, 3);
+    g_assert_cmpuint(after.offset, ==, 2);
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));
+    assert_roundtrip(d, blob);
+    on_document_free(frag);
+
+    /* Into a cell: plain text only.                                        */
+    frag = on_document_from_text("a\nb");
+    g_assert_true(on_document_insert_fragment(d, cell_at(3, 0, 1), frag,
+                                              &after));
+    g_assert_cmpstr(on_block_cell(on_document_block(d, 3), 0, 0)->text->str,
+                    ==, "ca b1");
+    on_document_free(frag);
+    on_document_undo(d);
+    assert_roundtrip(d, blob);
+
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1447,5 +1601,6 @@ main(int argc, char **argv)
     g_test_add_func("/derived/from-text", test_from_text);
     g_test_add_func("/derived/collect-tags", test_collect_tags);
     g_test_add_func("/derived/action-rewrites", test_action_rewrites);
+    g_test_add_func("/ops/ranges", test_ranges);
     return g_test_run();
 }

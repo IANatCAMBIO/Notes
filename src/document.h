@@ -56,6 +56,8 @@ typedef struct {
     gsize    offset;                 /* byte offset of the U+FFFC            */
     GBytes  *png;                    /* the stored bytes, verbatim           */
     guint32  display_width;          /* 0 = default thumbnail sizing         */
+    gpointer pixels;                 /* a view's decode cache, see OnBlock   */
+    GDestroyNotify pixels_free;
 } OnInlineImage;
 
 /* The UTF-8 encoding of U+FFFC, the object replacement character.        */
@@ -85,6 +87,11 @@ typedef struct {
     GBytes     *png;                 /* the stored bytes, VERBATIM — never
                                         re-encoded                           */
     guint32     display_width;       /* 0 = default thumbnail sizing         */
+    gpointer    pixels;              /* whatever a VIEW decoded from `png`
+                                        (a texture), NULL until it needs it;
+                                        freed with the block by pixels_free.
+                                        A copy never shares it               */
+    GDestroyNotify pixels_free;
     /* TABLE */
     gint        rows, cols;
     gboolean    header;              /* first row is a header row            */
@@ -316,6 +323,41 @@ gboolean on_document_insert_block(OnDocument *d, guint i, OnBlock *block);
 /* on_document_remove_block() — remove block i.  The last remaining block
  * cannot be removed (a document is never empty): FALSE.                  */
 gboolean on_document_remove_block(OnDocument *d, guint i);
+
+/* ---------------------------------------------------------------------------
+ * RANGES — what a selection is to the model.  Positions are ordered by
+ * on_pos_cmp; an IMAGE or TABLE block is one unit: offset 0 is before it,
+ * 1 after, and a range that crosses it takes the whole block.
+ * ------------------------------------------------------------------------- */
+
+/* on_pos_cmp() — document order: block, then cell, then offset.          */
+gint on_pos_cmp(OnPos a, OnPos b);
+
+/* on_document_copy_range() — a new document holding [a, b): partial first
+ * and last text blocks, whole blocks between, uids cleared.  Two ends in
+ * one table cell copy that cell's text as a PARA; ends in different
+ * cells of one table copy the whole table.  Never NULL.                  */
+OnDocument *on_document_copy_range(const OnDocument *d, OnPos a, OnPos b);
+
+/* on_document_delete_range() — remove [a, b) as one undo group and join
+ * what is left around it; `out` (optional) receives where the caret
+ * belongs afterwards.  FALSE (nothing done) for an empty or invalid
+ * range.                                                                  */
+gboolean on_document_delete_range(OnDocument *d, OnPos a, OnPos b,
+                                  OnPos *out);
+
+/* on_document_insert_fragment() — insert the blocks of `frag` at `pos`
+ * as one undo group: a single text block goes INTO the block at pos (runs
+ * and inline images kept); more than one splits it and the fragment's
+ * blocks land between the halves, keeping their kinds.  `out` (optional)
+ * receives the position just after the inserted content.  Only at a text
+ * position (a cell takes plain text alone: its lines join with spaces). */
+gboolean on_document_insert_fragment(OnDocument *d, OnPos pos,
+                                     const OnDocument *frag, OnPos *out);
+
+/* on_document_last_change() — the position the most recent operation
+ * (or undo/redo step) touched: where a view puts the caret after undo. */
+OnPos on_document_last_change(const OnDocument *d);
 
 /* on_document_table_set_header() — a TABLE block's header-row flag.      */
 gboolean on_document_table_set_header(OnDocument *d, guint i,

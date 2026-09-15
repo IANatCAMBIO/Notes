@@ -304,15 +304,21 @@ on_startup(GtkApplication *gtk_app, gpointer user_data)
     OnApp *app = user_data;          /* shared application context          */
     on_app_install_accels(gtk_app);
 
-    /* Bundled theme icons (icons/theme/hicolor/...): the SVG pan-*-symbolic
-     * arrows so tree expanders render crisply on HiDPI displays, and the
-     * app logo as 512x512/apps/notes.png — the name the .deb installs and
-     * the default window icon below.  GTK4 takes window icons by THEME
-     * NAME only, so the logo has to be reachable as one.                   */
+    /* The icon theme serves every image the app draws by name:
+     *  - icons/ itself, where the toolbar PNGs sit flat by basename — GTK
+     *    picks up files at the top of a search-path directory as UNTHEMED
+     *    icons, so "new-folder" finds icons/new-folder.png, loaded at the
+     *    display's scale factor and cached (on_app_icon_image_sized);
+     *  - icons/theme/hicolor/…: the SVG pan-*-symbolic arrows so tree
+     *    expanders render crisply on HiDPI, and the app logo as
+     *    512x512/apps/notes.png — the name the .deb installs and the
+     *    default window icon below (GTK4 takes window icons by THEME
+     *    NAME only, so the logo has to be reachable as one).             */
+    GtkIconTheme *theme =
+        gtk_icon_theme_get_for_display(gdk_display_get_default());
+    gtk_icon_theme_add_search_path(theme, app->icons_dir);
     gchar *theme_dir = g_build_filename(app->icons_dir, "theme", NULL);
-    gtk_icon_theme_add_search_path(
-        gtk_icon_theme_get_for_display(gdk_display_get_default()),
-        theme_dir);
+    gtk_icon_theme_add_search_path(theme, theme_dir);
     g_free(theme_dir);
     gtk_window_set_default_icon_name("notes");
 

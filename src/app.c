@@ -398,49 +398,44 @@ display_scale_factor(void)
     return sf;
 }
 
+/* icon_theme_has() — does the icon theme know `name`?  Both lookups below
+ * go through the theme (main.c adds icons/ as a search path, where GTK
+ * picks the PNGs up as "unthemed" icons by basename), so this is THE test
+ * for "a file exists and loads" — GTK would otherwise hand back its
+ * missing-image placeholder, and the caller wants the text fallback.       */
+static gboolean
+icon_theme_has(const gchar *name)
+{
+    return gtk_icon_theme_has_icon(
+        gtk_icon_theme_get_for_display(gdk_display_get_default()), name);
+}
+
 GdkPaintable *
 on_app_icon_paintable(OnApp *app, const gchar *name, gint size)
 {
-    static const gchar *EXTS[] = { "svg", "png" };
-
-    /* Rasterize at the display's scale factor so icons stay sharp on
-     * HiDPI/Retina screens: `size` is the LOGICAL size, the texture holds
-     * size × sf pixels, and the widget that shows it is told the logical
-     * size (gtk_image_set_pixel_size), so GTK draws the extra pixels
-     * rather than upscaling.                                              */
-    gint sf = display_scale_factor();
-
-    for (gsize i = 0; i < G_N_ELEMENTS(EXTS); i++) {
-        gchar *path = g_strdup_printf("%s%c%s.%s",
-                                      app->icons_dir, G_DIR_SEPARATOR,
-                                      name, EXTS[i]);
-        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
-            /* Verify the file actually decodes (SVGs need the librsvg
-             * pixbuf loader) — a broken-image icon is worse than the
-             * text fallback the caller provides.                           */
-            GdkPixbuf *pix = gdk_pixbuf_new_from_file_at_size(
-                path, size * sf, size * sf, NULL);
-            if (pix != NULL) {
-                GdkTexture *texture = on_app_texture_for_pixbuf(pix);
-                g_object_unref(pix);
-                g_free(path);
-                return GDK_PAINTABLE(texture);
-            }
-        }
-        g_free(path);
-    }
-    return NULL;
+    (void)app;                       /* the theme knows the directory       */
+    if (!icon_theme_has(name))
+        return NULL;
+    /* Looked up at the display's scale factor, so a drag icon stays sharp
+     * on HiDPI: GtkIconPaintable renders the PNG at size × scale pixels
+     * and reports the logical size.                                         */
+    GtkIconPaintable *icon = gtk_icon_theme_lookup_icon(
+        gtk_icon_theme_get_for_display(gdk_display_get_default()),
+        name, NULL, size, display_scale_factor(), GTK_TEXT_DIR_NONE, 0);
+    return GDK_PAINTABLE(icon);
 }
 
 GtkWidget *
 on_app_icon_image_sized(OnApp *app, const gchar *name, gint size)
 {
-    GdkPaintable *paintable = on_app_icon_paintable(app, name, size);
-    if (paintable == NULL)
+    (void)app;
+    if (!icon_theme_has(name))
         return NULL;
-    GtkWidget *image = gtk_image_new_from_paintable(paintable);
+    /* A themed image: GTK loads the file at the widget's own scale factor
+     * (and reloads it if the widget moves to another display), caches it,
+     * and draws it at the logical pixel size.                              */
+    GtkWidget *image = gtk_image_new_from_icon_name(name);
     gtk_image_set_pixel_size(GTK_IMAGE(image), size);
-    g_object_unref(paintable);       /* the image holds its own reference   */
     return image;
 }
 

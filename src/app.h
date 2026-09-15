@@ -246,30 +246,30 @@ void on_app_init_icons_dir(OnApp *app, const gchar *argv0);
 GdkTexture *on_app_texture_for_pixbuf(GdkPixbuf *pixbuf);
 
 /* ---------------------------------------------------------------------------
- * on_app_icon_image_sized() — build a GtkImage for icon `name` from
- * "<icons_dir>/<name>.svg" (then .png), rendered at an explicit LOGICAL
- * pixel size.  The texture behind it carries size × the display's scale
- * factor in pixels, so the image is sharp on HiDPI (quirk #5); the
- * GtkImage's pixel-size is the logical size.  The bundled icons are
- * elementary SVGs, which need the librsvg gdk-pixbuf loader to decode.
- *   app  — the application context.
- *   name — icon file basename without extension (e.g. "edit-copy").
- *   size — logical pixel size to render at.
- * Returns a new GtkImage, or NULL if no loadable file exists — callers
+ * on_app_icon_image_sized() — a GtkImage showing icon `name`, at a LOGICAL
+ * pixel size.  The icons are the PNGs in the app-local icons/ folder, which
+ * main() adds to the icon theme's search path: GTK picks them up by
+ * basename as unthemed icons, loads them at the display's scale factor
+ * (sharp on HiDPI, quirk #5), caches them, and draws at the logical size.
+ * Swapping a PNG in icons/ still re-themes a button (restart to see it).
+ *   app  — the application context (unused: the theme knows the folder).
+ *   name — icon file basename without extension (e.g. "new-folder").
+ *   size — logical pixel size to draw at.
+ * Returns a new GtkImage, or NULL if the theme has no such icon — callers
  * fall back to a text label in that case.
  * ------------------------------------------------------------------------- */
 GtkWidget *on_app_icon_image_sized(OnApp *app, const gchar *name,
                                    gint size);
 
 /* ---------------------------------------------------------------------------
- * on_app_icon_paintable() — the HiDPI-scaled texture behind
- * on_app_icon_image_sized(), for uses that need a paintable rather than a
- * widget (gtk_drag_source_set_icon).  Same lookup and scaling.
- *   app  — the application context.
+ * on_app_icon_paintable() — the same icon as a paintable, for uses that
+ * need one rather than a widget (gtk_drag_source_set_icon).  Same lookup;
+ * rendered at the display's scale factor.
+ *   app  — the application context (unused).
  *   name — icon file basename without extension (e.g. "folder").
- *   size — logical pixel size to render at.
- * Returns a new paintable (g_object_unref it), or NULL if no loadable
- * file exists.
+ *   size — logical pixel size.
+ * Returns a new paintable (g_object_unref it), or NULL if the theme has no
+ * such icon.
  * ------------------------------------------------------------------------- */
 GdkPaintable *on_app_icon_paintable(OnApp *app, const gchar *name,
                                     gint size);

@@ -308,6 +308,121 @@ written into Decisions the day they are measured.
       quirks from Decisions promoted
 - [ ] BUILD.md / README.md dependency lists
 
+## Port recipe — the per-file pass (Phase 1 as actually run)
+
+Phase 1 turned out not to be a sweep that leaves a compiling tree: a file
+compiles under GTK4 only when EVERYTHING GTK4 removed is gone from it, so
+the unit of work is "one file, everything the GTK4 compiler rejects",
+against the header contracts below (`app.h`, `image_viewer.h` — already
+rewritten; every other header is unchanged).  Files are ported in parallel,
+each verified with `make build/<name>.o`, and joined by one `make`.
+Runtime behaviour is verified AFTERWARDS, in the `dev/` sandbox, by hand —
+that is where Phases 4–6's re-derived quirks get written.
+
+Rules for the pass:
+
+1. Read CLAUDE.md first — its GTK3 quirks are wrong for GTK4 exactly where
+   the table above says; its "Actions, menus and shortcuts" section is
+   current and stays true.  Keep the house style: banner comment on every
+   function, `snake_case`, K&R, no dead code, no near-duplicates.
+2. Port the whole file: delete the GTK3 path in the same change, never
+   leave both.  Where a behaviour cannot exist in GTK4 (window placement),
+   delete it and say so in the report; do not emulate.
+3. Deprecated-but-present API is allowed ONLY where named below; wrap each
+   such call site in `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` /
+   `G_GNUC_END_IGNORE_DEPRECATIONS`.  A file that lives on the GtkTreeView
+   family (`library_window.c`) instead defines
+   `GDK_DISABLE_DEPRECATION_WARNINGS` and `GTK_DISABLE_DEPRECATION_WARNINGS`
+   before its includes, with a comment.  `make build/<name>.o` must be
+   `-Wall -Wextra` clean.
+4. Never run the binary.  Nothing links until every file is done; the
+   sandbox rule (D12) applies to whoever runs it afterwards.
+5. Do not commit.  Report: what changed, every deletion of behaviour, every
+   place you were unsure, and any header change you NEEDED (you may not make
+   one — say so and stub locally).
+
+Mapping (GTK3 → GTK4):
+
+| GTK3 | GTK4 |
+|---|---|
+| `gtk_widget_show_all`, `gtk_widget_set_no_show_all` | delete (visible by default; a widget whose visibility an updater owns gets `gtk_widget_set_visible(w, FALSE)` at build) |
+| `gtk_container_add(parent, c)` | `gtk_box_append`, `gtk_window_set_child`, `gtk_scrolled_window_set_child`, `gtk_frame_set_child`, `gtk_overlay_set_child`/`add_overlay`, `gtk_button_set_child`, `gtk_menu_button_set_child`, `gtk_grid_attach` — by parent type |
+| `gtk_box_pack_start(b, c, expand, fill, pad)` | `gtk_box_append` (or `prepend`) + `gtk_widget_set_hexpand/vexpand(c, expand)` + margins for `pad` |
+| `gtk_paned_pack1/pack2(p, c, resize, shrink)` | `gtk_paned_set_start_child/end_child` + `set_resize_start_child`/`set_shrink_start_child` (and `_end_`) |
+| `gtk_widget_destroy(w)` | toplevel: `gtk_window_destroy`; child: the parent's remove (`gtk_box_remove`, …) or `gtk_widget_unparent` for a widget you parented yourself |
+| `gtk_window_new(GTK_WINDOW_TOPLEVEL)` | `gtk_window_new()`; `GtkApplicationWindow` stays; `GTK_WINDOW_POPUP` → `GtkPopover` |
+| `gtk_window_move`, `get_position`, `gdk_window_get_frame_extents`, `gdk_monitor_get_workarea` | **delete** (no window placement in GTK4; `editor_place_bottom_right` + `editor_workarea` + the map-event go) |
+| `gtk_dialog_run` | never.  Confirmations → `GtkAlertDialog` + `gtk_alert_dialog_choose` (async, callback).  File/folder picks → `on_app_pick_path` (async).  Custom-widget dialogs (folder prompt, calendar) → `GtkDialog` (deprecated, wrapped) shown with `gtk_window_present`, `::response` callback; the caller's tail moves into the callback, its state carried as object data on the dialog |
+| `gtk_message_dialog_new` + run | `on_app_notice` (fire-and-forget) |
+| `gtk_about_dialog_new` + run | same dialog, `gtk_window_present`; logo via `gtk_about_dialog_set_logo(GdkPaintable)` |
+| `"button-press-event"`/`"button-release-event"` | `GtkGestureClick` (`gtk_gesture_single_set_button` 0 = any); `pressed(n_press, x, y)`; right button = `gtk_gesture_single_get_current_button() == GDK_BUTTON_SECONDARY`; modifiers `gtk_event_controller_get_current_event_state`; `gtk_gesture_set_state(CLAIMED)` where the old handler returned TRUE |
+| `"key-press-event"` | `GtkEventControllerKey` `key-pressed(keyval, keycode, state)` → TRUE to stop; on the window use `gtk_event_controller_set_propagation_phase(GTK_PHASE_CAPTURE)` where the old handler had to run before the focus widget |
+| `"motion-notify-event"`, `enter/leave` | `GtkEventControllerMotion` (`motion(x, y)`, `enter`, `leave`) |
+| `"scroll-event"` | `GtkEventControllerScroll` |
+| `"focus-in-event"`/`"focus-out-event"` | `GtkEventControllerFocus` `enter`/`leave` (editor: D11 keeps its gate) |
+| window `"focus-in-event"` (status refresh) | `notify::is-active` on the window |
+| `"configure-event"` (size persistence) | `notify::default-width` / `notify::default-height` on the window |
+| `"size-allocate"`, `"draw"` | a GtkWidget SUBCLASS overriding `size_allocate` / `snapshot` (chain up, then draw with `gtk_snapshot_append_layout` / cairo via `gtk_snapshot_append_cairo`).  The editor's `NotesTextView` (a `GtkTextView` subclass) is the one such subclass: line numbers in `snapshot`, code-button relayout in `size_allocate` |
+| `"populate-popup"` | `gtk_text_view_set_extra_menu(view, editor_image_menu())`, set from the right-click gesture BEFORE the view opens its menu (`ed->ctx_offset` stashed there too); `menu_shell_prepend_model` deleted |
+| `gtk_menu_new_from_model` (in `on_app_menu_popup`) | `gtk_popover_menu_new_from_model`, parented to the widget, `set_pointing_to` at (x,y), `set_has_arrow(FALSE)`, `gtk_popover_popup`; on `closed` → idle unparent |
+| `gtk_menu_bar_new_from_model` | `gtk_popover_menu_bar_new_from_model` |
+| `gtk_menu_button_set_use_popover` | delete; `gtk_menu_button_set_menu_model` stays; face via `gtk_menu_button_set_child(label)` |
+| `GtkToolbar`, `GtkToolItem`, `gtk_toolbar_insert`, separators | `GtkBox` (horizontal) with `gtk_widget_add_css_class("toolbar")`; items are what `on_app_tool_item_new` returns, `gtk_separator_new(GTK_ORIENTATION_VERTICAL)`, an expanding spacer is any widget with `hexpand`; `gtk_widget_set_focus_on_click(FALSE)` on the buttons |
+| `GtkToggleToolButton` active/set_active | `GtkToggleButton` |
+| `gtk_actionable_*` on tool buttons | unchanged (`GtkButton` is actionable) |
+| `GtkEventBox` | the child itself, or a `GtkBox`, with controllers |
+| `gtk_text_view_add_child_in_window(view, c, TEXT, x, y)` / `move_child` | `gtk_text_view_add_overlay(view, c, x, y)` / `gtk_text_view_move_overlay` — buffer coordinates; the top margin is added by GTK on every allocation (D6); `gtk_text_view_remove(view, c)` to take it out |
+| `gtk_text_view_add_child_at_anchor` | unchanged |
+| child at anchor: `GtkImage` from surface | `GtkPicture` (`gtk_picture_new_for_paintable`) of a `GdkTexture` from the PNG bytes (`gdk_texture_new_from_bytes(on_image_png_bytes(pix))`), `gtk_picture_set_can_shrink(FALSE)`, `gtk_widget_set_size_request(display_w, h)`; scaled loads → `on_app_texture_for_pixbuf` |
+| `gtk_image_new_from_pixbuf/surface`, `gtk_image_set_from_*` | `gtk_image_new_from_paintable` / `gtk_image_set_from_paintable`, textures from `on_app_texture_for_pixbuf` |
+| `cairo_surface_t` thumbnails in list stores (`CAIRO_GOBJECT_TYPE_SURFACE`) | `GDK_TYPE_TEXTURE` column; `GtkCellRendererPixbuf` bound to its `"texture"` attribute |
+| `gdk_cairo_surface_create_from_pixbuf`, `cairo_surface_set_device_scale` (quirk #5) | delete — textures carry their pixels, GTK scales |
+| `on_image_viewer_fit` | deleted; a render op returns the texture (see image_viewer.h) |
+| `gtk_drag_set_icon_surface` | `gtk_drag_source_set_icon(source, on_app_icon_paintable(), hx, hy)` |
+| tree/icon-view DnD (`enable_model_drag_*`, `drag-*` signals, `gtk_drag_*`, `GdkDragContext`, `GtkTargetEntry`) | `GtkDragSource` on each view (`prepare(x, y)` → row at the point → `gdk_content_provider_new_typed` over ONE boxed GType `OnDragRows` {kind, ids} defined in library_window.c — D8), `GtkDropTarget` on the sidebar (`motion` validates + `gtk_tree_view_set_drag_dest_row`, `leave` clears, `drop(value, x, y)` acts).  MUST call `gtk_tree_view_enable_model_drag_dest(view, gdk_content_formats_new(NULL, 0), 0)` once on the sidebar (D5, the crash).  Multi-select press veto: D7 (`tools/gtk4-spike/spike.c` has the working code) |
+| `gtk_tree_view_get_path_at_pos` from a gesture | convert first: `gtk_tree_view_convert_widget_to_bin_window_coords` |
+| `GtkClipboard` | `gdk_clipboard_set_text(gtk_widget_get_clipboard(w), s)`, `gdk_clipboard_set_texture`; paste probe → `gdk_clipboard_get_formats` + `gdk_content_formats_contain_mime_type("image/png")`, read with `gdk_clipboard_read_texture_async` — then `gdk_texture_save_to_png_bytes` → pixbuf via the loader, so serialize.c's pixbuf contract is untouched |
+| `gdk_window_set_cursor`, `gdk_cursor_new_from_name` | `gtk_widget_set_cursor_from_name(w, "pointer"/"text"/NULL)` on the widget that should show it (quirk #22 is moot: every widget owns its cursor) |
+| `gtk_widget_get_window`, `GdkWindow` | `gtk_widget_get_native` + `gtk_native_get_surface` if truly needed (rarely); `gdk_display_get_monitor_at_surface` |
+| `gtk_widget_get_toplevel` | `gtk_widget_get_root` |
+| `gtk_css_provider_load_from_data(p, s, -1, NULL)` | `gtk_css_provider_load_from_string(p, s)` |
+| `gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), …)` | `gtk_style_context_add_provider_for_display(gdk_display_get_default(), …)` |
+| `gtk_widget_get_style_context` + `add_class` | `gtk_widget_add_css_class` |
+| `on_app_widget_add_css` | keep the function; its body may use the deprecated per-widget provider, wrapped |
+| `gtk_window_set_default_icon_from_file` | copy `icons/composition.png` to `icons/theme/hicolor/512x512/apps/notes.png` (the .deb already installs that name), `gtk_icon_theme_add_search_path(theme, icons_dir/theme)`, `gtk_window_set_default_icon_name("notes")` |
+| `gtk_icon_theme_get_default`, `prepend_search_path` | `gtk_icon_theme_get_for_display(gdk_display_get_default())`, `gtk_icon_theme_add_search_path` |
+| `GTK_OVERLAY_SCROLLING=0`, `GDK_CORE_DEVICE_EVENTS` env | delete; `gtk_scrolled_window_set_overlay_scrolling(sw, FALSE)` per scrolled window (already there) |
+| `on_app_apply_touch_assist` CSS (`cursor-handle`, `popover.magnifier`) | keep the function and setting; GTK4 node names are `cursor-handle` still and the magnifier is `magnifier`; leave a comment that it is unverified on GTK4 |
+| `gtk_entry_get_text/set_text` | `gtk_editable_get_text/set_text` |
+| `gtk_calendar_get_date(c, &y, &m, &d)` | `GDateTime *dt = gtk_calendar_get_date(c)` |
+| `gtk_widget_set_events`, `gtk_widget_add_events` | delete |
+| `gtk_widget_get_allocation` | `gtk_widget_get_width/height`, `gtk_widget_compute_bounds` / `compute_point` for positions relative to another widget |
+| `gtk_widget_set_can_focus`, `grab_focus` | unchanged (`gtk_widget_set_focusable` also exists) |
+| `gtk_label_set_line_wrap` | `gtk_label_set_wrap` |
+| `gtk_button_box`, `gtk_dialog_get_action_area` | delete; dialog buttons via `gtk_dialog_add_button` only |
+| `GtkComboBoxText`, `GtkStatusbar`, `GtkDialog`, `GtkTreeView`/`GtkListStore`/`GtkTreeStore`/`GtkIconView` and their cell renderers | ALLOWED, deprecated, wrapped (rule 3) |
+| `gtk_tree_view_column_get_button` + press handler (column header menu) | `GtkGestureClick` on that button |
+| `gtk_emoji_chooser` reached via `"gtk-emoji-chooser"` object data | delete that hookup; the folder dialog's emoji entry uses `gtk_entry_set_input_hints(GTK_INPUT_HINT_EMOJI)` and the entry's own chooser; drop the resize-after-close handler |
+| `gtk_widget_queue_draw`, `gtk_widget_queue_resize` | unchanged |
+| `g_signal_connect(win, "destroy", …)` on windows | unchanged |
+
+File assignments (one agent each; every agent reads this section, CLAUDE.md,
+and the whole file it owns before editing):
+
+| Agent | Files | Notes |
+|---|---|---|
+| A | `src/app.c`, `src/main.c` | implements the new `app.h` contract; `main.c`: dialogs in `startup_first_run` async (the "Create/Open" continuation gates `on_library_window_create`), env vars, icon theme, `quartz_log_filter` (message texts may differ — keep both filters, they are harmless if they never match) |
+| B | `src/settings_window.c` | one `on_app_pick_path` caller, `gtk_container_add`/`pack_start` sweep, clipboard, GtkComboBoxText wrapped, checkbox visibility |
+| C | `src/search_window.c`, `src/media_window.c` | `configure-event` → notify; media: `GtkFlowBox` stays, cells hold `GdkTexture`s, viewer ops return textures, click via `GtkGestureClick`, key controller, `GtkEventBox` gone |
+| D | `src/image_viewer.c` | implements the new `image_viewer.h`: `GtkPicture` with `SCALE_DOWN`, labels hit-tested from a `GtkGestureClick` on the backdrop, `GtkEventControllerMotion` for the cursor, key handler takes keyval/state; overlay size tracking via `notify::` on the overlay's allocation → a `size_allocate` override is NOT available on a plain widget: use `gtk_widget_add_tick_callback` once after `gtk_widget_queue_allocate` or simply re-fit in the render path, since `GtkPicture` now fits by itself (most of the old fit/debounce machinery DELETES) |
+| E | `src/editor_window.c` | the biggest: `NotesTextView` subclass (snapshot + size_allocate), overlays, controllers, clipboard, `GtkPopover` tag popup pointing at the caret (`gtk_text_view_get_iter_location` + `buffer_to_window_coords`), delete placement, `set_extra_menu`, toolbar box, `GtkPicture` images, checkbox/table anchored children unchanged, D11 gate via `GtkEventControllerFocus`, window key controller in CAPTURE for the viewer |
+| F | `src/library_window.c` | second biggest: `G*_DISABLE_DEPRECATION_WARNINGS` at top; toolbar box; every dialog async (`confirm` → `GtkAlertDialog` with a continuation callback — its 5+ callers each split at the call); DnD per the table (both views as sources, sidebar as target, `OnDragRows`); column-header gestures; `GDK_TYPE_TEXTURE` thumbnails (`ThumbEntry` holds a texture); grid `GtkIconView` stays (deprecated); `gtk_menu_bar_new_from_model` → popover bar; `on_app_menu_popup(x, y)` |
+| G | `src/serialize.c`, `src/export.c`, `src/cli.c` | mostly compile fixes: `gtk_init` calls, offscreen `GtkTextBuffer` use is unchanged; `on_note_deserialize*` image anchors carry pixbufs still; anything creating widgets offscreen (export's checkbox glyphs?) — check |
+
+The join (me, after all seven report): `make`, fix link errors, then
+`make run-dev` in the worktree's own `dev/` and the Phase 4–6 runtime
+checklist by hand.
+
 ## After this port
 
 GTK5 removes `GtkTreeView`/`GtkIconView`/`GtkListStore`/`GtkTreeStore`.

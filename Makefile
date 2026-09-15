@@ -1,11 +1,11 @@
 # =============================================================================
 # Notes — Makefile
 #
-# Builds the Notes application (a GTK3 + SQLite notes app written in
-# plain C).  Requires GTK3 and SQLite3, discovered via pkg-config.
+# Builds the Notes application (a GTK4 + SQLite notes app written in
+# plain C).  Requires GTK4 and SQLite3, discovered via pkg-config.
 #
 # On macOS with MacPorts:
-#     sudo port install pkgconf gtk3 +quartz
+#     sudo port install pkgconf gtk4 +quartz
 #
 # Targets:
 #     make          — build the `notes` binary
@@ -43,13 +43,19 @@ PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg
 #   -std=c11        — use the C11 language standard
 #   -Wall -Wextra   — enable a broad set of warnings
 #   -g              — include debug symbols
-#   plus the include paths for GTK3 and SQLite3 from pkg-config.
+#   plus the include paths for GTK4 and SQLite3 from pkg-config.
+#   Deprecated-but-present GTK4 API (the GtkTreeView family, GtkIconView,
+#   GtkDialog, …) is used on purpose: those call sites are wrapped in
+#   G_GNUC_BEGIN/END_IGNORE_DEPRECATIONS, or a file that lives on them
+#   (library_window.c) defines G*_DISABLE_DEPRECATION_WARNINGS at its top,
+#   so the build stays warning-clean and the sites stay greppable for the
+#   GTK5 migration.  No global -Wno-deprecated-declarations.
 CFLAGS   := -std=c11 -Wall -Wextra -g \
             -DON_VERSION='"$(VERSION)"' \
-            $(shell $(PKGCONF) --cflags gtk+-3.0 sqlite3)
+            $(shell $(PKGCONF) --cflags gtk4 sqlite3)
 
-# Linker flags: the GTK3 and SQLite3 libraries from pkg-config, plus libm.
-LDFLAGS  := $(shell $(PKGCONF) --libs gtk+-3.0 sqlite3) -lm
+# Linker flags: the GTK4 and SQLite3 libraries from pkg-config, plus libm.
+LDFLAGS  := $(shell $(PKGCONF) --libs gtk4 sqlite3) -lm
 
 # All C source files that make up the application.
 SRCS     := src/main.c \
@@ -258,10 +264,10 @@ deb: pkgroot
 	  'Section: editors' \
 	  'Priority: optional' \
 	  'Architecture: $(DEB_ARCH)' \
-	  'Depends: libgtk-3-0 | libgtk-3-0t64, libsqlite3-0' \
+	  'Depends: libgtk-4-1, libsqlite3-0' \
 	  'Maintainer: Ian Campbell <ian@camb.io>' \
 	  'Description: Notes app with folders, tags and rich text' \
-	  ' Apple Notes-style desktop notes application (GTK3 + SQLite).' \
+	  ' Apple Notes-style desktop notes application (GTK4 + SQLite).' \
 	  > $(DEB_ROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEB_ROOT) \
 	  $(DIST)/notes_$(VERSION)_$(DEB_ARCH).deb
@@ -282,7 +288,7 @@ rpm: pkgroot
 	  'Summary: Notes app with folders, tags and rich text' \
 	  'License: BSD-3-Clause' \
 	  '%description' \
-	  'Apple Notes-style desktop notes application (GTK3 + SQLite).' \
+	  'Apple Notes-style desktop notes application (GTK4 + SQLite).' \
 	  '%install' \
 	  'cp -a $(abspath $(PKGROOT))/. %{buildroot}/' \
 	  '%files' \

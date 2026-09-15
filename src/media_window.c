@@ -35,6 +35,7 @@
  * =========================================================================== */
 
 #include "media_window.h"
+#include "app.h"                     /* on_app_set_tooltip                  */
 #include "editor_window.h"
 #include "image_viewer.h"
 #include "serialize.h"
@@ -402,7 +403,7 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
         gchar *tip = g_strdup_printf(
             "%s\nImage %d of %d \xe2\x80\x94 click to view",
             note->title, ord + 1, n_img);
-        gtk_widget_set_tooltip_text(box, tip);
+        on_app_set_tooltip(box, tip);
         g_free(tip);
     }
 

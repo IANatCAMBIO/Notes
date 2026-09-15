@@ -2339,7 +2339,7 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
     gtk_entry_set_input_hints(GTK_ENTRY(p->emoji_entry),
                               GTK_INPUT_HINT_EMOJI);
     g_object_set(p->emoji_entry, "show-emoji-icon", TRUE, NULL);
-    gtk_widget_set_tooltip_text(p->emoji_entry,
+    on_app_set_tooltip(p->emoji_entry,
                                 "Optional emoji \xe2\x80\x94 click to pick");
     gtk_widget_add_css_class(p->emoji_entry, "notes-emoji-entry");
     if (initial_emoji != NULL && *initial_emoji != '\0')
@@ -3411,7 +3411,7 @@ view_button_sync(OnLibrary *lw)
     gtk_accessible_update_property(GTK_ACCESSIBLE(lw->view_btn),
                                    GTK_ACCESSIBLE_PROPERTY_LABEL,
                                    grid ? "List" : "Grid", -1);
-    gtk_widget_set_tooltip_text(lw->view_btn,
+    on_app_set_tooltip(lw->view_btn,
         grid ? "Switch to list view" : "Switch to grid view");
 }
 
@@ -4277,7 +4277,7 @@ build_ai_pane(OnLibrary *lw)
      * close (✕) at the far right.  Both compact (library_install_css).       */
     GtkWidget *copy_btn = gtk_button_new_with_label("Copy");
     gtk_button_set_has_frame(GTK_BUTTON(copy_btn), FALSE);
-    gtk_widget_set_tooltip_text(copy_btn, "Copy summary to clipboard");
+    on_app_set_tooltip(copy_btn, "Copy summary to clipboard");
     gtk_widget_add_css_class(copy_btn, "notes-ai-button");
     g_signal_connect(copy_btn, "clicked",
                      G_CALLBACK(on_ai_copy_clicked), lw);
@@ -4285,7 +4285,7 @@ build_ai_pane(OnLibrary *lw)
 
     GtkWidget *close_btn = gtk_button_new_with_label("\xe2\x9c\x95");
     gtk_button_set_has_frame(GTK_BUTTON(close_btn), FALSE);
-    gtk_widget_set_tooltip_text(close_btn, "Close AI summary");
+    on_app_set_tooltip(close_btn, "Close AI summary");
     gtk_widget_add_css_class(close_btn, "notes-ai-button");
     g_signal_connect(close_btn, "clicked",
                      G_CALLBACK(on_ai_close_clicked), pane);
@@ -5489,7 +5489,7 @@ build_action_bar(OnLibrary *lw)
 
     GtkWidget *entry = gtk_search_entry_new();
     g_object_set(entry, "placeholder-text", "Search all notes", NULL);
-    gtk_widget_set_tooltip_text(entry,
+    on_app_set_tooltip(entry,
         "Search every note for this text (Enter)");
     gtk_editable_set_width_chars(GTK_EDITABLE(entry), 18);
     /* 5 px of air between the entry and the window edge.                    */

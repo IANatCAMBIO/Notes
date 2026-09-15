@@ -313,6 +313,22 @@ void on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
                                const gchar *fallback_markup);
 
 /* ---------------------------------------------------------------------------
+ * on_app_set_tooltip() — THE way to give a widget a tooltip (NULL removes
+ * it).  A plain gtk_widget_set_tooltip_text is unreliable on macOS: the
+ * tooltip window is one popup surface reused for every tooltip, and when
+ * the next tooltip needs a DIFFERENT size GTK re-presents the surface at
+ * the new size after showing it (gtktooltipwindow.c, position →
+ * relayout) but the macOS backend requests no layout for a resized
+ * POPUP (GdkMacosWindow.m windowDidResize does so for toplevels only), so
+ * the widget tree stays allocated at the previous size and the box is
+ * drawn cut off inside a surface of the right size.  This helper shows
+ * the text through a custom label and, once that label maps, queues a
+ * resize on the tooltip window from a high-priority idle — after the
+ * re-present, before the next frame — so the allocation catches up.
+ * ------------------------------------------------------------------------- */
+void on_app_set_tooltip(GtkWidget *widget, const gchar *text);
+
+/* ---------------------------------------------------------------------------
  * on_app_menu_popup() — pop up a one-shot context menu built from a menu
  * model, at a point in a widget.  THE transient-popup scaffold for every
  * right-click menu in the app: a GtkPopoverMenu parented to the WINDOW's

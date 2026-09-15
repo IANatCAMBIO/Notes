@@ -70,6 +70,7 @@
  * =========================================================================== */
 
 #include "image_viewer.h"
+#include "app.h"                     /* on_app_set_tooltip                  */
 
 /* Height reserved under the image for the caption + action-link row, and for
  * the Previous | Next row under that (logical px).                          */
@@ -645,7 +646,7 @@ on_image_viewer_new(GtkWidget *overlay, const OnImageViewerOps *ops,
         v->link = gtk_label_new(action_label);
         gtk_widget_set_halign(v->link, GTK_ALIGN_END);
         if (action_tip != NULL)
-            gtk_widget_set_tooltip_text(v->link, action_tip);
+            on_app_set_tooltip(v->link, action_tip);
         img_label_small(v->link);
         img_link_look(v->link, TRUE);
     }
@@ -671,7 +672,7 @@ on_image_viewer_new(GtkWidget *overlay, const OnImageViewerOps *ops,
     gtk_box_append(GTK_BOX(v->nav), v->nav_next);
     gtk_widget_set_visible(v->nav, FALSE);
     gtk_widget_set_halign(v->nav, GTK_ALIGN_CENTER);
-    gtk_widget_set_tooltip_text(v->nav,
+    on_app_set_tooltip(v->nav,
         "Show the previous or next image (or press the \xe2\x86\x90 and "
         "\xe2\x86\x92 keys)");
 

@@ -758,6 +758,23 @@ add a second idiom.
   windows (they doubled every other character in a GtkEntry too — an
   automation artefact, not a widget bug); accessibility CLICKS do not.
 
+- **D32 · 2026-09-15 — Tooltips go through `on_app_set_tooltip`, never
+  `gtk_widget_set_tooltip_text`.**  On macOS a tooltip shown after one of
+  a different size came out CUT OFF: the box ended mid-text inside a popup
+  surface of the right width (CGWindowList: the surface 311 wide, the
+  drawing 231 — the previous tooltip's).  Mechanism, from the 4.22.4
+  sources: GtkTooltipWindow is ONE popup surface reused for every tooltip;
+  `gtk_tooltip_position` → `relayout` re-presents it at the new size AFTER
+  showing it, the macOS backend then resizes the NSWindow but requests no
+  layout for a popup (`GdkMacosWindow.c windowDidResize` requests one for
+  toplevels only), and nothing has queued a resize on the widget tree, so
+  `gtk_tooltip_window_native_layout` takes its "ensure_allocate" branch
+  and the box stays allocated at the old width.  The helper shows the text
+  as a custom label and, when that label maps, queues a resize on the
+  tooltip window from a high-priority idle — after the re-present, before
+  the frame — so the allocation follows the surface.  Every tooltip site
+  uses it (24 of them), so no window is exempt.  Upstream-worthy.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.

@@ -1000,7 +1000,7 @@ editor_status_dirty_update(OnEditor *ed)
     gtk_label_set_text(GTK_LABEL(ed->status_dirty),
                        ed->dirty ? "\xF0\x9F\x94\xB4"   /* 🔴 unsaved edits  */
                                  : "\xF0\x9F\x9F\xA2"); /* 🟢 saved         */
-    gtk_widget_set_tooltip_text(ed->status_dirty,
+    on_app_set_tooltip(ed->status_dirty,
                                 ed->dirty ? "Unsaved changes" : "Saved");
 }
 
@@ -1085,7 +1085,7 @@ menu_button_new(const gchar *markup, const gchar *tooltip,
     gtk_widget_set_focus_on_click(btn, FALSE);
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(btn), model);
     g_object_unref(model);
-    gtk_widget_set_tooltip_text(btn, tooltip);
+    on_app_set_tooltip(btn, tooltip);
     return btn;
 }
 
@@ -1116,7 +1116,7 @@ search_button_new(const gchar *icon_name, const gchar *tooltip,
 {
     GtkWidget *btn = gtk_button_new_from_icon_name(icon_name);
     gtk_button_set_has_frame(GTK_BUTTON(btn), FALSE);
-    gtk_widget_set_tooltip_text(btn, tooltip);
+    on_app_set_tooltip(btn, tooltip);
     g_signal_connect(btn, "clicked", clicked, ed);
     return btn;
 }

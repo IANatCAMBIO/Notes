@@ -477,6 +477,73 @@ tool_icon_widget(OnApp *app, const gchar *icon_name,
     return icon;
 }
 
+/* ---------------------------------------------------------------------------
+ * tooltips (see on_app_set_tooltip in app.h for why this exists)
+ * ------------------------------------------------------------------------- */
+
+/* Object-data keys: the tooltip text, and the label that shows it (built
+ * once per widget, reused so GTK sees the same custom widget every query). */
+#define TOOLTIP_TEXT_KEY  "on-tooltip-text"
+#define TOOLTIP_LABEL_KEY "on-tooltip-label"
+
+/* tooltip_nudge() — the idle after the label mapped: queue a resize on the
+ * tooltip window so it is allocated at the size it was just presented at. */
+static gboolean
+tooltip_nudge(gpointer data)
+{
+    GtkWidget *label = data;
+    GtkNative *native = gtk_widget_get_native(label);
+    if (native != NULL)
+        gtk_widget_queue_resize(GTK_WIDGET(native));
+    g_object_unref(label);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+on_tooltip_label_map(GtkWidget *label, gpointer data)
+{
+    (void)data;
+    g_idle_add_full(G_PRIORITY_HIGH, tooltip_nudge, g_object_ref(label), NULL);
+}
+
+/* on_query_tooltip() — hand GTK the widget's label as the tooltip.         */
+static gboolean
+on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
+                 GtkTooltip *tooltip, gpointer data)
+{
+    (void)x; (void)y; (void)keyboard; (void)data;
+    GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
+    if (label == NULL)
+        return FALSE;
+    gtk_tooltip_set_custom(tooltip, label);
+    return TRUE;
+}
+
+void
+on_app_set_tooltip(GtkWidget *widget, const gchar *text)
+{
+    if (text == NULL || *text == '\0') {
+        g_object_set_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY, NULL);
+        gtk_widget_set_has_tooltip(widget, FALSE);
+        return;
+    }
+    GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
+    if (label == NULL) {
+        label = gtk_label_new(text);
+        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), 70);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        g_signal_connect(label, "map", G_CALLBACK(on_tooltip_label_map), NULL);
+        g_object_set_data_full(G_OBJECT(widget), TOOLTIP_LABEL_KEY,
+                               g_object_ref_sink(label), g_object_unref);
+        g_signal_connect(widget, "query-tooltip",
+                         G_CALLBACK(on_query_tooltip), NULL);
+    } else {
+        gtk_label_set_text(GTK_LABEL(label), text);
+    }
+    gtk_widget_set_has_tooltip(widget, TRUE);
+}
+
 /* Object-data key under which a toolbar button keeps its accessible label,
  * so on_app_tool_item_set_icon can rebuild the fallback glyph from it.     */
 #define TOOL_LABEL_KEY "on-tool-label"
@@ -493,7 +560,7 @@ on_app_tool_item_new(OnApp *app, gboolean toggle, const gchar *icon_name,
     gtk_widget_set_focus_on_click(button, FALSE);
     gtk_button_set_child(GTK_BUTTON(button),
         tool_icon_widget(app, icon_name, fallback_markup, label));
-    gtk_widget_set_tooltip_text(button, tooltip);
+    on_app_set_tooltip(button, tooltip);
     gtk_accessible_update_property(GTK_ACCESSIBLE(button),
                                    GTK_ACCESSIBLE_PROPERTY_LABEL, label,
                                    -1);

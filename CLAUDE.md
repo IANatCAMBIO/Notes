@@ -814,6 +814,11 @@ GtkTextView exists in the app.**
 
 ### GTK4 quirks (all measured on 4.22 — details and reproducers in GTK4_MIGRATION.md)
 
+- **Tooltips are `on_app_set_tooltip`, never `gtk_widget_set_tooltip_text`**
+  (D32): GTK reuses one popup surface for every tooltip and the macOS
+  backend requests no layout when a popup is resized, so a tooltip shown
+  after one of another size was drawn at the OLD width, cut off.  The
+  helper's custom label queues the missing resize when it maps.
 - **An input method's client widget is set at REALIZE** (D31): the macOS
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.

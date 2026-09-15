@@ -398,7 +398,7 @@ db_health_refresh(DbSection *s)
     g_free(markup);
     /* The detail is sqlite's own words and can run to many lines, so it
      * lives on the tooltip: the row says WHAT, hovering says which.       */
-    gtk_widget_set_tooltip_text(s->health_label,
+    on_app_set_tooltip(s->health_label,
         h != NULL && h->detail != NULL ? h->detail
       : h != NULL ? "PRAGMA integrity_check and PRAGMA foreign_key_check "
                     "both passed against this file."
@@ -432,7 +432,7 @@ db_sha_refresh(DbSection *s)
         gchar *tip = g_strdup_printf(
             "%s\n\nThe file as it stands.  A database in use changes with "
             "the next edit, so this moves.\n\nClick to copy.", sha);
-        gtk_widget_set_tooltip_text(s->sha_btn, tip);
+        on_app_set_tooltip(s->sha_btn, tip);
         g_free(tip);
         gtk_widget_set_sensitive(s->sha_btn, TRUE);
         /* The full digest rides the button, so the click that copies it
@@ -440,7 +440,7 @@ db_sha_refresh(DbSection *s)
         g_object_set_data_full(G_OBJECT(s->sha_btn), "on-sha", sha, g_free);
     } else {
         gtk_label_set_markup(GTK_LABEL(lbl), "<small>\xe2\x80\x94</small>");
-        gtk_widget_set_tooltip_text(s->sha_btn,
+        on_app_set_tooltip(s->sha_btn,
                                     "The database file could not be read.");
         gtk_widget_set_sensitive(s->sha_btn, FALSE);
         g_object_set_data(G_OBJECT(s->sha_btn), "on-sha", NULL);
@@ -1008,7 +1008,7 @@ on_settings_window_open(OnApp *app)
     GtkWidget *touch_check = gtk_check_button_new_with_label(
         "Disable touch assistance (selection handles, magnifier, "
         "tap popup)");
-    gtk_widget_set_tooltip_text(touch_check,
+    on_app_set_tooltip(touch_check,
         "Hides the touch aids GTK pops up under text selections.\n"
         "The tap cut/copy/paste popup needs a restart to change.");
     gtk_widget_set_margin_start(touch_check, 12);
@@ -1100,7 +1100,7 @@ on_settings_window_open(OnApp *app)
     gtk_box_append(GTK_BOX(plate_box), plate);
 
     dbs->update_btn = small_button("Update");
-    gtk_widget_set_tooltip_text(dbs->update_btn,
+    on_app_set_tooltip(dbs->update_btn,
         "Re-read every line above: run PRAGMA integrity_check and PRAGMA "
         "foreign_key_check against this database, then re-count its notes "
         "and folders and re-read its size and SHA-256.");
@@ -1168,7 +1168,7 @@ on_settings_window_open(OnApp *app)
         "Back up the database automatically");
     gtk_widget_set_margin_start(dbs->bk_check, 12);
     gtk_widget_set_margin_top(dbs->bk_check, 6);
-    gtk_widget_set_tooltip_text(dbs->bk_check,
+    on_app_set_tooltip(dbs->bk_check,
         "Writes a verified copy of the database into a folder of your "
         "choice on a timer, keeping only the most recent few.  Worth "
         "pointing at a disk INDEPENDENT of wherever the database itself "
@@ -1186,7 +1186,7 @@ on_settings_window_open(OnApp *app)
     gtk_widget_set_margin_start(bk_opts, 12);
     gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("Every"));
     dbs->bk_interval_spin = small_spin(0, 10080, 15, 5);
-    gtk_widget_set_tooltip_text(dbs->bk_interval_spin,
+    on_app_set_tooltip(dbs->bk_interval_spin,
         "Minutes between backups.  0 backs up only when you press "
         "Back Up Now.  A pass whose database has not changed since the "
         "last backup writes nothing.");
@@ -1197,7 +1197,7 @@ on_settings_window_open(OnApp *app)
     gtk_box_append(GTK_BOX(bk_opts), dbs->bk_interval_spin);
     gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"));
     dbs->bk_keep_spin = small_spin(1, 500, 1, 3);
-    gtk_widget_set_tooltip_text(dbs->bk_keep_spin,
+    on_app_set_tooltip(dbs->bk_keep_spin,
         "How many backup files to retain.  The oldest are removed once a "
         "NEW backup has been verified, never before.");
     gchar *bkkeep = on_app_config_get("backup_keep");

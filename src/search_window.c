@@ -25,6 +25,7 @@
  * =========================================================================== */
 
 #include "search_window.h"
+#include "app.h"                     /* on_app_set_tooltip                  */
 #include "search_query.h"
 #include "serialize.h"
 #include "editor_window.h"
@@ -495,7 +496,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     sw->entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(sw->entry),
                                    "Search titles and note text\xe2\x80\xa6");
-    gtk_widget_set_tooltip_text(sw->entry,
+    on_app_set_tooltip(sw->entry,
         "Every word must appear somewhere in the note.\n"
         "\"in quotes\" matches the whole phrase; -word excludes notes "
         "that contain it.\n"
@@ -528,7 +529,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     sw->radio_scoped = gtk_check_button_new_with_label("Selected Folder/Tag");
     gtk_check_button_set_group(GTK_CHECK_BUTTON(sw->radio_scoped),
                                GTK_CHECK_BUTTON(sw->radio_all));
-    gtk_widget_set_tooltip_text(sw->radio_scoped,
+    on_app_set_tooltip(sw->radio_scoped,
         "Search only whatever folder or tag is selected in the library "
         "when you press Search");
     gtk_box_append(GTK_BOX(scope_row), sw->radio_scoped);
@@ -541,7 +542,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     GtkWidget *opt_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     sw->check_case  = gtk_check_button_new_with_label("Case sensitive");
     sw->check_regex = gtk_check_button_new_with_label("Regular expression");
-    gtk_widget_set_tooltip_text(sw->check_regex,
+    on_app_set_tooltip(sw->check_regex,
         "Match the whole query as one pattern; quoting and -exclusions "
         "keep their regular-expression meaning instead");
     gtk_box_append(GTK_BOX(opt_row), sw->check_case);

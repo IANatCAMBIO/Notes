@@ -556,5 +556,37 @@ What the data taught, and how the spec above was adjusted:
 Largest note: 615 blocks (note 734); most text: 73 789 bytes (note 1324)
 — the layout's eager target in step 3 is small.
 
-**Next: step 2** — `export.c`, the headless action rewrites in `cli.c`,
-`render_note_thumb` and the AI-summary text onto the document.
+## Step 2 — done 2026-09-15
+
+Every offscreen consumer reads the document; `GtkTextBuffer` now serves
+the open editor alone.  `on_note_document_load()` (serialize.c) is the
+one preamble; `on_note_buffer_load` / `on_note_deserialize_scaled` and the
+CLI's GTK initialisation are gone.
+
+- **`export.c`** walks blocks.  Checked against the pre-change binary on
+  the live copy: all 1354 notes' HTML, Markdown and `note cat --md`
+  outputs byte-identical except **two notes whose task lines the OLD
+  exporter got wrong** — it read a line's style off its first character,
+  which for a loaded task line is the untagged checkbox anchor, so every
+  `- [ ]` came out as a plain paragraph with a leading space (the same
+  code is on `main`).  Export of the whole library: 35 s → 2 s, because
+  nothing is decoded.
+- **`cli.c`**: `note new/append/set/tag/untag/add-image` build or edit an
+  `OnDocument` through the operations; `action done/due/text` go through
+  `on_document_action_*` (the editor's live-buffer path is unchanged).
+  The same 25-command sequence run through the old and the new binary
+  leaves byte-identical blobs, titles, body text, tags and action rows.
+- **`render_note_thumb`** takes the first image's bytes and the plain
+  text off the document; `on_png_decode_capped` is public and still the
+  one decoder.
+- The model gained `on_document_title` (the buffer's first-line rule,
+  including its quirks — a bullet's prefix is part of the title, a
+  whitespace-only line yields the fallback), `on_document_from_text`,
+  `on_document_collect_tags` and the three action rewrites, each a unit
+  test.  The loader now breaks lines at `\r\n`, `\r` and U+2029 as
+  GtkTextBuffer and Pango do (`cr_newlines`: 31 lines in the live data,
+  from Windows pastes), which is what made the exports match.
+- The AI-summary pane needed nothing: it reads `body_text` and uses a
+  GtkTextBuffer only as its display widget.
+
+**Next: step 3** — `doc_layout` + `doc_view` behind `note_view.h`.

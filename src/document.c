@@ -765,6 +765,54 @@ check_record(Loader *L, const OnBnbfRecord *rec)
     L->strip_space  = TRUE;
 }
 
+/* ---------------------------------------------------------------------------
+ * line_break() — the next line break in [p, end): GtkTextBuffer — and
+ * Pango — break a paragraph at "\r\n", a lone "\r" and U+2029 as well as
+ * at "\n", so a Windows paste showed as separate lines in the editor and
+ * the model gives each its own block.  Returns where the break starts
+ * (`end` when there is none) and its length in *brk.
+ * ------------------------------------------------------------------------- */
+static const gchar *
+line_break(const gchar *p, const gchar *end, gsize *brk)
+{
+    for (; p < end; p++) {
+        if (*p == '\n') {
+            *brk = 1;
+            return p;
+        }
+        if (*p == '\r') {
+            *brk = (p + 1 < end && p[1] == '\n') ? 2 : 1;
+            return p;
+        }
+        if ((guchar)p[0] == 0xe2 && p + 2 < end &&
+            (guchar)p[1] == 0x80 && (guchar)p[2] == 0xa9) {
+            *brk = 3;                /* U+2029 PARAGRAPH SEPARATOR          */
+            return p;
+        }
+    }
+    *brk = 0;
+    return end;
+}
+
+OnDocument *
+on_document_from_text(const gchar *text)
+{
+    OnDocument *d = doc_alloc();
+    const gchar *p   = (text != NULL) ? text : "";
+    const gchar *end = p + strlen(p);
+    while (TRUE) {
+        gsize brk;
+        const gchar *q = line_break(p, end, &brk);
+        OnBlock *b = on_block_new_text(ON_BLOCK_PARA);
+        on_text_append(b->text, p, (gsize)(q - p), 0);
+        g_ptr_array_add(d->blocks, b);
+        if (q == end)
+            break;
+        p = q + brk;
+    }
+    return d;
+}
+
 OnDocument *
 on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
 {
@@ -795,14 +843,15 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                     const gchar *p   = rec.text;
                     const gchar *end = rec.text + rec.n_text;
                     while (p < end) {
-                        const gchar *nl = memchr(p, '\n', (gsize)(end - p));
-                        if (nl == NULL) {
-                            text_piece(&L, p, (gsize)(end - p), rec.flags);
+                        gsize brk;               /* bytes of the break     */
+                        const gchar *q = line_break(p, end, &brk);
+                        text_piece(&L, p, (gsize)(q - p), rec.flags);
+                        if (q == end)
                             break;
-                        }
-                        text_piece(&L, p, (gsize)(nl - p), rec.flags);
+                        if (*q != '\n')
+                            rep->cr_newlines++;
                         line_end(&L, rec.flags);
-                        p = nl + 1;
+                        p = q + brk;
                     }
                     break;
                 }
@@ -835,7 +884,7 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->styled_prefix == 0 && rep->check_no_space == 0 &&
            rep->check_no_tag == 0 && rep->check_no_box == 0 &&
            rep->split_check == 0 && rep->split_table == 0 &&
-           rep->run_split == 0;
+           rep->run_split == 0 && rep->cr_newlines == 0;
 }
 
 /* ===========================================================================
@@ -1853,4 +1902,200 @@ on_document_image_nth(const OnDocument *d, gint ord, guint32 *display_width)
         }
     }
     return NULL;
+}
+
+gchar *
+on_document_title(const OnDocument *d, const gchar *fallback, glong max_chars)
+{
+    gchar *title = NULL;             /* the rendered first line             */
+    for (guint i = 0; i < d->blocks->len && title == NULL; i++) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE) {
+            title = g_strdup("");    /* a line, but no text on it           */
+        } else if (b->text->text->len > 0) {
+            GString *line = g_string_new(NULL);
+            if (b->kind == ON_BLOCK_BULLET)
+                g_string_append(line, ON_BULLET_PREFIX);
+            else if (b->kind == ON_BLOCK_NUMBER)
+                g_string_append(line, "1. ");
+            append_text_line(line, b->text);
+            title = g_string_free(line, FALSE);
+        }
+    }
+    if (title != NULL)
+        g_strstrip(title);
+    if (title == NULL || *title == '\0') {
+        g_free(title);
+        return g_strdup(fallback);
+    }
+    if (g_utf8_strlen(title, -1) > max_chars) {
+        gchar *cut = g_utf8_substring(title, 0, max_chars);
+        g_free(title);
+        return cut;
+    }
+    return title;
+}
+
+GList *
+on_document_collect_tags(const OnDocument *d)
+{
+    GList *names = NULL;             /* collected, reversed                 */
+    for (guint i = 0; i < d->blocks->len; i++) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->text == NULL)
+            continue;
+        gsize at = 0;                /* start of run k                      */
+        for (guint k = 0; k < b->text->runs->len; k++) {
+            const OnRun *r = &g_array_index(b->text->runs, OnRun, k);
+            if (r->flags & ON_FMT_TAG) {
+                gchar *name = g_strndup(b->text->text->str + at, r->len);
+                g_strstrip(name);
+                const gchar *bare = (*name == '#') ? name + 1 : name;
+                if (*bare != '\0' &&
+                    g_list_find_custom(names, bare,
+                                       (GCompareFunc)g_strcmp0) == NULL)
+                    names = g_list_prepend(names, g_strdup(bare));
+                g_free(name);
+            }
+            at += r->len;
+        }
+    }
+    return g_list_reverse(names);
+}
+
+/* ---------------------------------------------------------------------------
+ * action_rest_real() — does an action line's rest-of-line text hold a
+ * REAL item?  Bare "!" lines and lines that are nothing but a "due <date>"
+ * suffix do not count — the extractor's rule, so ord numbering stays
+ * aligned with the action_items table.
+ * ------------------------------------------------------------------------- */
+static gboolean
+action_rest_real(const gchar *rest)
+{
+    gchar *t = g_strdup(rest);
+    gsize  due_start;                /* where the text part ends            */
+    gint64 due;
+    if (on_action_split_due(t, &due_start, &due))
+        t[due_start] = '\0';
+    gboolean real = *g_strstrip(t) != '\0';
+    g_free(t);
+    return real;
+}
+
+GArray *
+on_document_action_blocks(const OnDocument *d)
+{
+    GArray *blocks = g_array_new(FALSE, FALSE, sizeof(guint));
+    for (guint i = 0; i < d->blocks->len; i++) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (on_block_is_action(b) && action_rest_real(b->text->text->str + 1))
+            g_array_append_val(blocks, i);
+    }
+    return blocks;
+}
+
+/* action_block() — the block index of the `ord`-th real action line, or
+ * G_MAXUINT.                                                                */
+static guint
+action_block(const OnDocument *d, gint ord)
+{
+    GArray *blocks = on_document_action_blocks(d);
+    guint i = (ord >= 0 && (guint)ord < blocks->len)
+              ? g_array_index(blocks, guint, ord) : G_MAXUINT;
+    g_array_unref(blocks);
+    return i;
+}
+
+/* ---------------------------------------------------------------------------
+ * action_text_span() — the byte span of the item TEXT inside a line: after
+ * the '!' and its leading whitespace, up to an existing "due <date>" (or
+ * the line end) less trailing whitespace.  The derivation the extractor
+ * uses to produce OnActionItem.text, so a rewrite of exactly this span
+ * re-extracts to the new text.  Returns whether that text ends struck —
+ * the done state a rewrite must carry over.
+ * ------------------------------------------------------------------------- */
+static gboolean
+action_text_span(const OnText *t, gsize *start, gsize *end)
+{
+    const gchar *rest = t->text->str + 1;
+    gsize  text_bytes;               /* end of the item text in `rest`      */
+    gsize  due_start;
+    gint64 due;
+    text_bytes = on_action_split_due(rest, &due_start, &due)
+                 ? due_start : strlen(rest);
+    while (text_bytes > 0 && g_ascii_isspace((guchar)rest[text_bytes - 1]))
+        text_bytes--;
+    gsize lead = 0;                  /* whitespace right after the '!'      */
+    while (lead < text_bytes && g_ascii_isspace((guchar)rest[lead]))
+        lead++;
+    *start = 1 + lead;
+    *end   = 1 + text_bytes;
+    if (*end <= *start)
+        return FALSE;
+    const gchar *last = g_utf8_prev_char(t->text->str + *end);
+    return (on_text_flags_at(t, (gsize)(last - t->text->str)) &
+            ON_FMT_STRIKE) != 0;
+}
+
+gboolean
+on_document_action_strike(OnDocument *d, gint ord, gboolean done)
+{
+    guint i = action_block(d, ord);
+    if (i == G_MAXUINT)
+        return FALSE;
+    OnText *t = on_document_block(d, i)->text;
+    OnPos pos = { i, -1, 1 };
+    if (t->text->len > 1) {
+        on_document_begin_group(d);
+        on_document_set_flags(d, pos, t->text->len - 1, ON_FMT_STRIKE, done);
+        on_document_end_group(d);
+    }
+    return TRUE;
+}
+
+gboolean
+on_document_action_due(OnDocument *d, gint ord, gint64 due)
+{
+    guint i = action_block(d, ord);
+    if (i == G_MAXUINT)
+        return FALSE;
+    OnText *t = on_document_block(d, i)->text;
+    gsize start, end;                /* the item text                       */
+    gboolean struck = action_text_span(t, &start, &end);
+
+    on_document_begin_group(d);
+    /* Everything after the text goes: old suffix, its spacing.             */
+    OnPos pos = { i, -1, end };
+    if (t->text->len > end)
+        on_document_delete_text(d, pos, t->text->len - end);
+    if (due != 0) {
+        GDateTime *dt = g_date_time_new_from_unix_local(due);
+        gchar *suffix = g_date_time_format(dt, " due %Y-%m-%d");
+        g_date_time_unref(dt);
+        on_document_insert_text(d, pos, suffix, strlen(suffix),
+                                struck ? ON_FMT_STRIKE : 0);
+        g_free(suffix);
+    }
+    on_document_end_group(d);
+    return TRUE;
+}
+
+gboolean
+on_document_action_text(OnDocument *d, gint ord, const gchar *text)
+{
+    guint i = action_block(d, ord);
+    if (i == G_MAXUINT)
+        return FALSE;
+    OnText *t = on_document_block(d, i)->text;
+    gsize start, end;                /* the item text                       */
+    gboolean struck = action_text_span(t, &start, &end);
+
+    on_document_begin_group(d);
+    OnPos pos = { i, -1, start };
+    if (end > start)
+        on_document_delete_text(d, pos, end - start);
+    on_document_insert_text(d, pos, text, strlen(text),
+                            struck ? ON_FMT_STRIKE : 0);
+    on_document_end_group(d);
+    return TRUE;
 }

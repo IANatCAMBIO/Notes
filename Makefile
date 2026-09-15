@@ -66,6 +66,7 @@ SRCS     := src/main.c \
             src/db.c \
             src/ipc.c \
             src/bnbf.c \
+            src/document.c \
             src/serialize.c \
             src/note_view.c \
             src/editor_window.c \

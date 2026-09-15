@@ -19,7 +19,7 @@
 #include "export.h"
 #include "ipc.h"
 #include "search_query.h"
-#include "serialize.h"
+#include "serialize.h"               /* on_note_document_load, extractors  */
 
 #include <stdio.h>
 #include <string.h>
@@ -231,22 +231,6 @@ note_from_arg(OnDatabase *db, const gchar *arg)
 }
 
 /* ---------------------------------------------------------------------------
- * cli_require_gtk() — initialize GTK (windowless), needed by any command
- * that (de)serializes note content.  Inside a GUI instance running a
- * remote command this is a no-op (GTK is already up).
- * Returns TRUE on success, FALSE after printing an error.
- * ------------------------------------------------------------------------- */
-static gboolean
-cli_require_gtk(void)
-{
-    if (gtk_init_check())
-        return TRUE;
-    fprintf(stderr, "error: GTK could not initialize (needed to "
-                    "process note content)\n");
-    return FALSE;
-}
-
-/* ---------------------------------------------------------------------------
  * cli_read_content() — resolve a CLI content argument: the literal text,
  * or stdin when `arg` is "-" (the pre-slurped cli_stdin_data when running
  * inside a GUI instance on behalf of a remote CLI).
@@ -274,34 +258,56 @@ cli_read_content(const gchar *arg)
 }
 
 /* ---------------------------------------------------------------------------
- * buffer_append_iter() — put `end` at the buffer's end, ready to append,
- * inserting `sep` first when the buffer already holds something and the end
- * is mid-line.  What "append to a note" means in three places: plain text
- * and an image start a fresh line ("\n"), a #tag token only wants a space.
- *   buffer — the note being extended.
- *   end    — receives the append position.
- *   sep    — separator to insert first, or NULL for none.
+ * document_append_block() — a fresh PARA block at the end of `doc`, ready
+ * for appended content: the last block itself when it is an empty text
+ * block, else a new one after it.  What "append to a note" means for
+ * plain text and an image; a #tag token only wants a space (see
+ * document_append_tag).  Returns the block's index.
  * ------------------------------------------------------------------------- */
-static void
-buffer_append_iter(GtkTextBuffer *buffer, GtkTextIter *end, const gchar *sep)
+static guint
+document_append_block(OnDocument *doc)
 {
-    gtk_text_buffer_get_end_iter(buffer, end);
-    if (sep != NULL && gtk_text_buffer_get_char_count(buffer) > 0 &&
-        !gtk_text_iter_starts_line(end))
-        gtk_text_buffer_insert(buffer, end, sep, -1);
+    guint last = on_document_n_blocks(doc) - 1;
+    OnBlock *b = on_document_block(doc, last);
+    if (b->text != NULL && b->text->text->len == 0)
+        return last;
+    on_document_insert_block(doc, last + 1, on_block_new_text(ON_BLOCK_PARA));
+    return last + 1;
 }
 
 /* ---------------------------------------------------------------------------
- * note_buffer_save() — serialize `buffer` and persist it as note `id`'s
+ * document_append_text() — append plain text as PARA blocks, one per line,
+ * starting on a fresh line.
+ * ------------------------------------------------------------------------- */
+static void
+document_append_text(OnDocument *doc, const gchar *text)
+{
+    OnDocument *lines = on_document_from_text(text);
+    guint at = document_append_block(doc);
+    for (guint i = 0; i < on_document_n_blocks(lines); i++) {
+        const OnText *t = on_document_block(lines, i)->text;
+        OnPos pos = { at, -1, 0 };
+        if (i > 0) {
+            on_document_insert_block(doc, ++at, on_block_new_text(ON_BLOCK_PARA));
+            pos.block = at;
+        }
+        on_document_insert_text(doc, pos, t->text->str, t->text->len, 0);
+    }
+    on_document_free(lines);
+}
+
+/* ---------------------------------------------------------------------------
+ * note_document_save() — serialize `doc` and persist it as note `id`'s
  * content: title from the first line, searchable body text refreshed —
  * the same trio every editor save writes.  Returns TRUE on success.
  * ------------------------------------------------------------------------- */
 static gboolean
-note_buffer_save(OnDatabase *db, gint64 id, GtkTextBuffer *buffer)
+note_document_save(OnDatabase *db, gint64 id, const OnDocument *doc)
 {
     gsize blob_len;                  /* serialized content size             */
-    guint8 *blob = on_note_serialize(buffer, &blob_len);
-    gchar *title = on_buffer_first_line(buffer);
+    guint8 *blob = on_document_to_bnbf(doc, &blob_len);
+    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                     ON_TITLE_MAX_CHARS);
     /* One walk for both derived values.                                   */
     gchar *body = NULL;              /* searchable plain text               */
     GList *actions = NULL;           /* the note's '!' lines                */
@@ -870,10 +876,6 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
     gchar *text = cli_read_content(content);   /* the note body (owned)     */
     if (text == NULL)
         return 2;
-    if (!cli_require_gtk()) {
-        g_free(text);
-        return 2;
-    }
 
     gint64 id = on_db_note_create(db, folder);
     if (id == 0) {
@@ -882,16 +884,15 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
         return 2;
     }
 
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    gtk_text_buffer_set_text(buffer, text, -1);
-    note_buffer_save(db, id, buffer);
+    OnDocument *doc = on_document_from_text(text);
+    note_document_save(db, id, doc);
 
-    gchar *title = on_buffer_first_line(buffer);
+    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                     ON_TITLE_MAX_CHARS);
     printf("note %" G_GINT64_FORMAT "\t%s\n", id, title);
 
     g_free(title);
-    g_object_unref(buffer);
+    on_document_free(doc);
     g_free(text);
     return 0;
 }
@@ -911,10 +912,6 @@ cmd_cat_note(OnDatabase *db, const gchar *id_str, gboolean markdown)
 
     gchar *text;                     /* what gets printed (owned)           */
     if (markdown) {
-        if (!cli_require_gtk()) {
-            on_db_note_meta_free(meta);
-            return 2;
-        }
         /* The exporter only touches app->db.                               */
         OnApp app = { 0 };
         app.db = db;
@@ -953,19 +950,16 @@ cmd_append_note(OnDatabase *db, const gchar *id_str, const gchar *content)
     if (meta == NULL)
         return 2;
     gchar *text = cli_read_content(content);   /* text to append (owned)    */
-    if (text == NULL || !cli_require_gtk()) {
-        g_free(text);
+    if (text == NULL) {
         on_db_note_meta_free(meta);
         return 2;
     }
 
-    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
-    GtkTextIter end;                 /* append position                     */
-    buffer_append_iter(buffer, &end, "\n");
-    gtk_text_buffer_insert(buffer, &end, text, -1);
+    OnDocument *doc = on_note_document_load(db, meta->id);
+    document_append_text(doc, text);
 
     int rc = 0;                      /* process exit code                   */
-    if (note_buffer_save(db, meta->id, buffer)) {
+    if (note_document_save(db, meta->id, doc)) {
         printf("appended to note %" G_GINT64_FORMAT "\t%s\n",
                meta->id, meta->title);
     } else {
@@ -973,7 +967,7 @@ cmd_append_note(OnDatabase *db, const gchar *id_str, const gchar *content)
                 meta->id);
         rc = 2;
     }
-    g_object_unref(buffer);
+    on_document_free(doc);
     g_free(text);
     on_db_note_meta_free(meta);
     return rc;
@@ -992,18 +986,15 @@ cmd_set_note(OnDatabase *db, const gchar *id_str, const gchar *content)
     if (meta == NULL)
         return 2;
     gchar *text = cli_read_content(content);   /* the new body (owned)      */
-    if (text == NULL || !cli_require_gtk()) {
-        g_free(text);
+    if (text == NULL) {
         on_db_note_meta_free(meta);
         return 2;
     }
 
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
-    gtk_text_buffer_set_text(buffer, text, -1);
+    OnDocument *doc = on_document_from_text(text);
 
     int rc = 0;                      /* process exit code                   */
-    if (note_buffer_save(db, meta->id, buffer)) {
+    if (note_document_save(db, meta->id, doc)) {
         /* plain text: clear any tag links from the previous content; check
          * the result so a failed sync isn't silently reported as success. */
         if (!on_db_note_set_tags(db, meta->id, NULL)) {
@@ -1012,7 +1003,8 @@ cmd_set_note(OnDatabase *db, const gchar *id_str, const gchar *content)
                     G_GINT64_FORMAT "\n", meta->id);
             rc = 2;
         } else {
-            gchar *title = on_buffer_first_line(buffer);
+            gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                             ON_TITLE_MAX_CHARS);
             printf("set note %" G_GINT64_FORMAT "\t%s\n", meta->id, title);
             g_free(title);
         }
@@ -1021,7 +1013,7 @@ cmd_set_note(OnDatabase *db, const gchar *id_str, const gchar *content)
                 meta->id);
         rc = 2;
     }
-    g_object_unref(buffer);
+    on_document_free(doc);
     g_free(text);
     on_db_note_meta_free(meta);
     return rc;
@@ -1040,11 +1032,6 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
         return 2;
     gint64 id = meta->id;            /* validated note id                   */
 
-    if (!cli_require_gtk()) {
-        on_db_note_meta_free(meta);
-        return 2;
-    }
-
     GError *err = NULL;
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(file, &err);
     if (pixbuf == NULL) {
@@ -1055,21 +1042,35 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
         return 2;
     }
 
-    /* Load the note, append the image on a fresh line, save it back.       */
-    GtkTextBuffer *buffer = on_note_buffer_load(db, id, 0);
+    /* The stored form is PNG whatever the file was (the editor's paste
+     * path encodes the same way); encoded once, here, and never again.    */
+    GBytes *png = on_image_png_bytes(pixbuf);
+    if (png == NULL) {
+        fprintf(stderr, "error: cannot encode image %s\n", file);
+        g_object_unref(pixbuf);
+        on_db_note_meta_free(meta);
+        return 2;
+    }
 
-    GtkTextIter end;                 /* append position                     */
-    buffer_append_iter(buffer, &end, "\n");
-    GtkTextChildAnchor *anchor =
-        gtk_text_buffer_create_child_anchor(buffer, &end);
-    on_anchor_set_image(anchor, pixbuf, 0);
+    /* Load the note and append the image on a fresh line: an empty last
+     * line becomes the image, anything else gets the image after it.      */
+    OnDocument *doc = on_note_document_load(db, id);
+    guint last = on_document_n_blocks(doc) - 1;
+    const OnBlock *lb = on_document_block(doc, last);
+    if (lb->text != NULL && lb->text->text->len == 0) {
+        on_document_insert_block(doc, last, on_block_new_image(png, 0));
+        on_document_remove_block(doc, last + 1);
+    } else {
+        on_document_insert_block(doc, last + 1, on_block_new_image(png, 0));
+    }
 
-    note_buffer_save(db, id, buffer);
-    gchar *title = on_buffer_first_line(buffer);
+    note_document_save(db, id, doc);
+    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                     ON_TITLE_MAX_CHARS);
     printf("added image to note %" G_GINT64_FORMAT "\t%s\n", id, title);
 
     g_free(title);
-    g_object_unref(buffer);
+    on_document_free(doc);
     g_object_unref(pixbuf);
     on_db_note_meta_free(meta);
     return 0;
@@ -1337,7 +1338,7 @@ cmd_note_tags(OnDatabase *db, const gchar *id_str)
  * cmd_tag_note() — label a note with a #tag the way the editor does: the
  * literal "#name" token is appended to the note text (under the on-tag
  * text tag, so it survives GUI edits and re-saves), and the note's tag
- * links are rewritten from the buffer.  A tag living only in note_tags
+ * links are rewritten from the document.  A tag living only in note_tags
  * would be silently dropped by the next tag-touching GUI save.
  * ------------------------------------------------------------------------- */
 static int
@@ -1354,13 +1355,9 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
     OnNoteMeta *meta = note_from_arg(db, id_str);
     if (meta == NULL)
         return 2;
-    if (!cli_require_gtk()) {
-        on_db_note_meta_free(meta);
-        return 2;
-    }
 
-    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
-    GList *existing = on_buffer_collect_tags(buffer);
+    OnDocument *doc = on_note_document_load(db, meta->id);
+    GList *existing = on_document_collect_tags(doc);
     int rc = 0;                      /* process exit code                   */
 
     if (g_list_find_custom(existing, name, (GCompareFunc)g_strcmp0) != NULL) {
@@ -1369,15 +1366,23 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         printf("note %" G_GINT64_FORMAT " already tagged #%s\n",
                meta->id, name);
     } else {
-        GtkTextIter end;             /* append position                     */
-        buffer_append_iter(buffer, &end, " ");
+        /* The token goes at the end of the last line, one space after
+         * whatever is there — or on a fresh line after an image/table.   */
+        guint last = on_document_n_blocks(doc) - 1;
+        const OnBlock *lb = on_document_block(doc, last);
+        if (lb->text == NULL)
+            last = document_append_block(doc);
+        OnPos pos = { last, -1, on_document_block(doc, last)->text->text->len };
+        if (pos.offset > 0) {
+            on_document_insert_text(doc, pos, " ", 1, 0);
+            pos.offset++;
+        }
         gchar *token = g_strdup_printf("#%s", name);
-        gtk_text_buffer_insert_with_tags_by_name(buffer, &end, token, -1,
-                                                 ON_TAGNAME_TAG, NULL);
+        on_document_insert_text(doc, pos, token, strlen(token), ON_FMT_TAG);
         g_free(token);
 
-        GList *tags = on_buffer_collect_tags(buffer);
-        if (note_buffer_save(db, meta->id, buffer) &&
+        GList *tags = on_document_collect_tags(doc);
+        if (note_document_save(db, meta->id, doc) &&
             on_db_note_set_tags(db, meta->id, tags)) {
             printf("tagged note %" G_GINT64_FORMAT "\t#%s\n",
                    meta->id, name);
@@ -1390,7 +1395,7 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
     }
 
     g_list_free_full(existing, g_free);
-    g_object_unref(buffer);
+    on_document_free(doc);
     on_db_note_meta_free(meta);
     return rc;
 }
@@ -1398,8 +1403,8 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
 /* ---------------------------------------------------------------------------
  * cmd_untag_note() — remove a #tag from a note: every "#name" token is
  * deleted from the note text (plus one separating space before it) and
- * the tag links are rewritten from the remaining buffer tags.  A tag
- * linked in note_tags but absent from the text is unlinked directly.
+ * the tag links are rewritten from the remaining tags.  A tag linked in
+ * note_tags but absent from the text is unlinked directly.
  * ------------------------------------------------------------------------- */
 static int
 cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
@@ -1409,51 +1414,42 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
     OnNoteMeta *meta = note_from_arg(db, id_str);
     if (meta == NULL)
         return 2;
-    if (!cli_require_gtk()) {
-        on_db_note_meta_free(meta);
-        return 2;
-    }
 
-    GtkTextBuffer *buffer = on_note_buffer_load(db, meta->id, 0);
-    GtkTextTagTable *table = gtk_text_buffer_get_tag_table(buffer);
-    GtkTextTag *tag = gtk_text_tag_table_lookup(table, ON_TAGNAME_TAG);
+    OnDocument *doc = on_note_document_load(db, meta->id);
 
-    /* Collect [start,end) offset pairs of every matching "#name" span
-     * (ascending, the walk on_buffer_collect_tags uses), then delete them
-     * back-to-front so earlier offsets stay valid.                          */
-    GArray *spans = g_array_new(FALSE, FALSE, sizeof(gint));
-    GtkTextIter iter;                /* scan position                       */
-    gtk_text_buffer_get_start_iter(buffer, &iter);
-    while (tag != NULL) {
-        if (!gtk_text_iter_starts_tag(&iter, tag)) {
-            if (!gtk_text_iter_forward_to_tag_toggle(&iter, tag))
-                break;
-            if (!gtk_text_iter_starts_tag(&iter, tag))
+    /* Delete every matching #tag run, walking each block's runs back to
+     * front so earlier offsets stay valid.                                 */
+    guint removed = 0;               /* tokens deleted                      */
+    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
+        OnText *t = on_document_block(doc, i)->text;
+        if (t == NULL)
+            continue;
+        for (guint k = t->runs->len; k > 0; k--) {
+            const OnRun *r = &g_array_index(t->runs, OnRun, k - 1);
+            if ((r->flags & ON_FMT_TAG) == 0)
                 continue;
+            gsize at = 0;            /* the run's start                     */
+            for (guint j = 0; j + 1 < k; j++)
+                at += g_array_index(t->runs, OnRun, j).len;
+            gchar *text = g_strndup(t->text->str + at, r->len);
+            g_strstrip(text);
+            const gchar *span_name = (*text == '#') ? text + 1 : text;
+            if (g_strcmp0(span_name, name) == 0) {
+                OnPos pos = { i, -1, at };
+                gsize n = r->len;
+                if (at > 0 && t->text->str[at - 1] == ' ') {
+                    pos.offset--;    /* eat one separating space            */
+                    n++;
+                }
+                on_document_delete_text(doc, pos, n);
+                removed++;
+            }
+            g_free(text);
         }
-        GtkTextIter span_end = iter; /* end of this tag span                */
-        gtk_text_iter_forward_to_tag_toggle(&span_end, tag);
-
-        gchar *text = gtk_text_buffer_get_text(buffer, &iter, &span_end,
-                                               FALSE);
-        g_strstrip(text);
-        const gchar *span_name = (*text == '#') ? text + 1 : text;
-        if (g_strcmp0(span_name, name) == 0) {
-            gint a = gtk_text_iter_get_offset(&iter);
-            gint b = gtk_text_iter_get_offset(&span_end);
-            GtkTextIter before = iter;   /* eat one separating space        */
-            if (gtk_text_iter_backward_char(&before) &&
-                gtk_text_iter_get_char(&before) == ' ')
-                a--;
-            g_array_append_val(spans, a);
-            g_array_append_val(spans, b);
-        }
-        g_free(text);
-        iter = span_end;
     }
 
     int rc = 0;                      /* process exit code                   */
-    if (spans->len == 0) {
+    if (removed == 0) {
         /* Not in the text; drop a db-only link if one exists.              */
         GList *linked = on_db_note_tag_list(db, meta->id);
         GList *keep = NULL;          /* names to keep (borrowed strings)    */
@@ -1476,16 +1472,8 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         g_list_free(keep);
         on_db_tag_list_free(linked);
     } else {
-        for (guint i = spans->len; i >= 2; i -= 2) {
-            GtkTextIter a, b;        /* span bounds to delete               */
-            gtk_text_buffer_get_iter_at_offset(buffer, &a,
-                g_array_index(spans, gint, i - 2));
-            gtk_text_buffer_get_iter_at_offset(buffer, &b,
-                g_array_index(spans, gint, i - 1));
-            gtk_text_buffer_delete(buffer, &a, &b);
-        }
-        GList *tags = on_buffer_collect_tags(buffer);
-        if (note_buffer_save(db, meta->id, buffer) &&
+        GList *tags = on_document_collect_tags(doc);
+        if (note_document_save(db, meta->id, doc) &&
             on_db_note_set_tags(db, meta->id, tags)) {
             printf("untagged note %" G_GINT64_FORMAT "\t#%s\n",
                    meta->id, name);
@@ -1497,8 +1485,7 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         g_list_free_full(tags, g_free);
     }
 
-    g_array_free(spans, TRUE);
-    g_object_unref(buffer);
+    on_document_free(doc);
     on_db_note_meta_free(meta);
     return rc;
 }
@@ -1794,8 +1781,6 @@ cmd_action_done(OnDatabase *db, const gchar *token, gboolean done)
     gint   ord;
     if (!action_token_parse(db, token, &note_id, &ord))
         return 2;
-    if (!cli_require_gtk())
-        return 2;
 
     OnApp app = { 0 };               /* headless context: db only           */
     app.db = db;
@@ -1832,8 +1817,6 @@ cmd_action_due(OnDatabase *db, const gchar *token, const gchar *date_arg)
     gint64 note_id;                  /* the item's address                  */
     gint   ord;
     if (!action_token_parse(db, token, &note_id, &ord))
-        return 2;
-    if (!cli_require_gtk())
         return 2;
 
     OnApp app = { 0 };               /* headless context: db only           */
@@ -1884,8 +1867,7 @@ cmd_action_text(OnDatabase *db, const gchar *token, const gchar *content)
 
     gint64 note_id;                  /* the item's address                  */
     gint   ord;
-    if (!action_token_parse(db, token, &note_id, &ord) ||
-        !cli_require_gtk()) {
+    if (!action_token_parse(db, token, &note_id, &ord)) {
         g_free(text);
         return 2;
     }
@@ -1918,8 +1900,6 @@ cmd_backup(OnDatabase *db, const gchar *dest)
 static int
 cmd_export(OnDatabase *db, const gchar *dir, OnExportFormat format)
 {
-    if (!cli_require_gtk())
-        return 2;
     /* The exporter only touches app->db.                                   */
     OnApp app = { 0 };
     app.db = db;

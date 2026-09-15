@@ -228,7 +228,8 @@ void on_note_view_action_marks_sync(OnNoteView *v, GList *items);
 
 /* ---------------------------------------------------------------------------
  * ACTION LINE REWRITES on a bare buffer — any buffer that has been through
- * on_buffer_ensure_tags: a live view's or an offscreen on_note_buffer_load.
+ * on_buffer_ensure_tags — a live view's.  (The headless rewrites moved to
+ * on_document_action_*; these serve the open editor.)
  * `ord` numbers the REAL action lines (bare "!" lines and lines that are
  * only a "due <date>" do not count — the extractor's numbering).  Each
  * returns TRUE when the line was found.

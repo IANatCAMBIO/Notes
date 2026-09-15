@@ -212,6 +212,9 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *   split_table    — a TABLE record on a line with anything else: splits
  *   image_inline   — an IMAGE record sharing a line with text (kept as an
  *                    inline image — informational, round-trips exactly)
+ *   cr_newlines    — a line ended in "\r\n", a lone "\r" or U+2029 (a
+ *                    Windows paste): the editor and Pango break there, so
+ *                    the model does too, and the saver writes "\n"
  *   run_split      — two consecutive TEXT records carried the same flags
  *                    (builds before 2026-08 wrote the title line as its
  *                    own record); the saver writes the maximal run
@@ -225,7 +228,7 @@ typedef struct {
     guint bullet_no_prefix, number_renumbered, styled_prefix;
     guint check_no_space, check_no_tag, check_no_box, split_check;
     guint split_table, image_inline;
-    guint run_split, old_version;
+    guint run_split, cr_newlines, old_version;
     const gchar *error;
 } OnDocLoadReport;
 
@@ -383,6 +386,66 @@ gboolean on_document_take_actions_modified(OnDocument *d);
 /* on_block_is_action() — a text block (not CODE) whose text starts with
  * '!' — the format contract on_note_extract_actions defines.             */
 gboolean on_block_is_action(const OnBlock *b);
+
+/* Titles derived from a note's first line are cut to this many characters
+ * (the list views' sanity bound).                                         */
+#define ON_TITLE_MAX_CHARS 80
+
+/* ---------------------------------------------------------------------------
+ * on_document_title() — the note's title: the first line that holds
+ * anything (text, or an image/table), rendered as plain text and
+ * whitespace-trimmed; `fallback` when that leaves nothing (no such line,
+ * an object line, a blank line); cut to `max_chars` characters.  The
+ * rule on_buffer_first_line applies to the GtkTextBuffer, so the two
+ * agree on every note.  Returns a new string.
+ * ------------------------------------------------------------------------- */
+gchar *on_document_title(const OnDocument *d, const gchar *fallback,
+                         glong max_chars);
+
+/* ---------------------------------------------------------------------------
+ * on_document_from_text() — a document of PARA blocks, one per line of
+ * `text` (broken like the loader breaks lines: "\n", "\r\n", "\r",
+ * U+2029).  What `note new` and `note set` build.  Never NULL.
+ * ------------------------------------------------------------------------- */
+OnDocument *on_document_from_text(const gchar *text);
+
+/* ---------------------------------------------------------------------------
+ * on_document_collect_tags() — the distinct #tag names in the note (runs
+ * carrying ON_FMT_TAG, whitespace-trimmed, without the leading '#'), in
+ * document order.  Returns a GList of new strings; g_list_free_full(list,
+ * g_free).
+ * ------------------------------------------------------------------------- */
+GList *on_document_collect_tags(const OnDocument *d);
+
+/* ---------------------------------------------------------------------------
+ * ACTION ITEMS BY ORDINAL — the note's REAL action lines numbered in
+ * document order: a non-CODE text block whose text starts with '!' and
+ * whose rest is more than whitespace and a "due <date>" (bare "!" lines
+ * and lines that are only a due date do not count — the extractor's
+ * numbering, so ord n here is ord n in the action_items table).  Each
+ * rewrite is one undo group and returns FALSE when there is no such item.
+ * ------------------------------------------------------------------------- */
+
+/* on_document_action_blocks() — block indices of the real action lines,
+ * ord order.  Returns a new GArray of guint; g_array_unref() it.         */
+GArray *on_document_action_blocks(const OnDocument *d);
+
+/* on_document_action_strike() — strike (done) or un-strike everything
+ * after the '!'.                                                          */
+gboolean on_document_action_strike(OnDocument *d, gint ord, gboolean done);
+
+/* on_document_action_due() — rewrite the "due <date>" suffix: any
+ * existing one is removed, then " due YYYY-MM-DD" appended for a non-zero
+ * `due` (local-midnight UNIX time); the appended text takes the item
+ * text's strike state so a done item stays done.                         */
+gboolean on_document_action_due(OnDocument *d, gint ord, gint64 due);
+
+/* on_document_action_text() — replace the item TEXT, keeping the '!'
+ * prefix, the line's own spacing and any trailing "due <date>"; the new
+ * text is given the old text's strike state explicitly.  `text` must be
+ * non-blank and newline-free (callers validate — see cli.c).             */
+gboolean on_document_action_text(OnDocument *d, gint ord,
+                                 const gchar *text);
 
 /* on_document_plain_text() — the note as plain text: one line per block
  * (list prefixes rendered, U+FFFC dropped), table cells space-separated

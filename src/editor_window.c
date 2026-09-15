@@ -496,25 +496,22 @@ action_lists_equal(GList *a, GList *b)
 }
 
 /* ---------------------------------------------------------------------------
- * action_apply_to_note() — run one buffer edit (strike or due rewrite)
- * against note `note_id`: on the live view's buffer + autosave when an
- * editor is open (the save's extract-and-compare refreshes action_items),
- * else on an offscreen load with an immediate save + action_items resync
- * (images keep their cached PNG bytes, so nothing is re-encoded).  ONE
- * edit function serves both — the on_note_buffer_action_* family works
- * on any buffer with the standard tags.
- *   edit — the line edit; receives (buffer, ord, arg).
- *   arg  — passed to `edit` untouched.  It is a pointer rather than a
- *          value because the edits need a gboolean, a gint64 and a
- *          string between them; each adapter below casts it back.  It is
- *          only ever borrowed for the duration of the call.
+ * action_apply_to_note() — run one line edit (strike, due rewrite or
+ * rename) against note `note_id`: on the live view's buffer + autosave
+ * when an editor is open (the save's extract-and-compare refreshes
+ * action_items), else on the note's DOCUMENT with an immediate save +
+ * action_items resync — no GTK, nothing decoded.  The two paths are the
+ * same edit under the same ord numbering (on_document_action_* and the
+ * on_note_buffer_action_* family both count the extractor's REAL lines).
+ *   which — the edit.
+ *   arg   — its argument: a gboolean* (STRIKE), a gint64* (DUE) or the
+ *           new text (TEXT); borrowed for the duration of the call.
  * Returns TRUE when the item was found and updated.
  * ------------------------------------------------------------------------- */
-typedef gboolean (*ActionEdit)(GtkTextBuffer *buffer, gint ord,
-                               gconstpointer arg);
+typedef enum { ACTION_STRIKE, ACTION_DUE, ACTION_TEXT } ActionEdit;
 
 static gboolean
-action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
+action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit which,
                      gint ord, gconstpointer arg, gboolean *synced)
 {
     if (synced != NULL)
@@ -525,23 +522,46 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
         /* Live buffer: the autosave writes content AND the mirror later.
          * A tag change emits no "changed", so the view reports nothing —
          * the autosave is queued here.                                      */
-        if (!edit(editor_buffer(ed), ord, arg))
+        GtkTextBuffer *buffer = editor_buffer(ed);
+        gboolean ok;
+        switch (which) {
+        case ACTION_STRIKE:
+            ok = on_note_buffer_action_strike(buffer, ord,
+                                              *(const gboolean *)arg);
+            break;
+        case ACTION_DUE:
+            ok = on_note_buffer_action_due(buffer, ord, *(const gint64 *)arg);
+            break;
+        default:
+            ok = on_note_buffer_action_text(buffer, ord, arg);
+            break;
+        }
+        if (!ok)
             return FALSE;
         editor_queue_autosave(ed);
         return TRUE;
     }
 
-    /* Full resolution: this buffer IS saved again below, and a scaled
-     * pixbuf would no longer match its cached PNG bytes.  A note with no
-     * content yields an empty buffer, where `edit` finds no action line and
-     * fails on its own — no special case needed.                            */
-    GtkTextBuffer *buffer = on_note_buffer_load(app->db, note_id, 0);
-
-    gboolean ok = edit(buffer, ord, arg);
+    /* A note with no content is an empty document, where the edit finds
+     * no action line and fails on its own — no special case needed.       */
+    OnDocument *doc = on_note_document_load(app->db, note_id);
+    gboolean ok;
+    switch (which) {
+    case ACTION_STRIKE:
+        ok = on_document_action_strike(doc, ord, *(const gboolean *)arg);
+        break;
+    case ACTION_DUE:
+        ok = on_document_action_due(doc, ord, *(const gint64 *)arg);
+        break;
+    default:
+        ok = on_document_action_text(doc, ord, arg);
+        break;
+    }
     if (ok) {
         gsize   out_len;             /* re-serialized blob size             */
-        guint8 *out = on_note_serialize(buffer, &out_len);
-        gchar  *title = on_buffer_first_line(buffer);
+        guint8 *out = on_document_to_bnbf(doc, &out_len);
+        gchar  *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                          ON_TITLE_MAX_CHARS);
         gchar  *body = NULL;         /* searchable plain text               */
         GList  *actions = NULL;      /* the rewritten '!' lines             */
         on_note_extract(out, out_len, &body, &actions);
@@ -554,52 +574,29 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
         g_free(title);
         g_free(out);
     }
-    g_object_unref(buffer);
+    on_document_free(doc);
     return ok;
-}
-
-/* action_strike_edit() — adapter for on_note_buffer_action_strike.          */
-static gboolean
-action_strike_edit(GtkTextBuffer *buffer, gint ord, gconstpointer arg)
-{
-    return on_note_buffer_action_strike(buffer, ord, *(const gboolean *)arg);
-}
-
-/* action_due_edit() — adapter for on_note_buffer_action_due.                */
-static gboolean
-action_due_edit(GtkTextBuffer *buffer, gint ord, gconstpointer arg)
-{
-    return on_note_buffer_action_due(buffer, ord, *(const gint64 *)arg);
-}
-
-/* action_text_edit() — adapter for on_note_buffer_action_text.              */
-static gboolean
-action_text_edit(GtkTextBuffer *buffer, gint ord, gconstpointer arg)
-{
-    return on_note_buffer_action_text(buffer, ord, arg);
 }
 
 gboolean
 on_editor_action_set_done(OnApp *app, gint64 note_id, gint ord,
                           gboolean done, gboolean *synced)
 {
-    return action_apply_to_note(app, note_id, action_strike_edit,
-                                ord, &done, synced);
+    return action_apply_to_note(app, note_id, ACTION_STRIKE, ord, &done,
+                                synced);
 }
 
 gboolean
 on_editor_action_set_due(OnApp *app, gint64 note_id, gint ord, gint64 due)
 {
-    return action_apply_to_note(app, note_id, action_due_edit, ord, &due,
-                                NULL);
+    return action_apply_to_note(app, note_id, ACTION_DUE, ord, &due, NULL);
 }
 
 gboolean
 on_editor_action_set_text(OnApp *app, gint64 note_id, gint ord,
                           const gchar *text)
 {
-    return action_apply_to_note(app, note_id, action_text_edit, ord, text,
-                                NULL);
+    return action_apply_to_note(app, note_id, ACTION_TEXT, ord, text, NULL);
 }
 
 /* ===========================================================================

@@ -594,6 +594,34 @@ test_mixed_para(void)
     g_bytes_unref(blob);
 }
 
+/* Windows line ends and U+2029 break lines like "\n" does — the editor
+ * showed them as separate lines — and come back as "\n".                  */
+static void
+test_cr_newlines(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, ON_FMT_CODEBLOCK, "a\r\nb\rc\xe2\x80\xa9" "d");
+    GBytes *blob = blob_end(&b);
+    gsize n;
+    const guint8 *data = g_bytes_get_data(blob, &n);
+    OnDocLoadReport rep;
+    OnDocument *d = on_document_from_bnbf(data, n, &rep);
+    g_assert_cmpuint(rep.cr_newlines, ==, 3);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 4);
+    g_assert_cmpstr(block_text(d, 1), ==, "b");
+    g_assert_cmpstr(block_text(d, 3), ==, "d");
+    assert_valid(d);
+
+    blob_begin(&b);
+    blob_text(&b, ON_FMT_CODEBLOCK, "a\nb\nc\nd");
+    GBytes *fixed = blob_end(&b);
+    assert_roundtrip(d, fixed);
+    g_bytes_unref(fixed);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 static void
 test_unknown_flags(void)
 {
@@ -1224,6 +1252,167 @@ test_ops_fuzz(void)
     on_document_free(d);
 }
 
+
+/* ===========================================================================
+ * TESTS — derived reads and the headless rewrites
+ * ======================================================================== */
+
+static void
+test_title(void)
+{
+    OnDocument *d = on_document_from_text("\n\n  Hello world  \nbody");
+    gchar *t = on_document_title(d, "New Note", 80);
+    g_assert_cmpstr(t, ==, "Hello world");
+    g_free(t);
+    on_document_free(d);
+
+    d = on_document_from_text("");
+    t = on_document_title(d, "New Note", 80);
+    g_assert_cmpstr(t, ==, "New Note");
+    g_free(t);
+    on_document_free(d);
+
+    /* A whitespace-only first line is "a line" and yields the fallback,
+     * as it did on the buffer; the cut is in characters.                  */
+    d = on_document_from_text("   \nreal");
+    t = on_document_title(d, "New Note", 80);
+    g_assert_cmpstr(t, ==, "New Note");
+    g_free(t);
+    on_document_free(d);
+    d = on_document_from_text("\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2");
+    t = on_document_title(d, "New Note", 3);
+    g_assert_cmpstr(t, ==, "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2");
+    g_free(t);
+    on_document_free(d);
+
+    /* An image line first: a line with no text on it — the fallback.      */
+    Blob b;
+    blob_begin(&b);
+    blob_image(&b, 0, PNG_A, sizeof PNG_A);
+    blob_text(&b, 0, "\n");
+    blob_text(&b, ON_FMT_LIST_BULLET, "\xe2\x80\xa2 item");
+    GBytes *blob = blob_end(&b);
+    d = load_clean(blob);
+    t = on_document_title(d, "New Note", 80);
+    g_assert_cmpstr(t, ==, "New Note");
+    g_free(t);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    /* A bullet line first: the prefix is part of the title, as the
+     * buffer's text was.                                                   */
+    blob_begin(&b);
+    blob_text(&b, ON_FMT_LIST_BULLET, "\xe2\x80\xa2 item");
+    blob = blob_end(&b);
+    d = load_clean(blob);
+    t = on_document_title(d, "New Note", 80);
+    g_assert_cmpstr(t, ==, "\xe2\x80\xa2 item");
+    g_free(t);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
+static void
+test_from_text(void)
+{
+    OnDocument *d = on_document_from_text("a\r\nb\rc\n");
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 4);
+    g_assert_cmpstr(block_text(d, 1), ==, "b");
+    g_assert_cmpstr(block_text(d, 3), ==, "");
+    assert_valid(d);
+    on_document_free(d);
+    d = on_document_from_text(NULL);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 1);
+    assert_valid(d);
+    on_document_free(d);
+}
+
+static void
+test_collect_tags(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "a ");
+    blob_text(&b, ON_FMT_TAG, "#work");
+    blob_text(&b, 0, " b ");
+    blob_text(&b, ON_FMT_TAG, " #home ");
+    blob_text(&b, 0, "\n");
+    blob_text(&b, ON_FMT_TAG | ON_FMT_BOLD, "#work");
+    blob_text(&b, 0, " ");
+    blob_text(&b, ON_FMT_TAG, "#");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+    GList *tags = on_document_collect_tags(d);
+    g_assert_cmpuint(g_list_length(tags), ==, 2);
+    g_assert_cmpstr(tags->data, ==, "work");
+    g_assert_cmpstr(tags->next->data, ==, "home");
+    g_list_free_full(tags, g_free);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
+static void
+test_action_rewrites(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "Title\n!\n! due 2026-01-01\n!  first item  due 2026-02-03\n");
+    blob_text(&b, ON_FMT_CODEBLOCK, "! not one\n");
+    blob_text(&b, 0, "! ");
+    blob_text(&b, ON_FMT_STRIKE, "done item");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+
+    GArray *ords = on_document_action_blocks(d);
+    g_assert_cmpuint(ords->len, ==, 2);
+    g_assert_cmpuint(g_array_index(ords, guint, 0), ==, 3);
+    g_assert_cmpuint(g_array_index(ords, guint, 1), ==, 5);
+    g_array_unref(ords);
+    g_assert_false(on_document_action_strike(d, 2, TRUE));
+    g_assert_false(on_document_action_strike(d, -1, TRUE));
+
+    /* Strike: everything after the '!'.                                    */
+    g_assert_true(on_document_action_strike(d, 0, TRUE));
+    OnText *t = on_document_block(d, 3)->text;
+    g_assert_cmpuint(on_text_flags_at(t, 1), ==, ON_FMT_STRIKE);
+    g_assert_cmpuint(on_text_flags_at(t, t->text->len - 1), ==, ON_FMT_STRIKE);
+    g_assert_cmpuint(on_text_flags_at(t, 0), ==, 0);
+    assert_valid(d);
+
+    /* Due: replaces the suffix, keeps the text's spacing and strike.       */
+    GDateTime *dt = g_date_time_new_local(2027, 3, 4, 0, 0, 0);
+    g_assert_true(on_document_action_due(d, 0, g_date_time_to_unix(dt)));
+    g_date_time_unref(dt);
+    g_assert_cmpstr(block_text(d, 3), ==, "!  first item due 2027-03-04");
+    g_assert_cmpuint(on_text_flags_at(t, t->text->len - 1), ==, ON_FMT_STRIKE);
+    g_assert_true(on_document_action_due(d, 0, 0));
+    g_assert_cmpstr(block_text(d, 3), ==, "!  first item");
+    assert_valid(d);
+
+    /* Text: only the item text changes; the '!' and spacing survive, the
+     * strike state carries over.                                           */
+    g_assert_true(on_document_action_strike(d, 0, FALSE));
+    dt = g_date_time_new_local(2027, 3, 4, 0, 0, 0);
+    on_document_action_due(d, 0, g_date_time_to_unix(dt));
+    g_date_time_unref(dt);
+    g_assert_true(on_document_action_text(d, 0, "renamed"));
+    g_assert_cmpstr(block_text(d, 3), ==, "!  renamed due 2027-03-04");
+    g_assert_cmpuint(on_text_flags_at(t, 3), ==, 0);
+    g_assert_true(on_document_action_text(d, 1, "still done"));
+    g_assert_cmpstr(block_text(d, 5), ==, "! still done");
+    g_assert_cmpuint(on_text_flags_at(on_document_block(d, 5)->text, 2),
+                     ==, ON_FMT_STRIKE);
+    assert_valid(d);
+
+    /* Every rewrite was one undo step.                                     */
+    while (on_document_undo(d))
+        assert_valid(d);
+    assert_roundtrip(d, blob);
+
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1243,6 +1432,7 @@ main(int argc, char **argv)
     g_test_add_func("/document/table", test_table);
     g_test_add_func("/document/run-merge", test_run_merge_across_blocks);
     g_test_add_func("/document/mixed-para", test_mixed_para);
+    g_test_add_func("/document/cr-newlines", test_cr_newlines);
     g_test_add_func("/document/unknown-flags", test_unknown_flags);
     g_test_add_func("/document/malformed", test_malformed);
     g_test_add_func("/text/ops", test_text_ops);
@@ -1253,5 +1443,9 @@ main(int argc, char **argv)
     g_test_add_func("/ops/table", test_ops_table);
     g_test_add_func("/ops/groups", test_ops_groups);
     g_test_add_func("/ops/fuzz", test_ops_fuzz);
+    g_test_add_func("/derived/title", test_title);
+    g_test_add_func("/derived/from-text", test_from_text);
+    g_test_add_func("/derived/collect-tags", test_collect_tags);
+    g_test_add_func("/derived/action-rewrites", test_action_rewrites);
     return g_test_run();
 }

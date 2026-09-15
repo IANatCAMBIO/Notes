@@ -882,34 +882,24 @@ refresh_sidebar(OnLibrary *lw)
 static GdkTexture *
 render_note_thumb(OnLibrary *lw, gint64 id)
 {
-    /* Load the note into an offscreen buffer, capping image decode at
-     * 512 px: the card preview is at most ~256 physical pixels wide, so a
-     * full-resolution decode (tens of MB per screenshot) is pure waste.
-     * This buffer is never saved, so the scaled pixbufs are fine.          */
-    GtkTextBuffer *buf = on_note_buffer_load(lw->app->db, id, 512);
-
-    /* First embedded image, if any (borrowed ref, kept alive by buf).
-     * Images are child anchors carrying their pixbuf, never inline
-     * paintables (serialize.h).                                            */
-    GdkPixbuf *img = NULL;           /* preview image for the card          */
-    GtkTextIter it;                  /* scan cursor                         */
-    gtk_text_buffer_get_start_iter(buf, &it);
-    do {
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
-        if (anchor != NULL)
-            img = on_anchor_get_image(anchor, NULL);
-        if (img != NULL)
-            break;
-    } while (gtk_text_iter_forward_char(&it));
-
+    /* The note as a document: nothing decoded.  Its FIRST image, if any,
+     * is decoded here capped at 512 px — the card preview is at most ~256
+     * physical pixels wide, so a full-resolution decode (tens of MB per
+     * screenshot) would be pure waste.                                     */
+    OnDocument *doc = on_note_document_load(lw->app->db, id);
+    GdkPixbuf *img = NULL;           /* preview image for the card (owned)  */
+    GBytes *png = on_document_image_nth(doc, 0, NULL);
+    if (png != NULL) {
+        gsize n_png;
+        const guint8 *bytes = g_bytes_get_data(png, &n_png);
+        img = on_png_decode_capped(bytes, n_png, 512);
+    }
     /* Body text: everything after the TITLE line.  The title is the first
-     * non-empty line (matching on_buffer_first_line, which derives the
-     * name shown under the card) — skipping only the literal first line
-     * used to leave the title duplicated inside the thumbnail whenever a
-     * note began with blank lines.                                         */
-    GtkTextIter s, e;                /* full buffer bounds                  */
-    gtk_text_buffer_get_bounds(buf, &s, &e);
-    gchar *text = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+     * non-empty line (matching on_document_title, which derives the name
+     * shown under the card) — skipping only the literal first line used
+     * to leave the title duplicated inside the thumbnail whenever a note
+     * began with blank lines.                                              */
+    gchar *text = on_document_plain_text(doc);
     const gchar *body = text;        /* start of the post-title content     */
     while (*body == '\n')
         body++;                      /* skip leading blank lines            */
@@ -995,7 +985,8 @@ render_note_thumb(OnLibrary *lw, gint64 id)
 
     g_free(body_cut);
     g_free(text);
-    g_object_unref(buf);
+    g_clear_object(&img);
+    on_document_free(doc);
     return texture;
 }
 

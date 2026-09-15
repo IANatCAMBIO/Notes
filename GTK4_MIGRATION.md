@@ -757,6 +757,10 @@ One line per session: date, phase, item, outcome.
   only), `make test` (25 tests, fuzzed undo/redo), `make bnbf-scan`; the
   live database (copy) round-trips 1315/1354 byte-identical, the rest
   explained, 0 unexplained.  Findings in BLOCK_MODEL.md "Step 1 — done".
+- 2026-09-15 — Block model step 2: export, CLI content commands, headless
+  action rewrites and the grid thumbnail read the OnDocument; outputs
+  checked byte-for-byte against the old binary (the one difference is an
+  old exporter bug: task lines lost their box).  Export 35 s → 2 s.
 - 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
   code block on the last line (D30), `make run-dev` re-seeding the sandbox
   every run (order-only prerequisites).

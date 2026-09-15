@@ -16,6 +16,7 @@
 #include <gtk/gtk.h>
 
 #include "bnbf.h"                    /* the format: flags, reader, writer  */
+#include "document.h"                /* OnDocument                          */
 #include "db.h"                      /* OnDatabase, OnActionItem            */
 
 /* Task checkboxes are child anchors carrying their state as object data;
@@ -174,17 +175,6 @@ gboolean on_note_deserialize(GtkTextBuffer *buffer, const guint8 *data,
                              gsize len);
 
 /* ---------------------------------------------------------------------------
- * on_note_deserialize_scaled() — like on_note_deserialize(), but images
- * are DECODED at no more than `max_img_px` on their longest side (0 =
- * full resolution).  For consumers that only render small previews
- * (grid thumbnails), this avoids inflating multi-megapixel bitmaps that
- * are immediately shrunk to card size.
- * ------------------------------------------------------------------------- */
-gboolean on_note_deserialize_scaled(GtkTextBuffer *buffer,
-                                    const guint8 *data, gsize len,
-                                    gint max_img_px);
-
-/* ---------------------------------------------------------------------------
  * on_note_extract_text() — pull the searchable plain text out of a BNBF
  * blob WITHOUT building a GtkTextBuffer or decoding any images: TEXT
  * runs are concatenated, table cells are appended (space-separated), and
@@ -207,22 +197,14 @@ gchar *on_note_extract_text(const guint8 *data, gsize len);
 gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
- * on_note_buffer_load() — deserialize note `id`'s stored content into a new
- * offscreen GtkTextBuffer with the standard tag set applied (an empty buffer
- * when the note has no content yet).  The shared preamble of every offscreen
- * consumer: the exporter, the grid-thumbnail renderer, the CLI's content
- * commands and the editor's offscreen action rewrites.
- *   db          — open database.
- *   id          — the note to load.
- *   max_img_px  — cap on the longest side of decoded images, 0 for full
- *                 resolution.  Thumbnail callers pass a small cap so a note
- *                 full of screenshots is not decoded at full size; anything
- *                 that may SAVE the buffer again must pass 0, since a scaled
- *                 pixbuf no longer matches its cached PNG bytes.
- * Returns the buffer; g_object_unref() it.
+ * on_note_document_load() — note `id`'s stored content as an OnDocument
+ * (document.h): the block model, no GTK, no image decoded.  An empty or
+ * missing note is an empty document.  THE preamble of every offscreen
+ * consumer: the exporter, the CLI's content commands, the headless action
+ * rewrites, the grid thumbnail.  Returns the document; on_document_free()
+ * it.
  * ------------------------------------------------------------------------- */
-GtkTextBuffer *on_note_buffer_load(OnDatabase *db, gint64 id,
-                                   gint max_img_px);
+OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_extract_actions() — pull the ACTION ITEMS out of a BNBF blob
@@ -288,6 +270,20 @@ GdkPixbuf *on_anchor_get_image(GtkTextChildAnchor *anchor,
  * enlarge via the image's right-click menu.                                 */
 #define ON_IMAGE_THUMB_W 200
 #define ON_IMAGE_THUMB_H 125
+
+/* ---------------------------------------------------------------------------
+ * on_png_decode_capped() — decode one encoded image into a pixbuf,
+ * shrinking it DURING decode to at most `max_px` on its longest side (0 =
+ * full resolution; never upscales).  THE one decode path: the full
+ * deserializer, the media view's thumbnails, on_note_image_nth() and the
+ * grid thumbnail all come through here, so the size cap and the failure
+ * reporting exist once.
+ *   png    — encoded bytes (PNG as written by the serializer).
+ *   n_png  — their length.
+ * Returns a new pixbuf reference (g_object_unref() it), or NULL when the
+ * payload will not decode.
+ * ------------------------------------------------------------------------- */
+GdkPixbuf *on_png_decode_capped(const guint8 *png, gsize n_png, gint max_px);
 
 /* ---------------------------------------------------------------------------
  * on_note_count_images() — how many IMAGE records a BNBF blob holds, found

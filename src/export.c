@@ -1,17 +1,17 @@
 /* ===========================================================================
  * export.c — export all notes to HTML or Markdown (implementation)
  *
- * Strategy: every note's BNBF blob is deserialized into an *offscreen*
- * GtkTextBuffer (no window needed), which is then walked line by line.
- * Each line's paragraph style (heading / code block / list / plain) picks
- * the block element, and the characters inside the line are grouped into
- * runs of identical inline styling (bold/italic/…) for the span-level
- * markup.  Consecutive list lines are merged into one list, consecutive
- * code-block lines into one <pre> / fenced block.
+ * Strategy: every note's BNBF blob is loaded into an OnDocument (no GTK
+ * involved, no image decoded) and walked block by block.  Each block's
+ * kind (heading / code / list / plain / image / table) picks the element,
+ * and the runs inside a text block give the span-level markup.
+ * Consecutive list blocks merge into one list, consecutive code blocks
+ * into one <pre> / fenced block.
  * =========================================================================== */
 
 #include "export.h"
-#include "serialize.h"
+#include "document.h"
+#include "serialize.h"               /* on_note_document_load               */
 
 #include <string.h>
 
@@ -39,26 +39,12 @@ typedef struct {
                             ON_FMT_UNDERLINE | ON_FMT_STRIKE | ON_FMT_TAG)
 
 /* ---------------------------------------------------------------------------
- * line_is_checked() — for a task-list line, the state of its leading
- * checkbox anchor.
- * ------------------------------------------------------------------------- */
-static gboolean
-line_is_checked(const GtkTextIter *ls)
-{
-    gboolean checked = FALSE;        /* the checkbox's state                */
-    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(ls);
-    if (anchor != NULL)
-        on_anchor_is_checkbox(anchor, &checked);
-    return checked;
-}
-
-/* ---------------------------------------------------------------------------
- * emit_table() — render an embedded table.
+ * emit_table() — render a table block.
  * HTML: a plain <table>.  Markdown: a pipe table whose first row is the
  * header (as pipe tables require one).
  * ------------------------------------------------------------------------- */
 static void
-emit_table(OnExportCtx *ctx, OnTable *table)
+emit_table(OnExportCtx *ctx, const OnBlock *table)
 {
     if (ctx->format == ON_EXPORT_HTML) {
         g_string_append(ctx->out, "<table>\n");
@@ -69,7 +55,7 @@ emit_table(OnExportCtx *ctx, OnTable *table)
             g_string_append(ctx->out, "<tr>");
             for (gint c = 0; c < table->cols; c++) {
                 gchar *esc = g_markup_escape_text(
-                    on_table_get(table, r, c), -1);
+                    on_block_cell(table, r, c)->text->str, -1);
                 /* Multiline cells: newlines become <br>.                   */
                 gchar **lines = g_strsplit(esc, "\n", -1);
                 gchar *joined = g_strjoinv("<br>", lines);
@@ -87,8 +73,8 @@ emit_table(OnExportCtx *ctx, OnTable *table)
         for (gint r = 0; r < table->rows; r++) {
             for (gint c = 0; c < table->cols; c++) {
                 /* Pipe tables cannot hold raw newlines: use <br>.          */
-                gchar **lines = g_strsplit(on_table_get(table, r, c),
-                                           "\n", -1);
+                gchar **lines = g_strsplit(
+                    on_block_cell(table, r, c)->text->str, "\n", -1);
                 gchar *joined = g_strjoinv("<br>", lines);
                 g_strfreev(lines);
                 g_string_append_printf(ctx->out, "| %s ", joined);
@@ -106,19 +92,18 @@ emit_table(OnExportCtx *ctx, OnTable *table)
 }
 
 /* ---------------------------------------------------------------------------
- * emit_image() — render one embedded pixbuf.
+ * emit_image() — render one image.
  * HTML: inline base64 data URI.  Markdown: write "<base>-imgN.png" beside
  * the note file and reference it relatively.
  *
- * Both write the image's EXISTING encoding (on_image_png_bytes), which for
- * anything loaded from a note is the PNG the database already holds: an
- * export copies those bytes instead of recompressing every screenshot in
- * the library, and what lands on disk is byte-identical to what was stored.
- *   ctx    — rendering context.
- *   pixbuf — the image.
+ * Both write the image's STORED bytes: an export copies what the database
+ * holds instead of recompressing every screenshot in the library, and what
+ * lands on disk is byte-identical to what was stored.
+ *   ctx — rendering context.
+ *   png — the encoded image, as the block carries it.
  * ------------------------------------------------------------------------- */
 static void
-emit_image(OnExportCtx *ctx, GdkPixbuf *pixbuf)
+emit_image(OnExportCtx *ctx, GBytes *png_bytes)
 {
     ctx->img_count++;
 
@@ -130,9 +115,6 @@ emit_image(OnExportCtx *ctx, GdkPixbuf *pixbuf)
         return;
     }
 
-    GBytes *png_bytes = on_image_png_bytes(pixbuf);   /* borrowed           */
-    if (png_bytes == NULL)
-        return;                      /* already warned                      */
     gsize n_png = 0;                 /* encoded byte count                  */
     const guint8 *png = g_bytes_get_data(png_bytes, &n_png);
 
@@ -161,19 +143,20 @@ emit_image(OnExportCtx *ctx, GdkPixbuf *pixbuf)
 /* ---------------------------------------------------------------------------
  * emit_text_run() — render one run of identically-styled text.
  *   ctx   — rendering context.
- *   text  — the run's text (no newlines).
+ *   text  — the run's bytes (no newlines), NOT NUL-terminated.
+ *   n     — their count.
  *   flags — its EXPORT_INLINE_MASK bits.
  *   raw   — TRUE inside code blocks: no styling, escape-only (HTML).
  * ------------------------------------------------------------------------- */
 static void
-emit_text_run(OnExportCtx *ctx, const gchar *text, guint32 flags,
+emit_text_run(OnExportCtx *ctx, const gchar *text, gsize n, guint32 flags,
               gboolean raw)
 {
-    if (*text == '\0')
+    if (n == 0)
         return;
 
     if (ctx->format == ON_EXPORT_HTML) {
-        gchar *esc = g_markup_escape_text(text, -1);
+        gchar *esc = g_markup_escape_text(text, (gssize)n);
         if (raw) {
             g_string_append(ctx->out, esc);
         } else {
@@ -194,7 +177,7 @@ emit_text_run(OnExportCtx *ctx, const gchar *text, guint32 flags,
         g_free(esc);
     } else {
         if (raw) {
-            g_string_append(ctx->out, text);
+            g_string_append_len(ctx->out, text, (gssize)n);
         } else {
             /* Markdown markers.  Underline has no MD syntax; inline HTML
              * is valid Markdown, so <u> is used.  #tags stay literal.      */
@@ -202,7 +185,7 @@ emit_text_run(OnExportCtx *ctx, const gchar *text, guint32 flags,
             if (flags & ON_FMT_ITALIC)    g_string_append(ctx->out, "*");
             if (flags & ON_FMT_UNDERLINE) g_string_append(ctx->out, "<u>");
             if (flags & ON_FMT_STRIKE)    g_string_append(ctx->out, "~~");
-            g_string_append(ctx->out, text);
+            g_string_append_len(ctx->out, text, (gssize)n);
             if (flags & ON_FMT_STRIKE)    g_string_append(ctx->out, "~~");
             if (flags & ON_FMT_UNDERLINE) g_string_append(ctx->out, "</u>");
             if (flags & ON_FMT_ITALIC)    g_string_append(ctx->out, "*");
@@ -212,125 +195,55 @@ emit_text_run(OnExportCtx *ctx, const gchar *text, guint32 flags,
 }
 
 /* ---------------------------------------------------------------------------
- * render_line_inline() — walk one line's characters, emitting styled text
- * runs and images in order.
- *   ctx    — rendering context.
- *   buffer — the note buffer.
- *   start  — line start (after any list-prefix stripping).
- *   end    — line end (before the newline).
- *   raw    — TRUE inside code blocks (no inline styling).
+ * render_inline() — a text block's runs in order, its inline images where
+ * they sit (the U+FFFC placeholders themselves are not emitted).
+ *   ctx  — rendering context.
+ *   t    — the block's text.
+ *   raw  — TRUE inside code blocks (no inline styling).
  * ------------------------------------------------------------------------- */
 static void
-render_line_inline(OnExportCtx *ctx, GtkTextBuffer *buffer,
-                   const GtkTextIter *start, const GtkTextIter *end,
-                   gboolean raw)
+render_inline(OnExportCtx *ctx, const OnText *t, gboolean raw)
 {
-    GtkTextIter it = *start;         /* walk cursor                         */
-    GString *run = g_string_new(NULL);   /* pending same-style text         */
-    guint32  run_flags = 0;              /* its style bits                  */
-    OnFlagRun frun;                      /* per-run flag probing            */
-    on_flag_run_init(&frun, buffer, EXPORT_INLINE_MASK);
-
-    while (gtk_text_iter_compare(&it, end) < 0) {
-        /* Images and tables live on child anchors (a paintable inserted
-         * straight into the buffer carries no pixbuf and is skipped as a
-         * bare U+FFFC below).                                              */
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
-        if (anchor != NULL && on_anchor_is_checkbox(anchor, NULL)) {
-            /* Checkbox anchors are the line prefix, emitted at the block
-             * level — skip the placeholder character here.                 */
-            gtk_text_iter_forward_char(&it);
-            continue;
+    gsize at = 0;                    /* start of the current run            */
+    guint k  = 0;                    /* next inline image                   */
+    for (guint i = 0; i < t->runs->len; i++) {
+        const OnRun *r = &g_array_index(t->runs, OnRun, i);
+        guint32 flags = raw ? 0 : (r->flags & EXPORT_INLINE_MASK);
+        gsize cur = at, end = at + r->len;
+        while (k < t->images->len &&
+               g_array_index(t->images, OnInlineImage, k).offset < end) {
+            const OnInlineImage *img =
+                &g_array_index(t->images, OnInlineImage, k);
+            emit_text_run(ctx, t->text->str + cur, img->offset - cur, flags,
+                          raw);
+            emit_image(ctx, img->png);
+            cur = img->offset + ON_OBJ_CHAR_LEN;
+            k++;
         }
-        OnTable *table = (anchor != NULL)
-                         ? on_anchor_get_table(anchor) : NULL;
-        if (table != NULL) {
-            emit_text_run(ctx, run->str, run_flags, raw);
-            g_string_truncate(run, 0);
-            emit_table(ctx, table);
-            gtk_text_iter_forward_char(&it);
-            continue;
-        }
-        GdkPixbuf *pixbuf = (anchor != NULL)
-                            ? on_anchor_get_image(anchor, NULL) : NULL;
-        if (pixbuf != NULL) {
-            emit_text_run(ctx, run->str, run_flags, raw);
-            g_string_truncate(run, 0);
-            emit_image(ctx, pixbuf);
-            gtk_text_iter_forward_char(&it);
-            continue;
-        }
-        if (anchor != NULL) {        /* imageless anchor: skip its 0xFFFC   */
-            gtk_text_iter_forward_char(&it);
-            continue;
-        }
-
-        guint32 flags = raw ? 0 : on_flag_run_at(&frun, &it);
-        if (flags != run_flags && run->len > 0) {
-            emit_text_run(ctx, run->str, run_flags, raw);
-            g_string_truncate(run, 0);
-        }
-        run_flags = flags;
-
-        gunichar c = gtk_text_iter_get_char(&it);
-        if (c != 0xFFFC)
-            g_string_append_unichar(run, c);
-        gtk_text_iter_forward_char(&it);
+        emit_text_run(ctx, t->text->str + cur, end - cur, flags, raw);
+        at = end;
     }
-    emit_text_run(ctx, run->str, run_flags, raw);
-    g_string_free(run, TRUE);
-}
-
-/* ---------------------------------------------------------------------------
- * strip_list_prefix_iter() — advance `start` past a literal "• " or
- * "12. " list prefix if present at the line start.
- * ------------------------------------------------------------------------- */
-static void
-strip_list_prefix_iter(GtkTextBuffer *buffer, GtkTextIter *start,
-                       const GtkTextIter *end)
-{
-    /* Task lines: skip the checkbox anchor (+ separating space).           */
-    GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(start);
-    if (anchor != NULL && on_anchor_is_checkbox(anchor, NULL)) {
-        gtk_text_iter_forward_char(start);
-        if (gtk_text_iter_compare(start, end) < 0 &&
-            gtk_text_iter_get_char(start) == ' ')
-            gtk_text_iter_forward_char(start);
-        return;
-    }
-
-    GtkTextIter probe_end = *start;  /* end of the probe window             */
-    for (gint i = 0; i < 7 &&
-         gtk_text_iter_compare(&probe_end, end) < 0; i++)
-        gtk_text_iter_forward_char(&probe_end);
-
-    gchar *head = gtk_text_buffer_get_text(buffer, start, &probe_end,
-                                           FALSE);
-    glong skip = on_list_prefix_chars(head);
-    g_free(head);
-    gtk_text_iter_forward_chars(start, (gint)skip);
 }
 
 /* ---------------------------------------------------------------------------
  * BLOCK-STATE HELPERS — while rendering, `open_block` tracks which
  * multi-line construct is currently open (a list or a code block) so
- * consecutive lines of the same style merge into one block.
+ * consecutive blocks of the same kind merge into one.
  * ------------------------------------------------------------------------- */
 
 /* close_block() — emit the closer for whatever block is open.               */
 static void
-close_block(OnExportCtx *ctx, guint32 open_block)
+close_block(OnExportCtx *ctx, OnBlockKind open)
 {
     if (ctx->format == ON_EXPORT_HTML) {
-        if (open_block == ON_FMT_CODEBLOCK)
+        if (open == ON_BLOCK_CODE)
             g_string_append(ctx->out, "</code></pre>\n");
-        else if (open_block == ON_FMT_LIST_BULLET ||
-                 open_block == ON_FMT_LIST_CHECK)
+        else if (open == ON_BLOCK_BULLET || open == ON_BLOCK_CHECK)
             g_string_append(ctx->out, "</ul>\n");
-        else if (open_block == ON_FMT_LIST_NUMBER)
+        else if (open == ON_BLOCK_NUMBER)
             g_string_append(ctx->out, "</ol>\n");
     } else {
-        if (open_block == ON_FMT_CODEBLOCK)
+        if (open == ON_BLOCK_CODE)
             g_string_append(ctx->out, "```\n");
         /* Markdown lists need no closer.                                   */
     }
@@ -338,135 +251,141 @@ close_block(OnExportCtx *ctx, guint32 open_block)
 
 /* open_block() — emit the opener for a new multi-line block.                */
 static void
-open_block(OnExportCtx *ctx, guint32 block)
+open_block(OnExportCtx *ctx, OnBlockKind kind)
 {
     if (ctx->format == ON_EXPORT_HTML) {
-        if (block == ON_FMT_CODEBLOCK)
+        if (kind == ON_BLOCK_CODE)
             g_string_append(ctx->out, "<pre><code>");
-        else if (block == ON_FMT_LIST_BULLET)
+        else if (kind == ON_BLOCK_BULLET)
             g_string_append(ctx->out, "<ul>\n");
-        else if (block == ON_FMT_LIST_CHECK)
+        else if (kind == ON_BLOCK_CHECK)
             g_string_append(ctx->out, "<ul class=\"tasks\">\n");
-        else if (block == ON_FMT_LIST_NUMBER)
+        else if (kind == ON_BLOCK_NUMBER)
             g_string_append(ctx->out, "<ol>\n");
     } else {
-        if (block == ON_FMT_CODEBLOCK)
+        if (kind == ON_BLOCK_CODE)
             g_string_append(ctx->out, "```\n");
     }
 }
 
 /* ---------------------------------------------------------------------------
- * render_note_body() — walk every line of the buffer and build the full
- * document body in ctx->out.
+ * render_note_body() — walk every block of the document and build the
+ * full body in ctx->out.
  * ------------------------------------------------------------------------- */
 static void
-render_note_body(OnExportCtx *ctx, GtkTextBuffer *buffer)
+render_note_body(OnExportCtx *ctx, const OnDocument *doc)
 {
-    gint n_lines = gtk_text_buffer_get_line_count(buffer);
-    guint32 open = 0;                /* currently open multi-line block     */
+    OnBlockKind open = ON_BLOCK_PARA;    /* open multi-line block, or PARA */
+    gint number_run = 0;             /* consecutive NUMBER blocks           */
 
-    for (gint line = 0; line < n_lines; line++) {
-        GtkTextIter ls, le;          /* line bounds (newline excluded)      */
-        gtk_text_buffer_get_iter_at_line(buffer, &ls, line);
-        le = ls;
-        if (!gtk_text_iter_ends_line(&le))
-            gtk_text_iter_forward_to_line_end(&le);
-
-        guint32 para = on_flags_at_iter(buffer, &ls, ON_FMT_PARA_MASK);
+    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
+        const OnBlock *b = on_document_block(doc, i);
+        number_run = (b->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
 
         /* Blocks (lists, code) persist across lines; close the open one
-         * when the style changes.                                          */
-        gboolean is_block = (para == ON_FMT_CODEBLOCK ||
-                             para == ON_FMT_LIST_BULLET ||
-                             para == ON_FMT_LIST_NUMBER ||
-                             para == ON_FMT_LIST_CHECK);
-        if (open != 0 && (!is_block || para != open)) {
+         * when the kind changes.                                           */
+        gboolean is_block = (b->kind == ON_BLOCK_CODE ||
+                             b->kind == ON_BLOCK_BULLET ||
+                             b->kind == ON_BLOCK_NUMBER ||
+                             b->kind == ON_BLOCK_CHECK);
+        if (open != ON_BLOCK_PARA && (!is_block || b->kind != open)) {
             close_block(ctx, open);
-            open = 0;
+            open = ON_BLOCK_PARA;
         }
-        if (is_block && open == 0) {
-            open_block(ctx, para);
-            open = para;
+        if (is_block && open == ON_BLOCK_PARA) {
+            open_block(ctx, b->kind);
+            open = b->kind;
         }
 
         if (ctx->format == ON_EXPORT_HTML) {
-            switch (para) {
-            case ON_FMT_H1:
+            switch (b->kind) {
+            case ON_BLOCK_H1:
                 g_string_append(ctx->out, "<h1>");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append(ctx->out, "</h1>\n");
                 break;
-            case ON_FMT_H2:
+            case ON_BLOCK_H2:
                 g_string_append(ctx->out, "<h2>");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append(ctx->out, "</h2>\n");
                 break;
-            case ON_FMT_CODEBLOCK:
-                render_line_inline(ctx, buffer, &ls, &le, TRUE);
+            case ON_BLOCK_CODE:
+                render_inline(ctx, b->text, TRUE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            case ON_FMT_LIST_BULLET:
-            case ON_FMT_LIST_NUMBER:
-                strip_list_prefix_iter(buffer, &ls, &le);
+            case ON_BLOCK_BULLET:
+            case ON_BLOCK_NUMBER:
                 g_string_append(ctx->out, "<li>");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append(ctx->out, "</li>\n");
                 break;
-            case ON_FMT_LIST_CHECK: {
-                gboolean checked = line_is_checked(&ls);
-                strip_list_prefix_iter(buffer, &ls, &le);
+            case ON_BLOCK_CHECK:
                 g_string_append_printf(ctx->out,
                     "<li><input type=\"checkbox\"%s disabled> ",
-                    checked ? " checked" : "");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                    b->checked ? " checked" : "");
+                render_inline(ctx, b->text, FALSE);
                 g_string_append(ctx->out, "</li>\n");
                 break;
-            }
+            case ON_BLOCK_IMAGE:
+                g_string_append(ctx->out, "<p>");
+                emit_image(ctx, b->png);
+                g_string_append(ctx->out, "</p>\n");
+                break;
+            case ON_BLOCK_TABLE:
+                g_string_append(ctx->out, "<p>");
+                emit_table(ctx, b);
+                g_string_append(ctx->out, "</p>\n");
+                break;
             default:
-                if (gtk_text_iter_compare(&ls, &le) < 0) {
+                if (b->text->text->len > 0) {
                     g_string_append(ctx->out, "<p>");
-                    render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                    render_inline(ctx, b->text, FALSE);
                     g_string_append(ctx->out, "</p>\n");
                 }
                 break;
             }
         } else {
-            switch (para) {
-            case ON_FMT_H1:
+            switch (b->kind) {
+            case ON_BLOCK_H1:
                 g_string_append(ctx->out, "# ");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            case ON_FMT_H2:
+            case ON_BLOCK_H2:
                 g_string_append(ctx->out, "## ");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            case ON_FMT_CODEBLOCK:
-                render_line_inline(ctx, buffer, &ls, &le, TRUE);
+            case ON_BLOCK_CODE:
+                render_inline(ctx, b->text, TRUE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            case ON_FMT_LIST_BULLET:
-                strip_list_prefix_iter(buffer, &ls, &le);
+            case ON_BLOCK_BULLET:
                 g_string_append(ctx->out, "- ");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            case ON_FMT_LIST_CHECK: {
-                gboolean checked = line_is_checked(&ls);
-                strip_list_prefix_iter(buffer, &ls, &le);
-                g_string_append(ctx->out, checked ? "- [x] " : "- [ ] ");
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+            case ON_BLOCK_CHECK:
+                g_string_append(ctx->out, b->checked ? "- [x] " : "- [ ] ");
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
                 break;
-            }
-            case ON_FMT_LIST_NUMBER:
-                /* Keep the literal "N. " prefix — it is valid Markdown.    */
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+            case ON_BLOCK_NUMBER:
+                /* "N. " is valid Markdown as it stands.                    */
+                g_string_append_printf(ctx->out, "%d. ", number_run);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
+                break;
+            case ON_BLOCK_IMAGE:
+                emit_image(ctx, b->png);
+                g_string_append(ctx->out, "\n\n");
+                break;
+            case ON_BLOCK_TABLE:
+                emit_table(ctx, b);
+                g_string_append(ctx->out, "\n\n");
                 break;
             default:
-                render_line_inline(ctx, buffer, &ls, &le, FALSE);
+                render_inline(ctx, b->text, FALSE);
                 g_string_append_c(ctx->out, '\n');
                 /* Blank separator line keeps paragraphs distinct.          */
                 g_string_append_c(ctx->out, '\n');
@@ -474,7 +393,7 @@ render_note_body(OnExportCtx *ctx, GtkTextBuffer *buffer)
             }
         }
     }
-    if (open != 0)
+    if (open != ON_BLOCK_PARA)
         close_block(ctx, open);
 }
 
@@ -543,9 +462,7 @@ static gboolean
 export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
            OnExportFormat format, GHashTable *used)
 {
-    /* Load and deserialize into an offscreen buffer (full resolution: the
-     * images are re-encoded into the output).                              */
-    GtkTextBuffer *buffer = on_note_buffer_load(app->db, m->id, 0);
+    OnDocument *doc = on_note_document_load(app->db, m->id);
 
     /* Compute the output path.                                             */
     const gchar *ext = (format == ON_EXPORT_HTML) ? ".html" : ".md";
@@ -581,7 +498,7 @@ export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
         g_free(esc_title);
     }
 
-    render_note_body(&ctx, buffer);
+    render_note_body(&ctx, doc);
 
     if (format == ON_EXPORT_HTML)
         g_string_append(ctx.out, "</body>\n</html>\n");
@@ -596,7 +513,7 @@ export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
     }
 
     g_string_free(ctx.out, TRUE);
-    g_object_unref(buffer);
+    on_document_free(doc);
     g_free(path);
     g_free(final_base);
     g_free(base);
@@ -679,9 +596,8 @@ on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
 gchar *
 on_export_note_markdown(OnApp *app, gint64 note_id)
 {
-    /* Load and deserialize into an offscreen buffer (as export_one does;
-     * a missing/empty note renders as an empty string).                     */
-    GtkTextBuffer *buffer = on_note_buffer_load(app->db, note_id, 0);
+    /* A missing/empty note renders as an empty string.                     */
+    OnDocument *doc = on_note_document_load(app->db, note_id);
 
     OnExportCtx ctx = {
         .format    = ON_EXPORT_MARKDOWN,
@@ -690,7 +606,7 @@ on_export_note_markdown(OnApp *app, gint64 note_id)
         .base_name = NULL,
         .img_count = 0,
     };
-    render_note_body(&ctx, buffer);
-    g_object_unref(buffer);
+    render_note_body(&ctx, doc);
+    on_document_free(doc);
     return g_string_free(ctx.out, FALSE);
 }

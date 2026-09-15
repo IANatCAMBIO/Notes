@@ -18,9 +18,6 @@
 
 #include <string.h>
 
-/* Maximum character count for a title derived from a note's first line.     */
-#define ON_TITLE_MAX_CHARS 80
-
 /* ---------------------------------------------------------------------------
  * on_flag_tags — THE flag ⇄ tag-name table (declared in serialize.h).
  * Serializer, editor, undo and export all iterate this single copy so the
@@ -418,20 +415,8 @@ on_size_prepared(GdkPixbufLoader *loader, gint width, gint height,
     }
 }
 
-/* ---------------------------------------------------------------------------
- * png_decode_capped() — decode one IMAGE record's payload into a pixbuf,
- * shrinking it during decode to at most `max_px` on its longest side.  THE
- * one decode path: the full deserializer, the media view's thumbnails and
- * on_note_image_nth() all come through here, so the size cap and the
- * failure reporting exist once.
- *   png    — encoded bytes (PNG as written by the serializer).
- *   n_png  — their length.
- *   max_px — longest-side cap in pixels, 0 for full resolution.
- * Returns a new pixbuf reference (g_object_unref() it), or NULL when the
- * payload will not decode.
- * ------------------------------------------------------------------------- */
-static GdkPixbuf *
-png_decode_capped(const guint8 *png, gsize n_png, gint max_px)
+GdkPixbuf *
+on_png_decode_capped(const guint8 *png, gsize n_png, gint max_px)
 {
     GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
     if (max_px > 0)
@@ -459,13 +444,6 @@ png_decode_capped(const guint8 *png, gsize n_png, gint max_px)
 gboolean
 on_note_deserialize(GtkTextBuffer *buffer, const guint8 *data, gsize len)
 {
-    return on_note_deserialize_scaled(buffer, data, len, 0);
-}
-
-gboolean
-on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
-                           gsize len, gint max_img_px)
-{
     on_buffer_ensure_tags(buffer);
     gtk_text_buffer_set_text(buffer, "", -1);
 
@@ -488,7 +466,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
              * Widgets (for on-screen display) are attached separately by
              * the editor; offscreen consumers just read the anchor data.   */
             GdkPixbuf *pixbuf =      /* owned; the anchor takes its own ref */
-                png_decode_capped(rec.png, rec.n_png, max_img_px);
+                on_png_decode_capped(rec.png, rec.n_png, 0);
             if (pixbuf != NULL) {
                 GtkTextIter end;
                 gtk_text_buffer_get_end_iter(buffer, &end);
@@ -496,16 +474,12 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
                     gtk_text_buffer_create_child_anchor(buffer, &end);
                 on_anchor_set_image(anchor, pixbuf,
                                     (gint)rec.display_width);
-                /* Full-resolution load: keep the source PNG bytes on the
-                 * pixbuf so saves emit them verbatim instead of
-                 * re-encoding (see the "on-png" cache in
-                 * on_note_serialize).  Scaled loads (thumbnails) never
-                 * save, and their pixbuf no longer matches the bytes —
-                 * skip those.                                              */
-                if (max_img_px == 0)
-                    g_object_set_data_full(G_OBJECT(pixbuf), "on-png",
-                        g_bytes_new(rec.png, rec.n_png),
-                        (GDestroyNotify)g_bytes_unref);
+                /* Keep the source PNG bytes on the pixbuf so saves emit
+                 * them verbatim instead of re-encoding (see the "on-png"
+                 * cache in on_note_serialize).                             */
+                g_object_set_data_full(G_OBJECT(pixbuf), "on-png",
+                    g_bytes_new(rec.png, rec.n_png),
+                    (GDestroyNotify)g_bytes_unref);
                 g_object_unref(pixbuf);
             }
             break;
@@ -646,7 +620,7 @@ on_note_image_nth(const guint8 *data, gsize len, gint ord, gint max_px)
 
     gsize n_png;                     /* payload size                        */
     const guint8 *bytes = g_bytes_get_data(png, &n_png);
-    GdkPixbuf *out = png_decode_capped(bytes, n_png, max_px);
+    GdkPixbuf *out = on_png_decode_capped(bytes, n_png, max_px);
     g_bytes_unref(png);
     return out;
 }
@@ -723,18 +697,14 @@ on_note_text_cached(OnDatabase *db, gint64 id)
     return text;
 }
 
-GtkTextBuffer *
-on_note_buffer_load(OnDatabase *db, gint64 id, gint max_img_px)
+OnDocument *
+on_note_document_load(OnDatabase *db, gint64 id)
 {
-    GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
-    on_buffer_ensure_tags(buffer);
     gsize   blob_len = 0;            /* stored blob size                    */
     guint8 *blob = on_db_note_load(db, id, &blob_len);
-    if (blob != NULL) {
-        on_note_deserialize_scaled(buffer, blob, blob_len, max_img_px);
-        g_free(blob);
-    }
-    return buffer;
+    OnDocument *doc = on_document_from_bnbf(blob, blob_len, NULL);
+    g_free(blob);
+    return doc;
 }
 
 /* ---------------------------------------------------------------------------

@@ -503,10 +503,58 @@ Each step lands on its own, builds, and passes `make test`.
    live database opening, scrolling and typing with no visible hitch —
    measured, numbers into GTK4_MIGRATION.md's Decisions.
 
-## Open questions the step-1 scan answers
+## Step 1 — done 2026-09-15
 
-- How many notes hold an IMAGE record mid-line (decides whether the
-  inline-object form ships at all)?
-- How many hold a TABLE or CHECK mid-line (the normalized set; expected 0)?
-- Largest note by block count and by text bytes (the layout's eager
-  target).
+`src/bnbf.[ch]` (the format: flags, reader, writer, tables, the two line
+parsers — GLib only), `src/document.[ch]` (the model, loader/saver,
+operations, undo, observer, change flags — GLib only),
+`tests/test_document.c` (25 tests incl. a 400-op fuzz that undoes and
+redoes everything byte for byte; `make test`, zero leaks under `leaks`)
+and `tools/bnbf-scan.c` (`make bnbf-scan`).  `serialize.c` now drives the
+shared reader and writer instead of its own framing.  The app builds and
+the sandbox writes blobs the model reads back identically.
+
+**The scan, on a read-only copy of the live database (1354 notes, 709 MB):
+1315 byte-identical, 39 normalized, 0 unexplained, 0 invalid, 0 errors.**
+Load 36 ms, save 75 ms for the whole database — the loader copies PNG
+bytes and decodes nothing.
+
+What the data taught, and how the spec above was adjusted:
+
+- **`OnBlock.eol_flags`** (not in the spec): a line's newline carries
+  inline flags in the blob — the editor tags Enter like any typed
+  character — and 7 notes have them.  Meaningless on screen, but the
+  model keeps the bits so those notes round-trip exactly; a new block's
+  newline takes whatever the caller arms (`on_document_split_block`).
+- **The FIRST character decides a line's paragraph style**, not the
+  newline's run as first written: that is what the editor renders
+  (`line_para_flags` tests the line start), and the 3 `mixed_para` notes
+  are 2026-08 pre-D30 lines whose newline missed the H2 — under the
+  newline rule they would have LOST their heading.
+- **`run_split`**: 37 notes hold two consecutive TEXT records with equal
+  flags (builds before 2026-08 wrote the title line as its own record).
+  The format allows it; the model has no place for a record boundary and
+  the saver writes maximal runs.  Harmless, counted.
+- **Inline images stay**: 3 notes hold 6 images that share a line with
+  text.  The inline form (U+FFFC + `OnInlineImage`) round-trips them
+  exactly and is what the fuzz exercises; the view will draw them via
+  `PangoAttrShape` as planned.
+- **Table cells are `OnText`** with newlines allowed (the old editor
+  wrote multi-line cells; 1 note has a table) and no inline images — the
+  one place the "no newline in text" invariant is relaxed.
+- **A no-op `set_*` logs no undo step** (`on_document_undo_depth` says
+  how many there are, which is also how a host can tell "changed since
+  save" without comparing bytes).
+- `OnTable` (string cells) survives on the GtkTextBuffer side as the
+  anchor payload the reader hands out; the document converts.  It goes
+  with serialize.c in step 3.
+- Normalizations the loader counts and the saver repairs: a table or
+  checkbox mid-line (0 in the data), a check line without its space /
+  box / tag (0), a bullet without its prefix (0), a stale number (0),
+  a styled prefix (0), unknown flag bits (0).  Every category is a test.
+
+Largest note: 615 blocks (note 734); most text: 73 789 bytes (note 1324)
+— the layout's eager target in step 3 is small.
+
+**Next: step 2** — `export.c`, the headless action rewrites in `cli.c`,
+`render_note_thumb` and the AI-summary text onto the document.

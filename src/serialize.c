@@ -1,7 +1,8 @@
 /* ===========================================================================
- * serialize.c — BNBF binary note format (implementation)
+ * serialize.c — BNBF ⇄ GtkTextBuffer (implementation)
  *
- * See serialize.h for the format specification.  The general strategy:
+ * The record framing lives in bnbf.c; this file walks buffers and drives
+ * that reader and writer:
  *
  *   serialize:   walk the buffer character by character, grouping runs of
  *                identical formatting into TEXT records and emitting an
@@ -17,36 +18,8 @@
 
 #include <string.h>
 
-/* Magic bytes at the start of every BNBF blob.  (The pre-rename "ONBF"
- * magic was retired 2026-07 after an offline migration verified zero
- * such blobs remained in the database.)                                     */
-static const guint8 BNBF_MAGIC[4] = { 'B', 'N', 'B', 'F' };
-
 /* Maximum character count for a title derived from a note's first line.     */
 #define ON_TITLE_MAX_CHARS 80
-
-/* magic_ok() — does this blob start with the BNBF magic?                    */
-static gboolean
-magic_ok(const guint8 *data, gsize len)
-{
-    return data != NULL && len >= 8 && memcmp(data, BNBF_MAGIC, 4) == 0;
-}
-
-/* Current format version written by on_note_serialize().  Version 2 added
- * the display_width field to IMAGE records; version 3 added TABLE
- * records; version 4 added the tflags field to TABLE records; version 5
- * added CHECK records.  All older versions are still readable.              */
-#define BNBF_VERSION 5u
-
-/* TABLE record flag bits (the tflags field).                                */
-#define TABLE_FLAG_HEADER 1u         /* first row is a header row           */
-
-/* Record type bytes.                                                        */
-#define REC_END   0x00               /* end of document                     */
-#define REC_TEXT  0x01               /* formatted text run                  */
-#define REC_IMAGE 0x02               /* inline PNG image                    */
-#define REC_TABLE 0x03               /* embedded table of text cells        */
-#define REC_CHECK 0x04               /* task-list checkbox                  */
 
 /* ---------------------------------------------------------------------------
  * on_flag_tags — THE flag ⇄ tag-name table (declared in serialize.h).
@@ -181,21 +154,6 @@ on_tag_name_for_flag(guint32 flag)
         if (on_flag_tags[i].flag == (OnFormatFlags)flag)
             return on_flag_tags[i].tag_name;
     return NULL;
-}
-
-/* ---------------------------------------------------------------------------
- * put_u32() — append a little-endian u32 to a byte array.
- *   buf — destination array.
- *   v   — value to append.
- * ------------------------------------------------------------------------- */
-static void
-put_u32(GByteArray *buf, guint32 v)
-{
-    guint8 b[4] = {
-        (guint8)(v & 0xff),          (guint8)((v >> 8) & 0xff),
-        (guint8)((v >> 16) & 0xff),  (guint8)((v >> 24) & 0xff),
-    };
-    g_byte_array_append(buf, b, 4);
 }
 
 /* ===========================================================================
@@ -367,38 +325,23 @@ on_image_png_bytes(GdkPixbuf *pixbuf)
 static void
 serialize_seg(const OnBufferSeg *seg, gpointer data)
 {
-    GByteArray *out = data;          /* the growing BNBF blob               */
-    guint8 rec;                      /* record type byte                    */
+    OnBnbfWriter *w = data;          /* the growing BNBF blob               */
 
     switch (seg->kind) {
     case ON_SEG_TEXT:
-        rec = REC_TEXT;
-        g_byte_array_append(out, &rec, 1);
-        put_u32(out, seg->flags);
-        put_u32(out, (guint32)seg->n_text);
-        g_byte_array_append(out, (const guint8 *)seg->text,
-                            (guint)seg->n_text);
+        on_bnbf_write_text(w, seg->flags, seg->text, seg->n_text);
         break;
 
-    case ON_SEG_CHECK: {
-        rec = REC_CHECK;
-        g_byte_array_append(out, &rec, 1);
-        guint8 state = seg->checked ? 1 : 0;
-        g_byte_array_append(out, &state, 1);
+    case ON_SEG_CHECK:
+        on_bnbf_write_check(w, seg->checked);
         break;
-    }
 
     case ON_SEG_TABLE:
-        rec = REC_TABLE;
-        g_byte_array_append(out, &rec, 1);
-        put_u32(out, seg->table->header ? TABLE_FLAG_HEADER : 0);
-        put_u32(out, (guint32)seg->table->rows);
-        put_u32(out, (guint32)seg->table->cols);
+        on_bnbf_write_table_begin(w, seg->table->header, seg->table->rows,
+                                  seg->table->cols);
         for (gint i = 0; i < seg->table->rows * seg->table->cols; i++) {
             const gchar *cell = g_ptr_array_index(seg->table->cells, i);
-            put_u32(out, (guint32)strlen(cell));
-            g_byte_array_append(out, (const guint8 *)cell,
-                                (guint)strlen(cell));
+            on_bnbf_write_table_cell(w, cell, strlen(cell));
         }
         break;
 
@@ -407,11 +350,7 @@ serialize_seg(const OnBufferSeg *seg, gpointer data)
         if (png_bytes != NULL) {
             gsize n_png = 0;         /* PNG byte count                      */
             gconstpointer png = g_bytes_get_data(png_bytes, &n_png);
-            rec = REC_IMAGE;
-            g_byte_array_append(out, &rec, 1);
-            put_u32(out, (guint32)seg->display_width);
-            put_u32(out, (guint32)n_png);
-            g_byte_array_append(out, (const guint8 *)png, n_png);
+            on_bnbf_write_image(w, (guint32)seg->display_width, png, n_png);
         }
         break;
     }
@@ -421,191 +360,10 @@ serialize_seg(const OnBufferSeg *seg, gpointer data)
 guint8 *
 on_note_serialize(GtkTextBuffer *buffer, gsize *out_len)
 {
-    GByteArray *out = g_byte_array_new();   /* the growing BNBF blob        */
-    g_byte_array_append(out, BNBF_MAGIC, 4);
-    put_u32(out, BNBF_VERSION);
-
-    on_buffer_walk(buffer, serialize_seg, out);
-
-    guint8 end = REC_END;            /* terminating record                  */
-    g_byte_array_append(out, &end, 1);
-
-    *out_len = out->len;
-    return g_byte_array_free(out, FALSE);
-}
-
-/* ---------------------------------------------------------------------------
- * get_u32() — read a little-endian u32, advancing *pos.
- *   data — blob bytes.
- *   len  — blob length.
- *   pos  — in/out read cursor.
- *   out  — receives the value.
- * Returns FALSE if fewer than 4 bytes remain.
- * ------------------------------------------------------------------------- */
-static gboolean
-get_u32(const guint8 *data, gsize len, gsize *pos, guint32 *out)
-{
-    if (*pos + 4 > len)
-        return FALSE;
-    *out = (guint32)data[*pos]
-         | ((guint32)data[*pos + 1] << 8)
-         | ((guint32)data[*pos + 2] << 16)
-         | ((guint32)data[*pos + 3] << 24);
-    *pos += 4;
-    return TRUE;
-}
-
-/* ===========================================================================
- * BNBF READER
- *
- * One cursor over a blob's records, so the header validation, the
- * per-record-type framing and every truncation check exist ONCE.  Both
- * consumers drive it: the full deserializer (which builds a GtkTextBuffer)
- * and the extractor (which only wants text and '!' lines).  They used to
- * carry their own copy of this dispatch, which is how a format tweak could
- * be applied to one and forgotten in the other.
- *
- * The reader never warns; it records why it stopped in `error` and lets the
- * caller decide (the deserializer reports, the extractor stops quietly).
- * ------------------------------------------------------------------------- */
-
-typedef struct {
-    const guint8 *data;              /* the blob                            */
-    gsize         len;               /* its size                            */
-    gsize         pos;               /* read cursor                         */
-    guint32       version;           /* format version from the header      */
-    gboolean      saw_end;           /* a REC_END was reached               */
-    const gchar  *error;             /* why the walk stopped, or NULL       */
-} OnBnbfReader;
-
-/* One record, as handed to the caller.  Only the fields belonging to
- * `type` are meaningful.                                                    */
-typedef struct {
-    guint8        type;              /* REC_TEXT / IMAGE / TABLE / CHECK    */
-    guint32       flags;             /* TEXT: ON_FMT_* bits of the run      */
-    const gchar  *text;              /* TEXT: run bytes (NOT terminated)    */
-    guint32       n_text;
-    const guint8 *png;               /* IMAGE: encoded bytes                */
-    guint32       n_png;
-    guint32       display_width;     /* IMAGE: stored display width (v2+)   */
-    gboolean      checked;           /* CHECK: the box's state              */
-    OnTable      *table;             /* TABLE: parsed; the CALLER owns it   */
-} OnBnbfRecord;
-
-/* bnbf_open() — validate the header and position at the first record.
- * Returns FALSE (with reader->error set) on a bad magic or version.         */
-static gboolean
-bnbf_open(OnBnbfReader *r, const guint8 *data, gsize len)
-{
-    r->data = data;
-    r->len  = len;
-    r->pos  = 4;                     /* past the magic                      */
-    r->version = 0;
-    r->saw_end = FALSE;
-    r->error   = NULL;
-
-    if (!magic_ok(data, len)) {
-        r->error = "bad or missing BNBF header";
-        return FALSE;
-    }
-    if (!get_u32(data, len, &r->pos, &r->version) ||
-        r->version < 1 || r->version > BNBF_VERSION) {
-        r->error = "unsupported BNBF version";
-        return FALSE;
-    }
-    return TRUE;
-}
-
-/* ---------------------------------------------------------------------------
- * bnbf_next() — read the next record, fully consuming it.
- * Returns FALSE at REC_END (reader->saw_end set), when the blob runs out, or
- * on a malformed record (reader->error set).  A TABLE record arrives with
- * rec->table allocated; the caller frees it with on_table_free().
- * ------------------------------------------------------------------------- */
-static gboolean
-bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
-{
-    if (r->error != NULL || r->pos >= r->len)
-        return FALSE;
-
-    memset(rec, 0, sizeof *rec);
-    rec->type = r->data[r->pos++];
-
-    switch (rec->type) {
-    case REC_END:
-        r->saw_end = TRUE;
-        return FALSE;
-
-    case REC_TEXT:
-        if (!get_u32(r->data, r->len, &r->pos, &rec->flags) ||
-            !get_u32(r->data, r->len, &r->pos, &rec->n_text) ||
-            r->pos + rec->n_text > r->len) {
-            r->error = "truncated TEXT record";
-            return FALSE;
-        }
-        rec->text = (const gchar *)r->data + r->pos;
-        r->pos += rec->n_text;
-        return TRUE;
-
-    case REC_IMAGE:
-        if (r->version >= 2 &&
-            !get_u32(r->data, r->len, &r->pos, &rec->display_width)) {
-            r->error = "truncated IMAGE record";
-            return FALSE;
-        }
-        if (!get_u32(r->data, r->len, &r->pos, &rec->n_png) ||
-            r->pos + rec->n_png > r->len) {
-            r->error = "truncated IMAGE record";
-            return FALSE;
-        }
-        rec->png = r->data + r->pos;
-        r->pos += rec->n_png;
-        return TRUE;
-
-    case REC_CHECK:
-        if (r->pos >= r->len) {
-            r->error = "truncated CHECK record";
-            return FALSE;
-        }
-        rec->checked = r->data[r->pos++] != 0;
-        return TRUE;
-
-    case REC_TABLE: {
-        guint32 tflags = 0, rows, cols;
-        if (r->version >= 4 &&
-            !get_u32(r->data, r->len, &r->pos, &tflags)) {
-            r->error = "truncated TABLE record";
-            return FALSE;
-        }
-        if (!get_u32(r->data, r->len, &r->pos, &rows) ||
-            !get_u32(r->data, r->len, &r->pos, &cols) ||
-            rows == 0 || cols == 0 || rows > 1024 || cols > 1024) {
-            r->error = "bad TABLE record";
-            return FALSE;
-        }
-        OnTable *t = on_table_new((gint)rows, (gint)cols);
-        t->header = (tflags & TABLE_FLAG_HEADER) != 0;
-        for (guint32 i = 0; i < rows * cols; i++) {
-            guint32 n;               /* cell byte length                    */
-            if (!get_u32(r->data, r->len, &r->pos, &n) ||
-                r->pos + n > r->len) {
-                on_table_free(t);
-                r->error = "truncated TABLE cell";
-                return FALSE;
-            }
-            gchar *cell = g_strndup((const gchar *)r->data + r->pos, n);
-            on_table_set(t, (gint)(i / cols), (gint)(i % cols), cell);
-            g_free(cell);
-            r->pos += n;
-        }
-        rec->table = t;              /* caller owns it                      */
-        return TRUE;
-    }
-
-    default:
-        r->error = "unknown record type";
-        return FALSE;
-    }
+    OnBnbfWriter w;                  /* the growing BNBF blob               */
+    on_bnbf_writer_init(&w);
+    on_buffer_walk(buffer, serialize_seg, &w);
+    return on_bnbf_writer_finish(&w, out_len);
 }
 
 /* ---------------------------------------------------------------------------
@@ -712,20 +470,20 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
     gtk_text_buffer_set_text(buffer, "", -1);
 
     OnBnbfReader r;                  /* the one record walker               */
-    if (!bnbf_open(&r, data, len)) {
+    if (!on_bnbf_open(&r, data, len)) {
         g_warning("deserialize: %s", r.error);
         return FALSE;
     }
 
     OnBnbfRecord rec;                /* the record being built from         */
-    while (bnbf_next(&r, &rec)) {
+    while (on_bnbf_next(&r, &rec)) {
         switch (rec.type) {
-        case REC_TEXT:
+        case ON_REC_TEXT:
             insert_with_flags(buffer, rec.text, (gssize)rec.n_text,
                               rec.flags);
             break;
 
-        case REC_IMAGE: {
+        case ON_REC_IMAGE: {
             /* Decode the PNG bytes and embed an image-carrying anchor.
              * Widgets (for on-screen display) are attached separately by
              * the editor; offscreen consumers just read the anchor data.   */
@@ -753,7 +511,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
             break;
         }
 
-        case REC_TABLE: {
+        case ON_REC_TABLE: {
             GtkTextIter end;
             gtk_text_buffer_get_end_iter(buffer, &end);
             GtkTextChildAnchor *anchor =
@@ -762,7 +520,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
             break;
         }
 
-        case REC_CHECK: {
+        case ON_REC_CHECK: {
             GtkTextIter end;
             gtk_text_buffer_get_end_iter(buffer, &end);
             GtkTextChildAnchor *anchor =
@@ -772,7 +530,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
         }
 
         default:
-            break;                   /* bnbf_next only yields the four      */
+            break;                   /* on_bnbf_next yields only the four   */
         }
     }
 
@@ -781,7 +539,7 @@ on_note_deserialize_scaled(GtkTextBuffer *buffer, const guint8 *data,
         return FALSE;
     }
     if (!r.saw_end) {
-        /* Ran off the end without seeing REC_END — tolerate but report.    */
+        /* Ran off the end without seeing ON_REC_END — tolerate but report.    */
         g_warning("deserialize: missing end marker");
         return FALSE;
     }
@@ -804,79 +562,6 @@ on_anchor_is_checkbox(GtkTextChildAnchor *anchor, gboolean *out_checked)
     if (out_checked != NULL)
         *out_checked = (v == 2);
     return v != 0;
-}
-
-glong
-on_list_prefix_chars(const gchar *head)
-{
-    if (g_str_has_prefix(head, "\xe2\x80\xa2 "))
-        return 2;                    /* bullet + one space                  */
-
-    glong d = 0;                     /* leading digit characters            */
-    while (g_ascii_isdigit(head[d]))
-        d++;
-    if (d > 0 && head[d] == '.' && head[d + 1] == ' ')
-        return d + 2;                /* "12. "                              */
-    return 0;
-}
-
-OnTable *
-on_table_new(gint rows, gint cols)
-{
-    OnTable *t = g_new0(OnTable, 1);
-    t->rows  = MAX(1, rows);
-    t->cols  = MAX(1, cols);
-    t->cells = g_ptr_array_new_with_free_func(g_free);
-    for (gint i = 0; i < t->rows * t->cols; i++)
-        g_ptr_array_add(t->cells, g_strdup(""));
-    return t;
-}
-
-void
-on_table_free(OnTable *table)
-{
-    if (table == NULL)
-        return;
-    g_ptr_array_free(table->cells, TRUE);
-    g_free(table);
-}
-
-const gchar *
-on_table_get(OnTable *table, gint r, gint c)
-{
-    if (r < 0 || r >= table->rows || c < 0 || c >= table->cols)
-        return "";
-    return g_ptr_array_index(table->cells, r * table->cols + c);
-}
-
-void
-on_table_set(OnTable *table, gint r, gint c, const gchar *text)
-{
-    if (r < 0 || r >= table->rows || c < 0 || c >= table->cols)
-        return;
-    gint i = r * table->cols + c;    /* row-major cell index                */
-    g_free(g_ptr_array_index(table->cells, i));
-    g_ptr_array_index(table->cells, i) =
-        g_strdup(text != NULL ? text : "");
-}
-
-void
-on_table_resize(OnTable *table, gint rows, gint cols)
-{
-    rows = MAX(1, rows);
-    cols = MAX(1, cols);
-
-    /* Build the new cell array, carrying over overlapping content.         */
-    GPtrArray *cells = g_ptr_array_new_with_free_func(g_free);
-    for (gint r = 0; r < rows; r++)
-        for (gint c = 0; c < cols; c++)
-            g_ptr_array_add(cells,
-                            g_strdup((r < table->rows && c < table->cols)
-                                     ? on_table_get(table, r, c) : ""));
-    g_ptr_array_free(table->cells, TRUE);
-    table->cells = cells;
-    table->rows  = rows;
-    table->cols  = cols;
 }
 
 void
@@ -915,15 +600,15 @@ gint
 on_note_count_images(const guint8 *data, gsize len)
 {
     OnBnbfReader r;                  /* the shared record walker            */
-    if (data == NULL || !bnbf_open(&r, data, len))
+    if (data == NULL || !on_bnbf_open(&r, data, len))
         return 0;
 
     gint n = 0;                      /* images seen so far                  */
     OnBnbfRecord rec;                /* the record being walked past        */
-    while (bnbf_next(&r, &rec)) {
-        if (rec.type == REC_IMAGE)
+    while (on_bnbf_next(&r, &rec)) {
+        if (rec.type == ON_REC_IMAGE)
             n++;
-        else if (rec.type == REC_TABLE)
+        else if (rec.type == ON_REC_TABLE)
             on_table_free(rec.table);    /* the reader hands ownership over */
     }
     return n;
@@ -933,16 +618,16 @@ GBytes *
 on_note_image_nth_png(const guint8 *data, gsize len, gint ord)
 {
     OnBnbfReader r;                  /* the shared record walker            */
-    if (data == NULL || ord < 0 || !bnbf_open(&r, data, len))
+    if (data == NULL || ord < 0 || !on_bnbf_open(&r, data, len))
         return NULL;
 
     gint n = 0;                      /* images seen so far                  */
     OnBnbfRecord rec;                /* the record being walked past        */
     GBytes *out = NULL;              /* the one payload we copy out         */
-    while (bnbf_next(&r, &rec)) {
-        if (rec.type == REC_TABLE) {
+    while (on_bnbf_next(&r, &rec)) {
+        if (rec.type == ON_REC_TABLE) {
             on_table_free(rec.table);
-        } else if (rec.type == REC_IMAGE && n++ == ord) {
+        } else if (rec.type == ON_REC_IMAGE && n++ == ord) {
             out = g_bytes_new(rec.png, rec.n_png);
             break;
         }
@@ -1053,59 +738,6 @@ on_note_buffer_load(OnDatabase *db, gint64 id, gint max_img_px)
 }
 
 /* ---------------------------------------------------------------------------
- * parse_due_date() — parse one date string: ISO "YYYY-MM-DD" (the form
- * the app writes) or the shorthand "M/D/YY" / "M/D/YYYY".  On success
- * *out_ts receives local midnight of that day as a UNIX timestamp.
- * ------------------------------------------------------------------------- */
-static gboolean
-parse_due_date(const gchar *s, gint64 *out_ts)
-{
-    gint y = 0, m = 0, d = 0;        /* parsed components                   */
-    gchar tail;                      /* catches trailing garbage            */
-    if (sscanf(s, "%d-%d-%d%c", &y, &m, &d, &tail) != 3 &&
-        sscanf(s, "%d/%d/%d%c", &m, &d, &y, &tail) != 3)
-        return FALSE;
-    if (y < 100)
-        y += 2000;                   /* "26" means 2026                     */
-    if (!g_date_valid_dmy((GDateDay)d, (GDateMonth)m, (GDateYear)y))
-        return FALSE;
-
-    GDateTime *dt = g_date_time_new_local(y, m, d, 0, 0, 0);
-    if (dt == NULL)
-        return FALSE;
-    *out_ts = g_date_time_to_unix(dt);
-    g_date_time_unref(dt);
-    return TRUE;
-}
-
-gboolean
-on_action_split_due(const gchar *rest, gsize *due_start, gint64 *due)
-{
-    /* The LAST word-boundary "due" whose remainder parses as a date wins
-     * ("send due diligence report due 2026-07-07" keeps its text).         */
-    const gchar *limit = rest + strlen(rest);   /* scan window end          */
-    while (limit > rest) {
-        const gchar *p = g_strrstr_len(rest, limit - rest, "due");
-        if (p == NULL)
-            return FALSE;
-        gboolean word = (p == rest ||
-                         g_ascii_isspace((guchar)p[-1])) &&
-                        g_ascii_isspace((guchar)p[3]);
-        if (word) {
-            gchar *date = g_strstrip(g_strdup(p + 3));
-            gboolean ok = parse_due_date(date, due);
-            g_free(date);
-            if (ok) {
-                *due_start = (gsize)(p - rest);
-                return TRUE;
-            }
-        }
-        limit = p;                   /* keep scanning leftward              */
-    }
-    return FALSE;
-}
-
-/* ---------------------------------------------------------------------------
  * action_finish_line() — helper for on_note_extract_actions(): if the
  * line just ended was an action line with real text, append it to *items
  * (text trimmed, any trailing "due <date>" split off into `due`,
@@ -1165,9 +797,9 @@ on_note_extract(const guint8 *data, gsize len, gchar **out_text,
 
     OnBnbfReader r;                  /* the same walker the loader uses     */
     OnBnbfRecord rec;
-    if (bnbf_open(&r, data, len)) {
-        while (bnbf_next(&r, &rec)) {
-            if (rec.type == REC_TEXT) {
+    if (on_bnbf_open(&r, data, len)) {
+        while (on_bnbf_next(&r, &rec)) {
+            if (rec.type == ON_REC_TEXT) {
                 if (text != NULL)
                     g_string_append_len(text, rec.text, rec.n_text);
                 for (guint32 i = 0; want_actions && i < rec.n_text; i++) {
@@ -1198,7 +830,7 @@ on_note_extract(const guint8 *data, gsize len, gchar **out_text,
                  * slot like any character, so such a line is never an
                  * action line.  Table cells additionally join the text,
                  * space-separated.                                         */
-                if (rec.type == REC_TABLE) {
+                if (rec.type == ON_REC_TABLE) {
                     if (text != NULL)
                         for (gint cell = 0;
                              cell < rec.table->rows * rec.table->cols;

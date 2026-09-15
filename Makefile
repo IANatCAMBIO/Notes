@@ -10,6 +10,8 @@
 # Targets:
 #     make          — build the `notes` binary
 #     make clean    — remove build artifacts (including dist/)
+#     make test     — headless tests of the block model (GLib only)
+#     make bnbf-scan — build/bnbf-scan, the blob round-trip scan
 #     make run      — build and launch the app
 #     make app      — macOS .app bundle → dist/Notes.app
 #                     (needs the macOS sips/iconutil tools; the bundle
@@ -63,6 +65,7 @@ SRCS     := src/main.c \
             src/cli.c \
             src/db.c \
             src/ipc.c \
+            src/bnbf.c \
             src/serialize.c \
             src/note_view.c \
             src/editor_window.c \
@@ -149,6 +152,34 @@ run-dev: $(BIN) $(DEV_DB) dev-check
 
 clean-dev:
 	rm -rf $(DEV_DIR)
+
+# ---------------------------------------------------------------------------
+# Headless tests and the blob scan.  Both build against GLib and SQLite
+# ONLY — no GTK on the line — which is what proves the block model
+# (document.[ch], bnbf.[ch]) needs none.
+#   make test              — the unit tests (GLib's g_test harness)
+#   make bnbf-scan         — build/bnbf-scan: round-trips every note blob
+#                            in a database COPY and reports what the
+#                            loader normalized (see tools/bnbf-scan.c)
+# ---------------------------------------------------------------------------
+MODEL_SRCS   := src/document.c src/bnbf.c
+MODEL_CFLAGS := -std=c11 -Wall -Wextra -g -Isrc \
+                $(shell $(PKGCONF) --cflags glib-2.0)
+MODEL_LIBS   := $(shell $(PKGCONF) --libs glib-2.0)
+
+build/test_document: tests/test_document.c $(MODEL_SRCS) src/document.h src/bnbf.h Makefile
+	@mkdir -p build
+	$(CC) $(MODEL_CFLAGS) -o $@ tests/test_document.c $(MODEL_SRCS) $(MODEL_LIBS)
+
+test: build/test_document
+	./build/test_document
+
+build/bnbf-scan: tools/bnbf-scan.c $(MODEL_SRCS) src/document.h src/bnbf.h Makefile
+	@mkdir -p build
+	$(CC) $(MODEL_CFLAGS) $(shell $(PKGCONF) --cflags sqlite3) -o $@ \
+	  tools/bnbf-scan.c $(MODEL_SRCS) $(MODEL_LIBS) $(shell $(PKGCONF) --libs sqlite3)
+
+bnbf-scan: build/bnbf-scan
 
 # Remove all build artifacts.
 clean:
@@ -313,4 +344,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run run-dev dev-check clean clean-dev app pkgroot deb rpm
+.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan app pkgroot deb rpm

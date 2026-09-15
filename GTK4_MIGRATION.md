@@ -753,6 +753,10 @@ One line per session: date, phase, item, outcome.
 - 2026-09-14 — plan written; survey numbers above.
 - 2026-09-15 — BLOCK_MODEL.md written: the OnDocument + drawn-view design
   that retires the anchored-widget family; no code yet.
+- 2026-09-15 — Block model step 1: `bnbf.[ch]` + `document.[ch]` (GLib
+  only), `make test` (25 tests, fuzzed undo/redo), `make bnbf-scan`; the
+  live database (copy) round-trips 1315/1354 byte-identical, the rest
+  explained, 0 unexplained.  Findings in BLOCK_MODEL.md "Step 1 — done".
 - 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
   code block on the last line (D30), `make run-dev` re-seeding the sandbox
   every run (order-only prerequisites).

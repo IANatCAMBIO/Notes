@@ -41,6 +41,8 @@ GtkDialog, …) is used on purpose and each site is marked; the build is
 | `make run` | builds and runs it against the database `notes.ini` names — the real one |
 | `make run-dev` | builds and runs it in `dev/`: its own ini (seeded from `notes.ini.defaults`), a throwaway database with a few notes, and a guard that refuses to start unless that ini points at `dev/db` |
 | `make clean-dev` | discards the sandbox |
+| `make test` | builds and runs `tests/test_document.c` against GLib alone (no GTK on the line): the block model's round trips, operations, undo and a fuzz |
+| `make bnbf-scan` | builds `build/bnbf-scan`, which round-trips every note blob in a database COPY through the block model and reports what changed (BLOCK_MODEL.md) |
 | `make clean` | removes `build/` and the binary |
 | `make app` | macOS: `dist/Notes.app` (icon via `sips`/`iconutil`; NOT self-contained — it links MacPorts' GTK dynamically) |
 | `make deb` / `make rpm` | Linux packages; build ON the target distribution (`dpkg-deb` / `rpmbuild`); they install to `/opt/notes` plus a `/usr/bin/notes` wrapper |

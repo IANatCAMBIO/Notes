@@ -1,38 +1,13 @@
 /* ===========================================================================
- * serialize.h — BNBF binary note format
+ * serialize.h — BNBF ⇄ GtkTextBuffer
  *
- * Converts a GtkTextBuffer (rich text + inline images) to and from the
- * "BNBF" binary blob stored in SQLite (originally "Blue Notes Binary Format").
- *
- * BNBF layout (all integers little-endian):
- *
- *   [4 bytes]  magic "BNBF"
- *   [u32]      format version (currently 5; 1–4 are still readable)
- *   ...records...
- *   [u8 0x00]  end marker
- *
- * Record types:
- *   [u8 0x01]  TEXT  : [u32 flags] [u32 byte_len] [byte_len UTF-8 bytes]
- *   [u8 0x02]  IMAGE : [u32 display_width]            (version >= 2 only)
- *                      [u32 png_len] [png_len bytes of PNG data]
- *   [u8 0x03]  TABLE : [u32 tflags]                   (version >= 4 only;
- *                                                      bit 0 = header row)
- *                      [u32 rows] [u32 cols]          (version >= 3)
- *                      rows*cols x ([u32 len] [len UTF-8 bytes]) row-major
- *   [u8 0x04]  CHECK : [u8 state]                     (version >= 5)
- *                      a task-list checkbox (0 = unchecked, 1 = checked);
- *                      rendered as a native GtkCheckButton in the editor
- *
- * IMAGE records always hold the image at its ORIGINAL resolution; the
- * display_width field records how wide the user chose to show it in the
- * editor (0 = default thumbnail sizing).  Version 1 blobs lack the
- * display_width field.
- *
- * A TEXT record holds one "run": a maximal span of characters that all
- * share the same formatting flags.  Formatting is expressed as a bitmask
- * (ON_FMT_*) so the format is self-contained and easy to parse from any
- * language — this is also what export.c consumes indirectly by walking a
- * deserialized buffer.
+ * The GtkTextBuffer side of the note format: a buffer (rich text + child
+ * anchors carrying images, checkboxes and tables) to and from the "BNBF"
+ * blob stored in SQLite, plus the cheap record walks (plain text, action
+ * items, image ordinals) that read a blob without building a buffer.
+ * The format itself — flags, records, reader and writer — is bnbf.h,
+ * which needs no GTK; this file is what the block model (document.[ch])
+ * replaces.
  * =========================================================================== */
 
 #ifndef BLUE_SERIALIZE_H
@@ -40,25 +15,8 @@
 
 #include <gtk/gtk.h>
 
+#include "bnbf.h"                    /* the format: flags, reader, writer  */
 #include "db.h"                      /* OnDatabase, OnActionItem            */
-
-/* ---------------------------------------------------------------------------
- * Formatting flag bits used in BNBF TEXT records.  Each bit corresponds to
- * exactly one named GtkTextTag (see ON_TAGNAME_* below).
- * ------------------------------------------------------------------------- */
-typedef enum {
-    ON_FMT_BOLD        = 1 << 0,   /* bold text                             */
-    ON_FMT_ITALIC      = 1 << 1,   /* italic text                           */
-    ON_FMT_UNDERLINE   = 1 << 2,   /* underlined text                       */
-    ON_FMT_STRIKE      = 1 << 3,   /* strikethrough text                    */
-    ON_FMT_H1          = 1 << 4,   /* heading level 1 (paragraph)           */
-    ON_FMT_H2          = 1 << 5,   /* heading level 2 (paragraph)           */
-    ON_FMT_CODEBLOCK   = 1 << 6,   /* monospace code block (paragraph)      */
-    ON_FMT_LIST_BULLET = 1 << 7,   /* bulleted list item (paragraph)        */
-    ON_FMT_LIST_NUMBER = 1 << 8,   /* numbered list item (paragraph)        */
-    ON_FMT_TAG         = 1 << 9,   /* inline #tag token                     */
-    ON_FMT_LIST_CHECK  = 1 << 10,  /* task-list item with checkbox (para)   */
-} OnFormatFlags;
 
 /* Task checkboxes are child anchors carrying their state as object data;
  * the editor attaches a native GtkCheckButton at each.                      */
@@ -69,13 +27,6 @@ typedef enum {
 void on_anchor_set_checkbox(GtkTextChildAnchor *anchor, gboolean checked);
 gboolean on_anchor_is_checkbox(GtkTextChildAnchor *anchor,
                                gboolean *out_checked);
-
-/* on_list_prefix_chars() — length in CHARACTERS of the literal list
- * prefix at the start of `head` ("\xe2\x80\xa2 " bullet or "12. "), or 0
- * if none.  `head` is a short UTF-8 probe
- * of the line start (callers pass ~7 chars).  The one parser both the
- * editor (prefix stripping) and the exporters use.                          */
-glong on_list_prefix_chars(const gchar *head);
 
 /* Names of the GtkTextTags the editor registers on every note buffer.
  * serialize.c maps between these tags and the ON_FMT_* bits.               */
@@ -90,16 +41,6 @@ glong on_list_prefix_chars(const gchar *head);
 #define ON_TAGNAME_LIST_NUMBER "on-list-number"
 #define ON_TAGNAME_LIST_CHECK  "on-list-check"
 #define ON_TAGNAME_TAG         "on-tag"
-
-/* Format-bit groups: the four inline (character) styles, and the six
- * mutually exclusive paragraph styles (applied to whole lines only —
- * apply_paragraph_format clears the others first, and loading heals any
- * stragglers, so at most one PARA bit is ever set on a character).          */
-#define ON_FMT_INLINE_MASK (ON_FMT_BOLD | ON_FMT_ITALIC | \
-                            ON_FMT_UNDERLINE | ON_FMT_STRIKE)
-#define ON_FMT_PARA_MASK   (ON_FMT_H1 | ON_FMT_H2 | ON_FMT_CODEBLOCK | \
-                            ON_FMT_LIST_BULLET | ON_FMT_LIST_NUMBER | \
-                            ON_FMT_LIST_CHECK)
 
 /* ---------------------------------------------------------------------------
  * The canonical flag ⇄ tag-name table.  THE single copy in the program —
@@ -187,8 +128,6 @@ void on_buffer_ensure_tags(GtkTextBuffer *buffer);
  * carry a copy each, with comments warning that the two must stay in step.
  * Now only the per-segment action differs.
  * ------------------------------------------------------------------------- */
-typedef struct OnTable OnTable;      /* defined with the table API below     */
-
 typedef enum {
     ON_SEG_TEXT,                     /* a run of identically-styled text    */
     ON_SEG_IMAGE,                    /* an embedded image                   */
@@ -313,21 +252,6 @@ void on_note_extract(const guint8 *data, gsize len, gchar **out_text,
                      GList **out_actions);
 
 /* ---------------------------------------------------------------------------
- * on_action_split_due() — locate a trailing "due <date>" in an action
- * item's rest-of-line text.  The date is ISO "YYYY-MM-DD" (what the app
- * writes) or "M/D/YY" / "M/D/YYYY"; the last word-boundary "due" whose
- * remainder parses wins.  The one parser both the extractor and the
- * editor's due-date rewriting use (like on_list_prefix_chars).
- *   rest      — the text after the line's '!' (NUL-terminated).
- *   due_start — receives the BYTE offset in `rest` of the "due" word
- *               (the item text ends before it, whitespace-trimmed).
- *   due       — receives local midnight of the date as a UNIX timestamp.
- * Returns TRUE when a due date was found and parsed.
- * ------------------------------------------------------------------------- */
-gboolean on_action_split_due(const gchar *rest, gsize *due_start,
-                             gint64 *due);
-
-/* ---------------------------------------------------------------------------
  * on_buffer_first_line() — extract the note title: the text of the first
  * non-empty line, or "New Note" if the buffer is empty.
  *   buffer — buffer to inspect.
@@ -431,36 +355,6 @@ GBytes *on_note_image_nth_png(const guint8 *data, gsize len, gint ord);
  * Returns TRUE when the header parsed.
  * ------------------------------------------------------------------------- */
 gboolean on_png_probe_size(const guint8 *png, gsize n_png, gint *w, gint *h);
-
-/* ---------------------------------------------------------------------------
- * OnTable — the data behind an embedded table anchor.
- *
- * Fields:
- *   rows/cols — current dimensions.
- *   header    — whether the first row is styled/exported as a header.
- *   cells     — rows*cols owned strings, row-major (never NULL entries;
- *               cell text may contain newlines).
- * ------------------------------------------------------------------------- */
-struct OnTable {
-    gint       rows;
-    gint       cols;
-    gboolean   header;
-    GPtrArray *cells;
-};
-
-/* on_table_new() — a rows×cols table of empty cells.                        */
-OnTable *on_table_new(gint rows, gint cols);
-
-/* on_table_free() — release a table and its cell strings.                   */
-void on_table_free(OnTable *table);
-
-/* on_table_get()/on_table_set() — cell access (row r, column c).            */
-const gchar *on_table_get(OnTable *table, gint r, gint c);
-void on_table_set(OnTable *table, gint r, gint c, const gchar *text);
-
-/* on_table_resize() — grow/shrink to rows×cols, preserving overlapping
- * cells (new cells become empty; dimensions clamp to at least 1×1).         */
-void on_table_resize(OnTable *table, gint rows, gint cols);
 
 /* on_anchor_set_table() — attach `table` to an anchor (ownership passes
  * to the anchor).  on_anchor_get_table() reads it back (borrowed).          */

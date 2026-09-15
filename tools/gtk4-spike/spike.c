@@ -23,6 +23,7 @@
  */
 
 #include <gtk/gtk.h>
+#include <stdio.h>
 
 enum {
     COL_NAME,                        /* row label                           */
@@ -41,6 +42,7 @@ static GtkWidget    *overlay_label;
 static gint          overlay_buffer_y;   /* buffer y the label was placed at */
 static guint         motion_calls;       /* ::motion count for one drag      */
 static guint         drop_calls;         /* ::drop count for one drag        */
+static gboolean      veto_armed;         /* selection veto is installed      */
 
 /*
  * tree_add — append one row under parent (NULL = root).
@@ -120,6 +122,118 @@ tree_find_id(gint64 id, GtkTreeIter *out)
 }
 
 /*
+ * veto_select — GtkTreeSelectionFunc that refuses every selection change.
+ * Installed for the duration of a press on an already-selected row so the
+ * tree view's own click gesture cannot collapse a multi-selection before a
+ * drag has had the chance to start (CLAUDE.md quirk #15, GTK4 edition).
+ *
+ * Output:
+ *   FALSE always — the selection may not change.
+ */
+static gboolean
+veto_select(GtkTreeSelection *sel, GtkTreeModel *m, GtkTreePath *p,
+            gboolean cur, gpointer data)
+{
+    (void)sel; (void)m; (void)p; (void)cur; (void)data;
+    return FALSE;
+}
+
+/*
+ * veto_lift — remove the veto if it is installed.
+ */
+static void
+veto_lift(void)
+{
+    if (!veto_armed)
+        return;
+    gtk_tree_selection_set_select_function(gtk_tree_view_get_selection(tree),
+                                           NULL, NULL, NULL);
+    veto_armed = FALSE;
+}
+
+/*
+ * on_press_capture — GtkGestureClick::pressed in the CAPTURE phase, so it
+ * runs BEFORE the tree view's own bubble-phase click gesture.  Arms the
+ * veto when an unmodified press lands on a row that is already part of a
+ * multi-selection.
+ *
+ * Inputs:
+ *   g       — the gesture
+ *   n_press — click count
+ *   x, y    — widget coordinates
+ */
+static void
+on_press_capture(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                 gpointer data)
+{
+    (void)data;
+    GtkTreePath *path = NULL;
+    gint bx, by;
+
+    if (n_press != 1)
+        return;
+    GdkModifierType state =
+        gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(g));
+    if (state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK | GDK_META_MASK))
+        return;
+
+    gtk_tree_view_convert_widget_to_bin_window_coords(tree, (gint)x, (gint)y,
+                                                      &bx, &by);
+    if (!gtk_tree_view_get_path_at_pos(tree, bx, by, &path, NULL, NULL, NULL))
+        return;
+
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(tree);
+    if (gtk_tree_selection_path_is_selected(sel, path) &&
+        gtk_tree_selection_count_selected_rows(sel) >= 2) {
+        gtk_tree_selection_set_select_function(sel, veto_select, NULL, NULL);
+        veto_armed = TRUE;
+        g_print("Q3  press on a selected row with %d selected: veto armed\n",
+                gtk_tree_selection_count_selected_rows(sel));
+    }
+    gtk_tree_path_free(path);
+}
+
+/*
+ * on_release_capture — GtkGestureClick::released.  A plain click (no drag
+ * began, so the veto is still armed) collapses the selection to the row
+ * under the pointer, which is what the vetoed press would have done.
+ */
+static void
+on_release_capture(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                   gpointer data)
+{
+    (void)g; (void)n_press; (void)data;
+    GtkTreePath *path = NULL;
+    gint bx, by;
+
+    if (!veto_armed)
+        return;
+    veto_lift();
+    gtk_tree_view_convert_widget_to_bin_window_coords(tree, (gint)x, (gint)y,
+                                                      &bx, &by);
+    if (gtk_tree_view_get_path_at_pos(tree, bx, by, &path, NULL, NULL, NULL)) {
+        gtk_tree_view_set_cursor(tree, path, NULL, FALSE);
+        gtk_tree_path_free(path);
+        g_print("Q3  plain click: veto lifted, selection collapsed to 1\n");
+    }
+}
+
+/*
+ * on_cancel_capture — GtkGestureClick::cancel.  The drag source claiming
+ * the sequence cancels this gesture; drop the veto without collapsing.
+ */
+static void
+on_cancel_capture(GtkGesture *g, GdkEventSequence *seq, gpointer data)
+{
+    (void)g; (void)seq; (void)data;
+    if (veto_armed) {
+        veto_lift();
+        g_print("Q3  click gesture cancelled (drag took over): veto lifted, "
+                "selection kept\n");
+    }
+}
+
+/*
  * on_drag_prepare — GtkDragSource::prepare.  Identify the row under the
  * pointer and hand its id over as the drag content.  Also answers Q3 by
  * reporting how many rows are selected at the moment the drag starts.
@@ -149,6 +263,7 @@ on_drag_prepare(GtkDragSource *source, gdouble x, gdouble y, gpointer data)
     gtk_tree_model_get(GTK_TREE_MODEL(store), &it, COL_ID, &id, -1);
     gtk_tree_path_free(path);
 
+    veto_lift();                          /* a drag began: keep the selection */
     gint nsel = gtk_tree_selection_count_selected_rows(
         gtk_tree_view_get_selection(tree));
     g_print("Q3  prepare: dragging id=%" G_GINT64_FORMAT
@@ -198,9 +313,45 @@ on_drop_leave(GtkDropTarget *target, gpointer data)
 }
 
 /*
+ * move_row — move the leaf row carrying id relative to dst.
+ *
+ * Inputs:
+ *   id  — id of the row to move
+ *   dst — target row (copied first: moving invalidates nothing in a
+ *         GtkTreeStore, but dst may itself be the dragged row's sibling)
+ *   pos — before / after / into
+ *
+ * Output:
+ *   TRUE if the row was found and moved.
+ */
+static gboolean
+move_row(gint64 id, GtkTreeIter *dst, GtkTreeViewDropPosition pos)
+{
+    GtkTreeIter src, moved;
+    gchar *name;
+
+    if (!tree_find_id(id, &src))
+        return FALSE;
+    gtk_tree_model_get(GTK_TREE_MODEL(store), &src, COL_NAME, &name, -1);
+    switch (pos) {
+    case GTK_TREE_VIEW_DROP_BEFORE:
+        gtk_tree_store_insert_before(store, &moved, NULL, dst); break;
+    case GTK_TREE_VIEW_DROP_AFTER:
+        gtk_tree_store_insert_after(store, &moved, NULL, dst);  break;
+    default:
+        gtk_tree_store_append(store, &moved, dst);              break;
+    }
+    gtk_tree_store_set(store, &moved, COL_NAME, name, COL_ID, id, -1);
+    gtk_tree_store_remove(store, &src);
+    g_free(name);
+    return TRUE;
+}
+
+/*
  * on_drop — GtkDropTarget::drop.  THE measurement for Q1: log how many
- * times this ran for the drag and with what coordinates, then perform the
- * move (leaf rows only — enough for the spike).
+ * times this ran for the drag and with what coordinates.  Then, as the
+ * app does, move the WHOLE selection when the dragged row is part of it
+ * (Q3 at drop time), else just the dragged row.  Leaf rows only.
  *
  * Inputs:
  *   target — the drop target
@@ -217,6 +368,7 @@ on_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
     (void)target; (void)data;
     GtkTreePath *path = NULL;
     GtkTreeViewDropPosition pos;
+    GtkTreeModel *m = GTK_TREE_MODEL(store);
 
     drop_calls++;
     g_print("Q1  drop #%u at widget (%.0f,%.0f) after %u motion calls",
@@ -227,32 +379,57 @@ on_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y,
         g_print(" — no row there, refused\n");
         return FALSE;
     }
+    GtkTreeIter dst;
+    gtk_tree_model_get_iter(m, &dst, path);
 
-    gint64 id = g_value_get_int64(value);
-    GtkTreeIter src, dst, moved;
-    gchar *name;
-    if (!tree_find_id(id, &src)) {
-        g_print(" — source id %" G_GINT64_FORMAT " vanished\n", id);
-        gtk_tree_path_free(path);
-        return FALSE;
+    /* Collect the ids to move: the selection if it contains the dragged
+     * row, else the dragged row alone.                                    */
+    gint64 dragged = g_value_get_int64(value);
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(tree);
+    GList *rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+    gboolean in_sel = FALSE;
+    for (GList *l = rows; l; l = l->next) {
+        GtkTreeIter it;
+        gint64 id;
+        gtk_tree_model_get_iter(m, &it, l->data);
+        gtk_tree_model_get(m, &it, COL_ID, &id, -1);
+        g_array_append_val(ids, id);
+        if (id == dragged)
+            in_sel = TRUE;
     }
-    gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &dst, path);
+    g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+    if (!in_sel) {
+        g_array_set_size(ids, 0);
+        g_array_append_val(ids, dragged);
+    }
     gtk_tree_path_free(path);
-    gtk_tree_model_get(GTK_TREE_MODEL(store), &src, COL_NAME, &name, -1);
 
-    const gchar *how;
-    switch (pos) {
-    case GTK_TREE_VIEW_DROP_BEFORE:
-        gtk_tree_store_insert_before(store, &moved, NULL, &dst); how = "before"; break;
-    case GTK_TREE_VIEW_DROP_AFTER:
-        gtk_tree_store_insert_after(store, &moved, NULL, &dst);  how = "after";  break;
-    default:
-        gtk_tree_store_append(store, &moved, &dst);              how = "into";   break;
+    /* The target must not be one of the moved rows.                      */
+    gint64 dst_id;
+    gtk_tree_model_get(m, &dst, COL_ID, &dst_id, -1);
+    for (guint i = 0; i < ids->len; i++) {
+        if (g_array_index(ids, gint64, i) == dst_id) {
+            g_print(" — target is among the dragged rows, refused\n");
+            g_array_free(ids, TRUE);
+            return FALSE;
+        }
     }
-    gtk_tree_store_set(store, &moved, COL_NAME, name, COL_ID, id, -1);
-    gtk_tree_store_remove(store, &src);
-    g_print(" — moved \"%s\" %s target\n", name, how);
-    g_free(name);
+
+    /* Moving invalidates the dst iter only if dst's parent changes, which
+     * a leaf move never does; re-find it by id after each move anyway.   */
+    guint moved = 0;
+    for (guint i = 0; i < ids->len; i++) {
+        if (tree_find_id(dst_id, &dst) &&
+            move_row(g_array_index(ids, gint64, i), &dst, pos))
+            moved++;
+    }
+    g_print(" — moved %u of %u row(s) %s target (Q3: %u selected at DROP)\n",
+            moved, ids->len,
+            pos == GTK_TREE_VIEW_DROP_BEFORE ? "before" :
+            pos == GTK_TREE_VIEW_DROP_AFTER  ? "after"  : "into",
+            ids->len);
+    g_array_free(ids, TRUE);
     gtk_tree_view_expand_all(tree);
     return TRUE;
 }
@@ -285,10 +462,30 @@ build_tree(void)
                                 GTK_SELECTION_MULTIPLE);
     gtk_tree_view_expand_all(tree);
 
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed",  G_CALLBACK(on_press_capture),   NULL);
+    g_signal_connect(click, "released", G_CALLBACK(on_release_capture), NULL);
+    g_signal_connect(click, "cancel",   G_CALLBACK(on_cancel_capture),  NULL);
+    gtk_widget_add_controller(GTK_WIDGET(tree), GTK_EVENT_CONTROLLER(click));
+
     GtkDragSource *src = gtk_drag_source_new();
     gtk_drag_source_set_actions(src, GDK_ACTION_MOVE);
     g_signal_connect(src, "prepare", G_CALLBACK(on_drag_prepare), NULL);
     gtk_widget_add_controller(GTK_WIDGET(tree), GTK_EVENT_CONTROLLER(src));
+
+    /* GTK 4.22 bug, measured in this spike: gtk_tree_view_set_drag_dest_row()
+     * segfaults on the next paint (NULL TreeViewDragInfo->cssnode in the
+     * drop-indicator branch of gtk_tree_view_bin_snapshot) unless
+     * gtk_tree_view_enable_model_drag_dest() has run, because only that
+     * creates the "dndtarget" CSS node.  Enable it with an EMPTY format set:
+     * its built-in GtkDropTargetAsync then matches nothing and never fires,
+     * while the node exists for the indicator our own target asks for.     */
+    GdkContentFormats *none = gdk_content_formats_new(NULL, 0);
+    gtk_tree_view_enable_model_drag_dest(tree, none, 0);
+    gdk_content_formats_unref(none);
 
     GtkDropTarget *dst = gtk_drop_target_new(G_TYPE_INT64, GDK_ACTION_MOVE);
     g_signal_connect(dst, "motion", G_CALLBACK(on_drop_motion), NULL);
@@ -452,6 +649,7 @@ on_activate(GtkApplication *app, gpointer data)
 int
 main(int argc, char *argv[])
 {
+    setvbuf(stdout, NULL, _IOLBF, 0);    /* log survives a crash when piped */
     GtkApplication *app = gtk_application_new("io.camb.notes.gtk4spike",
                                               G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);

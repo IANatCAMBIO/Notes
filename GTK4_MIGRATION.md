@@ -31,7 +31,9 @@ pace, and this plan is built so it can be paused after any phase.
 1. Read this file.  Read CLAUDE.md, but see "Quirks that do not carry over"
    below before applying any of its GTK quirks to GTK4 code.
 2. Work in the `gtk4` worktree, never on `main` (exception: Phase 2, which
-   is GTK3-legal and is done on `main` on purpose).
+   is GTK3-legal and is done on `main` on purpose).  THIS FILE is edited on
+   `gtk4` only — a Phase 2 session on `main` ticks its boxes here after the
+   rebase, so there is never a second diverging copy.
 3. Do ONE checklist item, `make` clean under `-Wall -Wextra`, tick the box,
    add every non-obvious mapping to Decisions, commit.  Then `/clear`.
    Compaction summaries lose exactly the decisions this file must keep.
@@ -140,14 +142,17 @@ reorder between rows, and a `GtkTextView` with one anchored image and one
 `add_overlay` child that must stay put across scrolling.  Answers the two
 questions the estimate hangs on.  Stop the port here if either is ugly.
 
-- [ ] Install `gtk4 +quartz` (MacPorts) — `sudo port install gtk4 +quartz`
-- [ ] Spike builds and runs on macOS
-- [ ] Deprecated tree-view + DropTarget: drop lands once, with real
-      coordinates, on quartz (the quirk-13 question)
-- [ ] Multi-selection survives a press-and-drag (the quirk-15 question)
-- [ ] `add_overlay` child rides scrolling at 1×, top margin behaviour noted
-- [ ] Findings written to Decisions below
-- [ ] Verdict: go / no-go
+- [x] Install `gtk4 +quartz` (MacPorts) — 4.22.4
+- [x] Spike builds and runs on macOS (`tools/gtk4-spike/`, kept on the
+      branch as the reference for the three recipes below)
+- [x] Deprecated tree-view + DropTarget: drop lands once, with real
+      coordinates, on quartz — YES (found a GTK crash on the way, see D5)
+- [x] Multi-selection survives a press-and-drag — NOT by itself (quirk 15
+      persists) but the GTK3 remedy ports cleanly, see D7
+- [x] `add_overlay` child rides scrolling at 1×, top margin behaviour noted
+      — YES, see D6
+- [x] Findings written to Decisions below
+- [x] Verdict: **GO** (2026-09-14)
 
 ### Phase 1 — mechanical sweep (1 week) — makes the branch compile
 
@@ -320,11 +325,64 @@ add a second idiom.
 - **2026-09-14 — `GdkPixbuf` stays the in-memory image type inside
   `serialize.c`** (the `"on-png"` GBytes cache, `png_decode_capped`, the
   PNG-bytes-verbatim contract all live on it).  Textures are made at the
-  widget edge (`gdk_texture_new_for_pixbuf`) and never cached — the pixbuf
-  is the one source of truth, as today.
+  widget edge and never cached — the pixbuf is the one source of truth, as
+  today.  **`gdk_texture_new_for_pixbuf` is DEPRECATED since 4.20** (the
+  spike build says so), so the edge is: `gdk_texture_new_from_bytes` over
+  the cached `"on-png"` GBytes where they exist (full-res editor images —
+  GTK decodes the PNG itself, no pixbuf round trip), and
+  `gdk_memory_texture_new` over the pixbuf's pixels for capped/scaled
+  decodes (thumbnails, viewer fits) whose bytes no longer match the PNG.
+
+- **D5 · 2026-09-14 — Tree-view drop targets: our own `GtkDropTarget`, PLUS
+  `gtk_tree_view_enable_model_drag_dest()` with an EMPTY format set.**
+  Measured on 4.22.4/quartz: a `GtkDropTarget` on the deprecated
+  `GtkTreeView` works exactly as wanted — `::motion` per pointer move,
+  `::drop` ONCE at release with the release coordinates (quirk 13's mid-drag
+  data requests do not exist in GTK4).  But `gtk_tree_view_set_drag_dest_row()`
+  — public API, the only way to show the drop indicator — SEGFAULTS on the
+  next paint unless `enable_model_drag_dest` has run: the indicator branch
+  of `gtk_tree_view_bin_snapshot` reads `TreeViewDragInfo->cssnode`, and only
+  `enable_model_drag_dest` creates that struct and its `dndtarget` CSS node
+  (GTK3 drew the indicator with a style class on the widget, hence no such
+  dependency).  Verified in the disassembly (NULL+0x20 after
+  `g_object_get_data("gtk-tree-view-drag-info")`) and in
+  `gtk/deprecated/gtktreeview.c` 4.22.4.  Workaround: call
+  `enable_model_drag_dest(view, gdk_content_formats_new(NULL, 0), 0)` once at
+  build — its built-in `GtkDropTargetAsync` matches nothing and never fires,
+  our target does all the work, the node exists.  Worth filing upstream.
+- **D6 · 2026-09-14 — `gtk_text_view_add_overlay` replaces
+  `add_child_in_window` outright; quirks 1 and 2 reduce to "add the top
+  margin".**  Measured: the child is allocated at `buffer_y + top_margin −
+  scroll` on EVERY allocation (settled readings: delta = 12 = the margin, at
+  every scroll position), so it rides scrolling at 1× and there is no
+  first-allocation special case.  Place with `add_overlay(view, w, x,
+  buffer_y)` — GTK adds the margin — and `move_overlay` the same way.
+  Measurement note for anyone repeating it: `vadjustment::value-changed`
+  fires BEFORE the re-layout, so a reading taken there shows the previous
+  frame's position; read in a tick callback or after settle.
+- **D7 · 2026-09-14 — Quirk 15 persists on GTK4 and the GTK3 remedy ports
+  as-is.**  The deprecated tree view's own click gesture still collapses a
+  multi-selection on an unmodified press (measured: `1 row(s) selected` at
+  drag start without the fix).  Recipe (spike, `on_press_capture` et al.):
+  a `GtkGestureClick` in the CAPTURE phase (runs before the view's own
+  bubble-phase gesture) that, on an unmodified press over an already-selected
+  row with ≥2 selected, installs a vetoing `GtkTreeSelectionFunc`; lifted in
+  `GtkDragSource::prepare` (a drag began — selection kept, measured 2 at
+  prepare AND 2 at drop), in `::released` (a plain click — collapse via
+  `gtk_tree_view_set_cursor`), and in `::cancel`.  Modifier state comes from
+  `gtk_event_controller_get_current_event_state`.
+- **D8 · 2026-09-14 — In-process drag content is a typed `GValue`.**
+  `gdk_content_provider_new_typed(G_TYPE_INT64, id)` + `gtk_drop_target_new
+  (G_TYPE_INT64, …)` transfers within the process with no serialization.  The
+  app needs kind + ids (one folder, or N notes): Phase 5 defines ONE boxed
+  GType for that and both views use it.  No MIME types, no `GdkContentFormats`
+  matching, nothing cross-process — the sidebar never accepts external drops.
 
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-14 — Phase 0 complete, verdict GO.  gtk4 4.22.4 +quartz installed;
+  spike measured Q1/Q2/Q3 (D5–D8); one GTK crash found and worked around
+  (D5); `gdk_texture_new_for_pixbuf` deprecation folded into D4.

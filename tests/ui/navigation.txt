@@ -1,0 +1,57 @@
+# Word and line movement, select-all, replacing a selection, paragraph
+# toggles over a selection.
+text one two three
+key Return
+text four five
+# Word steps (Alt on macOS, Ctrl elsewhere — "word" in the probe is both).
+key Left alt ctrl
+caret 1 5
+key Left alt ctrl
+caret 1 0
+key Left
+caret 0 13
+key Home
+caret 0 0
+key End
+caret 0 13
+# A word step at a block's end lands on the next block's start.
+key Right alt ctrl
+caret 1 0
+key Down
+caret 1 0
+key Up
+caret 0 0
+key End
+key Left alt ctrl
+caret 0 8
+# Shift+Home selects to the line start; typing replaces it.
+key Home shift
+text ONE
+check 0 para ONEthree
+undo
+check 0 para one two three
+# Select all and make it a numbered list, then body text again.
+key a primary
+para number
+check 0 number one two three
+check 1 number four five
+para number
+check 0 para one two three
+check 1 para four five
+# Select all, type: one block remains.
+key a primary
+text replaced
+check 0 para replaced
+undo
+check 0 para one two three
+check 1 para four five
+# Code blocks: Enter continues them, Backspace at the start joins.
+key End
+para code
+key Return
+text more code
+check 1 code four five
+check 2 code more code
+key Home
+key BackSpace
+check 1 code four fivemore code

@@ -150,15 +150,6 @@ static void     editor_save(OnEditor *ed);
 static void     editor_queue_autosave(OnEditor *ed);
 static void     editor_status_dirty_update(OnEditor *ed);
 
-/* editor_buffer() — the view's buffer, for the few window-side reads that
- * need it whole: the blank test, the tag collection, the live action
- * edits.  Never written to from here.                                       */
-static GtkTextBuffer *
-editor_buffer(OnEditor *ed)
-{
-    return gtk_text_view_get_buffer(GTK_TEXT_VIEW(ed->view));
-}
-
 /* ===========================================================================
  * inline and paragraph formatting — the "win." actions over the view API
  * =========================================================================== */
@@ -327,8 +318,8 @@ static GdkPaintable *
 editor_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
 {
     (void)box_w; (void)box_h;
-    GdkPixbuf *orig = on_note_view_image_nth(((OnEditor *)host)->view, idx);
-    return orig != NULL ? GDK_PAINTABLE(on_app_texture_for_pixbuf(orig)) : NULL;
+    GdkTexture *tex = on_note_view_image_texture(((OnEditor *)host)->view, idx);
+    return tex != NULL ? GDK_PAINTABLE(g_object_ref(tex)) : NULL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -345,9 +336,9 @@ editor_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
 static gchar *
 editor_viewer_caption(gpointer host, gint idx)
 {
-    OnEditor  *ed   = host;          /* owning editor                       */
-    GdkPixbuf *orig = on_note_view_image_nth(ed->view, idx);
-    if (orig == NULL)
+    OnEditor   *ed  = host;          /* owning editor                       */
+    GdkTexture *tex = on_note_view_image_texture(ed->view, idx);
+    if (tex == NULL)
         return NULL;
 
     gchar *note = on_note_view_first_line(ed->view);
@@ -355,7 +346,7 @@ editor_viewer_caption(gpointer host, gint idx)
         "%s \xe2\x80\x94 image %d of %d \xe2\x80\x94 %d \xc3\x97 %d",
         (note != NULL && *note != '\0') ? note : "Untitled",
         idx + 1, on_note_view_image_count(ed->view),
-        gdk_pixbuf_get_width(orig), gdk_pixbuf_get_height(orig));
+        gdk_texture_get_width(tex), gdk_texture_get_height(tex));
     g_free(note);
     return cap;
 }
@@ -368,7 +359,7 @@ static void
 editor_viewer_action(gpointer host, gint idx)
 {
     on_note_image_open_external(
-        on_note_view_image_nth(((OnEditor *)host)->view, idx));
+        on_note_view_image_png(((OnEditor *)host)->view, idx));
 }
 
 static const OnImageViewerOps editor_viewer_ops = {
@@ -499,10 +490,10 @@ action_lists_equal(GList *a, GList *b)
  * action_apply_to_note() — run one line edit (strike, due rewrite or
  * rename) against note `note_id`: on the live view's buffer + autosave
  * when an editor is open (the save's extract-and-compare refreshes
- * action_items), else on the note's DOCUMENT with an immediate save +
- * action_items resync — no GTK, nothing decoded.  The two paths are the
- * same edit under the same ord numbering (on_document_action_* and the
- * on_note_buffer_action_* family both count the extractor's REAL lines).
+ * action_items — the view's "edited" queues it), else on the note's
+ * DOCUMENT with an immediate save + action_items resync.  The two paths
+ * are the same edit: on_document_action_* under the extractor's ord
+ * numbering, live or headless.
  *   which — the edit.
  *   arg   — its argument: a gboolean* (STRIKE), a gint64* (DUE) or the
  *           new text (TEXT); borrowed for the duration of the call.
@@ -522,24 +513,16 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit which,
         /* Live buffer: the autosave writes content AND the mirror later.
          * A tag change emits no "changed", so the view reports nothing —
          * the autosave is queued here.                                      */
-        GtkTextBuffer *buffer = editor_buffer(ed);
-        gboolean ok;
         switch (which) {
         case ACTION_STRIKE:
-            ok = on_note_buffer_action_strike(buffer, ord,
+            return on_note_view_action_strike(ed->view, ord,
                                               *(const gboolean *)arg);
-            break;
         case ACTION_DUE:
-            ok = on_note_buffer_action_due(buffer, ord, *(const gint64 *)arg);
-            break;
+            return on_note_view_action_due(ed->view, ord,
+                                           *(const gint64 *)arg);
         default:
-            ok = on_note_buffer_action_text(buffer, ord, arg);
-            break;
+            return on_note_view_action_text(ed->view, ord, arg);
         }
-        if (!ok)
-            return FALSE;
-        editor_queue_autosave(ed);
-        return TRUE;
     }
 
     /* A note with no content is an empty document, where the edit finds
@@ -811,7 +794,7 @@ editor_save(OnEditor *ed)
      * at all.                                                              */
     gboolean tags_changed = on_note_view_take_tags_modified(ed->view);
     if (tags_changed) {
-        GList *tags = on_buffer_collect_tags(editor_buffer(ed));
+        GList *tags = on_note_view_collect_tags(ed->view);
         on_db_note_set_tags(ed->app->db, ed->note_id, tags);
         g_list_free_full(tags, g_free);
     }
@@ -893,32 +876,6 @@ editor_queue_autosave(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
- * buffer_is_blank() — TRUE when the buffer holds no content: nothing but
- * whitespace and no embedded objects.  Anchors (images, tables, task
- * checkboxes) appear as U+FFFC in the slice, which is not whitespace,
- * so a note holding only an image or an unticked checkbox is NOT blank.
- * ------------------------------------------------------------------------- */
-static gboolean
-buffer_is_blank(GtkTextBuffer *buffer)
-{
-    if (gtk_text_buffer_get_char_count(buffer) == 0)
-        return TRUE;
-
-    GtkTextIter start, end;          /* whole-buffer bounds                 */
-    gtk_text_buffer_get_bounds(buffer, &start, &end);
-    gchar *slice = gtk_text_buffer_get_slice(buffer, &start, &end, TRUE);
-    gboolean blank = TRUE;           /* nothing but whitespace so far?      */
-    for (const gchar *p = slice; *p != '\0'; p = g_utf8_next_char(p)) {
-        if (!g_unichar_isspace(g_utf8_get_char(p))) {
-            blank = FALSE;
-            break;
-        }
-    }
-    g_free(slice);
-    return blank;
-}
-
-/* ---------------------------------------------------------------------------
  * on_editor_destroy() — the window is going away: flush a final save (or
  * delete the note outright when it was left with no content), drop the
  * editor from the open-editors table, and free everything.
@@ -958,7 +915,7 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
     g_clear_pointer(&ed->pending_search, g_free);
 
     ed->window = NULL;               /* don't touch the dying window        */
-    if (buffer_is_blank(editor_buffer(ed))) {
+    if (on_note_view_is_blank(ed->view)) {
         /* A note closed with no content is discarded — permanently, an
          * empty note in the Trash would be clutter — so a Ctrl+N or
          * quicknote window closed without typing leaves nothing behind.
@@ -1428,12 +1385,10 @@ on_editor_window_key_pressed(GtkEventControllerKey *controller, guint keyval,
  * invoked from inside this window.  The image and table context menus are
  * NOT here: they name the view's own "view." group (note_view.c).
  *
- * The EDITING actions are enabled only while the note's text view has the
- * focus.  A window accelerator fires whatever widget has the focus, and the
- * in-note search entry and every table cell (its own GtkTextView) have
- * keys of their own; a disabled action is skipped by the accelerator
- * lookup, so Primary+B there propagates to the entry or cell as a key,
- * exactly as it did when the shortcuts were handled on the view itself.
+ * The EDITING actions are disabled while the in-note search entry has the
+ * focus.  A window accelerator fires whatever widget has the focus, and
+ * the entry has keys of its own; a disabled action is skipped by the
+ * accelerator lookup, so Primary+B there propagates to the entry as a key.
  * =========================================================================== */
 
 /* Action name → handler, parameter type, gated on the view's focus.        */
@@ -1503,9 +1458,8 @@ on_gate_leave(GtkEventControllerFocus *controller, gpointer user_data)
 }
 
 /* editor_gate_widget() — close the editing gate while `widget` (or a
- * descendant) has the focus.  The one gate: the search entry is handed to
- * it at toolbar build, every table cell through the view's "cell-created"
- * — the view builds the cells but knows nothing about actions.             */
+ * descendant) has the focus.  The one gate: the search entry, handed to it
+ * at toolbar build.                                                        */
 static void
 editor_gate_widget(OnEditor *ed, GtkWidget *widget)
 {
@@ -1513,14 +1467,6 @@ editor_gate_widget(OnEditor *ed, GtkWidget *widget)
     g_signal_connect(focus, "enter", G_CALLBACK(on_gate_enter), ed);
     g_signal_connect(focus, "leave", G_CALLBACK(on_gate_leave), ed);
     gtk_widget_add_controller(widget, focus);
-}
-
-/* on_view_cell_created() — "cell-created" from the view.                   */
-static void
-on_view_cell_created(OnNoteView *view, GtkWidget *cell, gpointer user_data)
-{
-    (void)view;
-    editor_gate_widget(user_data, cell);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1552,10 +1498,8 @@ on_view_edited(OnNoteView *view, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_build_view() — create ed->view and connect its four signals.
- * Before the content is loaded: a table in the note raises "cell-created"
- * while loading, and the gate must catch it.  The other three cannot fire
- * during a load (the view reports nothing for it).
+ * editor_build_view() — create ed->view and connect its three signals.
+ * None can fire during a load (the view reports nothing for it).
  * ------------------------------------------------------------------------- */
 static void
 editor_build_view(OnEditor *ed)
@@ -1570,8 +1514,6 @@ editor_build_view(OnEditor *ed)
                      G_CALLBACK(on_view_flags_changed), ed);
     g_signal_connect(ed->view, "image-activated",
                      G_CALLBACK(on_view_image_activated), ed);
-    g_signal_connect(ed->view, "cell-created",
-                     G_CALLBACK(on_view_cell_created), ed);
     /* The view's "view." context-menu actions, made reachable from the
      * whole window: on_app_menu_popup parents the table menu's popover to
      * the window's child box (D14), where the group inserted on the view

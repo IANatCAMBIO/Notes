@@ -1,0 +1,76 @@
+# Tables, cells, Tab, images, ranges, the clipboard and find.
+text First line here
+key Return
+table
+caret 1 1
+text after table
+check 2 para after table
+click 30 60
+caret 1 0
+text A1
+key Tab
+text B1
+key Tab
+key Tab
+text A2 is longer text
+key Tab
+key Tab
+key Tab
+key Tab
+key Tab
+key Tab
+print
+# Arrow keys walk through cells and out of the table.
+key Down
+caret 2 11
+click 30 20
+key End
+key Right
+caret 1 0
+key Right
+caret 1 1
+# Double click selects a word; Shift+Down extends across the table.
+click 30 20 2
+caret 0 5
+key Down shift
+key Down shift
+key Down shift
+key BackSpace
+check 0 para 
+check 1 para after table
+undo
+check 0 para First line here
+# Copy the first block (the selection ends before the table's text) and
+# paste it into the empty line Enter makes at the end.
+click 30 20
+key Down shift
+caret 1 0
+key c primary
+settle 300
+key End
+key Down
+key Down
+key Down
+key End
+caret 2 11
+key Return
+key v primary
+settle 500
+check 3 para First line here
+check 4 para 
+caret 3 15
+# An image at the caret splits the line around it; Backspace removes it.
+image ../../icons/file.png
+caret 4 1
+key BackSpace
+check 3 para First line here
+check 4 para 
+caret 4 0
+# Find highlights and steps to the next match, wrapping.
+find line
+step line
+caret 0 10
+step line
+caret 3 10
+step-back line
+caret 0 10

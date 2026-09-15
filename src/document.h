@@ -188,6 +188,9 @@ typedef struct OnDocument OnDocument;
 /* on_document_new() — an empty note: ONE empty PARA block.                */
 OnDocument *on_document_new(void);
 
+/* on_document_new_from_block() — a one-block document; takes `block`.    */
+OnDocument *on_document_new_from_block(OnBlock *block);
+
 /* on_document_free() — release the document and every block.             */
 void on_document_free(OnDocument *d);
 
@@ -358,6 +361,12 @@ gboolean on_document_insert_fragment(OnDocument *d, OnPos pos,
 /* on_document_last_change() — the position the most recent operation
  * (or undo/redo step) touched: where a view puts the caret after undo. */
 OnPos on_document_last_change(const OnDocument *d);
+
+/* on_document_set_image_width() — the display width of an IMAGE block
+ * (`inline_ord` -1) or of a text block's `inline_ord`-th inline image;
+ * 0 = the default thumbnail size.                                         */
+gboolean on_document_set_image_width(OnDocument *d, guint i, gint inline_ord,
+                                     guint32 width);
 
 /* on_document_table_set_header() — a TABLE block's header-row flag.      */
 gboolean on_document_table_set_header(OnDocument *d, guint i,

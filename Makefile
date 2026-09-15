@@ -68,6 +68,7 @@ SRCS     := src/main.c \
             src/bnbf.c \
             src/document.c \
             src/serialize.c \
+            src/doc_layout.c \
             src/note_view.c \
             src/editor_window.c \
             src/image_viewer.c \
@@ -181,6 +182,25 @@ build/bnbf-scan: tools/bnbf-scan.c $(MODEL_SRCS) src/document.h src/bnbf.h Makef
 	  tools/bnbf-scan.c $(MODEL_SRCS) $(MODEL_LIBS) $(shell $(PKGCONF) --libs sqlite3)
 
 bnbf-scan: build/bnbf-scan
+
+# The UI probe: a note view driven from a script, rendered to a PNG
+# (tests/ui_probe.c).  Links the app's objects minus main.o.
+PROBE_OBJS := $(filter-out build/main.o,$(OBJS))
+build/ui-probe: tests/ui_probe.c $(PROBE_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/ui_probe.c $(PROBE_OBJS) $(LDFLAGS)
+
+ui-probe: build/ui-probe
+
+# ui-test: every script in tests/ui/ through the probe, on a copy of the
+# sandbox database (the #tag choices come from it).  Needs a display.
+ui-test: build/ui-probe $(DEV_DB)
+	@cp $(DEV_DB) build/ui-test.db
+	@rc=0; for s in tests/ui/*.txt; do \
+	  n=$$(basename $$s .txt); \
+	  if (cd tests/ui && ../../build/ui-probe ../../build/ui-test.db $$n.txt ../../build/ui-$$n.png >/dev/null 2>../../build/ui-$$n.err); then \
+	    echo "ok   $$s"; \
+	  else echo "FAIL $$s"; grep -v "poll(2)" build/ui-$$n.err; rc=1; fi; \
+	done; exit $$rc
 
 # Remove all build artifacts.
 clean:
@@ -345,4 +365,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan app pkgroot deb rpm
+.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan ui-probe ui-test app pkgroot deb rpm

@@ -1,182 +1,27 @@
 /* ===========================================================================
- * serialize.h — BNBF ⇄ GtkTextBuffer
+ * serialize.h — the blob side of a note
  *
- * The GtkTextBuffer side of the note format: a buffer (rich text + child
- * anchors carrying images, checkboxes and tables) to and from the "BNBF"
- * blob stored in SQLite, plus the cheap record walks (plain text, action
- * items, image ordinals) that read a blob without building a buffer.
- * The format itself — flags, records, reader and writer — is bnbf.h,
- * which needs no GTK; this file is what the block model (document.[ch])
- * replaces.
+ * What reads or writes a note's BNBF blob WITHOUT building an OnDocument:
+ * the record walks behind the body_text cache and the action_items mirror
+ * (on_note_extract*), the image ordinals the media browser and the CLI
+ * address (on_note_count_images / on_note_image_nth*), THE one PNG decoder
+ * (on_png_decode_capped) and encoder (on_image_png_bytes), and
+ * on_note_document_load — the preamble of every consumer that does want
+ * the document (document.h).  The format itself is bnbf.h.
  * =========================================================================== */
 
 #ifndef BLUE_SERIALIZE_H
 #define BLUE_SERIALIZE_H
 
-#include <gtk/gtk.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 #include "bnbf.h"                    /* the format: flags, reader, writer  */
 #include "document.h"                /* OnDocument                          */
 #include "db.h"                      /* OnDatabase, OnActionItem            */
 
-/* Task checkboxes are child anchors carrying their state as object data;
- * the editor attaches a native GtkCheckButton at each.                      */
-
-/* on_anchor_set_checkbox() — mark an anchor as a task checkbox with the
- * given state.  on_anchor_is_checkbox() reads it back (returns FALSE for
- * non-checkbox anchors; out_checked may be NULL).                           */
-void on_anchor_set_checkbox(GtkTextChildAnchor *anchor, gboolean checked);
-gboolean on_anchor_is_checkbox(GtkTextChildAnchor *anchor,
-                               gboolean *out_checked);
-
-/* Names of the GtkTextTags the editor registers on every note buffer.
- * serialize.c maps between these tags and the ON_FMT_* bits.               */
-#define ON_TAGNAME_BOLD        "on-bold"
-#define ON_TAGNAME_ITALIC      "on-italic"
-#define ON_TAGNAME_UNDERLINE   "on-underline"
-#define ON_TAGNAME_STRIKE      "on-strike"
-#define ON_TAGNAME_H1          "on-h1"
-#define ON_TAGNAME_H2          "on-h2"
-#define ON_TAGNAME_CODEBLOCK   "on-codeblock"
-#define ON_TAGNAME_LIST_BULLET "on-list-bullet"
-#define ON_TAGNAME_LIST_NUMBER "on-list-number"
-#define ON_TAGNAME_LIST_CHECK  "on-list-check"
-#define ON_TAGNAME_TAG         "on-tag"
-
-/* ---------------------------------------------------------------------------
- * The canonical flag ⇄ tag-name table.  THE single copy in the program —
- * serializer, editor, undo and export all iterate it, so the mapping can
- * never fall out of sync.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    OnFormatFlags flag;              /* the bitmask bit                     */
-    const gchar  *tag_name;          /* the GtkTextTag name it maps to      */
-} OnFlagTag;
-extern const OnFlagTag on_flag_tags[];
-extern const gsize     on_n_flag_tags;
-
-/* ---------------------------------------------------------------------------
- * on_flags_at_iter() — the ON_FMT_* bits (restricted to `mask`) whose
- * tags cover the character at `iter`.
- *   buffer — buffer owning the tag table.
- *   iter   — position to inspect.
- *   mask   — which bits to test (ON_FMT_INLINE_MASK, ON_FMT_PARA_MASK,
- *            or ~0u for all).
- * ------------------------------------------------------------------------- */
-guint32 on_flags_at_iter(GtkTextBuffer *buffer, const GtkTextIter *iter,
-                         guint32 mask);
-
-/* ---------------------------------------------------------------------------
- * OnFlagRun — a flag-set cursor for character-by-character buffer walks.
- *
- * on_flags_at_iter() probes every entry of the shared tag table, each probe
- * a string-hash lookup, so calling it per character makes it the inner loop
- * of the three walks that matter: the serializer, the editor's undo snapshot
- * and the exporter.  Formatting can only change where a tag TOGGLES, so this
- * cursor re-probes only at those positions and returns the cached flag set
- * in between (measured 6.9 ms -> 1.3 ms across a 20 000-character note).
- *
- * Contract: the walk must move FORWARD, and the buffer must not be mutated
- * while the cursor is in use — a toggle position remembered from before an
- * edit would be stale.  Both hold for all three walks.
- *
- * Fields (owned by the cursor; callers only pass it around):
- *   buffer      — buffer being walked.
- *   mask        — which ON_FMT_* bits to report.
- *   flags       — the flag set covering [last probe, next_toggle).
- *   next_toggle — offset at which the tag set changes next; -1 before the
- *                 first probe, G_MAXINT once no toggle remains.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    GtkTextBuffer *buffer;
-    guint32        mask;
-    guint32        flags;
-    gint           next_toggle;
-} OnFlagRun;
-
-/* on_flag_run_init() — start a cursor over `buffer`, reporting `mask` bits. */
-void on_flag_run_init(OnFlagRun *run, GtkTextBuffer *buffer, guint32 mask);
-
-/* ---------------------------------------------------------------------------
- * on_flag_run_at() — the flag set at `iter`, re-probing only when the walk
- * has reached the next tag toggle.  Same result as calling
- * on_flags_at_iter(buffer, iter, mask) at every position.
- * ------------------------------------------------------------------------- */
-guint32 on_flag_run_at(OnFlagRun *run, const GtkTextIter *iter);
-
-/* ---------------------------------------------------------------------------
- * on_tag_name_for_flag() — the GtkTextTag name for one ON_FMT_* bit, or
- * NULL if the bit is unknown.
- * ------------------------------------------------------------------------- */
-const gchar *on_tag_name_for_flag(guint32 flag);
-
-/* ---------------------------------------------------------------------------
- * on_buffer_ensure_tags() — create the standard Notes tag set on
- * `buffer`'s tag table if not already present.  Both the editor window and
- * the exporter call this before touching a buffer, so the two always agree
- * on tag names and appearance.
- *   buffer — the text buffer to prepare.
- * ------------------------------------------------------------------------- */
-void on_buffer_ensure_tags(GtkTextBuffer *buffer);
-
-/* ---------------------------------------------------------------------------
- * BUFFER WALK — the ONE decomposition of a GtkTextBuffer into the pieces
- * that get stored: styled text runs plus the three kinds of embedded object.
- *
- * The serializer and the editor's undo snapshot need exactly the same
- * traversal (anchors interrupt runs, runs split where the flag set changes,
- * payloadless anchors and stray U+FFFC characters are dropped) and used to
- * carry a copy each, with comments warning that the two must stay in step.
- * Now only the per-segment action differs.
- * ------------------------------------------------------------------------- */
-typedef enum {
-    ON_SEG_TEXT,                     /* a run of identically-styled text    */
-    ON_SEG_IMAGE,                    /* an embedded image                   */
-    ON_SEG_CHECK,                    /* a task-list checkbox                */
-    ON_SEG_TABLE,                    /* an embedded table                   */
-} OnBufferSegKind;
-
-/* One segment.  Only the fields belonging to `kind` are meaningful, and
- * every pointer is BORROWED — valid only for the duration of the callback.  */
-typedef struct {
-    OnBufferSegKind kind;
-    guint32      flags;              /* ON_FMT_* on the run / anchor char    */
-    const gchar *text;               /* TEXT: bytes, NOT NUL-terminated      */
-    gsize        n_text;
-    GdkPixbuf   *pixbuf;             /* IMAGE                                */
-    gint         display_width;      /* IMAGE: chosen on-screen width        */
-    gboolean     checked;            /* CHECK                                */
-    OnTable     *table;              /* TABLE: owned by its anchor           */
-} OnBufferSeg;
-
-typedef void (*OnBufferSegFn)(const OnBufferSeg *seg, gpointer data);
-
-/* Walk `buffer` start to end, calling `cb` once per segment, in order.      */
-void on_buffer_walk(GtkTextBuffer *buffer, OnBufferSegFn cb, gpointer data);
-
-/* ---------------------------------------------------------------------------
- * on_note_serialize() — flatten a buffer into a newly allocated BNBF blob.
- *   buffer  — source buffer (must have been through on_buffer_ensure_tags).
- *   out_len — receives the blob size in bytes.
- * Returns a g_malloc'd byte array (g_free() it), or NULL on error.
- * ------------------------------------------------------------------------- */
-guint8 *on_note_serialize(GtkTextBuffer *buffer, gsize *out_len);
-
-/* ---------------------------------------------------------------------------
- * on_note_deserialize() — replace `buffer`'s contents with the note stored
- * in a BNBF blob.
- *   buffer — destination buffer (tags are ensured automatically).
- *   data   — BNBF bytes as loaded from SQLite.
- *   len    — length of `data`.
- * Returns TRUE if the blob parsed cleanly; on FALSE the buffer may hold a
- * partial document (best-effort recovery).
- * ------------------------------------------------------------------------- */
-gboolean on_note_deserialize(GtkTextBuffer *buffer, const guint8 *data,
-                             gsize len);
-
 /* ---------------------------------------------------------------------------
  * on_note_extract_text() — pull the searchable plain text out of a BNBF
- * blob WITHOUT building a GtkTextBuffer or decoding any images: TEXT
+ * blob WITHOUT building a document or decoding any images: TEXT
  * runs are concatenated, table cells are appended (space-separated), and
  * image/checkbox payloads are skipped.  Orders of magnitude cheaper than
  * a full deserialize; used to (back)fill the notes.body_text column.
@@ -208,7 +53,7 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_extract_actions() — pull the ACTION ITEMS out of a BNBF blob
- * without building a GtkTextBuffer (same cheap record walk as
+ * without building a document (same cheap record walk as
  * on_note_extract_text).  An action item is a line whose first character
  * is '!' outside a code block (an embedded image/table/checkbox occupies
  * the first slot like any character, so such lines never qualify): its
@@ -234,50 +79,12 @@ void on_note_extract(const guint8 *data, gsize len, gchar **out_text,
                      GList **out_actions);
 
 /* ---------------------------------------------------------------------------
- * on_buffer_first_line() — extract the note title: the text of the first
- * non-empty line, or "New Note" if the buffer is empty.
- *   buffer — buffer to inspect.
- * Returns a newly allocated string; g_free() it.
- * ------------------------------------------------------------------------- */
-gchar *on_buffer_first_line(GtkTextBuffer *buffer);
-
-/* ---------------------------------------------------------------------------
- * Images are embedded as GtkTextChildAnchors (not raw pixbufs): the anchor
- * carries the FULL-RESOLUTION image plus the user's chosen display width
- * as object data, and the editor attaches a HiDPI-aware GtkImage widget
- * at each anchor.  Offscreen consumers (export, search, thumbnails) read
- * the anchor data directly and never need widgets.
- * ------------------------------------------------------------------------- */
-
-/* on_anchor_set_image() — attach an image to an anchor.
- *   anchor        — the anchor embedded in the buffer.
- *   original      — full-resolution image (a reference is taken).
- *   display_width — chosen on-screen (logical) width; <= 0 means the
- *                   default thumbnail size.                                 */
-void on_anchor_set_image(GtkTextChildAnchor *anchor, GdkPixbuf *original,
-                         gint display_width);
-
-/* on_anchor_get_image() — read an anchor's image.
- *   anchor        — the anchor to inspect.
- *   display_width — optional; receives the stored display width.
- * Returns the original pixbuf (borrowed ref), or NULL if this anchor
- * carries no image.                                                         */
-GdkPixbuf *on_anchor_get_image(GtkTextChildAnchor *anchor,
-                               gint *display_width);
-
-/* Bounding box for the default thumbnail display of images (logical px):
- * a freshly inserted image is scaled to fit inside this, aspect kept;
- * enlarge via the image's right-click menu.                                 */
-#define ON_IMAGE_THUMB_W 200
-#define ON_IMAGE_THUMB_H 125
-
-/* ---------------------------------------------------------------------------
  * on_png_decode_capped() — decode one encoded image into a pixbuf,
  * shrinking it DURING decode to at most `max_px` on its longest side (0 =
- * full resolution; never upscales).  THE one decode path: the full
- * deserializer, the media view's thumbnails, on_note_image_nth() and the
- * grid thumbnail all come through here, so the size cap and the failure
- * reporting exist once.
+ * full resolution; never upscales).  THE one decode path to a pixbuf: the
+ * media view's thumbnails, on_note_image_nth() and the grid thumbnail all
+ * come through here, so the size cap and the failure reporting exist once.
+ * (The editor draws GdkTextures decoded straight from the bytes.)
  *   png    — encoded bytes (PNG as written by the serializer).
  *   n_png  — their length.
  * Returns a new pixbuf reference (g_object_unref() it), or NULL when the
@@ -351,19 +158,5 @@ GBytes *on_note_image_nth_png(const guint8 *data, gsize len, gint ord);
  * Returns TRUE when the header parsed.
  * ------------------------------------------------------------------------- */
 gboolean on_png_probe_size(const guint8 *png, gsize n_png, gint *w, gint *h);
-
-/* on_anchor_set_table() — attach `table` to an anchor (ownership passes
- * to the anchor).  on_anchor_get_table() reads it back (borrowed).          */
-void on_anchor_set_table(GtkTextChildAnchor *anchor, OnTable *table);
-OnTable *on_anchor_get_table(GtkTextChildAnchor *anchor);
-
-/* ---------------------------------------------------------------------------
- * on_buffer_collect_tags() — collect the distinct #tag names present in
- * the buffer (spans carrying ON_TAGNAME_TAG), without the leading '#'.
- *   buffer — buffer to scan.
- * Returns a GList of newly allocated strings; free with
- * g_list_free_full(list, g_free).
- * ------------------------------------------------------------------------- */
-GList *on_buffer_collect_tags(GtkTextBuffer *buffer);
 
 #endif /* BLUE_SERIALIZE_H */

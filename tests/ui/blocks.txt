@@ -1,0 +1,51 @@
+# Headings, code, tasks: Enter and Backspace at block edges, undo.
+text Title
+key Return
+para h1
+text Heading
+key Return
+text body after heading
+check 1 h1 Heading
+check 2 para body after heading
+key Return
+para code
+text int x;
+key Return
+text return x;
+check 3 code int x;
+check 4 code return x;
+key Return
+key Return
+check 5 code 
+check 6 code 
+para check
+text task one
+key Return
+text task two
+check 6 check task one
+check 7 check task two
+# Backspace at the start of an item makes it body text; undo brings it back.
+key Home
+key BackSpace
+check 7 para task two
+undo
+check 7 check task two
+# Enter on an empty item ends the list without a new line.
+key End
+key Return
+key Return
+check 8 para 
+text end
+check 8 para end
+# Backspace joins into the block above, which keeps its kind.
+key Home
+key BackSpace
+check 7 check task twoend
+caret 7 8
+undo
+check 8 para end
+# Delete at the end of a block joins the next one.
+key Up
+key End
+key Delete
+check 7 check task twoend

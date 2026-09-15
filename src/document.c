@@ -353,6 +353,14 @@ on_document_new(void)
     return d;
 }
 
+OnDocument *
+on_document_new_from_block(OnBlock *block)
+{
+    OnDocument *d = doc_alloc();
+    g_ptr_array_add(d->blocks, block);
+    return d;
+}
+
 void
 on_document_free(OnDocument *d)
 {
@@ -1050,6 +1058,7 @@ typedef enum {
     OP_INSERT_BLOCK,                 /* block at pos.block                   */
     OP_REMOVE_BLOCK,
     OP_TABLE_HEADER,
+    OP_IMAGE_WIDTH,                  /* image `at` (-1 = the block) := flags */
     OP_TABLE_INSERT_ROW,             /* at `at`, cells or fresh              */
     OP_TABLE_REMOVE_ROW,
     OP_TABLE_INSERT_COL,
@@ -1440,6 +1449,20 @@ apply_op(OnDocument *d, Op *op)
         notify_changed(d, i);
         break;
 
+    case OP_IMAGE_WIDTH: {
+        guint32 *slot = (op->at < 0)
+            ? &b->display_width
+            : &g_array_index(b->text->images, OnInlineImage, op->at)
+                  .display_width;
+        inv = op_new(OP_IMAGE_WIDTH);
+        inv->pos.block = i;
+        inv->at = op->at;
+        inv->flags = *slot;
+        *slot = op->flags;
+        notify_changed(d, i);
+        break;
+    }
+
     case OP_TABLE_INSERT_ROW:
         table_put_row(b, op->at, op->cells);
         inv = op_new(OP_TABLE_REMOVE_ROW);
@@ -1675,6 +1698,32 @@ on_document_remove_block(OnDocument *d, guint i)
         return FALSE;
     Op *op = op_new(OP_REMOVE_BLOCK);
     op->pos.block = i;
+    return do_op(d, op);
+}
+
+gboolean
+on_document_set_image_width(OnDocument *d, guint i, gint inline_ord,
+                            guint32 width)
+{
+    OnBlock *b = on_document_block(d, i);
+    if (b == NULL)
+        return FALSE;
+    if (inline_ord < 0) {
+        if (b->kind != ON_BLOCK_IMAGE)
+            return FALSE;
+        if (b->display_width == width)
+            return TRUE;
+    } else {
+        if (b->text == NULL || (guint)inline_ord >= b->text->images->len)
+            return FALSE;
+        if (g_array_index(b->text->images, OnInlineImage, inline_ord)
+                .display_width == width)
+            return TRUE;
+    }
+    Op *op = op_new(OP_IMAGE_WIDTH);
+    op->pos.block = i;
+    op->at = inline_ord;
+    op->flags = width;
     return do_op(d, op);
 }
 
@@ -1974,6 +2023,40 @@ on_document_insert_fragment(OnDocument *d, OnPos pos, const OnDocument *frag,
         return TRUE;
     }
 
+    /* An EMPTY host block facing an object: the fragment goes in front of
+     * it, whole, and the empty block stays as the line after — no split,
+     * which would leave two empty lines around the object.                */
+    if (t->text->len == 0 && !on_block_kind_is_text(f0->kind)) {
+        guint at = pos.block;
+        for (guint k = 0; k < n; k++) {
+            const OnBlock *fk = on_document_block(frag, k);
+            if (k == n - 1 && on_block_kind_is_text(fk->kind)) {
+                /* Its last text block becomes the empty host's content.   */
+                OnPos hp = { at, -1, 0 };
+                Op *op = op_new(OP_INSERT_TEXT);
+                op->pos  = hp;
+                op->frag = on_text_copy(fk->text);
+                do_op(d, op);
+                if (fk->kind != ON_BLOCK_PARA)
+                    on_document_set_kind(d, at, fk->kind);
+                end.block  = at;
+                end.offset = fk->text->text->len;
+            } else {
+                OnBlock *c = on_block_copy(fk);
+                c->action_uid = 0;
+                on_document_insert_block(d, at, c);
+                end.block  = at;
+                end.cell   = -1;
+                end.offset = 1;
+                at++;
+            }
+        }
+        on_document_end_group(d);
+        if (out != NULL)
+            *out = end;
+        return TRUE;
+    }
+
     /* Split the host at pos; the fragment's first text block joins the
      * head, its last text block the tail, everything else lands between. */
     on_document_split_block(d, pos, on_text_flags_at(t, pos.offset));
@@ -2007,7 +2090,7 @@ on_document_insert_fragment(OnDocument *d, OnPos pos, const OnDocument *frag,
         on_document_insert_block(d, at++, c);
         end.block++;
     }
-    if (n > 1 && !on_block_kind_is_text(fl->kind)) {
+    if (!on_block_kind_is_text(fl->kind)) {
         /* Ends on an object: the caret goes after it, before the tail.    */
         end.block  = at - 1;
         end.offset = 1;

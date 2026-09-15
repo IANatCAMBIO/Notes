@@ -306,8 +306,9 @@ written into Decisions the day they are measured.
 - [ ] `GDK_CORE_DEVICE_EVENTS` / `GTK_OVERLAY_SCROLLING` env in `main.c`:
       neither exists in GTK4 — delete; overlay scrolling is per-scrolled-window
       `gtk_scrolled_window_set_overlay_scrolling`
-- [ ] CLAUDE.md rewritten for the branch: quirks table above applied, new
-      quirks from Decisions promoted
+- [x] CLAUDE.md rewritten for the branch: GTK4 build/deps, a note_view
+      row, the GTK3 quirks marked superseded/kept, a "GTK4 quirks" list
+      (D5–D25 in short form), actions section, task patterns
 - [ ] BUILD.md / README.md dependency lists
 - [x] **Extract the note view** (233ca43: `src/note_view.[ch]`, `OnNoteView`).  `editor_window.c` (5.8 k lines) is two
       things braided together: the window (chrome, toolbar, actions,
@@ -678,6 +679,14 @@ add a second idiom.
   (the GTK3 recipe, from when Pango dropped the run-edge half) widens the
   follower as well — a hole before the next letter.  CLAUDE.md quirk #12's
   "self + the following char" is therefore wrong for this branch.
+
+- **D25 · 2026-09-15 — A GtkTextView no longer requests its content
+  WIDTH.**  `gtk_text_view_measure` (4.22) reports margins plus anchored
+  children horizontally — GTK3 reported the layout width — while the
+  vertical measure still uses the layout height.  A table cell with a long
+  line therefore sat at its 64 px minimum and hid the overflow.  The table
+  sizes its columns itself (`table_fit_columns`: widest line per column by
+  PangoLayout, capped at 320 px, cells wrap past the cap and rows grow).
 
 ## Session log
 

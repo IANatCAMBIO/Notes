@@ -2456,9 +2456,64 @@ insert_checkbox_at(OnNoteView *v, gint at)
  * which rebuild the widget from the updated data.
  * =========================================================================== */
 
+/* A table column is never wider than this (logical px, margins included);
+ * a cell whose longest line needs more wraps and grows DOWN instead.       */
+#define TABLE_CELL_MAX_WIDTH 320
+/* And never narrower than this, so an empty column is still clickable.     */
+#define TABLE_CELL_MIN_WIDTH 64
+
+/* ---------------------------------------------------------------------------
+ * table_fit_columns() — size every column of a table grid to the widest
+ * LINE among its cells (header included), capped at TABLE_CELL_MAX_WIDTH.
+ *
+ * GTK4's GtkTextView no longer requests its content width: its horizontal
+ * measure is margins plus anchored children only (gtktextview.c 4.22
+ * gtk_text_view_measure — GTK3 reported the layout width), so a cell with
+ * a long line would sit at its minimum and hide the overflow.  The
+ * vertical measure DOES use the layout height, so once a column has its
+ * width, rows grow with wrapped or multi-line content by themselves.
+ * Measured with a PangoLayout in the cell's own font; the width is set as
+ * a size request on every cell of the column, so the header and the body
+ * cells always agree.
+ *   grid — the table's GtkGrid (frame per cell, cell = frame child).
+ *   rows / cols — the table's dimensions.
+ * ------------------------------------------------------------------------- */
+static void
+table_fit_columns(GtkWidget *grid, gint rows, gint cols)
+{
+    for (gint c = 0; c < cols; c++) {
+        gint widest = 0;             /* widest line in this column, px      */
+        for (gint r = 0; r < rows; r++) {
+            GtkWidget *frame = gtk_grid_get_child_at(GTK_GRID(grid), c, r);
+            if (frame == NULL)
+                continue;
+            GtkWidget *cell = gtk_frame_get_child(GTK_FRAME(frame));
+            GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(cell));
+            GtkTextIter s, e;
+            gtk_text_buffer_get_bounds(buf, &s, &e);
+            gchar *text = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+            PangoLayout *lay = gtk_widget_create_pango_layout(cell, text);
+            gint w;                  /* the longest line's pixel width      */
+            pango_layout_get_pixel_size(lay, &w, NULL);
+            g_object_unref(lay);
+            g_free(text);
+            w += gtk_text_view_get_left_margin(GTK_TEXT_VIEW(cell)) +
+                 gtk_text_view_get_right_margin(GTK_TEXT_VIEW(cell)) + 2;
+            widest = MAX(widest, w);
+        }
+        gint width = CLAMP(widest, TABLE_CELL_MIN_WIDTH, TABLE_CELL_MAX_WIDTH);
+        for (gint r = 0; r < rows; r++) {
+            GtkWidget *frame = gtk_grid_get_child_at(GTK_GRID(grid), c, r);
+            if (frame != NULL)
+                gtk_widget_set_size_request(gtk_frame_get_child(GTK_FRAME(frame)),
+                                            width, -1);
+        }
+    }
+}
+
 /* on_table_cell_changed() — a cell buffer edited: write through to the
- * data (cells are small GtkTextViews so content can be multiline; a bare
- * text view requests its content size, so cells auto-grow).                 */
+ * data, then refit the columns (the cell's own line may now be the widest
+ * in its column, or no longer be).                                          */
 static void
 on_table_cell_changed(GtkTextBuffer *cell_buf, gpointer user_data)
 {
@@ -2478,6 +2533,11 @@ on_table_cell_changed(GtkTextBuffer *cell_buf, gpointer user_data)
     gchar *text = gtk_text_buffer_get_text(cell_buf, &s, &e, FALSE);
     on_table_set(table, r, c, text);
     g_free(text);
+    GtkWidget *cell =                /* the edited cell's own view          */
+        g_object_get_data(G_OBJECT(cell_buf), "on-cell");
+    GtkWidget *grid = gtk_widget_get_ancestor(cell, GTK_TYPE_GRID);
+    if (grid != NULL)
+        table_fit_columns(grid, table->rows, table->cols);
     note_view_edited(v);
 }
 
@@ -2669,7 +2729,11 @@ attach_table_widget(OnNoteView *v, GtkTextChildAnchor *anchor)
             gtk_text_view_set_right_margin(GTK_TEXT_VIEW(cell), 6);
             gtk_text_view_set_top_margin(GTK_TEXT_VIEW(cell), 3);
             gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(cell), 3);
-            gtk_widget_set_size_request(cell, 64, -1);
+            /* Wrap only past the column cap: table_fit_columns gives each
+             * column its widest line up to TABLE_CELL_MAX_WIDTH.          */
+            gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(cell),
+                                        GTK_WRAP_WORD_CHAR);
+            g_object_set_data(G_OBJECT(cell_buf), "on-cell", cell);
 
             /* Header row: bold on a light grey fill (note_view_install_css). */
             if (table->header && r == 0)
@@ -2707,6 +2771,7 @@ attach_table_widget(OnNoteView *v, GtkTextChildAnchor *anchor)
             gtk_grid_attach(GTK_GRID(grid), frame, c, r, 1, 1);
         }
     }
+    table_fit_columns(grid, table->rows, table->cols);
     gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(v), grid, anchor);
 }
 

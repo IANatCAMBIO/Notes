@@ -5889,6 +5889,7 @@ library_build_notes_list(OnLibrary *lw)
         gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
     /* No GTK type-ahead popup (auto-picked search column, see quirk 16).  */
     gtk_tree_view_set_enable_search(lw->notes_list, FALSE);
+    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_list), "notes-columns");
     {
         /* Title: no static attribute binding — the cell data function drives
          * both the row tint and the compact/comfortable rendering.          */
@@ -6134,6 +6135,7 @@ library_build_actions_view(OnLibrary *lw)
     lw->actions_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->actions_store)));
     gtk_tree_view_set_enable_search(lw->actions_view, FALSE); /* quirk 16   */
+    gtk_widget_add_css_class(GTK_WIDGET(lw->actions_view), "notes-columns");
     {
         /* Untitled checkbox column + the item text + the due date; done
          * rows also render struck through, matching the editor.            */
@@ -6335,6 +6337,8 @@ library_build_status_bar(OnLibrary *lw)
  * 8. The sidebar/notes divider: a 6 px handle (wide-handle mode gives the
  *    separator node a 5 px theme floor; min-WIDTH is the lever on a
  *    horizontal paned).
+ * 9. The notes list / Action Items headers: no left border on the first
+ *    visible column, which would double the divider's edge line.
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -6383,7 +6387,15 @@ library_install_css(void)
         "button.notes-ai-button {"
         "  padding: 0 4px; min-height: 0; font-size: 85%%;"
         "}"
-        "paned.notes-split > separator { min-width: 6px; }",
+        "paned.notes-split > separator { min-width: 6px; }"
+        /* The theme gives every column header a LEFT + bottom border
+         * (`border-style: none none solid solid`), so the first column's
+         * sat 4 px from the divider's own edge line as a second line.
+         * Hidden columns do not count for :first-child (invisible CSS
+         * nodes are skipped), so this is the first VISIBLE header.      */
+        "treeview.notes-columns > header > button:first-child {"
+        "  border-left-style: none;"
+        "}",
         THUMB_SIZE);
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);

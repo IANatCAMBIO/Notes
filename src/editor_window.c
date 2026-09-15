@@ -95,7 +95,24 @@
  *                     (upper-right corner of each block); clicks are
  *                     hit-tested by the view's click gesture, the hand
  *                     cursor is the label's own.
+ *   code_button_pool — links no block uses right now, hidden.  An overlay
+ *                     can NEVER be taken off a GtkTextView in GTK 4.22:
+ *                     gtk_text_view_remove() walks only the anchored
+ *                     children and warns "is not a child" for an overlay
+ *                     (gtktextview.c; the removal that would work is in
+ *                     the private GtkTextViewChild).  So a link whose
+ *                     block went away is hidden and kept here, and the
+ *                     next block that needs one takes it back.
  *   code_btn_idle   — idle source id for a pending code-button rebuild.
+ *   join_para       — the paragraph style (ON_FMT_PARA_MASK bits, 0 =
+ *                     body) of the FIRST line of a deletion that joins
+ *                     lines, captured by the delete-range before-handler
+ *                     and re-asserted over the merged line by the
+ *                     after-handler; -1 while no join is in flight.  A
+ *                     join keeps the SECOND line's newline, and with it
+ *                     that line's paragraph tag — so backspacing at the
+ *                     start of an (emptied) code line would otherwise turn
+ *                     the body line above into the code block.
  *   ctx_offset      — buffer offset of the image or table anchor the last
  *                     context menu was opened ON: the "img-*" and
  *                     "table-*" actions act on the thing under the last
@@ -167,8 +184,10 @@ typedef struct {
                                        * filtered in memory per keystroke  */
 
     GSList         *code_buttons;
+    GSList         *code_button_pool;
     guint           code_btn_idle;
     guint           scroll_idle;
+    gint            join_para;
     gint            ctx_offset;
 
     GtkWidget      *search_entry;
@@ -216,9 +235,11 @@ typedef struct {
  * NotesTextView — the editor's GtkTextView subclass, private to this file.
  *
  * The one GObject subclass the GTK4 port introduces, because two things the
- * GTK3 editor did from signals are vfuncs in GTK4: painting the code-block
- * line numbers over the text ("draw" → snapshot) and re-anchoring the
- * floating copy links after a reflow ("size-allocate" → size_allocate).
+ * GTK3 editor did from signals are vfuncs in GTK4: painting inside the code
+ * blocks ("draw" → GtkTextView's snapshot_layer: the line numbers over the
+ * text, and the shading of EMPTY code lines under it, which GTK4's
+ * paragraph-background skips) and re-anchoring the floating copy links
+ * after a reflow ("size-allocate" → size_allocate).
  * Its dispose also unparents the #tag popover, which is a child of the view
  * that GtkTextView does not know about — and gtk_text_view_dispose LOOPS
  * FOREVER on a child it cannot remove (measured in gtktextview.c 4.22.4:
@@ -263,6 +284,7 @@ static const struct {
 };
 
 /* Forward declarations for callbacks referenced before their definition.   */
+static void     editor_gate_widget(OnEditor *ed, GtkWidget *widget);
 static void     editor_save(OnEditor *ed);
 static void     editor_queue_autosave(OnEditor *ed);
 static void     editor_status_dirty_update(OnEditor *ed);
@@ -995,13 +1017,17 @@ code_buttons_rebuild(OnEditor *ed)
         }
     }
 
-    /* Tear down the old set (their marks die with them).                   */
+    /* Retire the old set into the pool (their marks die here; the widgets
+     * cannot — see code_button_pool in the OnEditor banner).                */
     for (GSList *l = ed->code_buttons; l != NULL; l = l->next) {
         GtkWidget *btn = l->data;
         GtkTextMark *mark = g_object_get_data(G_OBJECT(btn), "on-mark");
         if (mark != NULL)
             gtk_text_buffer_delete_mark(ed->buffer, mark);
-        gtk_text_view_remove(ed->view, btn);
+        g_object_set_data(G_OBJECT(btn), "on-mark", NULL);
+        g_object_set_data(G_OBJECT(btn), "on-x", GINT_TO_POINTER(-1));
+        gtk_widget_set_visible(btn, FALSE);
+        ed->code_button_pool = g_slist_prepend(ed->code_button_pool, btn);
     }
     g_slist_free(ed->code_buttons);
     ed->code_buttons = NULL;
@@ -1024,21 +1050,29 @@ code_buttons_rebuild(OnEditor *ed)
                 continue;
         }
 
-        /* One block starts here: build its "copy" hyperlink overlay.  A
-         * plain label: the click is served by the view's gesture, only
-         * the hover cursor is the label's own.                             */
-        GtkWidget *link = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(link),
-            "<span size=\"8192\" foreground=\"#0066cc\""
-            " underline=\"single\">copy</span>");
-        gtk_widget_set_cursor_from_name(link, "pointer");
+        /* One block starts here: its "copy" hyperlink overlay — a pooled
+         * one shown again, else a new one.  A plain label: the click is
+         * served by the view's gesture, only the hover cursor is the
+         * label's own.                                                    */
+        GtkWidget *link;
+        if (ed->code_button_pool != NULL) {
+            link = ed->code_button_pool->data;
+            ed->code_button_pool = g_slist_delete_link(
+                ed->code_button_pool, ed->code_button_pool);
+            gtk_widget_set_visible(link, TRUE);
+        } else {
+            link = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(link),
+                "<span size=\"8192\" foreground=\"#0066cc\""
+                " underline=\"single\">copy</span>");
+            gtk_widget_set_cursor_from_name(link, "pointer");
+            /* Added at the origin; code_buttons_update_positions moves it */
+            gtk_text_view_add_overlay(ed->view, link, 0, 0);
+        }
 
         GtkTextMark *mark = gtk_text_buffer_create_mark(ed->buffer, NULL,
                                                         &it, TRUE);
         g_object_set_data(G_OBJECT(link), "on-mark", mark);
-
-        /* Added at the origin; code_buttons_update_positions moves it.    */
-        gtk_text_view_add_overlay(ed->view, link, 0, 0);
         ed->code_buttons = g_slist_prepend(ed->code_buttons, link);
 
         /* Jump past this block and continue scanning.                      */
@@ -1073,105 +1107,141 @@ code_buttons_queue_rebuild(OnEditor *ed)
 G_DEFINE_FINAL_TYPE(NotesTextView, notes_text_view, GTK_TYPE_TEXT_VIEW)
 
 /* ---------------------------------------------------------------------------
- * notes_text_view_snapshot() — chain up (text, overlays, anchored
- * children), then paint line numbers INSIDE each code block: the block's
- * left margin is widened (see editor_apply_line_numbers) and the numbers
- * are drawn onto that strip of the block's own shading, right-aligned just
- * before the code text.  Painted, not text — selection and copying can
- * never include them.  Each block numbers from 1.  Cairo through
- * gtk_snapshot_append_cairo, in the view's widget coordinates
- * (buffer_to_window_coords with GTK_TEXT_WINDOW_WIDGET).
+ * code_block_walk_start() — the first buffer line at or above the top of
+ * the visible area, and — when it sits mid-block — how many code lines the
+ * block already has above it, so numbering continues rather than restarts.
+ *   ed  — the editor.
+ *   tag — the code-block tag.
+ *   it  — out: the line to start walking from (line offset 0).
+ *   vis — out: the visible area in buffer coordinates.
+ * Returns the number of the code line BEFORE `it` (0 at a block start).
+ * ------------------------------------------------------------------------- */
+static gint
+code_block_walk_start(OnEditor *ed, GtkTextTag *tag, GtkTextIter *it,
+                      GdkRectangle *vis)
+{
+    gtk_text_view_get_visible_rect(ed->view, vis);
+    gtk_text_view_get_line_at_y(ed->view, it, vis->y, NULL);
+    gtk_text_iter_set_line_offset(it, 0);
+    if (!gtk_text_iter_has_tag(it, tag))
+        return 0;
+    gint first = gtk_text_iter_get_line(it);
+    while (first > 0) {
+        GtkTextIter prev;
+        gtk_text_buffer_get_iter_at_line(ed->buffer, &prev, first - 1);
+        if (!gtk_text_iter_has_tag(&prev, tag))
+            break;
+        first--;
+    }
+    return gtk_text_iter_get_line(it) - first;
+}
+
+/* ---------------------------------------------------------------------------
+ * notes_text_view_snapshot_layer() — GtkTextView's hook for drawing under
+ * and over the text, in BUFFER coordinates (GTK translates the snapshot by
+ * the scroll offset before calling; the text itself is drawn under the
+ * same translation).  Two jobs, both walking the visible code-block lines:
+ *
+ *   BELOW_TEXT — shade the EMPTY code lines.  The code tag's
+ *   paragraph-background does the rest, but GTK4 does not paint a
+ *   paragraph background on a line holding only its newline (measured on
+ *   4.22 with a pixel probe; GTK3 did), so a blank line inside a block
+ *   came up white.  The tag's own colour is used, so the two cannot differ.
+ *
+ *   ABOVE_TEXT — the line numbers INSIDE each code block: the block's
+ *   left margin is widened (see editor_apply_line_numbers) and the numbers
+ *   are drawn onto that strip of the block's shading, right-aligned just
+ *   before the code text.  Painted, not text — selection and copying can
+ *   never include them.  Each block numbers from 1.
  * ------------------------------------------------------------------------- */
 static void
-notes_text_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot)
+notes_text_view_snapshot_layer(GtkTextView *view, GtkTextViewLayer layer,
+                               GtkSnapshot *snapshot)
 {
-    GTK_WIDGET_CLASS(notes_text_view_parent_class)->snapshot(widget,
-                                                             snapshot);
-
-    OnEditor *ed = NOTES_TEXT_VIEW(widget)->ed;   /* owning editor         */
-    if (ed == NULL || !ed->app->code_line_numbers)
+    OnEditor *ed = NOTES_TEXT_VIEW(view)->ed;   /* owning editor           */
+    if (ed == NULL)
         return;
     GtkTextTag *tag = lookup_tag(ed->buffer, ON_TAGNAME_CODEBLOCK);
     if (tag == NULL)
         return;
+    if (layer == GTK_TEXT_VIEW_LAYER_ABOVE_TEXT && !ed->app->code_line_numbers)
+        return;
 
-    graphene_rect_t bounds =         /* the whole widget: cairo clip        */
-        GRAPHENE_RECT_INIT(0, 0, (float)gtk_widget_get_width(widget),
-                           (float)gtk_widget_get_height(widget));
-    cairo_t *cr = gtk_snapshot_append_cairo(snapshot, &bounds);
-
-    /* Start at the first visible buffer line.                              */
     GdkRectangle vis;                /* visible area in buffer coords       */
-    gtk_text_view_get_visible_rect(ed->view, &vis);
     GtkTextIter it;                  /* walking line iterator               */
-    gtk_text_view_get_line_at_y(ed->view, &it, vis.y, NULL);
-    gtk_text_iter_set_line_offset(&it, 0);
+    gint num = code_block_walk_start(ed, tag, &it, &vis);
 
-    /* If that line sits mid-block, count how far into the block it is.     */
-    gint num = 0;                    /* number of the PREVIOUS code line    */
-    if (gtk_text_iter_has_tag(&it, tag)) {
-        gint first = gtk_text_iter_get_line(&it);
-        while (first > 0) {
-            GtkTextIter prev;
-            gtk_text_buffer_get_iter_at_line(ed->buffer, &prev, first - 1);
-            if (!gtk_text_iter_has_tag(&prev, tag))
-                break;
-            first--;
-        }
-        num = gtk_text_iter_get_line(&it) - first;
+    GdkRGBA *shade = NULL;           /* the tag's paragraph background      */
+    gint right_edge = 0;             /* where a text line's shading ends    */
+    cairo_t *cr = NULL;              /* the number painter (ABOVE only)     */
+    PangoLayout *layout = NULL;      /* renders the number strings          */
+    if (layer == GTK_TEXT_VIEW_LAYER_BELOW_TEXT) {
+        g_object_get(tag, "paragraph-background-rgba", &shade, NULL);
+        if (shade == NULL)
+            return;
+        /* GTK shades a text line from its left margin to the view's width
+         * less the RIGHT margin in force (the tag's when it sets one), so
+         * the empty-line fill stops at the same edge.                     */
+        gboolean tag_right;          /* does the tag set a right margin?    */
+        gint right_margin;
+        g_object_get(tag, "right-margin-set", &tag_right,
+                     "right-margin", &right_margin, NULL);
+        if (!tag_right)
+            right_margin = gtk_text_view_get_right_margin(view);
+        right_edge = vis.x + vis.width - right_margin;
+    } else {
+        cr = gtk_snapshot_append_cairo(snapshot,
+            &GRAPHENE_RECT_INIT((float)vis.x, (float)vis.y,
+                                (float)vis.width, (float)vis.height));
+        layout = gtk_widget_create_pango_layout(GTK_WIDGET(view), NULL);
+        PangoFontDescription *fd =
+            pango_font_description_from_string("monospace 9");
+        pango_layout_set_font_description(layout, fd);
+        pango_font_description_free(fd);
     }
-
-    PangoLayout *layout =            /* renders the number strings          */
-        gtk_widget_create_pango_layout(widget, NULL);
-    PangoFontDescription *fd =
-        pango_font_description_from_string("monospace 9");
-    pango_layout_set_font_description(layout, fd);
-    pango_font_description_free(fd);
 
     while (TRUE) {
         gint y, h;                   /* line extent in buffer coords        */
         gtk_text_view_get_line_yrange(ed->view, &it, &y, &h);
         if (y > vis.y + vis.height)
             break;
-
-        if (gtk_text_iter_has_tag(&it, tag)) {
+        if (!gtk_text_iter_has_tag(&it, tag)) {
+            num = 0;                 /* block ended: restart numbering      */
+        } else {
             num++;
-
-            /* The line's first character marks where the code text
-             * begins; the gutter band and its number sit just left of
-             * it, over the block's shading.                                */
             GdkRectangle rect;       /* first char, buffer coords           */
             gtk_text_view_get_iter_location(ed->view, &it, &rect);
-            gint wx, wy;             /* char position in widget coords      */
-            gtk_text_view_buffer_to_window_coords(
-                ed->view, GTK_TEXT_WINDOW_WIDGET, rect.x, rect.y,
-                &wx, &wy);
-            gint wy_line;            /* line-range top in widget coords     */
-            gtk_text_view_buffer_to_window_coords(
-                ed->view, GTK_TEXT_WINDOW_WIDGET, 0, y, NULL, &wy_line);
-
-            /* Grey gutter band behind the number, spanning the whole
-             * line range so adjacent lines tile seamlessly.                */
-            cairo_set_source_rgb(cr, 0.78, 0.78, 0.78);
-            cairo_rectangle(cr, wx - 20, wy_line, 16, h);
-            cairo_fill(cr);
-
-            gchar text[16];          /* the printed number                  */
-            g_snprintf(text, sizeof text, "%d", num);
-            pango_layout_set_text(layout, text, -1);
-            gint tw, th;             /* rendered number size                */
-            pango_layout_get_pixel_size(layout, &tw, &th);
-            cairo_set_source_rgb(cr, 0.30, 0.30, 0.30);
-            cairo_move_to(cr, wx - 6 - tw, wy + 1);
-            pango_cairo_show_layout(cr, layout);
-        } else {
-            num = 0;                 /* block ended: restart numbering      */
+            if (layer == GTK_TEXT_VIEW_LAYER_BELOW_TEXT) {
+                if (gtk_text_iter_ends_line(&it) && right_edge > rect.x)
+                    gtk_snapshot_append_color(snapshot, shade,
+                        &GRAPHENE_RECT_INIT((float)rect.x, (float)y,
+                            (float)(right_edge - rect.x), (float)h));
+            } else {
+                /* Grey gutter band behind the number, spanning the whole
+                 * line range so adjacent lines tile seamlessly, just left
+                 * of where the code text begins.                           */
+                cairo_set_source_rgb(cr, 0.78, 0.78, 0.78);
+                cairo_rectangle(cr, rect.x - 20, y, 16, h);
+                cairo_fill(cr);
+                gchar text[16];      /* the printed number                  */
+                g_snprintf(text, sizeof text, "%d", num);
+                pango_layout_set_text(layout, text, -1);
+                gint tw, th;         /* rendered number size                */
+                pango_layout_get_pixel_size(layout, &tw, &th);
+                cairo_set_source_rgb(cr, 0.30, 0.30, 0.30);
+                cairo_move_to(cr, rect.x - 6 - tw, rect.y + 1);
+                pango_cairo_show_layout(cr, layout);
+            }
         }
         if (!gtk_text_iter_forward_line(&it))
             break;
     }
-    g_object_unref(layout);
-    cairo_destroy(cr);
+    if (shade != NULL)
+        gdk_rgba_free(shade);
+    if (layout != NULL)
+        g_object_unref(layout);
+    if (cr != NULL)
+        cairo_destroy(cr);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1220,8 +1290,9 @@ static void
 notes_text_view_class_init(NotesTextViewClass *klass)
 {
     GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
-    widget_class->snapshot        = notes_text_view_snapshot;
     widget_class->size_allocate   = notes_text_view_size_allocate;
+    GTK_TEXT_VIEW_CLASS(klass)->snapshot_layer =
+        notes_text_view_snapshot_layer;
     G_OBJECT_CLASS(klass)->dispose = notes_text_view_dispose;
 }
 
@@ -2967,11 +3038,9 @@ on_table_header_change_state(GSimpleAction *action, GVariant *value,
  * last row/column, header row, delete the table).  The cell's table
  * becomes the context the "win.table-*" actions act on.
  *
- * The popover is parented to the EDITOR's view, not the cell, with the
- * press translated into its coordinates: every table op rebuilds the grid
- * — the cell would die while the menu was still its child, and
- * on_app_menu_popup unparents only from an idle after "closed" (the
- * action runs before that idle).  The editor's view outlives any table op.
+ * on_app_menu_popup parents the popover to the WINDOW's child box, never
+ * to the cell — which matters here: every table op rebuilds the grid, so
+ * the cell dies while the menu's teardown idle is still pending.
  * ------------------------------------------------------------------------- */
 static void
 on_table_cell_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
@@ -2983,8 +3052,14 @@ on_table_cell_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
         gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
     GdkEvent *event = gtk_event_controller_get_current_event(
         GTK_EVENT_CONTROLLER(gesture));
-    if (event == NULL || !gdk_event_triggers_context_menu(event))
-        return;                      /* the cell's own gesture: caret       */
+    if (event == NULL || !gdk_event_triggers_context_menu(event)) {
+        /* Anchored children inside a GtkTextView don't reliably receive
+         * the focus from the default click handling (GTK4 as GTK3): force
+         * it so the caret lands in the cell, then let the cell's own
+         * gesture place it.                                                */
+        gtk_widget_grab_focus(cell);
+        return;
+    }
 
     GtkTextChildAnchor *anchor =
         g_object_get_data(G_OBJECT(cell), "on-anchor");
@@ -3020,13 +3095,7 @@ on_table_cell_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
     g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
     g_object_unref(section);
 
-    graphene_point_t at;             /* the press, in the editor view       */
-    if (!gtk_widget_compute_point(cell, GTK_WIDGET(ed->view),
-                                  &GRAPHENE_POINT_INIT((float)x, (float)y),
-                                  &at))
-        at = GRAPHENE_POINT_INIT(0, 0);
-    on_app_menu_popup(GTK_WIDGET(ed->view), G_MENU_MODEL(menu),
-                      at.x, at.y);
+    on_app_menu_popup(cell, G_MENU_MODEL(menu), x, y);
     gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
@@ -3077,6 +3146,7 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
             g_signal_connect(cell_buf, "changed",
                              G_CALLBACK(on_table_cell_changed), ed);
             g_object_set_data(G_OBJECT(cell), "on-anchor", anchor);
+            editor_gate_widget(ed, cell);
             GtkGesture *press = gtk_gesture_click_new();
             gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(press), 0);
             gtk_event_controller_set_propagation_phase(
@@ -3086,6 +3156,8 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
             gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(press));
 
             GtkWidget *frame = gtk_frame_new(NULL);
+            /* Square cells: Adwaita rounds every frame 8 px in GTK4.     */
+            on_app_widget_add_css(frame, "frame { border-radius: 0; }");
             gtk_frame_set_child(GTK_FRAME(frame), cell);
             gtk_grid_attach(GTK_GRID(grid), frame, c, r, 1, 1);
         }
@@ -4334,7 +4406,20 @@ on_buffer_delete_range_before(GtkTextBuffer *buffer, GtkTextIter *start,
      * offset 0 and then mis-hint the first item.                           */
     action_marks_prune(ed, start, end);
 
-    if (ed->internal_change > 0 || ed->tags_modified)
+    if (ed->internal_change > 0)
+        return;
+
+    /* A deletion spanning lines JOINS them: remember the first line's
+     * paragraph style so the after-handler can keep it in charge of the
+     * merged line (see join_para in the OnEditor banner).                 */
+    ed->join_para = -1;
+    if (gtk_text_iter_get_line(start) != gtk_text_iter_get_line(end)) {
+        GtkTextIter first = *start;  /* the line the cursor lands in        */
+        gtk_text_iter_set_line_offset(&first, 0);
+        ed->join_para = (gint)line_para_flags(buffer, &first);
+    }
+
+    if (ed->tags_modified)
         return;
 
     GtkTextTag *tag = lookup_tag(buffer, ON_TAGNAME_TAG);
@@ -4363,13 +4448,32 @@ static void
 on_buffer_delete_range_after(GtkTextBuffer *buffer, GtkTextIter *start,
                              GtkTextIter *end, gpointer user_data)
 {
-    (void)buffer; (void)end;
+    (void)end;
     OnEditor *ed = user_data;        /* owning editor                       */
     if (ed->internal_change > 0)
         return;
 
     /* start == end after the deletion: retag the collapse-point line.      */
     gint off = gtk_text_iter_get_offset(start);
+
+    /* Lines were joined: the merged line's newline came from the SECOND
+     * line, so its paragraph tag must be replaced by the first line's.    */
+    if (ed->join_para >= 0) {
+        guint32 flags = (guint32)ed->join_para;
+        ed->join_para = -1;
+        GtkTextIter ls, le;          /* the merged line incl. its newline   */
+        line_span(buffer, gtk_text_iter_get_line(start), &ls, &le);
+        ed->internal_change++;
+        for (gsize i = 0; i < on_n_flag_tags; i++)
+            if (on_flag_tags[i].flag & ON_FMT_PARA_MASK)
+                gtk_text_buffer_remove_tag_by_name(
+                    buffer, on_flag_tags[i].tag_name, &ls, &le);
+        if (flags != 0)
+            gtk_text_buffer_apply_tag_by_name(
+                buffer, on_tag_name_for_flag(flags), &ls, &le);
+        ed->internal_change--;
+        gtk_text_buffer_get_iter_at_offset(buffer, start, off);
+    }
     /* A merge can pull a line up to 0, so the title look is re-derived too. */
     editor_rederive(ed, off, off, RD_ACTION | RD_TITLE);
     ed->actions_clean = FALSE;    /* deletes can create/destroy '!' lines   */
@@ -4960,6 +5064,8 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
     g_clear_pointer(&ed->pending_search, g_free);
     g_slist_free(ed->code_buttons);  /* widgets die with the window         */
     ed->code_buttons = NULL;
+    g_slist_free(ed->code_button_pool);
+    ed->code_button_pool = NULL;
 
     ed->window = NULL;               /* don't touch the dying window        */
     if (buffer_is_blank(ed->buffer)) {
@@ -5280,6 +5386,7 @@ build_toolbar(OnEditor *ed)
     gtk_box_append(GTK_BOX(toolbar), spacer);
 
     ed->search_entry = gtk_search_entry_new();
+    editor_gate_widget(ed, ed->search_entry);
     gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(ed->search_entry),
                                           "Find in note");
     gtk_editable_set_width_chars(GTK_EDITABLE(ed->search_entry), 18);
@@ -5622,19 +5729,36 @@ editor_actions_set_editing(OnEditor *ed, gboolean enabled)
     }
 }
 
-/* on_view_is_focus_changed() — the gate: "notify::is-focus" of the view's
- * focus controller.  is-focus, not enter/leave — those also fire for the
- * view's DESCENDANTS, and a table cell (its own GtkTextView) is exactly
- * where the gate must be closed (D11).                                      */
+/* on_gate_enter() / on_gate_leave() — the gate (D11), hung on the widgets
+ * that have keys of THEIR OWN: the in-note search entry and every table
+ * cell.  While the focus is inside one of them the editing actions are
+ * off, so Primary+B there is a plain key again; everywhere else — the
+ * view, a toolbar button, an open menu popover (which takes the keyboard
+ * focus while it is up: gating on the VIEW's focus greyed out the very
+ * Insert/Styles items being opened) — they are on.                          */
 static void
-on_view_is_focus_changed(GObject *controller, GParamSpec *pspec,
-                         gpointer user_data)
+on_gate_enter(GtkEventControllerFocus *controller, gpointer user_data)
 {
-    (void)pspec;
-    editor_actions_set_editing(
-        user_data,
-        gtk_event_controller_focus_is_focus(
-            GTK_EVENT_CONTROLLER_FOCUS(controller)));
+    (void)controller;
+    editor_actions_set_editing(user_data, FALSE);
+}
+
+static void
+on_gate_leave(GtkEventControllerFocus *controller, gpointer user_data)
+{
+    (void)controller;
+    editor_actions_set_editing(user_data, TRUE);
+}
+
+/* editor_gate_widget() — close the editing gate while `widget` (or a
+ * descendant) has the focus.                                                */
+static void
+editor_gate_widget(OnEditor *ed, GtkWidget *widget)
+{
+    GtkEventController *focus = gtk_event_controller_focus_new();
+    g_signal_connect(focus, "enter", G_CALLBACK(on_gate_enter), ed);
+    g_signal_connect(focus, "leave", G_CALLBACK(on_gate_leave), ed);
+    gtk_widget_add_controller(widget, focus);
 }
 /* ---------------------------------------------------------------------------
  * editor_install_actions() — add every action to the window: the table
@@ -5663,14 +5787,6 @@ editor_install_actions(OnEditor *ed)
     g_action_map_add_action(map, G_ACTION(header));
     g_object_unref(header);
 
-    /* Nothing has the focus until the window shows; the view takes it then
-     * (on_editor_window_open grabs it after presenting) and the focus
-     * controller opens the gate.  Until then the editing actions are off. */
-    editor_actions_set_editing(ed, FALSE);
-    GtkEventController *focus = gtk_event_controller_focus_new();
-    g_signal_connect(focus, "notify::is-focus",
-                     G_CALLBACK(on_view_is_focus_changed), ed);
-    gtk_widget_add_controller(GTK_WIDGET(ed->view), focus);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5768,6 +5884,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     }
 
     OnEditor *ed = g_new0(OnEditor, 1);
+    ed->join_para = -1;
     ed->app     = app;
     ed->note_id = note_id;
     ed->pending_image = -1;          /* no image reveal unless asked for    */

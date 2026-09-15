@@ -1674,6 +1674,7 @@ action_due_dialog(OnLibrary *lw, GtkTreePath *path)
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Set",    GTK_RESPONSE_OK,
         NULL);
+    gtk_widget_add_css_class(dlg, "notes-dialog");   /* library_install_css */
     gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
 
     d->cal = gtk_calendar_new();
@@ -2310,6 +2311,7 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_OK",     GTK_RESPONSE_OK,
         NULL);
+    gtk_widget_add_css_class(dialog, "notes-dialog"); /* library_install_css */
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
     FolderPrompt *p = g_new0(FolderPrompt, 1);
@@ -2337,14 +2339,18 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
 
     p->emoji_entry = gtk_entry_new();
     gtk_entry_set_max_length(GTK_ENTRY(p->emoji_entry), 4);
+    /* One emoji wide (plus its chooser icon): both width bounds, and the
+     * theme's entry min-width lifted, or the field spans the dialog.     */
     gtk_editable_set_width_chars(GTK_EDITABLE(p->emoji_entry), 3);
+    gtk_editable_set_max_width_chars(GTK_EDITABLE(p->emoji_entry), 3);
     gtk_entry_set_alignment(GTK_ENTRY(p->emoji_entry), 0.5);
     gtk_entry_set_input_hints(GTK_ENTRY(p->emoji_entry),
                               GTK_INPUT_HINT_EMOJI);
     g_object_set(p->emoji_entry, "show-emoji-icon", TRUE, NULL);
     gtk_widget_set_tooltip_text(p->emoji_entry,
                                 "Optional emoji \xe2\x80\x94 click to pick");
-    on_app_widget_add_css(p->emoji_entry, "entry { font-size: 18px; }");
+    on_app_widget_add_css(p->emoji_entry,
+                          "entry { font-size: 18px; min-width: 0; }");
     if (initial_emoji != NULL && *initial_emoji != '\0')
         gtk_editable_set_text(GTK_EDITABLE(p->emoji_entry), initial_emoji);
     gtk_widget_set_halign(p->emoji_entry, GTK_ALIGN_START);
@@ -6099,6 +6105,7 @@ library_build_notes_grid(OnLibrary *lw)
 {
     lw->notes_grid = GTK_ICON_VIEW(
         gtk_icon_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
+    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_grid), "notes-grid");
     {
         /* Custom cell layout: the thumbnail texture with the note title
          * as a real text label underneath.                                 */
@@ -6326,6 +6333,53 @@ library_build_status_bar(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * library_install_css() — the library's DISPLAY-level stylesheet, installed
+ * once per process: rules that must reach nodes a widget-scoped provider
+ * cannot.
+ *
+ * 1. Grid thumbnails.  GtkCellRendererPixbuf hands a texture to GTK's icon
+ *    helper, which paints a paintable at MIN(cell width, -gtk-icon-size) —
+ *    and -gtk-icon-size is 16px unless CSS says otherwise (measured on
+ *    4.22 with a pixel probe: a 140 px texture painted 16 px square while
+ *    the cell reserved 140).  The renderer saves the icon view's style
+ *    context with the "image" class for that paint, so the rule targets
+ *    `iconview.notes-grid.image`.
+ * 2. Dialog buttons.  GtkDialog's action area has no padding of its own
+ *    in GTK4 (the old action-area border went with gtk_dialog_get_action_area),
+ *    so the buttons sat flush against the bottom-right corner.
+ * 3. Grid hover.  The icon view paints each item's background and frame
+ *    on its own node saved with the "cell" class and the :hover state for
+ *    the item under the pointer; GTK3's rendering gave that a visible
+ *    outline, GTK4's theme has no rule for it, so the outline is ours.
+ * ------------------------------------------------------------------------- */
+static void
+library_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    gchar *css = g_strdup_printf(
+        "iconview.notes-grid.image { -gtk-icon-size: %dpx; }"
+        "window.notes-dialog .dialog-action-area {"
+        "  padding: 0 12px 12px 12px;"
+        "}"
+        "iconview.notes-grid.cell:hover {"
+        "  background-color: alpha(currentColor, 0.06);"
+        "  border: 1px solid alpha(currentColor, 0.35);"
+        "  border-radius: 4px;"
+        "}",
+        THUMB_SIZE);
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider, css);
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+    g_free(css);
+}
+
+/* ---------------------------------------------------------------------------
  * on_library_window_create() — build and show the library window.
  * Creates the OnLibrary state, models, and sub-panes via the builder helpers
  * above, assembles the layout, and triggers the initial data load.
@@ -6340,6 +6394,7 @@ on_library_window_create(OnApp *app)
     lw->sel_name = g_strdup("Notes");
     lw->thumb_cache = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                             g_free, thumb_entry_free);
+    library_install_css();
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------
      * A GtkApplicationWindow: that is what gives it the "win." action

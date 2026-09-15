@@ -240,11 +240,9 @@ menu_popup_closed(GtkPopover *popover, gpointer user_data)
 
 /* ---------------------------------------------------------------------------
  * menu_popup_parent_unrealize() — the popover's parent is being torn down
- * (its window destroyed, or it removed from the tree) while the popover is
- * still up or still waiting for its idle.  Drop the popover NOW: a
- * GtkTextView disposing with a foreign child left in place never gets past
- * it (gtk_text_view_dispose loops on its first child and only warns), and
- * any other parent would leave the idle to unparent from a dead widget.
+ * (its window destroyed) while the popover is still up or still waiting
+ * for its idle.  Drop the popover NOW, so the idle never unparents from a
+ * dead widget.
  *   parent    — the widget losing its realization.
  *   user_data — the popover.
  * ------------------------------------------------------------------------- */
@@ -258,17 +256,33 @@ menu_popup_parent_unrealize(GtkWidget *parent, gpointer user_data)
 void
 on_app_menu_popup(GtkWidget *attach, GMenuModel *model, gdouble x, gdouble y)
 {
+    /* The popover's PARENT is the window's own child box, not `attach`.
+     * Measured on 4.22: a popover parented to a deprecated GtkTreeView
+     * trips gtk_css_node_insert_after (the view keeps its header buttons
+     * under a private sub-node, so a foreign child breaks its sibling
+     * chain) and comes up the wrong size; a GtkTextView disposing with a
+     * foreign child never gets past it.  A GtkBox takes a popover cleanly
+     * — layout skips GtkNative children — and every window's child is one.
+     * The press is translated into that box's coordinates.                 */
+    GtkRoot *root = gtk_widget_get_root(attach);
+    GtkWidget *parent = gtk_window_get_child(GTK_WINDOW(root));
+    graphene_point_t at_parent;      /* the press, in the parent's space    */
+    if (!gtk_widget_compute_point(attach, parent,
+                                  &GRAPHENE_POINT_INIT((float)x, (float)y),
+                                  &at_parent))
+        at_parent = GRAPHENE_POINT_INIT((float)x, (float)y);
+
     GtkWidget *popover = gtk_popover_menu_new_from_model(model);
     g_object_unref(model);           /* the popover holds its own reference */
-    gtk_widget_set_parent(popover, attach);
+    gtk_widget_set_parent(popover, parent);
     /* Our own reference outlives the parent's, so the popover stays a valid
      * object until menu_popup_drop has run whichever way it is reached.     */
     g_object_set_data(G_OBJECT(popover), "on-popup-ref", g_object_ref(popover));
     g_object_set_data(G_OBJECT(popover), "on-popup-unrealize",
-        GSIZE_TO_POINTER(g_signal_connect(attach, "unrealize",
+        GSIZE_TO_POINTER(g_signal_connect(parent, "unrealize",
             G_CALLBACK(menu_popup_parent_unrealize), popover)));
     gtk_popover_set_has_arrow(GTK_POPOVER(popover), FALSE);
-    GdkRectangle at = { (gint)x, (gint)y, 1, 1 };  /* the press, in attach  */
+    GdkRectangle at = { (gint)at_parent.x, (gint)at_parent.y, 1, 1 };
     gtk_popover_set_pointing_to(GTK_POPOVER(popover), &at);
     g_signal_connect(popover, "closed", G_CALLBACK(menu_popup_closed), NULL);
     gtk_popover_popup(GTK_POPOVER(popover));
@@ -306,6 +320,15 @@ on_app_install_accels(GtkApplication *gtk_app)
         { "win.insert-emoji",      "<Primary>e"        },
     };
 
+    /* GTK4 parses "<Primary>" as Control on EVERY platform (gtkaccelgroup.c:
+     * is_primary → GDK_CONTROL_MASK); the Command key is GDK_META_MASK.
+     * The table is written with <Primary> and spelled out here per
+     * platform — Command on macOS, Control elsewhere.                       */
+#ifdef __APPLE__
+    static const gchar *const PRIMARY = "<Meta>";
+#else
+    static const gchar *const PRIMARY = "<Control>";
+#endif
     for (gsize i = 0; i < G_N_ELEMENTS(ACCELS); i++) {
         /* Collect every accel already bound to this action so a second row
          * for the same action adds a key rather than replacing the first. */
@@ -315,10 +338,18 @@ on_app_install_accels(GtkApplication *gtk_app)
         gchar **all = g_new0(gchar *, n + 2);
         for (gsize j = 0; j < n; j++)
             all[j] = have[j];
-        all[n] = (gchar *)ACCELS[i].accel;
+        gchar *accel = g_strdup(ACCELS[i].accel);   /* platform-spelled     */
+        if (g_str_has_prefix(accel, "<Primary>")) {
+            gchar *spelled = g_strconcat(PRIMARY, accel + strlen("<Primary>"),
+                                         NULL);
+            g_free(accel);
+            accel = spelled;
+        }
+        all[n] = accel;
         gtk_application_set_accels_for_action(gtk_app, ACCELS[i].action,
                                               (const gchar *const *)all);
         g_strfreev(have);
+        g_free(accel);
         g_free(all);
     }
 }

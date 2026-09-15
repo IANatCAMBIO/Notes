@@ -531,11 +531,74 @@ add a second idiom.
   has its own ini + seeded throwaway db, and the IPC socket is per database
   so a dev instance and the real one coexist.  Applies to every phase.
 
+- **D13 · 2026-09-15 — `<Primary>` is Control on GTK4, everywhere.**
+  `gtkaccelgroup.c: is_primary → GDK_CONTROL_MASK`, no platform branch;
+  Command is `GDK_META_MASK`.  `on_app_install_accels` spells the table's
+  `<Primary>` as `<Meta>` on macOS and `<Control>` elsewhere.
+- **D14 · 2026-09-15 — Context popovers are parented to the window's child
+  box, never to the widget that was clicked.**  Measured: a popover
+  parented to a deprecated GtkTreeView trips `gtk_css_node_insert_after`
+  on every popup (the view keeps its header buttons under a private
+  sub-node) and came up squashed with a scrollbar; parented to a GtkBox it
+  gets its natural size even in a cramped window.  A GtkTextView disposing
+  with a foreign child never returns.  `on_app_menu_popup` translates the
+  point with `gtk_widget_compute_point`, holds its own reference and drops
+  the popover on the parent's `unrealize` if the window goes first.
+- **D15 · 2026-09-15 — Drawing over/under the text is `snapshot_layer`,
+  not a `snapshot` override.**  GtkTextView draws through an internal
+  child, so a cairo node appended after chaining up `snapshot` never showed.
+  `snapshot_layer(BELOW/ABOVE_TEXT)` is called under the same translation
+  as the text: BUFFER coordinates, no conversion.
+- **D16 · 2026-09-15 — GTK4 does not paint a paragraph background on a
+  line holding only its newline** (pixel-probed; GTK3 did).  The editor
+  shades empty code lines itself in the BELOW_TEXT layer, from the line's
+  first-character x to the view width less the tag's right margin — the
+  rectangle GTK uses for the text lines.
+- **D17 · 2026-09-15 — An overlay can never be removed from a GtkTextView
+  in 4.22.**  `gtk_text_view_remove` walks anchored children only and warns
+  "is not a child" for an overlay (the removal that would work is in the
+  private GtkTextViewChild).  The code-block copy links are POOLED: hidden
+  when their block goes, reused when one appears.
+- **D18 · 2026-09-15 — GtkCellRendererPixbuf paints a texture at
+  `-gtk-icon-size`, 16 px by default, whatever the cell reserves.**
+  Pixel-probed: a 140 px texture painted 16 px square.  The rule
+  `iconview.<class>.image { -gtk-icon-size: Npx }` (the renderer saves the
+  view's context with the "image" class) fixes it; textures stay 1× since
+  the renderer lays a texture out at its pixel size.  The hovered cell has
+  no theme rule either — `iconview.<class>.cell:hover` supplies one.
+- **D19 · 2026-09-15 — The editing-action gate hangs on the widgets that
+  own keys, not on the view's focus.**  A popover menu takes the keyboard
+  focus while open, so gating on the view greyed out the very Insert /
+  Styles items being opened.  `editor_gate_widget` puts a focus controller
+  on the find entry and every table cell: enter disables, leave enables.
+- **D20 · 2026-09-15 — Joining lines keeps the FIRST line's paragraph
+  style** (`join_para`, delete-range before/after).  GtkTextBuffer keeps
+  the second line's newline — and its tag — so backspacing an emptied code
+  line into the body line above turned that line into the code block.  A
+  latent GTK3 bug too, invisible there because empty code lines were not
+  shaded; port back to `main`.
+- **D21 · 2026-09-15 — GTK4 emits a window's "destroy" AFTER its dispose
+  has torn the child tree down** (gtkwindow.c → gtkwidget.c), the reverse
+  of GTK3.  Anything a destroy handler touches must be its own reference
+  (the image viewer holds its panel), never a widget looked up from the
+  window.
+- **D22 · 2026-09-15 — Theme differences papered over per widget:** every
+  GtkFrame is rounded 8 px (table cells get `border-radius: 0`); GtkDialog's
+  action area has no padding (`window.notes-dialog .dialog-action-area`);
+  GtkEntry's min-width ignores width-chars (`min-width: 0` on the emoji
+  entry); `-gtk-icon-size` above.  Apple Color Emoji still overdraws its
+  advance and the letter-spacing pad still works — but Pango drops the
+  spacing at a line end, so a TRAILING emoji sits 2 px under the caret
+  until the next character is typed (GTK3 identical).
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — Per-file port joined and running in the sandbox; first two
+  rounds of hand verification on macOS: menus, shortcuts, DnD, dialogs,
+  grid, tables, code blocks, emoji, viewer all pass after D13–D22.
 - 2026-09-14 — Phase 2 complete on `main` (facad9e), verified in the dev
   sandbox on macOS; D9–D12; "Lost permanently #2" struck.  gtk4 rebased.
 - 2026-09-14 — Phase 0 complete, verdict GO.  gtk4 4.22.4 +quartz installed;

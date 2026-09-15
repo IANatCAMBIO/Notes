@@ -325,10 +325,12 @@ void on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
 /* ---------------------------------------------------------------------------
  * on_app_menu_popup() — pop up a one-shot context menu built from a menu
  * model, at a point in a widget.  THE transient-popup scaffold for every
- * right-click menu in the app: a GtkPopoverMenu parented to `attach` (so
- * its "win."/"app." action names resolve through that widget's window),
- * pointing at (x, y), that unparents and drops itself once closed.
- *   attach — the widget the press landed in; the popover's parent.
+ * right-click menu in the app: a GtkPopoverMenu parented to the WINDOW's
+ * child box (not to `attach` — see the implementation for why a tree view
+ * or text view cannot take one), pointing at (x, y) translated into that
+ * box, that unparents and drops itself once closed.  Actions resolve
+ * through the window either way.
+ *   attach — the widget the press landed in (any widget in a window).
  *   model  — the items; OWNERSHIP IS TAKEN (the popover keeps its own ref).
  *   x, y   — the press position in `attach`'s coordinates (what a
  *            GtkGestureClick "pressed" handler receives).

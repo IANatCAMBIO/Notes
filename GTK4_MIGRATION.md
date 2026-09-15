@@ -504,6 +504,12 @@ comparable size to this one and is NOT in scope here.  Doing it now would
 double the port; doing it never means the app dies with GTK4.  Decide when
 GTK5 has a date.
 
+The note ENGINE is the other project: replacing the `GtkTextView`
+subclass with an `OnDocument` block model and a drawn view, so no widget
+ever lives inside another widget again (D14/D17/D23/D27/D29 are all that
+one thing).  Specified in **BLOCK_MODEL.md**; its step 1 is headless and
+can start on this branch at any time.
+
 ## Decisions
 
 Append-only.  One entry per non-obvious mapping, with the reason.  A later
@@ -745,6 +751,8 @@ add a second idiom.
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — BLOCK_MODEL.md written: the OnDocument + drawn-view design
+  that retires the anchored-widget family; no code yet.
 - 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
   code block on the last line (D30), `make run-dev` re-seeding the sandbox
   every run (order-only prerequisites).

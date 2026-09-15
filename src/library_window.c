@@ -39,10 +39,6 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
-#ifdef HAVE_GTKOSX
-#include <gtkosxapplication.h>
-#endif
-
 /* Logical pixel size of the square grid-view thumbnails.                    */
 #define THUMB_SIZE 140
 
@@ -157,9 +153,15 @@ static const GtkTargetEntry ROW_TARGET =
  *                   jumping back to the top.
  *   sidebar_box   — the whole folder/tag pane, so the toolbar's
  *                   show/hide toggle can flip its visibility.
- *   view_sidebar_item — the View menu's Show/Hide Sidebar item, kept so
- *                   its label can be re-pointed at whichever action it
- *                   currently offers (see sidebar_menu_sync()).
+ *   menubar_model — the File/View menu model (owned ref).  Handed to
+ *                   gtk_application_set_menubar, which GTK renders in the
+ *                   native macOS menu bar or, where the shell has none, at
+ *                   the top of this GtkApplicationWindow.
+ *   menubar       — an in-window GtkMenuBar over the same model, macOS
+ *                   only: shown while the "native_menubar" setting is off
+ *                   (see on_library_apply_native_menubar).  NULL elsewhere.
+ *   column_menu_view — the list view whose column header was last
+ *                   right-clicked; the "column-<key>" actions act on it.
  *   view_btn      — the toolbar's List/Grid toggle, kept so its ICON can
  *                   be re-pointed at whichever view a click switches TO
  *                   (see view_button_sync()).
@@ -210,7 +212,9 @@ typedef struct {
     gint          shown_kind;
     gint64        shown_id;
     GtkWidget    *sidebar_box;
-    GtkWidget    *view_sidebar_item;     /* View menu's Show/Hide Sidebar   */
+    GMenuModel   *menubar_model;         /* File/View menus (owned ref)     */
+    GtkWidget    *menubar;               /* in-window bar (macOS only)      */
+    GtkTreeView  *column_menu_view;      /* view the column menu is up for  */
     GtkWidget    *sidebar_paned;         /* horizontal paned holding the sidebar */
     guint         sb_fit_idle;           /* pending sidebar_fit_grow(), or 0;
                                             coalesces the row-expanded burst
@@ -318,8 +322,6 @@ static gboolean trash_notes_core(OnLibrary *lw, const gint64 *ids,
                                  guint n);
 static gboolean trash_folder(OnLibrary *lw, gint64 folder_id,
                              const gchar *name);
-static void    add_menu_item(GtkWidget *menu, const gchar *label,
-                             GCallback callback, gpointer data);
 static void    run_ai_summary(OnLibrary *lw);
 static GtkWidget *build_ai_pane(OnLibrary *lw);
 static void    on_ai_copy_clicked(GtkButton *btn, gpointer user_data);
@@ -2315,10 +2317,8 @@ confirm(OnLibrary *lw, const gchar *primary, const gchar *secondary)
 
 /* on_new_note() — create a note in the current folder and open it.          */
 static void
-on_new_note(GtkWidget *widget, gpointer user_data)
+on_new_note(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     gint64 id = on_db_note_create(lw->app->db, current_folder_id(lw));
     if (id != 0) {
         refresh_all(lw);             /* the folder's count just grew        */
@@ -2348,19 +2348,15 @@ on_library_quicknote(OnApp *app)
 /* on_quicknote() — toolbar button: a note in the root folder, whatever is
  * selected, with its editor to the front.                                   */
 static void
-on_quicknote(GtkWidget *widget, gpointer user_data)
+on_quicknote(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     on_library_quicknote(lw->app);
 }
 
 /* on_new_folder() — prompt for a name and AI mode; create under current.    */
 static void
-on_new_folder(GtkWidget *widget, gpointer user_data)
+on_new_folder(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     gint   mode  = ON_AI_MODE_NORMAL;
     gchar *emoji = NULL;
     gchar *name  = prompt_for_folder(lw, "New Folder", NULL,
@@ -2535,10 +2531,8 @@ delete_notes_permanently(OnLibrary *lw, GArray *ids)
 /* on_delete_note() — action-bar Delete: trash every selected note, or
  * permanently delete it when the Trash is what's being viewed.              */
 static void
-on_delete_note(GtkWidget *widget, gpointer user_data)
+on_delete_note(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     GArray *ids = selected_note_ids(lw);
     if (in_trash_view(lw))
         delete_notes_permanently(lw, ids);
@@ -2551,10 +2545,8 @@ on_delete_note(GtkWidget *widget, gpointer user_data)
  * (with its whole subtree) to the Trash; a folder already in the Trash is
  * permanently deleted instead (after confirmation).                         */
 static void
-on_delete_folder(GtkWidget *widget, gpointer user_data)
+on_delete_folder(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->sel_kind == SB_KIND_FOLDER) {
         if (trash_folder(lw, lw->sel_id, lw->sel_name))
             refresh_all(lw);
@@ -2578,10 +2570,8 @@ on_delete_folder(GtkWidget *widget, gpointer user_data)
  * folder (and its subtree) back where it was deleted from; the selection
  * follows it to its restored spot.                                          */
 static void
-on_restore_folder(GtkWidget *widget, gpointer user_data)
+on_restore_folder(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->sel_kind != SB_KIND_TRASH_FOLDER)
         return;
     if (on_db_folder_restore(lw->app->db, lw->sel_id)) {
@@ -2596,10 +2586,8 @@ on_restore_folder(GtkWidget *widget, gpointer user_data)
 /* on_empty_trash() — Trash context menu: permanently delete everything in
  * the Trash after one confirmation.                                         */
 static void
-on_empty_trash(GtkWidget *widget, gpointer user_data)
+on_empty_trash(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (!confirm(lw, "Permanently delete everything in the Trash?",
                  "This cannot be undone."))
         return;
@@ -2622,10 +2610,8 @@ on_empty_trash(GtkWidget *widget, gpointer user_data)
 
 /* on_rename_folder() — "Info…" menu: edit folder name and AI mode.          */
 static void
-on_rename_folder(GtkWidget *widget, gpointer user_data)
+on_rename_folder(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->sel_kind != SB_KIND_FOLDER)
         return;
     gint   cur_mode  =               /* pre-fill radios with current setting */
@@ -2652,10 +2638,8 @@ on_rename_folder(GtkWidget *widget, gpointer user_data)
  * a folder or tag; the All Notes/Trash/Pinned sections have no folder
  * scope, so they default to searching everything.                           */
 static void
-on_open_search(GtkWidget *widget, gpointer user_data)
+on_open_search(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     gboolean scoped = lw->sel_kind == SB_KIND_FOLDER ||
                       lw->sel_kind == SB_KIND_TAG ||
                       lw->sel_kind == SB_KIND_TRASH_FOLDER;
@@ -2669,11 +2653,8 @@ on_open_search(GtkWidget *widget, gpointer user_data)
  * window takes a snapshot, so the list is fetched once here.
  * ------------------------------------------------------------------------- */
 static void
-on_open_media(GtkWidget *widget, gpointer user_data)
+on_open_media(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
-
     /* The Action Items view is not a place, and its media set is every
      * note's — say so rather than naming a row that isn't a folder.        */
     const gchar *label = (lw->sel_kind == SB_KIND_ACTIONS)
@@ -2703,12 +2684,10 @@ on_toolbar_search_activate(GtkEntry *entry, gpointer user_data)
     on_search_window_open_query(lw->app, query);
 }
 
-/* on_open_settings() — File → Settings…                                     */
+/* on_open_settings() — File → Settings… (the macOS app menu's Preferences)  */
 static void
-on_open_settings(GtkWidget *widget, gpointer user_data)
+on_open_settings(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     on_settings_window_open(lw->app);
 }
 
@@ -2717,11 +2696,9 @@ on_open_settings(GtkWidget *widget, gpointer user_data)
  * open it, either as the new permanent default or for this session only.
  * ------------------------------------------------------------------------- */
 static void
-on_open_db(GtkWidget *widget, gpointer user_data)
+on_open_db(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;
-    OnApp     *app = lw->app;
+    OnApp *app = lw->app;
 
     /* Step 1: pick the file. */
     gchar *file_path = on_app_pick_path(
@@ -2823,11 +2800,8 @@ find_gtk_image(GtkWidget *widget)
  * author, build date and a link to the BSD license.
  * ------------------------------------------------------------------------- */
 static void
-on_about(GtkWidget *widget, gpointer user_data)
+on_about(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
-
     /* 128x128-logical logo from composition.png, decoded at the display's
      * scale factor so it stays sharp on Retina (quirk #5).                 */
     gint sf = gtk_widget_get_scale_factor(lw->window);
@@ -2906,10 +2880,8 @@ on_about(GtkWidget *widget, gpointer user_data)
  * GTK main loop ends once the last window is gone.
  * ------------------------------------------------------------------------- */
 static void
-on_quit(GtkWidget *widget, gpointer user_data)
+on_quit(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     GList *windows =                 /* copy: destroying mutates the list   */
         g_list_copy(gtk_application_get_windows(lw->app->gtk_app));
     for (GList *l = windows; l != NULL; l = l->next)
@@ -2920,10 +2892,8 @@ on_quit(GtkWidget *widget, gpointer user_data)
 /* on_sidebar_search_here() — sidebar context menu Search: the clicked row
  * is already selected, so a scoped search targets it directly.              */
 static void
-on_sidebar_search_here(GtkWidget *widget, gpointer user_data)
+on_sidebar_search_here(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     on_search_window_open(lw->app, TRUE);
 }
 
@@ -2947,10 +2917,8 @@ utf8_casecmp(const gchar *a, const gchar *b)
  * stays whatever the user made it.
  * ------------------------------------------------------------------------- */
 static void
-on_sort_subfolders(GtkWidget *widget, gpointer user_data)
+on_sort_subfolders(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->sel_kind != SB_KIND_FOLDER && lw->sel_kind != SB_KIND_ROOT)
         return;
     gint64 parent =                  /* whose children get sorted           */
@@ -2964,32 +2932,26 @@ on_sort_subfolders(GtkWidget *widget, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * menu_new_transient() — one-shot context-menu scaffold: a fresh GtkMenu
- * attached to the library window that destroys itself once its selection
- * is done.
+ * menu_section_end() — close a section of a context menu: append it to
+ * `menu` and start a fresh one.  Sections are what draw the separators.
+ *   menu    — the menu being built.
+ *   section — in/out: the section to close (unreffed), replaced by a new
+ *             empty one.
  * ------------------------------------------------------------------------- */
-static GtkWidget *
-menu_new_transient(OnLibrary *lw)
-{
-    GtkWidget *menu = gtk_menu_new();
-    gtk_menu_attach_to_widget(GTK_MENU(menu), lw->window, NULL);
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-    return menu;
-}
-
-/* menu_popup() — show a fully-built menu at the pointer of `event`.         */
 static void
-menu_popup(GtkWidget *menu, GdkEventButton *event)
+menu_section_end(GMenu *menu, GMenu **section)
 {
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(*section));
+    g_object_unref(*section);
+    *section = g_menu_new();
 }
 
 /* ---------------------------------------------------------------------------
  * on_sidebar_button_press() — right click in the folder/tag tree: select
  * the row under the pointer and show a context menu mirroring the sidebar
- * toolbar (folder actions + scoped search).
+ * toolbar (folder actions + scoped search).  The items name actions, so
+ * the row kind only decides which items appear; the handlers read the
+ * selection this press just made.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
@@ -3019,43 +2981,38 @@ on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
     if (kind == SB_KIND_TAGS_HEADER)
         return TRUE;                 /* consumed, but no menu               */
 
-    GtkWidget *menu = menu_new_transient(lw);
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
 
     if (kind == SB_KIND_TRASH) {
         /* The Trash row's only action: purge it.                           */
-        add_menu_item(menu, "_Empty Trash\xe2\x80\xa6",
-                      G_CALLBACK(on_empty_trash), lw);
-        menu_popup(menu, event);
-        return TRUE;
-    }
-
-    if (kind == SB_KIND_TRASH_FOLDER) {
-        add_menu_item(menu, "_Restore Folder",
-                      G_CALLBACK(on_restore_folder), lw);
-        add_menu_item(menu, "Delete _Permanently",
-                      G_CALLBACK(on_delete_folder), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
-    } else if (kind == SB_KIND_FOLDER || kind == SB_KIND_ROOT) {
-        add_menu_item(menu,
-                      kind == SB_KIND_FOLDER ? "New _Subfolder\xe2\x80\xa6"
-                                             : "New _Folder\xe2\x80\xa6",
-                      G_CALLBACK(on_new_folder), lw);
-        if (kind == SB_KIND_FOLDER) {
-            add_menu_item(menu, "Info\xe2\x80\xa6",
-                          G_CALLBACK(on_rename_folder), lw);
-            add_menu_item(menu, "Move to _Trash",
-                          G_CALLBACK(on_delete_folder), lw);
+        g_menu_append(section, "_Empty Trash\xe2\x80\xa6", "win.empty-trash");
+    } else {
+        if (kind == SB_KIND_TRASH_FOLDER) {
+            g_menu_append(section, "_Restore Folder", "win.folder-restore");
+            g_menu_append(section, "Delete _Permanently",
+                          "win.delete-folder");
+            menu_section_end(menu, &section);
+        } else if (kind == SB_KIND_FOLDER || kind == SB_KIND_ROOT) {
+            g_menu_append(section,
+                          kind == SB_KIND_FOLDER ? "New _Subfolder\xe2\x80\xa6"
+                                                 : "New _Folder\xe2\x80\xa6",
+                          "app.new-folder");
+            if (kind == SB_KIND_FOLDER) {
+                g_menu_append(section, "Info\xe2\x80\xa6", "win.folder-info");
+                g_menu_append(section, "Move to _Trash",
+                              "win.delete-folder");
+            }
+            g_menu_append(section, "Sort Subfolders _Alphabetically",
+                          "win.sort-subfolders");
+            menu_section_end(menu, &section);
         }
-        add_menu_item(menu, "Sort Subfolders _Alphabetically",
-                      G_CALLBACK(on_sort_subfolders), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
+        g_menu_append(section, "Search _Here\xe2\x80\xa6", "win.search-here");
     }
-    add_menu_item(menu, "Search _Here\xe2\x80\xa6",
-                  G_CALLBACK(on_sidebar_search_here), lw);
+    menu_section_end(menu, &section);
+    g_object_unref(section);
 
-    menu_popup(menu, event);
+    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
     return TRUE;
 }
 
@@ -3068,10 +3025,8 @@ on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
  * restores it; while that view is showing they only set the preference
  * (refresh_notes keeps the actions child on top for that selection).       */
 static void
-on_view_list(GtkWidget *widget, gpointer user_data)
+on_view_list(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     lw->grid_pref = FALSE;
     if (lw->sel_kind == SB_KIND_ACTIONS)
         return;
@@ -3081,10 +3036,8 @@ on_view_list(GtkWidget *widget, gpointer user_data)
 }
 
 static void
-on_view_grid(GtkWidget *widget, gpointer user_data)
+on_view_grid(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     lw->grid_pref = TRUE;
     if (lw->sel_kind == SB_KIND_ACTIONS)
         return;
@@ -3093,19 +3046,24 @@ on_view_grid(GtkWidget *widget, gpointer user_data)
 }
 
 /* The View menu's sidebar item is an ACTION, not a state: its label names
- * what a click DOES.  Two labels, so the item can be re-pointed at
- * whichever one is on offer.                                               */
+ * what a click DOES.  Two items — "Hide Sidebar" on "app.sidebar-hide",
+ * "Show Sidebar" on "app.sidebar-show" — each with hidden-when set to
+ * action-disabled, so exactly the one whose action is enabled shows.  The
+ * label is therefore chosen by enabling an action, never by editing the
+ * model: a live model edit trips a misplaced assertion in MacPorts' GTK
+ * (patch-gtk-menu-crash.diff guards *change_point before the loop, which
+ * every append legitimately has NULL) — harmless, but a Gtk-CRITICAL on
+ * every toggle.                                                            */
 #define SIDEBAR_LABEL_TO_HIDE "Hide Sidebar"
 #define SIDEBAR_LABEL_TO_SHOW "Show Sidebar"
 
 /* ---------------------------------------------------------------------------
- * sidebar_menu_sync() — point the View menu's sidebar item at the action it
- * offers, read from the pane's LIVE visibility: "Hide Sidebar" while the
- * folder pane is up, "Show Sidebar" while it is not.
- *
- * No handler blocking is needed — an action item's label carries no state to
- * feed back, and gtk_menu_item_set_label cannot emit "activate".  NULL-safe,
- * so the toolbar button works during construction, before the menu exists.
+ * sidebar_menu_sync() — offer the View menu's sidebar item that fits the
+ * pane's LIVE visibility: "Hide Sidebar" while the folder pane is up,
+ * "Show Sidebar" while it is not, by enabling one action and disabling the
+ * other.  The menus GTK rendered from the model (in-window and the native
+ * macOS bar alike) show and hide the items themselves.  NULL-safe, so the
+ * toolbar button works during construction, before the actions exist.
  *
  * Inputs:
  *   lw — the library window.
@@ -3116,11 +3074,14 @@ on_view_grid(GtkWidget *widget, gpointer user_data)
 static void
 sidebar_menu_sync(OnLibrary *lw)
 {
-    if (lw->view_sidebar_item == NULL)
+    GActionMap *map = G_ACTION_MAP(lw->app->gtk_app);
+    GAction *hide = g_action_map_lookup_action(map, "sidebar-hide");
+    GAction *show = g_action_map_lookup_action(map, "sidebar-show");
+    if (hide == NULL || show == NULL)
         return;
-    gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
-        gtk_widget_get_visible(lw->sidebar_box) ? SIDEBAR_LABEL_TO_HIDE
-                                                : SIDEBAR_LABEL_TO_SHOW);
+    gboolean visible = gtk_widget_get_visible(lw->sidebar_box);
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(hide), visible);
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(show), !visible);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3146,11 +3107,22 @@ sidebar_set_visible(OnLibrary *lw, gboolean show)
 /* on_toggle_sidebar() — the toolbar button AND the View menu item: the
  * notes view takes the whole window while the folder pane is hidden.        */
 static void
-on_toggle_sidebar(GtkWidget *widget, gpointer user_data)
+on_toggle_sidebar(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
+}
+
+/* on_sidebar_hide() / on_sidebar_show() — the View menu's two items.       */
+static void
+on_sidebar_hide(OnLibrary *lw)
+{
+    sidebar_set_visible(lw, FALSE);
+}
+
+static void
+on_sidebar_show(OnLibrary *lw)
+{
+    sidebar_set_visible(lw, TRUE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3224,14 +3196,12 @@ on_view_stack_changed(GObject *stack, GParamSpec *pspec, gpointer user_data)
 /* on_toggle_view() — toolbar List/Grid button: switch to whichever notes
  * view the button is currently picturing.                                   */
 static void
-on_toggle_view(GtkWidget *widget, gpointer user_data)
+on_toggle_view(OnLibrary *lw)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
     if (view_shows_grid(lw))
-        on_view_list(NULL, lw);
+        on_view_list(lw);
     else
-        on_view_grid(NULL, lw);
+        on_view_grid(lw);
 }
 
 /* pick_export_dir() — run the "Choose Export Folder" chooser shared by
@@ -3287,33 +3257,33 @@ run_export(OnLibrary *lw, OnExportFormat format)
 
 /* on_export_html() / on_export_markdown() — File-menu export entries.       */
 static void
-on_export_html(GtkWidget *widget, gpointer user_data)
+on_export_html(OnLibrary *lw)
 {
-    (void)widget;
-    run_export((OnLibrary *)user_data, ON_EXPORT_HTML);
+    run_export(lw, ON_EXPORT_HTML);
 }
 
 static void
-on_export_markdown(GtkWidget *widget, gpointer user_data)
+on_export_markdown(OnLibrary *lw)
 {
-    (void)widget;
-    run_export((OnLibrary *)user_data, ON_EXPORT_MARKDOWN);
+    run_export(lw, ON_EXPORT_MARKDOWN);
 }
 
 /* ===========================================================================
  * per-note context menu (right click in list or grid)
  * =========================================================================== */
 
-/* Context-menu item handlers.  Delete and export act on the whole
- * selection; Open uses the note id stashed on the item as boxed object
- * data "on-note-id".                                                        */
+/* Context-menu item handlers.  Delete, export and restore act on the whole
+ * selection; Open and Pin are the two that take a parameter — the CLICKED
+ * note's id, and the pin state the clicked note's current state implies —
+ * carried as the menu item's action target.                                 */
+
+/* on_note_open() — "win.note-open(x)": open exactly the clicked note.       */
 static void
-on_note_ctx_open(GtkMenuItem *item, gpointer user_data)
+on_note_open(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gint64 *id = g_object_get_data(G_OBJECT(item), "on-note-id");
-    if (id != NULL)
-        on_editor_window_open(lw->app, *id);
+    on_editor_window_open(lw->app, g_variant_get_int64(param));
 }
 
 /* ctx_export_selection() — export every selected note to one directory.     */
@@ -3344,40 +3314,23 @@ ctx_export_selection(OnLibrary *lw, OnExportFormat format)
 }
 
 static void
-on_note_ctx_export_html(GtkMenuItem *item, gpointer user_data)
+on_note_export_html(OnLibrary *lw)
 {
-    (void)item;
-    ctx_export_selection((OnLibrary *)user_data, ON_EXPORT_HTML);
+    ctx_export_selection(lw, ON_EXPORT_HTML);
 }
 
 static void
-on_note_ctx_export_md(GtkMenuItem *item, gpointer user_data)
+on_note_export_md(OnLibrary *lw)
 {
-    (void)item;
-    ctx_export_selection((OnLibrary *)user_data, ON_EXPORT_MARKDOWN);
+    ctx_export_selection(lw, ON_EXPORT_MARKDOWN);
 }
 
+/* on_note_restore() — Trash-view context menu: put every selected note
+ * back where it was deleted from (top level when that folder is itself
+ * still in the Trash).                                                      */
 static void
-on_note_ctx_delete(GtkMenuItem *item, gpointer user_data)
+on_note_restore(OnLibrary *lw)
 {
-    (void)item;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    GArray *ids = selected_note_ids(lw);
-    if (in_trash_view(lw))
-        delete_notes_permanently(lw, ids);
-    else
-        trash_notes(lw, ids);
-    g_array_free(ids, TRUE);
-}
-
-/* on_note_ctx_restore() — Trash-view context menu: put every selected
- * note back where it was deleted from (top level when that folder is
- * itself still in the Trash).                                               */
-static void
-on_note_ctx_restore(GtkMenuItem *item, gpointer user_data)
-{
-    (void)item;
-    OnLibrary *lw = user_data;       /* owning library window               */
     GArray *ids = selected_note_ids(lw);
     if (ids->len > 0) {
         for (guint i = 0; i < ids->len; i++)
@@ -3389,14 +3342,14 @@ on_note_ctx_restore(GtkMenuItem *item, gpointer user_data)
     g_array_free(ids, TRUE);
 }
 
-/* on_note_ctx_toggle_pin() — pin or unpin every selected note (the new
- * state is the opposite of the clicked note's current state).               */
+/* on_note_pin() — "win.note-pin(b)": pin or unpin every selected note; the
+ * target is the new state (the opposite of the clicked note's).             */
 static void
-on_note_ctx_toggle_pin(GtkMenuItem *item, gpointer user_data)
+on_note_pin(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gboolean pin =                   /* target state for the selection      */
-        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "on-pin"));
+    gboolean pin = g_variant_get_boolean(param);   /* state for the set    */
 
     GArray *ids = selected_note_ids(lw);
     for (guint i = 0; i < ids->len; i++)
@@ -3417,51 +3370,44 @@ on_note_ctx_toggle_pin(GtkMenuItem *item, gpointer user_data)
 static void
 show_note_context_menu(OnLibrary *lw, gint64 note_id, GdkEventButton *event)
 {
-    GtkWidget *menu = menu_new_transient(lw);
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
+    GMenuItem *item;                 /* the two items that carry a target   */
 
-    /* Pin/Unpin reflects the clicked note's current state.                 */
-    OnNoteMeta *meta = on_db_note_get(lw->app->db, note_id);
-    gboolean pinned = meta != NULL && meta->pinned;
-    on_db_note_meta_free(meta);
+    /* Open acts on the CLICKED note, whatever the selection.               */
+    item = g_menu_item_new("_Open", NULL);
+    g_menu_item_set_action_and_target(item, "win.note-open", "x", note_id);
+    g_menu_append_item(section, item);
+    g_object_unref(item);
 
-    /* Two menus: the normal one, and the Trash view's restore/purge one.   */
-    typedef struct { const gchar *label; GCallback cb; } NoteMenuItem;
-    NoteMenuItem normal_items[] = {
-        { "_Open",                          G_CALLBACK(on_note_ctx_open) },
-        { pinned ? "Un_pin" : "_Pin",       G_CALLBACK(on_note_ctx_toggle_pin) },
-        { NULL,                             NULL /* separator */          },
-        { "Export as _HTML\xe2\x80\xa6",    G_CALLBACK(on_note_ctx_export_html) },
-        { "Export as _Markdown\xe2\x80\xa6",G_CALLBACK(on_note_ctx_export_md)   },
-        { NULL,                             NULL /* separator */          },
-        { "Move to _Trash",                 G_CALLBACK(on_note_ctx_delete) },
-    };
-    NoteMenuItem trash_items[] = {
-        { "_Open",                          G_CALLBACK(on_note_ctx_open) },
-        { "_Restore",                       G_CALLBACK(on_note_ctx_restore) },
-        { NULL,                             NULL /* separator */          },
-        { "Delete _Permanently",            G_CALLBACK(on_note_ctx_delete) },
-    };
-    NoteMenuItem *items = in_trash_view(lw) ? trash_items : normal_items;
-    gsize n_items = in_trash_view(lw) ? G_N_ELEMENTS(trash_items)
-                                      : G_N_ELEMENTS(normal_items);
-    for (gsize i = 0; i < n_items; i++) {
-        GtkWidget *mi;               /* menu item (or separator)            */
-        if (items[i].label == NULL) {
-            mi = gtk_separator_menu_item_new();
-        } else {
-            mi = gtk_menu_item_new_with_mnemonic(items[i].label);
-            gint64 *boxed = g_new(gint64, 1);
-            *boxed = note_id;
-            g_object_set_data_full(G_OBJECT(mi), "on-note-id",
-                                   boxed, g_free);
-            if (items[i].cb == G_CALLBACK(on_note_ctx_toggle_pin))
-                g_object_set_data(G_OBJECT(mi), "on-pin",
-                                  GINT_TO_POINTER(!pinned));
-            g_signal_connect(mi, "activate", items[i].cb, lw);
-        }
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    if (in_trash_view(lw)) {
+        /* The Trash view's restore/purge menu.                             */
+        g_menu_append(section, "_Restore", "win.note-restore");
+        menu_section_end(menu, &section);
+        g_menu_append(section, "Delete _Permanently", "win.delete-note");
+    } else {
+        /* Pin/Unpin offers the opposite of the clicked note's state.       */
+        OnNoteMeta *meta = on_db_note_get(lw->app->db, note_id);
+        gboolean pinned = meta != NULL && meta->pinned;
+        on_db_note_meta_free(meta);
+        item = g_menu_item_new(pinned ? "Un_pin" : "_Pin", NULL);
+        g_menu_item_set_action_and_target(item, "win.note-pin", "b",
+                                          !pinned);
+        g_menu_append_item(section, item);
+        g_object_unref(item);
+        menu_section_end(menu, &section);
+
+        g_menu_append(section, "Export as _HTML\xe2\x80\xa6",
+                      "win.note-export-html");
+        g_menu_append(section, "Export as _Markdown\xe2\x80\xa6",
+                      "win.note-export-md");
+        menu_section_end(menu, &section);
+        g_menu_append(section, "Move to _Trash", "win.delete-note");
     }
-    menu_popup(menu, event);
+    menu_section_end(menu, &section);
+    g_object_unref(section);
+
+    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4261,27 +4207,24 @@ library_notify_note_saved(OnApp *app, gint64 note_id)
 void
 on_library_apply_native_menubar(OnApp *app, gboolean native)
 {
-#ifdef HAVE_GTKOSX
-    GtkWidget *menubar =             /* the in-window GtkMenuBar            */
-        g_object_get_data(G_OBJECT(app->library_window), "on-menubar");
-    if (menubar == NULL)
+    OnLibrary *lw = lw_from_app(app);
+    if (lw == NULL)
         return;
-
-    GtkosxApplication *osx = gtkosx_application_get();
-    if (native) {
-        /* The same menu shell drives the macOS bar; the in-window widget
-         * just has to be hidden.                                           */
-        gtk_widget_hide(menubar);
-        gtkosx_application_set_menu_bar(osx, GTK_MENU_SHELL(menubar));
-    } else {
-        gtk_widget_show(menubar);
-        /* Hand macOS an empty bar so the app menu stays functional.        */
-        GtkWidget *empty = gtk_menu_bar_new();
-        gtkosx_application_set_menu_bar(osx, GTK_MENU_SHELL(empty));
-    }
-    gtkosx_application_sync_menubar(osx);
+#ifdef __APPLE__
+    /* GTK's quartz backend exports the application menubar to the native
+     * macOS bar (and builds the app menu — About/Preferences/Quit — from
+     * our "app." actions) whenever one is set.  So "native" = set it and
+     * hide the in-window rendering; "not native" = unset it and show the
+     * in-window GtkMenuBar over the same model.                            */
+    gtk_application_set_menubar(app->gtk_app,
+                                native ? lw->menubar_model : NULL);
+    gtk_widget_set_visible(lw->menubar, !native);
 #else
-    (void)app; (void)native;
+    /* No shell menubar on Linux: the GtkApplicationWindow renders the
+     * application menubar itself, so it is always set and the setting has
+     * nothing to choose between.                                           */
+    (void)native;
+    gtk_application_set_menubar(app->gtk_app, lw->menubar_model);
 #endif
 }
 
@@ -4611,32 +4554,89 @@ list_autofit_set(OnLibrary *lw, PangoLayout *lay, const gchar *key,
         c, MAX(content_w + AUTOFIT_CELL_EXTRA, w + AUTOFIT_HEADER_EXTRA));
 }
 
-/* on_autofit_toggled() — the "Autofit Column Widths" check item flipped:
- * remember, persist and apply.                                              */
+/* on_autofit_change_state() — "win.autofit" (stateful boolean, the header
+ * menu's "Autofit Column Widths" check item) flipped: remember, persist
+ * and apply.                                                                */
 static void
-on_autofit_toggled(GtkCheckMenuItem *item, gpointer user_data)
+on_autofit_change_state(GSimpleAction *action, GVariant *value,
+                        gpointer user_data)
 {
     OnLibrary *lw = user_data;       /* owning library window               */
-    lw->list_autofit = gtk_check_menu_item_get_active(item);
+    g_simple_action_set_state(action, value);
+    lw->list_autofit = g_variant_get_boolean(value);
     on_app_config_set("list_autofit", lw->list_autofit ? "1" : "0");
     list_autofit_apply(lw);
     refresh_notes(lw);               /* measuring rides the populate loop   */
 }
 
-/* on_column_toggled() — a check item in the header menu flipped:
- * show/hide that column and persist.  Autofit re-measuring applies to
- * the notes list only (the Action Items list doesn't autofit).             */
+/* The "column-<key>" actions: one stateful boolean per column of the view
+ * whose header was last right-clicked, named after the column's stable
+ * key ("on-colkey").  Created on demand by column_menu_action().           */
+#define COLUMN_ACTION_PREFIX "column-"
+
+/* on_column_change_state() — a column's check item flipped: show/hide the
+ * column of lw->column_menu_view carrying that key and persist.  Autofit
+ * re-measuring applies to the notes list only (the Action Items list
+ * doesn't autofit).                                                         */
 static void
-on_column_toggled(GtkCheckMenuItem *item, gpointer user_data)
+on_column_change_state(GSimpleAction *action, GVariant *value,
+                       gpointer user_data)
 {
     OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreeViewColumn *c = g_object_get_data(G_OBJECT(item), "on-column");
-    GtkTreeView *view = GTK_TREE_VIEW(gtk_tree_view_column_get_tree_view(c));
-    gtk_tree_view_column_set_visible(
-        c, gtk_check_menu_item_get_active(item));
+    const gchar *key =               /* the column key after the prefix     */
+        g_action_get_name(G_ACTION(action)) + strlen(COLUMN_ACTION_PREFIX);
+    GtkTreeView *view = lw->column_menu_view;
+    if (view == NULL)
+        return;
+    g_simple_action_set_state(action, value);
+
+    GList *cols = gtk_tree_view_get_columns(view);
+    for (GList *l = cols; l != NULL; l = l->next) {
+        if (g_strcmp0(g_object_get_data(G_OBJECT(l->data), "on-colkey"),
+                      key) == 0)
+            gtk_tree_view_column_set_visible(l->data,
+                                             g_variant_get_boolean(value));
+    }
+    g_list_free(cols);
     view_columns_persist(view);
     if (view == lw->notes_list && lw->list_autofit)
         refresh_notes(lw);           /* a re-shown column needs its width   */
+}
+
+/* ---------------------------------------------------------------------------
+ * column_menu_action() — the "column-<key>" action for one column, created
+ * on the window the first time that column's menu is opened and brought up
+ * to date every time: state = the column's visibility, enabled unless it
+ * is the only visible column (so the view can't go empty).
+ *   lw      — the library window.
+ *   key     — the column's stable key.
+ *   visible — whether the column is currently shown.
+ *   last    — TRUE when it is the only visible one.
+ * Returns the detailed action name for the menu item (g_free it).
+ * ------------------------------------------------------------------------- */
+static gchar *
+column_menu_action(OnLibrary *lw, const gchar *key, gboolean visible,
+                   gboolean last)
+{
+    gchar *name = g_strconcat(COLUMN_ACTION_PREFIX, key, NULL);
+    GActionMap *map = G_ACTION_MAP(lw->window);
+    GSimpleAction *action =
+        G_SIMPLE_ACTION(g_action_map_lookup_action(map, name));
+    if (action == NULL) {
+        action = g_simple_action_new_stateful(
+            name, NULL, g_variant_new_boolean(visible));
+        g_signal_connect(action, "change-state",
+                         G_CALLBACK(on_column_change_state), lw);
+        g_action_map_add_action(map, G_ACTION(action));
+        g_object_unref(action);      /* the map holds it now                */
+    } else {
+        g_simple_action_set_state(action, g_variant_new_boolean(visible));
+    }
+    g_simple_action_set_enabled(action, !(visible && last));
+
+    gchar *detailed = g_strconcat("win.", name, NULL);
+    g_free(name);
+    return detailed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4657,8 +4657,10 @@ on_column_header_press(GtkWidget *button, GdkEventButton *event,
         g_object_get_data(G_OBJECT(button), "on-view");
     if (view == NULL)
         return FALSE;
+    lw->column_menu_view = view;     /* what the column actions act on      */
 
-    GtkWidget *menu = menu_new_transient(lw);
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
 
     GList *cols = gtk_tree_view_get_columns(view);
     gint n_visible = 0;              /* how many columns are shown          */
@@ -4674,30 +4676,22 @@ on_column_header_press(GtkWidget *button, GdkEventButton *event,
             g_object_get_data(G_OBJECT(c), "on-collabel");
         if (label == NULL)
             label = gtk_tree_view_column_get_title(c);
-        GtkWidget *item = gtk_check_menu_item_new_with_label(label);
-        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), visible);
-        if (visible && n_visible == 1)
-            gtk_widget_set_sensitive(item, FALSE);
-        g_object_set_data(G_OBJECT(item), "on-column", c);
-        g_signal_connect(item, "toggled",
-                         G_CALLBACK(on_column_toggled), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+        gchar *detailed = column_menu_action(
+            lw, g_object_get_data(G_OBJECT(c), "on-colkey"),
+            visible, n_visible == 1);
+        g_menu_append(section, label, detailed);
+        g_free(detailed);
     }
     g_list_free(cols);
 
     if (view == lw->notes_list) {
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
-        GtkWidget *fit = gtk_check_menu_item_new_with_label(
-            "Autofit Column Widths");
-        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(fit),
-                                       lw->list_autofit);
-        g_signal_connect(fit, "toggled",
-                         G_CALLBACK(on_autofit_toggled), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), fit);
+        menu_section_end(menu, &section);
+        g_menu_append(section, "Autofit Column Widths", "win.autofit");
     }
+    menu_section_end(menu, &section);
+    g_object_unref(section);
 
-    menu_popup(menu, event);
+    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
     return TRUE;
 }
 
@@ -4885,30 +4879,179 @@ notes_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  NULL);
 }
 
-/* ---------------------------------------------------------------------------
- * add_menu_item() — helper: append one item with a callback to a menu.
- *   menu     — the GtkMenu to append to.
- *   label    — item label (mnemonics with '_').
- *   callback — "activate" handler.
- *   data     — user data for the handler.
- * ------------------------------------------------------------------------- */
+/* ===========================================================================
+ * actions
+ *
+ * Every command the library offers is a GAction, and menus, toolbar
+ * buttons and keyboard shortcuts only NAME actions.  Two scopes:
+ *
+ *   "app." — what the menubar references.  It has to work from whichever
+ *            window is focused (on macOS the native menubar is the only
+ *            menubar), so these live on the GtkApplication and act on THE
+ *            library window, creating it again if it was closed.
+ *   "win." — what is only ever invoked from inside this window: toolbar
+ *            buttons, context menus, and every keyboard shortcut (see
+ *            on_app_install_accels — a key may mean something else in an
+ *            editor window, which is what window scope is for).
+ *
+ * A command is a name plus the function that runs it for the library; the
+ * three shortcuts that duplicate a menubar item (new-note, find, media)
+ * simply bind the SAME function under a "win." name.
+ * =========================================================================== */
+
+typedef struct {
+    const gchar *name;               /* action name, without the prefix     */
+    void       (*run)(OnLibrary *lw);/* what it does                        */
+} LibCommand;
+
+static const LibCommand APP_COMMANDS[] = {
+    { "new-note",       on_new_note        },
+    { "new-folder",     on_new_folder      },
+    { "export-html",    on_export_html     },
+    { "export-md",      on_export_markdown },
+    { "open-db",        on_open_db         },
+    { "preferences",    on_open_settings   },  /* the macOS app menu's name */
+    { "about",          on_about           },
+    { "quit",           on_quit            },
+    { "view-list",      on_view_list       },
+    { "view-grid",      on_view_grid       },
+    { "toggle-sidebar", on_toggle_sidebar  },
+    { "sidebar-hide",   on_sidebar_hide    },
+    { "sidebar-show",   on_sidebar_show    },
+    { "media",          on_open_media      },
+    { "search",         on_open_search     },
+};
+
+static const LibCommand WIN_COMMANDS[] = {
+    /* shortcuts (see on_app_install_accels)                                */
+    { "new-note",         on_new_note            },
+    { "find",             on_open_search         },
+    { "media",            on_open_media          },
+    /* toolbar                                                              */
+    { "delete-folder",    on_delete_folder       },
+    { "quicknote",        on_quicknote           },
+    { "delete-note",      on_delete_note         },
+    { "toggle-view",      on_toggle_view         },
+    /* sidebar context menu                                                 */
+    { "folder-info",      on_rename_folder       },
+    { "folder-restore",   on_restore_folder      },
+    { "sort-subfolders",  on_sort_subfolders     },
+    { "search-here",      on_sidebar_search_here },
+    { "empty-trash",      on_empty_trash         },
+    /* note context menu                                                    */
+    { "note-export-html", on_note_export_html    },
+    { "note-export-md",   on_note_export_md      },
+    { "note-restore",     on_note_restore        },
+};
+
+/* command_run() — run the command `name` from `table` for `lw`.            */
 static void
-add_menu_item(GtkWidget *menu, const gchar *label, GCallback callback,
-              gpointer data)
+command_run(const LibCommand *table, gsize n, const gchar *name,
+            OnLibrary *lw)
 {
-    GtkWidget *item = gtk_menu_item_new_with_mnemonic(label);
-    g_signal_connect(item, "activate", callback, data);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+    for (gsize i = 0; i < n; i++) {
+        if (g_strcmp0(table[i].name, name) == 0) {
+            table[i].run(lw);
+            return;
+        }
+    }
+}
+
+/* on_win_command() — "activate" of a "win." command: user_data is the
+ * library the action lives on.                                              */
+static void
+on_win_command(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)param;
+    command_run(WIN_COMMANDS, G_N_ELEMENTS(WIN_COMMANDS),
+                g_action_get_name(G_ACTION(action)), user_data);
+}
+
+/* on_app_command() — "activate" of an "app." command: user_data is the
+ * OnApp, since these outlive any one library window.  The library is
+ * re-created if it has been closed (the native macOS menubar stays up
+ * while editors are open), which is also what on_activate does.            */
+static void
+on_app_command(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)param;
+    OnApp *app = user_data;          /* shared application context          */
+    if (app->library_window == NULL)
+        on_library_window_create(app);
+    command_run(APP_COMMANDS, G_N_ELEMENTS(APP_COMMANDS),
+                g_action_get_name(G_ACTION(action)), lw_from_app(app));
 }
 
 /* ---------------------------------------------------------------------------
- * build_menubar() — the File and View menus.
- * Returns the GtkMenuBar widget.
+ * commands_install() — add one table of parameterless actions to a map.
+ *   map       — the GtkApplication or the library window.
+ *   table / n — the commands.
+ *   handler   — on_app_command or on_win_command.
+ *   user_data — what that handler expects.
  * ------------------------------------------------------------------------- */
-static GtkWidget *
-build_menubar(OnLibrary *lw)
+static void
+commands_install(GActionMap *map, const LibCommand *table, gsize n,
+                 GCallback handler, gpointer user_data)
 {
-    GtkWidget *bar = gtk_menu_bar_new();
+    for (gsize i = 0; i < n; i++) {
+        GSimpleAction *action = g_simple_action_new(table[i].name, NULL);
+        g_signal_connect(action, "activate", handler, user_data);
+        g_action_map_add_action(map, G_ACTION(action));
+        g_object_unref(action);      /* the map holds it now                */
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * library_install_actions() — every action of the library: the "app."
+ * commands on the application (once — a second library window in one
+ * process reuses them), the "win." commands, the two parameterised note
+ * actions and the stateful autofit toggle on the window.  The per-column
+ * actions are added lazily by column_menu_action().
+ * ------------------------------------------------------------------------- */
+static void
+library_install_actions(OnLibrary *lw)
+{
+    GActionMap *app_map = G_ACTION_MAP(lw->app->gtk_app);
+    GActionMap *win_map = G_ACTION_MAP(lw->window);
+
+    if (g_action_map_lookup_action(app_map, APP_COMMANDS[0].name) == NULL)
+        commands_install(app_map, APP_COMMANDS, G_N_ELEMENTS(APP_COMMANDS),
+                         G_CALLBACK(on_app_command), lw->app);
+    commands_install(win_map, WIN_COMMANDS, G_N_ELEMENTS(WIN_COMMANDS),
+                     G_CALLBACK(on_win_command), lw);
+
+    GSimpleAction *action;           /* the hand-made ones                  */
+    action = g_simple_action_new("note-open", G_VARIANT_TYPE_INT64);
+    g_signal_connect(action, "activate", G_CALLBACK(on_note_open), lw);
+    g_action_map_add_action(win_map, G_ACTION(action));
+    g_object_unref(action);
+
+    action = g_simple_action_new("note-pin", G_VARIANT_TYPE_BOOLEAN);
+    g_signal_connect(action, "activate", G_CALLBACK(on_note_pin), lw);
+    g_action_map_add_action(win_map, G_ACTION(action));
+    g_object_unref(action);
+
+    action = g_simple_action_new_stateful(
+        "autofit", NULL, g_variant_new_boolean(lw->list_autofit));
+    g_signal_connect(action, "change-state",
+                     G_CALLBACK(on_autofit_change_state), lw);
+    g_action_map_add_action(win_map, G_ACTION(action));
+    g_object_unref(action);
+}
+
+/* ---------------------------------------------------------------------------
+ * build_menubar() — the File and View menus as a menu model, every item
+ * naming an "app." action.  Rendered by GTK: in the native macOS menu bar,
+ * or at the top of the GtkApplicationWindow where the shell has none (see
+ * on_library_apply_native_menubar).
+ * Returns the model (owned by the caller).
+ * ------------------------------------------------------------------------- */
+static GMenuModel *
+build_menubar(void)
+{
+    GMenu *bar = g_menu_new();
+    GMenu *menu;                     /* one top-level menu                  */
+    GMenu *section;                  /* one group of its items              */
 
     /* File menu.
      *
@@ -4918,77 +5061,76 @@ build_menubar(OnLibrary *lw)
      * keeps — the database, Settings, About, Quit.  A rule between every
      * pair of items (which is what this was) divides nothing, so it
      * stopped reading as grouping at all.  Same shape as the sister Tasks
-     * app's File menu.                                                     */
-    GtkWidget *file_menu = gtk_menu_new();
-    add_menu_item(file_menu, "_New Note",
-                  G_CALLBACK(on_new_note), lw);
-    add_menu_item(file_menu, "New _Folder\xe2\x80\xa6",
-                  G_CALLBACK(on_new_folder), lw);
-    add_menu_item(file_menu, "Export All as _HTML\xe2\x80\xa6",
-                  G_CALLBACK(on_export_html), lw);
-    add_menu_item(file_menu, "Export All as _Markdown\xe2\x80\xa6",
-                  G_CALLBACK(on_export_markdown), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
-    add_menu_item(file_menu, "_Open Database File\xe2\x80\xa6",
-                  G_CALLBACK(on_open_db), lw);
-    add_menu_item(file_menu, "_Settings\xe2\x80\xa6",
-                  G_CALLBACK(on_open_settings), lw);
-    add_menu_item(file_menu, "_About", G_CALLBACK(on_about), lw);
-    add_menu_item(file_menu, "_Quit", G_CALLBACK(on_quit), lw);
+     * app's File menu.  (On macOS, GTK also puts Settings, About and Quit
+     * in the app menu it builds from the same three actions.)             */
+    menu    = g_menu_new();
+    section = g_menu_new();
+    g_menu_append(section, "_New Note",                   "app.new-note");
+    g_menu_append(section, "New _Folder\xe2\x80\xa6",          "app.new-folder");
+    g_menu_append(section, "Export All as _HTML\xe2\x80\xa6",  "app.export-html");
+    g_menu_append(section, "Export All as _Markdown\xe2\x80\xa6",
+                  "app.export-md");
+    menu_section_end(menu, &section);
+    g_menu_append(section, "_Open Database File\xe2\x80\xa6",  "app.open-db");
+    g_menu_append(section, "_Settings\xe2\x80\xa6",            "app.preferences");
+    g_menu_append(section, "_About",                      "app.about");
+    g_menu_append(section, "_Quit",                       "app.quit");
+    menu_section_end(menu, &section);
+    g_object_unref(section);
+    g_menu_append_submenu(bar, "_File", G_MENU_MODEL(menu));
+    g_object_unref(menu);
 
-    GtkWidget *file_root = gtk_menu_item_new_with_mnemonic("_File");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_root), file_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(bar), file_root);
-
-    /* View menu.  (Toolbar styles now live in File → Settings….)           */
-    GtkWidget *view_menu = gtk_menu_new();
-    add_menu_item(view_menu, "Notes as _List", G_CALLBACK(on_view_list), lw);
-    add_menu_item(view_menu, "Notes as _Grid", G_CALLBACK(on_view_grid), lw);
-    /* Above the rule is what the WINDOW looks like — the notes pane's two
-     * modes, and whether the folder pane is up.  Show/Hide Sidebar mirrors
-     * the toolbar's Folders button; both route through
-     * sidebar_set_visible(), so the label cannot drift from the pane.
+    /* View menu.  Above the rule is what the WINDOW looks like — the notes
+     * pane's two modes, and whether the folder pane is up.  Show/Hide
+     * Sidebar mirrors the toolbar's Folders button; both route through
+     * sidebar_set_visible(), so the label cannot drift from the pane.  The
+     * two sidebar items are both in the model; sidebar_menu_sync() decides
+     * which one is on offer (see SIDEBAR_LABEL_TO_HIDE).
      * Below the rule are the two items that open a window of their own.    */
-    lw->view_sidebar_item =
-        gtk_menu_item_new_with_label(SIDEBAR_LABEL_TO_HIDE);
-    g_signal_connect(lw->view_sidebar_item, "activate",
-                     G_CALLBACK(on_toggle_sidebar), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), lw->view_sidebar_item);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          gtk_separator_menu_item_new());
-    add_menu_item(view_menu, "_Media\xe2\x80\xa6",
-                  G_CALLBACK(on_open_media), lw);
-    add_menu_item(view_menu, "_Search Notes\xe2\x80\xa6",
-                  G_CALLBACK(on_open_search), lw);
+    menu    = g_menu_new();
+    section = g_menu_new();
+    g_menu_append(section, "Notes as _List",  "app.view-list");
+    g_menu_append(section, "Notes as _Grid",  "app.view-grid");
+    GMenuItem *item;                 /* the two hidden-when items           */
+    item = g_menu_item_new(SIDEBAR_LABEL_TO_HIDE, "app.sidebar-hide");
+    g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item(section, item);
+    g_object_unref(item);
+    item = g_menu_item_new(SIDEBAR_LABEL_TO_SHOW, "app.sidebar-show");
+    g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item(section, item);
+    g_object_unref(item);
+    menu_section_end(menu, &section);
+    g_menu_append(section, "_Media\xe2\x80\xa6",         "app.media");
+    g_menu_append(section, "_Search Notes\xe2\x80\xa6",  "app.search");
+    menu_section_end(menu, &section);
+    g_object_unref(section);
+    g_menu_append_submenu(bar, "_View", G_MENU_MODEL(menu));
+    g_object_unref(menu);
 
-    GtkWidget *view_root = gtk_menu_item_new_with_mnemonic("_View");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_root), view_menu);
-    gtk_menu_shell_append(GTK_MENU_SHELL(bar), view_root);
-
-    return bar;
+    return G_MENU_MODEL(bar);
 }
 
 /* ---------------------------------------------------------------------------
- * add_tool_button() — helper: append a tool button with a callback.
+ * add_tool_button() — helper: append a tool button bound to an action.
  *   lw       — the library window.
  *   toolbar  — the GtkToolbar to append to.
  *   icon     — local icon file basename, or NULL.
  *   fallback — markup shown as the icon when the file is missing.
  *   label    — button text label.
  *   tooltip  — hover help.
- *   cb       — "clicked" handler.
+ *   action   — detailed action name the click activates ("win.…"/"app.…").
  * Returns the button, for the callers that need to keep it (the List/Grid
  * toggle re-points its own icon); most ignore it.
  * ------------------------------------------------------------------------- */
 static GtkToolItem *
 add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
                 const gchar *fallback, const gchar *label,
-                const gchar *tooltip, GCallback cb)
+                const gchar *tooltip, const gchar *action)
 {
     GtkToolItem *item = on_app_tool_item_new(lw->app, FALSE, icon,
                                              fallback, label, tooltip);
-    g_signal_connect(item, "clicked", cb, lw);
+    gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(item), action);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
     return item;
 }
@@ -5013,14 +5155,14 @@ build_action_bar(OnLibrary *lw)
     /* --- folder area ---------------------------------------------------- */
     add_tool_button(lw, toolbar, "sidebar", "\xe2\x97\xa7",
                     "Folders", "Show or hide the folder pane",
-                    G_CALLBACK(on_toggle_sidebar));
+                    "app.toggle-sidebar");
     add_tool_button(lw, toolbar, "new-folder", "+\xf0\x9f\x93\x81",
                     "New Folder", "Create a folder inside the selection",
-                    G_CALLBACK(on_new_folder));
+                    "app.new-folder");
     add_tool_button(lw, toolbar, "delete-folder", "\xe2\x9c\x95",
                     "Delete Folder",
                     "Move the selected folder to the Trash",
-                    G_CALLBACK(on_delete_folder));
+                    "win.delete-folder");
     /* Rename lives in the folder's right-click menu only.                  */
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
@@ -5029,14 +5171,14 @@ build_action_bar(OnLibrary *lw)
     /* --- notes area ------------------------------------------------------*/
     add_tool_button(lw, toolbar, "archive", "\xe2\x9a\xa1", "Quicknote",
                     "Create a note in the root folder",
-                    G_CALLBACK(on_quicknote));
+                    "win.quicknote");
     add_tool_button(lw, toolbar, "newnote", "+", "New Note",
                     "Create a note in the current folder",
-                    G_CALLBACK(on_new_note));
+                    "app.new-note");
     add_tool_button(lw, toolbar, "deletenote", "\xe2\x9c\x95",
                     "Delete Note",
                     "Move the selected notes to the Trash",
-                    G_CALLBACK(on_delete_note));
+                    "win.delete-note");
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
@@ -5047,17 +5189,17 @@ build_action_bar(OnLibrary *lw)
      * with before the stack can be read.                                   */
     lw->view_btn = add_tool_button(lw, toolbar, "grid", "\xe2\x8a\x9e",
                     "Grid", "Switch to grid view",
-                    G_CALLBACK(on_toggle_view));
+                    "win.toggle-view");
     add_tool_button(lw, toolbar, "search", "\xf0\x9f\x94\x8d",
                     "Search", "Open search window",
-                    G_CALLBACK(on_open_search));
+                    "app.search");
     add_tool_button(lw, toolbar, "images", "\xf0\x9f\x96\xbc",
                     "Media",
                     "Show every image in the listed notes as thumbnails",
-                    G_CALLBACK(on_open_media));
+                    "app.media");
     add_tool_button(lw, toolbar, "settings", "\xe2\x9a\x99",
                     "Settings", "Open the settings window",
-                    G_CALLBACK(on_open_settings));
+                    "app.preferences");
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
@@ -5102,35 +5244,6 @@ build_action_bar(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * on_library_key_press() — window-level shortcuts: Ctrl/Cmd+N creates a
- * note in the currently selected folder; Ctrl/Cmd+F opens the search
- * window; Ctrl/Cmd+M opens the media browser.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_library_key_press(GtkWidget *widget, GdkEventKey *event,
-                     gpointer user_data)
-{
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    if (event->state & (GDK_CONTROL_MASK | GDK_META_MASK)) {
-        guint key = gdk_keyval_to_lower(event->keyval);
-        if (key == GDK_KEY_n) {
-            on_new_note(NULL, lw);
-            return TRUE;
-        }
-        if (key == GDK_KEY_f) {
-            on_open_search(NULL, lw);
-            return TRUE;
-        }
-        if (key == GDK_KEY_m) {
-            on_open_media(NULL, lw);
-            return TRUE;
-        }
-    }
-    return FALSE;
-}
-
-/* ---------------------------------------------------------------------------
  * sidebar_name_cell_func() — bold the sidebar's section rows (the Notes
  * root, the Tags header, and Pinned Notes); folders and tags render at
  * normal weight.  Runs per row draw, keyed on SB_KIND.
@@ -5170,6 +5283,9 @@ library_free(gpointer data)
         g_hash_table_destroy(lw->folder_path_cache);
     if (lw->notes_press_path != NULL)
         gtk_tree_path_free(lw->notes_press_path);
+    /* GTK keeps its own reference to the menubar model while it renders
+     * it; these are just ours.                                            */
+    g_clear_object(&lw->menubar_model);
     g_free(lw->sel_name);
     g_free(lw);
 }
@@ -5953,22 +6069,27 @@ on_library_window_create(OnApp *app)
     lw->thumb_cache = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                             g_free, thumb_entry_free);
 
-    /* --- window (standard titlebar, no HeaderBar) ------------------------*/
-    lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* --- window (standard titlebar, no HeaderBar) ------------------------
+     * A GtkApplicationWindow: that is what gives it the "win." action
+     * group (context menus, toolbar, shortcuts) and, on a desktop with no
+     * shell menubar, renders the application menubar at its top.  It adds
+     * itself to the application.                                          */
+    lw->window = gtk_application_window_new(app->gtk_app);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Notes - Library");
     gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
-    gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
     g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,
                            library_free);
 
+    /* A weak pointer: closing the library while editors are open must
+     * leave app->library_window NULL, not dangling — the "app." actions
+     * (native macOS menubar, alive as long as any window is) look it up.  */
     app->library_window       = lw->window;
+    g_object_add_weak_pointer(G_OBJECT(lw->window),
+                              (gpointer *)&app->library_window);
     app->notify_notes_changed = library_notify_notes_changed;
     app->notify_note_saved    = library_notify_note_saved;
     app->notify_status        = library_notify_status;
     app->notify_ai_changed    = library_notify_ai_changed;
-
-    g_signal_connect(lw->window, "key-press-event",
-                     G_CALLBACK(on_library_key_press), lw);
 
     /* --- models -----------------------------------------------------------*/
     lw->sidebar_store = gtk_tree_store_new(SB_N_COLS,
@@ -6017,11 +6138,19 @@ on_library_window_create(OnApp *app)
     gtk_paned_pack2(GTK_PANED(paned), notes_paned, TRUE, FALSE);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *menubar = build_menubar(lw);
-    /* Remembered so the settings window can move it into the native
-     * macOS menu bar (see on_library_apply_native_menubar).                */
-    g_object_set_data(G_OBJECT(lw->window), "on-menubar", menubar);
-    gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
+    /* The actions must exist before anything that names them is built —
+     * the menubar, the toolbar — so their items come up sensitive.        */
+    library_install_actions(lw);
+    lw->menubar_model = build_menubar();
+#ifdef __APPLE__
+    /* The in-window rendering of the menubar, for the "native_menubar"
+     * setting's OFF state; on_library_apply_native_menubar below decides
+     * which of the two shows.  Elsewhere the GtkApplicationWindow renders
+     * the application menubar itself, so nothing is packed.               */
+    lw->menubar = gtk_menu_bar_new_from_model(lw->menubar_model);
+    gtk_widget_set_no_show_all(lw->menubar, TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), lw->menubar, FALSE, FALSE, 0);
+#endif
     gtk_box_pack_start(GTK_BOX(vbox), build_action_bar(lw),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox),
@@ -6039,6 +6168,8 @@ on_library_window_create(OnApp *app)
     on_app_status(app, "DB at %s loaded", app->db->path);
 
     gtk_widget_show_all(lw->window);
+    on_library_apply_native_menubar(
+        app, on_app_config_get_bool("native_menubar", FALSE));
 
     /* AFTER show_all: the View item's label is read from the pane's live
      * visibility, and until show_all has run nothing in the window is

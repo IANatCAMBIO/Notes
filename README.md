@@ -55,7 +55,6 @@ macOS (MacPorts):
 
 ```sh
 sudo port install pkgconf gtk3 +quartz librsvg
-sudo port install gtk-osx-application-gtk3   # optional: native menu bar
 make
 make run
 ```
@@ -69,5 +68,8 @@ make
 make run
 ```
 
-The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install it
-later, rebuild from clean (`make clean && make`) so every file sees it.
+The native macOS menu bar needs no extra library — GTK's quartz backend
+provides it (Settings can switch it back into the window).
+
+For development, `make run-dev` runs the build in a sandbox (`dev/`) with
+its own throwaway database, never the one your `notes.ini` points at.

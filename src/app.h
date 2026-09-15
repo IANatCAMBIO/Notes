@@ -285,6 +285,32 @@ void on_app_tool_item_set_icon(OnApp *app, GtkToolItem *item,
                                const gchar *fallback_markup);
 
 /* ---------------------------------------------------------------------------
+ * on_app_menu_popup() — pop up a one-shot context menu built from a menu
+ * model, at the pointer of the triggering event.  THE transient-popup
+ * scaffold for every right-click menu in the app: the menu is attached to
+ * `attach` (so its "win."/"app." action names resolve through that
+ * widget's window) and destroys itself once its selection is done.
+ *   attach — a widget inside the window whose actions the items name.
+ *   model  — the items; OWNERSHIP IS TAKEN (the menu keeps its own ref).
+ *   event  — the button press to place the menu at.
+ * ------------------------------------------------------------------------- */
+void on_app_menu_popup(GtkWidget *attach, GMenuModel *model,
+                       GdkEventButton *event);
+
+/* ---------------------------------------------------------------------------
+ * on_app_install_accels() — THE keyboard-shortcut table, bound once at
+ * startup with gtk_application_set_accels_for_action.  Every shortcut is a
+ * "win." action, so the same key can mean different things in different
+ * windows (Primary+M: media browser in the library, code block in an
+ * editor) — GTK activates whichever of an accel's actions the focused
+ * window has and has enabled.  "app." actions carry no accelerators except
+ * quit and preferences, which nothing else uses.  <Primary> is Command on
+ * macOS and Control elsewhere.
+ *   gtk_app — the application.
+ * ------------------------------------------------------------------------- */
+void on_app_install_accels(GtkApplication *gtk_app);
+
+/* ---------------------------------------------------------------------------
  * on_app_config_init() — resolve the application config file once
  * ("notes.ini" in the same directory as the binary, from `argv0`)
  * and load it into memory.  All later reads are served from memory; the

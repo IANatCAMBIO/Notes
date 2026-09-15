@@ -51,15 +51,6 @@ CFLAGS   := -std=c11 -Wall -Wextra -g \
 # Linker flags: the GTK3 and SQLite3 libraries from pkg-config, plus libm.
 LDFLAGS  := $(shell $(PKGCONF) --libs gtk+-3.0 sqlite3) -lm
 
-# Optional macOS menu-bar integration (MacPorts: gtk-osx-application-gtk3).
-# When present, the Settings window offers moving the menu into the native
-# macOS menu bar; without it the option shows as unavailable.
-HAVE_GTKOSX := $(shell $(PKGCONF) --exists gtk-mac-integration-gtk3 && echo 1)
-ifeq ($(HAVE_GTKOSX),1)
-CFLAGS  += -DHAVE_GTKOSX $(shell $(PKGCONF) --cflags gtk-mac-integration-gtk3)
-LDFLAGS += $(shell $(PKGCONF) --libs gtk-mac-integration-gtk3)
-endif
-
 # All C source files that make up the application.
 SRCS     := src/main.c \
             src/app.c \
@@ -103,6 +94,44 @@ build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION
 run: $(BIN)
 	./$(BIN)
 
+# ---------------------------------------------------------------------------
+# Development sandbox.  `make run-dev` runs the freshly built binary from
+# dev/ — its OWN notes.ini (db_dir = dev/db) and its own throwaway database,
+# seeded with a few notes on first use — so a development run can never open
+# the real database the binary-adjacent notes.ini points at.  The binary and
+# icons are symlinks, so it is always the current build; the ini and db are
+# real files that persist between runs (`make clean-dev` discards them).
+# The IPC socket is per database, so a dev GUI and a real one may run at the
+# same time without either's CLI commands reaching the other.
+# ---------------------------------------------------------------------------
+DEV_DIR := dev
+DEV_DB  := $(DEV_DIR)/db/$(shell grep -o '"[a-z]*\.db"' src/db.h | tr -d '"')
+
+$(DEV_DIR)/notes.ini: | $(DEV_DIR)
+	printf '[notes]\ndb_dir=%s/$(DEV_DIR)/db\nnative_menubar=1\n' "$$(pwd)" > $@
+
+$(DEV_DIR):
+	mkdir -p $(DEV_DIR)/db
+	ln -sf ../$(BIN) $(DEV_DIR)/$(BIN)
+	ln -sf ../icons $(DEV_DIR)/icons
+	ln -sf ../notes.ini.defaults $(DEV_DIR)/notes.ini.defaults
+
+$(DEV_DB): $(BIN) $(DEV_DIR)/notes.ini
+	cd $(DEV_DIR) && ./$(BIN) folder add Work && ./$(BIN) folder add Home/Kitchen \
+	  && printf 'Meeting notes\n\n! Send the agenda due 2026-10-01\n! Book the room\n#work' | ./$(BIN) note new --folder Work - \
+	  && printf 'Project plan\n\nA plan with a #work tag and some **body** text.' | ./$(BIN) note new --folder Work - \
+	  && printf 'Groceries\n\n! Milk\n! Bread #home' | ./$(BIN) note new --folder Home - \
+	  && printf 'Loose note\n\nNot in any folder.' | ./$(BIN) note new - \
+	  && ./$(BIN) note tag 1 work && ./$(BIN) note tag 2 work \
+	  && ./$(BIN) note tag 3 home
+	@echo "seeded $(DEV_DB)"
+
+run-dev: $(BIN) $(DEV_DB)
+	cd $(DEV_DIR) && ./$(BIN)
+
+clean-dev:
+	rm -rf $(DEV_DIR)
+
 # Remove all build artifacts.
 clean:
 	rm -rf build $(BIN) $(DIST)
@@ -135,10 +164,10 @@ app: $(BIN)
 	rm -rf "$(APP_DIR)" "$(ICONSET)"
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
 	         "$(ICONSET)"
-	# The executable is named "Notes": for NIB-less apps (the
-	# gtkosx menubar is built programmatically) macOS titles the app
-	# menu with the PROCESS name, not CFBundleName — the binary's
-	# filename is the only lever.  argv[0]-relative lookups (icons,
+	# The executable is named "Notes": for NIB-less apps (GTK builds
+	# the menubar programmatically) macOS titles the app menu with the
+	# PROCESS name, not CFBundleName — the binary's filename is the
+	# only lever.  argv[0]-relative lookups (icons,
 	# ini) resolve by directory, so the rename is harmless.
 	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Notes"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
@@ -266,4 +295,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run clean app pkgroot deb rpm
+.PHONY: all run run-dev clean clean-dev app pkgroot deb rpm

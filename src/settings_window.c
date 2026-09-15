@@ -74,7 +74,7 @@ apply_statusbar_db_path(OnApp *app)
  * OnApp gboolean field each, persisted under `key`, with an optional
  * live-apply hook.  bool_check_new() builds the checkbox; on_bool_toggled
  * (shared by all of them) reads the spec back off the widget.  Settings
- * with extra behavior (touch assist's inverted sense, the gtkosx native
+ * with extra behavior (touch assist's inverted sense, the native macOS
  * menubar) stay hand-written below.
  * ------------------------------------------------------------------------- */
 typedef enum {
@@ -168,7 +168,7 @@ bool_check_new(OnApp *app, BoolSettingId id)
     return check;
 }
 
-#ifdef HAVE_GTKOSX
+#ifdef __APPLE__
 /* on_native_menubar_toggled() — move the library menu into (or out of)
  * the native macOS menu bar, live.                                          */
 static void
@@ -179,7 +179,7 @@ on_native_menubar_toggled(GtkToggleButton *check, gpointer user_data)
     on_app_config_set("native_menubar", native ? "1" : "0");
     on_library_apply_native_menubar(app, native);
 }
-#endif /* HAVE_GTKOSX */
+#endif /* __APPLE__ */
 
 /* ---------------------------------------------------------------------------
  * DbSection — widgets of the "Database" settings block, kept alive so the
@@ -818,6 +818,9 @@ void
 on_settings_window_open(OnApp *app)
 {
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* An application window, so the "app." accelerators (Quit,
+     * Preferences) work while it has the focus.                            */
+    gtk_application_add_window(app->gtk_app, GTK_WINDOW(window));
     gtk_window_set_title(GTK_WINDOW(window), "Notes - Settings");
     gtk_window_set_default_size(GTK_WINDOW(window), 210, -1);
     gtk_window_set_transient_for(GTK_WINDOW(window),
@@ -884,23 +887,18 @@ on_settings_window_open(OnApp *app)
                        FALSE, FALSE, 0);
 
 #ifdef __APPLE__
-    /* Native macOS menu bar belongs with the other appearance choices.     */
+    /* Native macOS menu bar belongs with the other appearance choices.
+     * GTK's own quartz backend renders the application menubar natively;
+     * this only chooses between that and the in-window bar.  Elsewhere
+     * there is no shell menubar to choose, so no checkbox.                */
     GtkWidget *mac_check = gtk_check_button_new_with_label(
         "Use the native macOS menu bar (hide the in-window menu)");
     gtk_widget_set_margin_start(mac_check, 12);
-#ifdef HAVE_GTKOSX
     gtk_toggle_button_set_active(
         GTK_TOGGLE_BUTTON(mac_check),
         on_app_config_get_bool("native_menubar", FALSE));
     g_signal_connect(mac_check, "toggled",
                      G_CALLBACK(on_native_menubar_toggled), app);
-#else
-    gtk_widget_set_sensitive(mac_check, FALSE);
-    gtk_widget_set_tooltip_text(mac_check,
-        "Requires the gtk-mac-integration library:\n"
-        "sudo port install gtk-osx-application-gtk3, then rebuild "
-        "(make clean && make)");
-#endif
     gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
 #endif /* __APPLE__ */
 

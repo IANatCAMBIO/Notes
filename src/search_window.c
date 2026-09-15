@@ -453,6 +453,9 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
 
     /* --- window (standard titlebar) --------------------------------------*/
     sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* An application window, so the "app." accelerators (Quit,
+     * Preferences) work while it has the focus.                            */
+    gtk_application_add_window(app->gtk_app, GTK_WINDOW(sw->window));
     gtk_window_set_title(GTK_WINDOW(sw->window), "Notes - Search");
 
     /* Open at whatever size the last search window was left at.            */

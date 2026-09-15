@@ -98,6 +98,11 @@
  *   popup_x/popup_y — text-window coordinates of the last right click,
  *                     used by the populate-popup handler to find the
  *                     image (if any) under the pointer.
+ *   ctx_offset      — buffer offset of the image or table anchor the last
+ *                     context menu was opened ON: the "img-*" and
+ *                     "table-*" actions act on the thing under the last
+ *                     right click, read back through anchor_at_offset()
+ *                     when they run (the anchor may have moved or gone).
  *   hand_cursor     — TRUE while the text window is showing the hand
  *                     cursor because the pointer is over a thumbnail
  *                     image; cached so motion over ordinary text doesn't
@@ -171,6 +176,7 @@ typedef struct {
     guint           scroll_idle;
     gint            popup_x;
     gint            popup_y;
+    gint            ctx_offset;
     gboolean        hand_cursor;
 
     GtkWidget      *search_entry;
@@ -216,23 +222,26 @@ typedef struct {
 
 /* ---------------------------------------------------------------------------
  * INLINE_TOGGLES — table describing the four inline-style toggle buttons:
- * their flag bit, tag name, icon file, fallback markup, label and tooltip.
+ * their flag bit, tag name, the name "win.inline" takes as its target for
+ * the shortcut (see on_app_install_accels), icon file, fallback markup,
+ * label and tooltip.
  * ------------------------------------------------------------------------- */
 static const struct {
     OnFormatFlags flag;              /* bit this button controls            */
     const gchar  *tag_name;         /* GtkTextTag it applies               */
+    const gchar  *target;           /* "win.inline" target naming it       */
     const gchar  *icon;             /* local icon file basename            */
     const gchar  *markup;           /* icon fallback markup                */
     const gchar  *label;            /* button text label                   */
     const gchar  *tooltip;          /* hover help text                     */
 } INLINE_TOGGLES[4] = {
-    { ON_FMT_BOLD,      ON_TAGNAME_BOLD,      NULL,
-      "<b>B</b>", "Bold",      "Bold (Ctrl+B)" },
-    { ON_FMT_ITALIC,    ON_TAGNAME_ITALIC,    NULL,
-      "<i>I</i>", "Italic",    "Italic (Ctrl+I)" },
-    { ON_FMT_UNDERLINE, ON_TAGNAME_UNDERLINE, NULL,
-      "<u>U</u>", "Underline", "Underline (Ctrl+U)" },
-    { ON_FMT_STRIKE,    ON_TAGNAME_STRIKE,    NULL,
+    { ON_FMT_BOLD,      ON_TAGNAME_BOLD,      "bold",      NULL,
+      "<b>B</b>", "Bold",      "Bold" },
+    { ON_FMT_ITALIC,    ON_TAGNAME_ITALIC,    "italic",    NULL,
+      "<i>I</i>", "Italic",    "Italic" },
+    { ON_FMT_UNDERLINE, ON_TAGNAME_UNDERLINE, "underline", NULL,
+      "<u>U</u>", "Underline", "Underline" },
+    { ON_FMT_STRIKE,    ON_TAGNAME_STRIKE,    "strike",    NULL,
       "<s>S</s>", "Strike",    "Strikethrough" },
 };
 
@@ -383,6 +392,24 @@ toggle_inline_format(OnEditor *ed, OnFormatFlags flag)
     }
     update_toggle_buttons(ed);
     gtk_widget_grab_focus(GTK_WIDGET(ed->view));
+}
+
+/* on_inline() — "win.inline(s)": the Primary+B/I/U shortcuts, by the name
+ * INLINE_TOGGLES gives the style.  The toolbar's four toggle buttons stay
+ * plain toggles driven by update_toggle_buttons(): bound to an action they
+ * would flip themselves before the action ran.                             */
+static void
+on_inline(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    const gchar *name = g_variant_get_string(param, NULL);
+    for (gsize i = 0; i < G_N_ELEMENTS(INLINE_TOGGLES); i++) {
+        if (g_strcmp0(INLINE_TOGGLES[i].target, name) == 0) {
+            toggle_inline_format(ed, INLINE_TOGGLES[i].flag);
+            return;
+        }
+    }
 }
 
 /* on_inline_toggle() — "toggled" handler for the four style buttons.  The
@@ -607,8 +634,8 @@ apply_paragraph_format(OnEditor *ed, guint32 flag)
 /* ---------------------------------------------------------------------------
  * toggle_paragraph_format() — apply `flag` to the selected lines, or
  * revert them to body text when every one already carries it.  Shared by
- * the paragraph tool buttons/menu items and the Ctrl/Cmd+M code-block
- * shortcut.
+ * the paragraph tool buttons/menu items and the Primary+M code-block
+ * shortcut (all of them "win.para").
  * ------------------------------------------------------------------------- */
 static void
 toggle_paragraph_format(OnEditor *ed, guint32 flag)
@@ -631,15 +658,35 @@ toggle_paragraph_format(OnEditor *ed, guint32 flag)
     apply_paragraph_format(ed, flag);
 }
 
-/* on_para_button() — click handler for paragraph-style tool buttons and
- * compact-toolbar menu items; the style each widget applies is stashed on
- * it as object data "on-flag".                                              */
+/* The paragraph styles by the name "win.para" takes as its target: the
+ * tool buttons, the compact Styles/Lists menus and the Primary+M shortcut
+ * ("win.para::code") all name one of these.                                */
+static const struct {
+    const gchar *name;               /* the action target                   */
+    guint32      flag;               /* the ON_FMT_* paragraph style        */
+} PARA_STYLES[] = {
+    { "h1",     ON_FMT_H1          },
+    { "h2",     ON_FMT_H2          },
+    { "body",   0                  },
+    { "bullet", ON_FMT_LIST_BULLET },
+    { "number", ON_FMT_LIST_NUMBER },
+    { "check",  ON_FMT_LIST_CHECK  },
+    { "code",   ON_FMT_CODEBLOCK   },
+};
+
+/* on_para() — "win.para(s)": toggle the named paragraph style.             */
 static void
-on_para_button(GtkToolButton *btn, gpointer user_data)
+on_para(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action;
     OnEditor *ed = user_data;        /* owning editor                       */
-    toggle_paragraph_format(
-        ed, GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(btn), "on-flag")));
+    const gchar *name = g_variant_get_string(param, NULL);
+    for (gsize i = 0; i < G_N_ELEMENTS(PARA_STYLES); i++) {
+        if (g_strcmp0(PARA_STYLES[i].name, name) == 0) {
+            toggle_paragraph_format(ed, PARA_STYLES[i].flag);
+            return;
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1307,8 +1354,8 @@ insert_image_pixbuf(OnEditor *ed, GdkPixbuf *pixbuf)
 }
 
 /* ---------------------------------------------------------------------------
- * anchor_at_offset() — the image anchor at buffer offset `offset`, or
- * NULL if that position holds none.
+ * anchor_at_offset() — the child anchor (image or table) at buffer offset
+ * `offset`, or NULL if that position holds none.
  * ------------------------------------------------------------------------- */
 static GtkTextChildAnchor *
 anchor_at_offset(OnEditor *ed, gint offset)
@@ -1472,28 +1519,26 @@ replace_image_display(OnEditor *ed, gint offset, gint display_width)
     code_buttons_queue_rebuild(ed);
 }
 
-/* image_from_menu_item() — resolve an image context-menu item back to
- * its full-resolution pixbuf via the "on-offset" it was built with.
- * Returns the pixbuf (anchor-owned, do not unref) or NULL; the offset is
- * stored through `offset_out` when non-NULL.                                */
+/* ctx_image() — the full-resolution pixbuf of the image the last context
+ * menu was opened on (ed->ctx_offset), or NULL if none is there any more.
+ * Anchor-owned: do not unref.                                               */
 static GdkPixbuf *
-image_from_menu_item(OnEditor *ed, GtkMenuItem *item, gint *offset_out)
+ctx_image(OnEditor *ed)
 {
-    gint offset = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item),
-                                                    "on-offset"));
-    if (offset_out != NULL)
-        *offset_out = offset;
-    GtkTextChildAnchor *anchor = anchor_at_offset(ed, offset);
+    GtkTextChildAnchor *anchor = anchor_at_offset(ed, ed->ctx_offset);
     return anchor != NULL ? on_anchor_get_image(anchor, NULL) : NULL;
 }
+
+/* The image context-menu actions ("win.img-*").  All act on ctx_image().   */
 
 /* on_img_copy() — "Copy Image": put the full-resolution image on the
  * clipboard so it can be pasted outside the note.                           */
 static void
-on_img_copy(GtkMenuItem *item, gpointer user_data)
+on_img_copy(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
-    GdkPixbuf *orig = image_from_menu_item(ed, item, NULL);
+    GdkPixbuf *orig = ctx_image(ed);
     if (orig != NULL)
         gtk_clipboard_set_image(
             gtk_widget_get_clipboard(GTK_WIDGET(ed->view),
@@ -1550,31 +1595,34 @@ image_open_external(GdkPixbuf *orig)
 
 /* on_img_open() — "Open" context-menu item.                                */
 static void
-on_img_open(GtkMenuItem *item, gpointer user_data)
+on_img_open(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
-    image_open_external(image_from_menu_item(ed, item, NULL));
-}
-
-/* on_img_display_full() / on_img_display_thumb() — inline display size.     */
-static void
-on_img_display_full(GtkMenuItem *item, gpointer user_data)
-{
-    OnEditor *ed = user_data;        /* owning editor                       */
-    gint offset;                     /* the image's buffer offset           */
-    GdkPixbuf *orig = image_from_menu_item(ed, item, &offset);
+    GdkPixbuf *orig = ctx_image(ed);
     if (orig != NULL)
-        replace_image_display(ed, offset, gdk_pixbuf_get_width(orig));
+        image_open_external(orig);
+}
+
+/* on_img_full() / on_img_thumb() — inline display size.                     */
+static void
+on_img_full(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    GdkPixbuf *orig = ctx_image(ed);
+    if (orig != NULL)
+        replace_image_display(ed, ed->ctx_offset,
+                              gdk_pixbuf_get_width(orig));
 }
 
 static void
-on_img_display_thumb(GtkMenuItem *item, gpointer user_data)
+on_img_thumb(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
-    replace_image_display(
-        ed,
-        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "on-offset")),
-        0);                          /* 0 = the default thumbnail width     */
+    replace_image_display(ed, ed->ctx_offset,
+                          0);        /* 0 = the default thumbnail width     */
 }
 
 /* ===========================================================================
@@ -1764,8 +1812,65 @@ on_view_button_press(GtkWidget *widget, GdkEventButton *event,
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_image_menu() — the context-menu items for an embedded image, as a
+ * menu model naming the "win.img-*" actions: Copy Image, Open, and
+ * whichever of Display Full Size / Display as Thumbnail the image is not
+ * already showing.  The one definition of that menu; GTK4 hands it to
+ * gtk_text_view_set_extra_menu, GTK3 renders it into the view's popup
+ * through menu_shell_prepend_model().
+ *   shown_full — whether the image is displayed at full size now.
+ * Returns a new model (unref it).
+ * ------------------------------------------------------------------------- */
+static GMenuModel *
+editor_image_menu(gboolean shown_full)
+{
+    GMenu *menu = g_menu_new();
+    g_menu_append(menu, "Copy _Image", "win.img-copy");
+    g_menu_append(menu, "_Open",       "win.img-open");
+    if (shown_full)
+        g_menu_append(menu, "Display as _Thumbnail", "win.img-thumb");
+    else
+        g_menu_append(menu, "Display _Full Size",    "win.img-full");
+    return G_MENU_MODEL(menu);
+}
+
+/* ---------------------------------------------------------------------------
+ * menu_shell_prepend_model() — GTK3 glue: put a model's items at the TOP
+ * of an existing GtkMenu, followed by a separator, as actionable menu
+ * items.  GTK3 can build a whole menu from a model but cannot splice one
+ * into a menu it already built (the text view's own popup); GTK4 does
+ * exactly that with gtk_text_view_set_extra_menu, and this goes away.
+ *   shell — the text view's popup menu.
+ *   model — one flat section of label + action items.
+ * ------------------------------------------------------------------------- */
+static void
+menu_shell_prepend_model(GtkMenuShell *shell, GMenuModel *model)
+{
+    GtkWidget *sep = gtk_separator_menu_item_new();
+    gtk_widget_show(sep);
+    gtk_menu_shell_prepend(shell, sep);
+
+    /* Prepending reverses the order, so walk the model backwards.         */
+    for (gint i = g_menu_model_get_n_items(model) - 1; i >= 0; i--) {
+        gchar *label  = NULL;        /* the item's label attribute          */
+        gchar *action = NULL;        /* its detailed action name            */
+        g_menu_model_get_item_attribute(model, i, G_MENU_ATTRIBUTE_LABEL,
+                                        "s", &label);
+        g_menu_model_get_item_attribute(model, i, G_MENU_ATTRIBUTE_ACTION,
+                                        "s", &action);
+        GtkWidget *mi = gtk_menu_item_new_with_mnemonic(label);
+        gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(mi), action);
+        gtk_widget_show(mi);
+        gtk_menu_shell_prepend(shell, mi);
+        g_free(label);
+        g_free(action);
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * on_view_populate_popup() — extend the text view's context menu with
- * image actions when the right click landed on an embedded image.
+ * image actions when the right click landed on an embedded image, and
+ * remember that image as the context the actions act on.
  * ------------------------------------------------------------------------- */
 static void
 on_view_populate_popup(GtkTextView *view, GtkWidget *popup,
@@ -1782,32 +1887,11 @@ on_view_populate_popup(GtkTextView *view, GtkWidget *popup,
         image_at_view_pos(ed, ed->popup_x, ed->popup_y, &offset, &dw);
     if (orig == NULL)
         return;
-    gboolean shown_full = image_shown_full(orig, dw);
+    ed->ctx_offset = offset;
 
-    /* Build the extra items (prepended so they sit on top).                */
-    struct { const gchar *label; GCallback cb; gboolean show; } items[] = {
-        { "Display as _Thumbnail", G_CALLBACK(on_img_display_thumb),
-          shown_full },
-        { "Display _Full Size",    G_CALLBACK(on_img_display_full),
-          !shown_full },
-        { "_Open",                 G_CALLBACK(on_img_open), TRUE },
-        { "Copy _Image",           G_CALLBACK(on_img_copy), TRUE },
-    };
-
-    GtkWidget *sep = gtk_separator_menu_item_new();
-    gtk_widget_show(sep);
-    gtk_menu_shell_prepend(GTK_MENU_SHELL(popup), sep);
-
-    for (gsize i = 0; i < G_N_ELEMENTS(items); i++) {
-        if (!items[i].show)
-            continue;
-        GtkWidget *mi = gtk_menu_item_new_with_mnemonic(items[i].label);
-        g_object_set_data(G_OBJECT(mi), "on-offset",
-                          GINT_TO_POINTER(offset));
-        g_signal_connect(mi, "activate", items[i].cb, ed);
-        gtk_widget_show(mi);
-        gtk_menu_shell_prepend(GTK_MENU_SHELL(popup), mi);
-    }
+    GMenuModel *items = editor_image_menu(image_shown_full(orig, dw));
+    menu_shell_prepend_model(GTK_MENU_SHELL(popup), items);
+    g_object_unref(items);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1863,13 +1947,13 @@ on_paste_clipboard(GtkTextView *view, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * on_insert_image_clicked() — "Image…" toolbar button: pick an image file
+ * on_insert_image() — "win.insert-image" (Insert menu): pick an image file
  * and embed it at the cursor.
  * ------------------------------------------------------------------------- */
 static void
-on_insert_image_clicked(GtkToolButton *btn, gpointer user_data)
+on_insert_image(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-    (void)btn;
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
 
     GtkWidget *dialog = gtk_file_chooser_dialog_new(
@@ -2766,28 +2850,26 @@ on_table_cell_changed(GtkTextBuffer *cell_buf, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * table_menu_op() — one structural table operation, dispatched by the
- * "on-op" string on the activated menu item.
+ * table_op() — one structural operation on the table the last context
+ * menu was opened on (ed->ctx_offset), named by the action that asked:
+ * "row-add", "row-del", "col-add", "col-del", "header" or "delete".
  * ------------------------------------------------------------------------- */
 static void
-table_menu_op(GtkMenuItem *item, gpointer user_data)
+table_op(OnEditor *ed, const gchar *op)
 {
-    OnEditor *ed = user_data;        /* owning editor                       */
-    GtkTextChildAnchor *anchor =
-        g_object_get_data(G_OBJECT(item), "on-anchor");
+    GtkTextChildAnchor *anchor = anchor_at_offset(ed, ed->ctx_offset);
     OnTable *table = (anchor != NULL)
                      ? on_anchor_get_table(anchor) : NULL;
     if (table == NULL)
         return;
-    const gchar *op = g_object_get_data(G_OBJECT(item), "on-op");
 
-    if (g_strcmp0(op, "row+") == 0)
+    if (g_strcmp0(op, "row-add") == 0)
         on_table_resize(table, table->rows + 1, table->cols);
-    else if (g_strcmp0(op, "row-") == 0)
+    else if (g_strcmp0(op, "row-del") == 0)
         on_table_resize(table, table->rows - 1, table->cols);
-    else if (g_strcmp0(op, "col+") == 0)
+    else if (g_strcmp0(op, "col-add") == 0)
         on_table_resize(table, table->rows, table->cols + 1);
-    else if (g_strcmp0(op, "col-") == 0)
+    else if (g_strcmp0(op, "col-del") == 0)
         on_table_resize(table, table->rows, table->cols - 1);
     else if (g_strcmp0(op, "header") == 0)
         table->header = !table->header;
@@ -2808,9 +2890,33 @@ table_menu_op(GtkMenuItem *item, gpointer user_data)
     editor_queue_autosave(ed);
 }
 
+/* The "table-<op>" actions carry the op in their name.                     */
+#define TABLE_ACTION_PREFIX "table-"
+
+/* on_table_command() — "activate" of a plain "win.table-*" action.         */
+static void
+on_table_command(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)param;
+    table_op(user_data,
+             g_action_get_name(G_ACTION(action)) + strlen(TABLE_ACTION_PREFIX));
+}
+
+/* on_table_header_change_state() — "win.table-header", the stateful one
+ * behind the Header Row check item: its state is set from the table when
+ * the menu opens, and a flip toggles the table's header.                    */
+static void
+on_table_header_change_state(GSimpleAction *action, GVariant *value,
+                             gpointer user_data)
+{
+    g_simple_action_set_state(action, value);
+    table_op(user_data, "header");
+}
+
 /* ---------------------------------------------------------------------------
  * on_table_cell_button_press() — right click in a cell: the structural
- * menu (add/remove last row/column, delete the table).
+ * menu (add/remove last row/column, header row, delete the table).  The
+ * cell's table becomes the context the "win.table-*" actions act on.
  * ------------------------------------------------------------------------- */
 static gboolean
 on_table_cell_button_press(GtkWidget *entry, GdkEventButton *event,
@@ -2827,50 +2933,39 @@ on_table_cell_button_press(GtkWidget *entry, GdkEventButton *event,
 
     GtkTextChildAnchor *anchor =
         g_object_get_data(G_OBJECT(entry), "on-anchor");
-
-    GtkWidget *menu = gtk_menu_new();
-    gtk_menu_attach_to_widget(GTK_MENU(menu), entry, NULL);
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-
     OnTable *table = (anchor != NULL)
                      ? on_anchor_get_table(anchor) : NULL;
+    if (table == NULL)
+        return FALSE;
 
-    static const struct { const gchar *label; const gchar *op; } OPS[] = {
-        { "Add _Row",       "row+"   },
-        { "Add _Column",    "col+"   },
-        { "Remove Row",     "row-"   },
-        { "Remove Column",  "col-"   },
-        { NULL,             NULL     },
-        { "_Header Row",    "header" },
-        { NULL,             NULL     },
-        { "_Delete Table",  "delete" },
-    };
-    for (gsize i = 0; i < G_N_ELEMENTS(OPS); i++) {
-        GtkWidget *mi;               /* menu item (or separator)            */
-        if (OPS[i].label == NULL) {
-            mi = gtk_separator_menu_item_new();
-        } else if (g_strcmp0(OPS[i].op, "header") == 0) {
-            /* Check item mirroring the table's current header state.       */
-            mi = gtk_check_menu_item_new_with_mnemonic(OPS[i].label);
-            gtk_check_menu_item_set_active(
-                GTK_CHECK_MENU_ITEM(mi),
-                table != NULL && table->header);
-            g_object_set_data(G_OBJECT(mi), "on-anchor", anchor);
-            g_object_set_data(G_OBJECT(mi), "on-op", (gpointer)OPS[i].op);
-            g_signal_connect(mi, "activate",
-                             G_CALLBACK(table_menu_op), ed);
-        } else {
-            mi = gtk_menu_item_new_with_mnemonic(OPS[i].label);
-            g_object_set_data(G_OBJECT(mi), "on-anchor", anchor);
-            g_object_set_data(G_OBJECT(mi), "on-op", (gpointer)OPS[i].op);
-            g_signal_connect(mi, "activate",
-                             G_CALLBACK(table_menu_op), ed);
-        }
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
-    }
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    GtkTextIter it;                  /* where the anchor sits               */
+    gtk_text_buffer_get_iter_at_child_anchor(ed->buffer, &it, anchor);
+    ed->ctx_offset = gtk_text_iter_get_offset(&it);
+
+    /* The check item mirrors the table's current header state.            */
+    GAction *header = g_action_map_lookup_action(G_ACTION_MAP(ed->window),
+                                                 "table-header");
+    g_simple_action_set_state(G_SIMPLE_ACTION(header),
+                              g_variant_new_boolean(table->header));
+
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
+    g_menu_append(section, "Add _Row",      "win.table-row-add");
+    g_menu_append(section, "Add _Column",   "win.table-col-add");
+    g_menu_append(section, "Remove Row",    "win.table-row-del");
+    g_menu_append(section, "Remove Column", "win.table-col-del");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
+    g_object_unref(section);
+    section = g_menu_new();
+    g_menu_append(section, "_Header Row",   "win.table-header");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
+    g_object_unref(section);
+    section = g_menu_new();
+    g_menu_append(section, "_Delete Table", "win.table-delete");
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
+    g_object_unref(section);
+
+    on_app_menu_popup(entry, G_MENU_MODEL(menu), event);
     return TRUE;
 }
 
@@ -2991,30 +3086,30 @@ tag_emoji_in_range(OnEditor *ed, gint start_off, gint end_off)
 }
 
 /* ---------------------------------------------------------------------------
- * on_emoji_clicked() — toolbar "Emoji": open GTK's built-in emoji chooser
- * at the cursor via the text view's "insert-emoji" action (the same one
- * bound to Ctrl+. natively and Ctrl/Cmd+E in on_view_key_press).  The
+ * on_insert_emoji() — "win.insert-emoji" (Insert menu, Primary+E): open
+ * GTK's built-in emoji chooser at the cursor via the text view's
+ * "insert-emoji" action (the same one bound to Ctrl+. natively).  The
  * picked emoji is inserted as plain UTF-8 text, so styling, storage and
  * export handle it like any typed character.
  * ------------------------------------------------------------------------- */
 static void
-on_emoji_clicked(GtkToolButton *btn, gpointer user_data)
+on_insert_emoji(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-    (void)btn;
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
     gtk_widget_grab_focus(GTK_WIDGET(ed->view));
     g_signal_emit_by_name(ed->view, "insert-emoji");
 }
 
 /* ---------------------------------------------------------------------------
- * on_insert_table_clicked() — toolbar "Table": embed a fresh 3×3 table at
- * the cursor.  Rows/columns are added or removed afterwards from any
- * cell's right-click menu.
+ * on_insert_table() — "win.insert-table": embed a fresh 3×3 table at the
+ * cursor.  Rows/columns are added or removed afterwards from any cell's
+ * right-click menu.
  * ------------------------------------------------------------------------- */
 static void
-on_insert_table_clicked(GtkToolButton *btn, gpointer user_data)
+on_insert_table(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-    (void)btn;
+    (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
 
     GtkTextIter cursor;              /* insertion point                     */
@@ -3030,31 +3125,24 @@ on_insert_table_clicked(GtkToolButton *btn, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_insert_date() — insert today's date in ISO format (YYYY-MM-DD)
- * at the cursor, replacing the selection like typed text would.  It goes
- * through the normal insert-text path, so styling, autosave and undo of
- * the surrounding text behave exactly as for a paste.  Shared by the
- * Insert menu item and the Ctrl/Cmd+D shortcut.
+ * on_insert_date() — "win.insert-date" (Insert menu, Primary+D): insert
+ * today's date in ISO format (YYYY-MM-DD) at the cursor, replacing the
+ * selection like typed text would.  It goes through the normal insert-text
+ * path, so styling, autosave and undo of the surrounding text behave
+ * exactly as for a paste.
  * ------------------------------------------------------------------------- */
 static void
-editor_insert_date(OnEditor *ed)
+on_insert_date(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+    (void)action; (void)param;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    gtk_widget_grab_focus(GTK_WIDGET(ed->view));
     GDateTime *now = g_date_time_new_now_local();
     gchar *date = g_date_time_format(now, "%Y-%m-%d");
     gtk_text_buffer_delete_selection(ed->buffer, TRUE, TRUE);
     gtk_text_buffer_insert_at_cursor(ed->buffer, date, -1);
     g_free(date);
     g_date_time_unref(now);
-}
-
-/* on_insert_date_clicked() — Insert menu "Date": see editor_insert_date(). */
-static void
-on_insert_date_clicked(GtkWidget *item, gpointer user_data)
-{
-    (void)item;
-    OnEditor *ed = user_data;        /* owning editor                       */
-    gtk_widget_grab_focus(GTK_WIDGET(ed->view));
-    editor_insert_date(ed);
 }
 
 /* ===========================================================================
@@ -3386,9 +3474,9 @@ tag_popup_move_selection(OnEditor *ed, gint delta)
  * commits only after the user pauses for UNDO_GROUP_MS: one undo step
  * per typing burst.  When it fires, the previously committed snapshot
  * is pushed on the undo stack and a fresh capture becomes "current".
- * Ctrl/Cmd+Z flushes any pending group, then swaps the current snapshot
- * for the popped one (old current goes to the redo stack); Ctrl/Cmd+Y
- * or Ctrl/Cmd+Shift+Z mirrors it.  A commit that captures a state
+ * Primary+Z flushes any pending group, then swaps the current snapshot
+ * for the popped one (old current goes to the redo stack); Primary+Y
+ * or Primary+Shift+Z mirrors it.  A commit that captures a state
  * identical to the current snapshot (e.g. an autosave queued by a
  * no-op) pushes nothing.  Two caps keep a non-stop burst from becoming
  * one giant step: a typed linebreak commits the group immediately, and
@@ -3866,7 +3954,7 @@ undo_restore(OnEditor *ed, const UndoSnap *from, const UndoSnap *to)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_undo() / editor_redo() — Ctrl/Cmd+Z and Ctrl/Cmd+Y.  Undo first
+ * editor_undo() / editor_redo() — "win.undo" / "win.redo".  Undo first
  * flushes the in-progress group so the very latest edits are what gets
  * undone.  tags_modified goes up whenever either side of the swap
  * contains #tag spans — the restore may change the note's tag set.
@@ -4313,8 +4401,10 @@ on_cursor_moved(GObject *object, GParamSpec *pspec, gpointer user_data)
 
 /* ---------------------------------------------------------------------------
  * on_view_key_press() — key handling that must run before GtkTextView's
- * default: tag-popup navigation, Escape, Enter-in-list, and the classic
- * Ctrl/Cmd+B/I/U shortcuts.
+ * default: tag-popup navigation, Escape and Enter-in-list.  The Primary+key
+ * shortcuts are NOT here: they are application accelerators on the "win."
+ * actions (on_app_install_accels), which the window fires before the view
+ * ever sees the key.
  * Returns TRUE when the key was fully handled here.
  * ------------------------------------------------------------------------- */
 static gboolean
@@ -4369,62 +4459,54 @@ on_view_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
         }
     }
 
-    /* Ctrl (or Cmd on macOS) + B/I/U inline-style shortcuts, Ctrl+M for
-     * a code block, and Ctrl+F to jump into the in-note search box.       */
-    if (event->state & (GDK_CONTROL_MASK | GDK_META_MASK)) {
-        switch (gdk_keyval_to_lower(event->keyval)) {
-        case GDK_KEY_b:
-            toggle_inline_format(ed, ON_FMT_BOLD);
-            return TRUE;
-        case GDK_KEY_i:
-            toggle_inline_format(ed, ON_FMT_ITALIC);
-            return TRUE;
-        case GDK_KEY_u:
-            toggle_inline_format(ed, ON_FMT_UNDERLINE);
-            return TRUE;
-        case GDK_KEY_z:
-            if (event->state & GDK_SHIFT_MASK)
-                editor_redo(ed);
-            else
-                editor_undo(ed);
-            return TRUE;
-        case GDK_KEY_y:
-            editor_redo(ed);
-            return TRUE;
-        case GDK_KEY_d:
-            editor_insert_date(ed);
-            return TRUE;
-        case GDK_KEY_e:
-            g_signal_emit_by_name(ed->view, "insert-emoji");
-            return TRUE;
-        case GDK_KEY_f:
-            gtk_widget_grab_focus(ed->search_entry);
-            return TRUE;
-        case GDK_KEY_m:
-            toggle_paragraph_format(ed, ON_FMT_CODEBLOCK);
-            return TRUE;
-        case GDK_KEY_n: {
-            /* New note in this note's folder, opened in its own editor.
-             * The library (if open) refreshes via the full notify — the
-             * folder's count just grew.                                   */
-            OnNoteMeta *meta = on_db_note_get(ed->app->db, ed->note_id);
-            if (meta != NULL) {
-                gint64 id = on_db_note_create(ed->app->db,
-                                              meta->folder_id);
-                on_db_note_meta_free(meta);
-                if (id != 0) {
-                    if (ed->app->notify_notes_changed != NULL)
-                        ed->app->notify_notes_changed(ed->app);
-                    on_editor_window_open(ed->app, id);
-                }
-            }
-            return TRUE;
-        }
-        default:
-            break;
-        }
-    }
     return FALSE;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_new_note() — "win.new-note" (Primary+N): a new note in THIS note's
+ * folder, opened in its own editor.  The library (if open) refreshes via
+ * the full notify — the folder's count just grew.
+ * ------------------------------------------------------------------------- */
+static void
+on_new_note(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    OnNoteMeta *meta = on_db_note_get(ed->app->db, ed->note_id);
+    if (meta == NULL)
+        return;
+    gint64 id = on_db_note_create(ed->app->db, meta->folder_id);
+    on_db_note_meta_free(meta);
+    if (id != 0) {
+        if (ed->app->notify_notes_changed != NULL)
+            ed->app->notify_notes_changed(ed->app);
+        on_editor_window_open(ed->app, id);
+    }
+}
+
+/* on_find() — "win.find" (Primary+F): jump into the in-note search box.   */
+static void
+on_find(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    gtk_widget_grab_focus(ed->search_entry);
+}
+
+/* on_undo() / on_redo() — "win.undo" (Primary+Z) and "win.redo"
+ * (Primary+Shift+Z, Primary+Y).                                             */
+static void
+on_undo(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    editor_undo(user_data);
+}
+
+static void
+on_redo(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    editor_redo(user_data);
 }
 
 /* ===========================================================================
@@ -4432,7 +4514,7 @@ on_view_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
  *
  * The toolbar's right-edge entry highlights every case-insensitive match
  * with the "on-search-hit" tag as you type; Enter (or the entry icon)
- * jumps to the next match, wrapping at the end.  Ctrl/Cmd+F focuses the
+ * jumps to the next match, wrapping at the end.  Primary+F focuses the
  * entry; Escape returns focus to the text.
  * =========================================================================== */
 
@@ -4952,55 +5034,68 @@ on_editor_focus_in(GtkWidget *widget, GdkEventFocus *event,
 static void
 add_para_button(OnEditor *ed, GtkWidget *toolbar, const gchar *icon,
                 const gchar *fallback, const gchar *label,
-                const gchar *tooltip, guint32 flag)
+                const gchar *tooltip, const gchar *style)
 {
     GtkToolItem *item = on_app_tool_item_new(ed->app, FALSE, icon,
                                              fallback, label, tooltip);
-    g_object_set_data(G_OBJECT(item), "on-flag", GUINT_TO_POINTER(flag));
-    g_signal_connect(item, "clicked", G_CALLBACK(on_para_button), ed);
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(item), "win.para");
+    gtk_actionable_set_action_target(GTK_ACTIONABLE(item), "s", style);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
-}
-
-/* ---------------------------------------------------------------------------
- * add_para_menu_item() — helper: the compact-toolbar counterpart of
- * add_para_button — one paragraph style as a menu item.  on_para_button
- * only reads the "on-flag" object data from whatever widget fired it, so
- * it serves menu items and tool buttons alike.
- * ------------------------------------------------------------------------- */
-static void
-add_para_menu_item(OnEditor *ed, GtkWidget *menu, const gchar *label,
-                   guint32 flag)
-{
-    GtkWidget *mi = gtk_menu_item_new_with_mnemonic(label);
-    g_object_set_data(G_OBJECT(mi), "on-flag", GUINT_TO_POINTER(flag));
-    g_signal_connect(mi, "activate", G_CALLBACK(on_para_button), ed);
-    gtk_widget_show(mi);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
 }
 
 /* ---------------------------------------------------------------------------
  * menu_tool_button_new() — helper: a glyph-labelled GtkMenuButton wrapped
  * in a GtkToolItem.  `markup` is Pango markup rendered as the button face
- * so the compact menu buttons match the letter-glyph tool buttons.  A
- * GtkMenuButton + GtkMenu is used instead of a GtkComboBox: the combo's
- * popup grab is unreliable inside a toolbar (it could close the moment
- * the pointer moved); a real menu holds its grab.
+ * so the compact menu buttons match the letter-glyph tool buttons.  The
+ * model is rendered as a GtkMenu, not the popover GtkMenuButton defaults
+ * to — and not a GtkComboBox: the combo's popup grab is unreliable inside
+ * a toolbar (it could close the moment the pointer moved); a real menu
+ * holds its grab.  The button never takes the focus: the editing actions
+ * are enabled only while the text view has it, and a click here must not
+ * disable the very items it is opening.
+ *   markup  — the button face.
+ *   tooltip — hover help.
+ *   model   — the items; OWNERSHIP IS TAKEN.
  * ------------------------------------------------------------------------- */
 static GtkToolItem *
 menu_tool_button_new(const gchar *markup, const gchar *tooltip,
-                     GtkWidget *menu)
+                     GMenuModel *model)
 {
     GtkWidget *btn = gtk_menu_button_new();
     gtk_button_set_label(GTK_BUTTON(btn), markup);
     GtkWidget *face = gtk_bin_get_child(GTK_BIN(btn));
     if (GTK_IS_LABEL(face))          /* set_label's child IS the label      */
         gtk_label_set_use_markup(GTK_LABEL(face), TRUE);
-    gtk_menu_button_set_popup(GTK_MENU_BUTTON(btn), menu);
+    gtk_widget_set_focus_on_click(btn, FALSE);
+    /* use-popover first: set after the model, GTK would build a popover
+     * and then rebuild.                                                    */
+    gtk_menu_button_set_use_popover(GTK_MENU_BUTTON(btn), FALSE);
+    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(btn), model);
+    g_object_unref(model);
     gtk_widget_set_tooltip_text(btn, tooltip);
 
     GtkToolItem *item = gtk_tool_item_new();
     gtk_container_add(GTK_CONTAINER(item), btn);
     return item;
+}
+
+/* ---------------------------------------------------------------------------
+ * para_menu() — a compact-toolbar menu of paragraph styles: one item per
+ * (label, "win.para" target) pair.
+ *   labels / styles / n — parallel arrays.
+ * Returns a new model (menu_tool_button_new takes it).
+ * ------------------------------------------------------------------------- */
+static GMenuModel *
+para_menu(const gchar *const *labels, const gchar *const *styles, gsize n)
+{
+    GMenu *menu = g_menu_new();
+    for (gsize i = 0; i < n; i++) {
+        GMenuItem *item = g_menu_item_new(labels[i], NULL);
+        g_menu_item_set_action_and_target(item, "win.para", "s", styles[i]);
+        g_menu_append_item(menu, item);
+        g_object_unref(item);
+    }
+    return G_MENU_MODEL(menu);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5037,7 +5132,7 @@ build_toolbar(OnEditor *ed)
     }
 
     add_para_button(ed, toolbar, "code-block", "{\xc2\xa0}", "Code",
-                    "Code block (Ctrl+M)", ON_FMT_CODEBLOCK);
+                    "Code block", "code");
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
@@ -5046,79 +5141,66 @@ build_toolbar(OnEditor *ed)
      * are text glyphs (still swappable by dropping a matching PNG — e.g.
      * heading-1.png — into the icons/ folder).                             */
     if (ed->app->compact_editor_toolbar) {
-        GtkWidget *styles_menu = gtk_menu_new();
-        add_para_menu_item(ed, styles_menu, "Heading _1", ON_FMT_H1);
-        add_para_menu_item(ed, styles_menu, "Heading _2", ON_FMT_H2);
-        add_para_menu_item(ed, styles_menu, "_Body",      0);
+        static const gchar *const LABELS[] =
+            { "Heading _1", "Heading _2", "_Body" };
+        static const gchar *const STYLES[] = { "h1", "h2", "body" };
         gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                            menu_tool_button_new("<b>A</b>a",
                                "Styles \xe2\x80\x94 paragraph style: "
                                "heading or body text",
-                               styles_menu), -1);
+                               para_menu(LABELS, STYLES, 3)), -1);
     } else {
         add_para_button(ed, toolbar, "heading-1", "<b>H1</b>", "Heading 1",
-                        "Heading 1", ON_FMT_H1);
+                        "Heading 1", "h1");
         add_para_button(ed, toolbar, "heading-2", "<b>H2</b>", "Heading 2",
-                        "Heading 2", ON_FMT_H2);
+                        "Heading 2", "h2");
         add_para_button(ed, toolbar, "body-text", "\xc2\xb6", "Body",
-                        "Plain body text", 0);
+                        "Plain body text", "body");
     }
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
     if (ed->app->compact_editor_toolbar) {
-        GtkWidget *lists_menu = gtk_menu_new();
-        add_para_menu_item(ed, lists_menu, "_Bulleted List",
-                           ON_FMT_LIST_BULLET);
-        add_para_menu_item(ed, lists_menu, "_Numbered List",
-                           ON_FMT_LIST_NUMBER);
-        add_para_menu_item(ed, lists_menu, "_Task List",
-                           ON_FMT_LIST_CHECK);
+        static const gchar *const LABELS[] =
+            { "_Bulleted List", "_Numbered List", "_Task List" };
+        static const gchar *const STYLES[] = { "bullet", "number", "check" };
         gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                            menu_tool_button_new("\xe2\x89\xa1",
                                "Lists \xe2\x80\x94 bullets, numbers, or "
-                               "task checkboxes", lists_menu), -1);
+                               "task checkboxes",
+                               para_menu(LABELS, STYLES, 3)), -1);
     } else {
         add_para_button(ed, toolbar, "list-bullet", "\xe2\x80\xa2",
-                        "Bullets", "Bulleted list", ON_FMT_LIST_BULLET);
+                        "Bullets", "Bulleted list", "bullet");
         add_para_button(ed, toolbar, "list-number", "1.", "Numbered",
-                        "Numbered list", ON_FMT_LIST_NUMBER);
+                        "Numbered list", "number");
         /* Fallback glyph is a plain text square (U+25A1 □), not the ⬜
          * color emoji: it renders in the text font like the •/1. glyphs
          * and avoids the emoji's oversized advance in the toolbar.        */
         add_para_button(ed, toolbar, "list-check", "\xe2\x96\xa1", "Tasks",
                         "Task list with checkboxes (click a box to toggle)",
-                        ON_FMT_LIST_CHECK);
+                        "check");
     }
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
-    /* One "Insert ▾" dropdown replaces the Image/Table/Emoji buttons.      */
-    GtkWidget *insert_menu = gtk_menu_new();
-    static const struct {
-        const gchar *label;          /* menu-item text                      */
-        GCallback    cb;             /* existing insert handler             */
-    } INSERTS[] = {
-        { "_Image\xe2\x80\xa6", G_CALLBACK(on_insert_image_clicked) },
-        { "_Table",             G_CALLBACK(on_insert_table_clicked) },
-        { "_Emoji\xe2\x80\xa6 (Ctrl+E)", G_CALLBACK(on_emoji_clicked) },
-        { "_Date (Ctrl+D)",              G_CALLBACK(on_insert_date_clicked) },
-    };
-    for (gsize i = 0; i < G_N_ELEMENTS(INSERTS); i++) {
-        GtkWidget *mi = gtk_menu_item_new_with_mnemonic(INSERTS[i].label);
-        g_signal_connect(mi, "activate", INSERTS[i].cb, ed);
-        gtk_widget_show(mi);
-        gtk_menu_shell_append(GTK_MENU_SHELL(insert_menu), mi);
-    }
+    /* One "Insert ▾" dropdown replaces the Image/Table/Emoji buttons.  The
+     * shortcuts (Primary+E, Primary+D) show on the items by themselves.  */
+    GMenu *insert_menu = g_menu_new();
+    g_menu_append(insert_menu, "_Image\xe2\x80\xa6", "win.insert-image");
+    g_menu_append(insert_menu, "_Table",             "win.insert-table");
+    g_menu_append(insert_menu, "_Emoji\xe2\x80\xa6", "win.insert-emoji");
+    g_menu_append(insert_menu, "_Date",              "win.insert-date");
 
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        menu_tool_button_new("+",
                            "Insert an image, a table, an emoji, or "
-                           "today's date at the cursor", insert_menu), -1);
+                           "today's date at the cursor",
+                           G_MENU_MODEL(insert_menu)), -1);
 
-    /* In-note search, pinned to the toolbar's right edge (Ctrl+F) by an
+    /* In-note search, pinned to the toolbar's right edge (Primary+F) by an
      * expanding blank spacer.                                              */
     GtkToolItem *spacer = gtk_separator_tool_item_new();
     gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
@@ -5128,7 +5210,7 @@ build_toolbar(OnEditor *ed)
 
     ed->search_entry = gtk_search_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->search_entry),
-                                   "Find in note (Ctrl+F)");
+                                   "Find in note");
     gtk_entry_set_width_chars(GTK_ENTRY(ed->search_entry), 18);
     g_signal_connect(ed->search_entry, "search-changed",
                      G_CALLBACK(on_search_changed), ed);
@@ -5407,6 +5489,129 @@ on_editor_window_key_press(GtkWidget *widget, GdkEventKey *event,
 
 
 
+/* ===========================================================================
+ * actions
+ *
+ * Every command the editor offers is a "win." GAction on its window; the
+ * toolbar, the compact Styles/Lists/Insert menus, the image and table
+ * context menus and every keyboard shortcut (on_app_install_accels) only
+ * NAME them.  Nothing here is "app.": an editor's commands act on this
+ * note, so they are only ever invoked from inside this window.
+ *
+ * The EDITING actions are enabled only while the note's text view has the
+ * focus.  A window accelerator fires whatever widget has the focus, and the
+ * in-note search entry and every table cell (its own GtkTextView) have
+ * keys of their own; a disabled action is skipped by the accelerator
+ * lookup, so Primary+B there propagates to the entry or cell as a key,
+ * exactly as it did when the shortcuts were handled on the view itself.
+ * =========================================================================== */
+
+/* Action name → handler, parameter type, gated on the view's focus.        */
+typedef struct {
+    const gchar *name;
+    void       (*activate)(GSimpleAction *, GVariant *, gpointer);
+    const gchar *param_type;         /* GVariant type string, or NULL       */
+    gboolean     editing;            /* enabled only while the view has
+                                        the focus                           */
+} EditorAction;
+
+static const EditorAction EDITOR_ACTIONS[] = {
+    { "new-note",      on_new_note,      NULL, FALSE },
+    { "find",          on_find,          NULL, FALSE },
+    { "undo",          on_undo,          NULL, TRUE  },
+    { "redo",          on_redo,          NULL, TRUE  },
+    { "inline",        on_inline,        "s",  TRUE  },
+    { "para",          on_para,          "s",  TRUE  },
+    { "insert-image",  on_insert_image,  NULL, TRUE  },
+    { "insert-table",  on_insert_table,  NULL, TRUE  },
+    { "insert-emoji",  on_insert_emoji,  NULL, TRUE  },
+    { "insert-date",   on_insert_date,   NULL, TRUE  },
+    /* context menus: they act on ed->ctx_offset, and a table's menu runs
+     * with the focus in a CELL, so neither set is gated                    */
+    { "img-copy",      on_img_copy,      NULL, FALSE },
+    { "img-open",      on_img_open,      NULL, FALSE },
+    { "img-full",      on_img_full,      NULL, FALSE },
+    { "img-thumb",     on_img_thumb,     NULL, FALSE },
+    { "table-row-add", on_table_command, NULL, FALSE },
+    { "table-row-del", on_table_command, NULL, FALSE },
+    { "table-col-add", on_table_command, NULL, FALSE },
+    { "table-col-del", on_table_command, NULL, FALSE },
+    { "table-delete",  on_table_command, NULL, FALSE },
+};
+
+/* ---------------------------------------------------------------------------
+ * editor_actions_set_editing() — enable or disable the gated actions.
+ *   ed      — the editor.
+ *   enabled — TRUE while the text view has the focus.
+ * ------------------------------------------------------------------------- */
+static void
+editor_actions_set_editing(OnEditor *ed, gboolean enabled)
+{
+    GActionMap *map = G_ACTION_MAP(ed->window);
+    for (gsize i = 0; i < G_N_ELEMENTS(EDITOR_ACTIONS); i++) {
+        if (!EDITOR_ACTIONS[i].editing)
+            continue;
+        g_simple_action_set_enabled(
+            G_SIMPLE_ACTION(g_action_map_lookup_action(
+                map, EDITOR_ACTIONS[i].name)),
+            enabled);
+    }
+}
+
+/* on_view_focus_in() / on_view_focus_out() — the gate.                      */
+static gboolean
+on_view_focus_in(GtkWidget *widget, GdkEventFocus *event, gpointer user_data)
+{
+    (void)widget; (void)event;
+    editor_actions_set_editing(user_data, TRUE);
+    return FALSE;
+}
+
+static gboolean
+on_view_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer user_data)
+{
+    (void)widget; (void)event;
+    editor_actions_set_editing(user_data, FALSE);
+    return FALSE;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_install_actions() — add every action to the window: the table
+ * above, plus the stateful "table-header" behind the table menu's check
+ * item.  Must run before anything that names them is built (the toolbar),
+ * so those items come up sensitive.
+ * ------------------------------------------------------------------------- */
+static void
+editor_install_actions(OnEditor *ed)
+{
+    GActionMap *map = G_ACTION_MAP(ed->window);
+    for (gsize i = 0; i < G_N_ELEMENTS(EDITOR_ACTIONS); i++) {
+        const EditorAction *a = &EDITOR_ACTIONS[i];
+        GSimpleAction *action = g_simple_action_new(
+            a->name,
+            a->param_type != NULL ? G_VARIANT_TYPE(a->param_type) : NULL);
+        g_signal_connect(action, "activate", G_CALLBACK(a->activate), ed);
+        g_action_map_add_action(map, G_ACTION(action));
+        g_object_unref(action);      /* the map holds it now                */
+    }
+
+    GSimpleAction *header = g_simple_action_new_stateful(
+        "table-header", NULL, g_variant_new_boolean(FALSE));
+    g_signal_connect(header, "change-state",
+                     G_CALLBACK(on_table_header_change_state), ed);
+    g_action_map_add_action(map, G_ACTION(header));
+    g_object_unref(header);
+
+    /* Nothing has the focus until the window shows; the view takes it then
+     * (on_editor_window_open grabs it after show_all) and the focus-in
+     * handler opens the gate.  Until then the editing actions are off.    */
+    editor_actions_set_editing(ed, FALSE);
+    g_signal_connect(ed->view, "focus-in-event",
+                     G_CALLBACK(on_view_focus_in), ed);
+    g_signal_connect(ed->view, "focus-out-event",
+                     G_CALLBACK(on_view_focus_out), ed);
+}
+
 /* ---------------------------------------------------------------------------
  * editor_connect_signals() — connect all buffer/view/window signals.  Called
  * after content is loaded so that loading never triggers autosave handlers.
@@ -5589,7 +5794,13 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     ed->action_marks = g_ptr_array_new_with_free_func(g_free);
 
     /* --- window: a plain GtkWindow, standard titlebar (no HeaderBar) ---- */
-    ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* A GtkApplicationWindow, for the "win." action group the toolbar,
+     * menus and shortcuts name; it adds itself to the application.  The
+     * application menubar is NOT rendered in-window here — on a desktop
+     * with no shell menubar that would put File/View atop every editor. */
+    ed->window = gtk_application_window_new(app->gtk_app);
+    gtk_application_window_set_show_menubar(
+        GTK_APPLICATION_WINDOW(ed->window), FALSE);
 
     /* Open at the configured default size (editor_win_w/editor_win_h in
      * the ini, fixed — unlike the search window's, these are not written
@@ -5599,7 +5810,6 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     on_app_config_get_size("editor_win_w", "editor_win_h", &win_w, &win_h);
     gtk_window_set_default_size(GTK_WINDOW(ed->window), win_w, win_h);
     editor_place_bottom_right(ed, win_w, win_h);
-    gtk_application_add_window(app->gtk_app, GTK_WINDOW(ed->window));
     {
         gchar *wtitle = g_strdup_printf("Notes - %s", meta->title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
@@ -5607,6 +5817,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     }
 
     editor_build_view(ed);
+    editor_install_actions(ed);      /* before the toolbar names them       */
     editor_load_content(ed);
     editor_build_layout(ed);
     editor_connect_signals(ed);

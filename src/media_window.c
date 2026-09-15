@@ -606,6 +606,9 @@ on_media_window_open(OnApp *app, const gchar *scope_label, GList *notes)
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------ */
     mw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* An application window, so the "app." accelerators (Quit,
+     * Preferences) work while it has the focus.                            */
+    gtk_application_add_window(app->gtk_app, GTK_WINDOW(mw->window));
     {
         gchar *title = g_strdup_printf("Notes - Media in %s", mw->scope);
         gtk_window_set_title(GTK_WINDOW(mw->window), title);

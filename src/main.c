@@ -17,16 +17,12 @@
 #include "ipc.h"
 #include "library_window.h"
 
-#ifdef HAVE_GTKOSX
-#include <gtkosxapplication.h>
-#endif
-
 #ifdef __APPLE__
 /* ---------------------------------------------------------------------------
- * quartz_log_filter() — GLogFunc that drops one specific, benign GDK
- * assertion emitted on macOS and forwards everything else unchanged.
+ * quartz_log_filter() — GLogFunc that drops two specific, benign
+ * assertions emitted on macOS and forwards everything else unchanged.
  *
- * When GTK enumerates the clipboard's targets (the "TARGETS" atom — done
+ * 1. When GTK enumerates the clipboard's targets (the "TARGETS" atom — done
  * whenever the right-click/selection menus appear, on rich-text paste, and in
  * drag negotiation), the GDK Quartz backend converts each NSPasteboard type
  * to a GdkAtom via gdk_atom_intern(uti.preferredMIMEType.UTF8String)
@@ -37,7 +33,16 @@
  * enumeration keeps going with the valid types — but it prints a Gdk-CRITICAL
  * on every affected paste/menu.  We cannot reach the upstream call site, so we
  * silence just this message and pass all other logs through untouched.
- *   domain  — log domain ("Gdk" for the offending message).
+ *
+ * 2. MacPorts' gtk3 carries patch-gtk-menu-crash.diff, which puts
+ * `g_return_if_fail (*change_point != NULL)` at the top of
+ * gtk_menu_tracker_remove_items() — but a change point at the END of a
+ * tracked section is exactly what every append to a live menu model has,
+ * with nothing to remove.  So GTK's own gtk_application_set_menubar()
+ * (the quartz backend appends the menubar to its combined model) prints
+ * one Gtk-CRITICAL per call and nothing is wrong.  Upstream GTK has no such
+ * check; a real tracker fault would abort in the loop below it.
+ *   domain  — log domain ("Gdk"/"Gtk" for the offending messages).
  *   level   — log level flags.
  *   message — the formatted log text.
  *   data    — unused.
@@ -53,6 +58,10 @@ quartz_log_filter(const gchar   *domain,
         strstr(message, "gdk_atom_intern") != NULL &&
         strstr(message, "atom_name != NULL") != NULL)
         return;                      /* benign macOS pasteboard artifact     */
+    if (message != NULL &&
+        strstr(message, "gtk_menu_tracker_remove_items") != NULL &&
+        strstr(message, "*change_point != NULL") != NULL)
+        return;                      /* MacPorts' misplaced tracker guard    */
     g_log_default_handler(domain, level, message, data);
 }
 #endif /* __APPLE__ */
@@ -160,6 +169,20 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
 }
 
 /* ---------------------------------------------------------------------------
+ * on_startup() — GtkApplication "startup" handler, run once after GTK has
+ * a display: bind the keyboard shortcuts (their <Primary> modifier is
+ * resolved through the display's keymap, so this cannot run earlier).
+ *   gtk_app   — the application.
+ *   user_data — unused.
+ * ------------------------------------------------------------------------- */
+static void
+on_startup(GtkApplication *gtk_app, gpointer user_data)
+{
+    (void)user_data;
+    on_app_install_accels(gtk_app);
+}
+
+/* ---------------------------------------------------------------------------
  * on_activate() — GtkApplication "activate" handler: show the library
  * window, or just raise it if the app is activated a second time.
  *   gtk_app   — the application.
@@ -212,14 +235,6 @@ on_activate(GtkApplication *gtk_app, gpointer user_data)
      * run any action a CLI already queued because no instance was running.  */
     on_ipc_server_start(app);
     on_ipc_run_pending(app);
-
-#ifdef HAVE_GTKOSX
-    /* Honor the persisted native-menu-bar preference, then let the macOS
-     * integration finish its launch handshake.                             */
-    if (on_app_config_get_bool("native_menubar", FALSE))
-        on_library_apply_native_menubar(app, TRUE);
-    gtkosx_application_ready(gtkosx_application_get());
-#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -249,9 +264,14 @@ int
 main(int argc, char *argv[])
 {
 #ifdef __APPLE__
-    /* Silence one benign, upstream GDK-Quartz clipboard critical (see
-     * quartz_log_filter).  Installed before GTK so it covers every paste.   */
+    /* Silence two benign macOS-only criticals — GDK-Quartz's clipboard
+     * one and MacPorts' menu-tracker one (see quartz_log_filter).
+     * Installed before GTK so it covers every paste and the first
+     * menubar.                                                             */
     g_log_set_handler("Gdk",
+                      G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_RECURSION,
+                      quartz_log_filter, NULL);
+    g_log_set_handler("Gtk",
                       G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_RECURSION,
                       quartz_log_filter, NULL);
 #endif
@@ -377,6 +397,12 @@ main(int argc, char *argv[])
 
     app.gtk_app = gtk_application_new("org.example.notes",
                                       G_APPLICATION_DEFAULT_FLAGS);
+    /* register-session: Dock → Quit and logout then route through
+     * "app.quit", which destroys every window so editor autosaves flush.
+     * Without it AppKit's default terminate exits the process at once.    */
+    g_object_set(app.gtk_app, "register-session", TRUE, NULL);
+    g_signal_connect(app.gtk_app, "startup",
+                     G_CALLBACK(on_startup), NULL);
     g_signal_connect(app.gtk_app, "activate",
                      G_CALLBACK(on_activate), &app);
     g_unix_signal_add(SIGTERM, on_sigterm, &app);

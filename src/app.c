@@ -94,6 +94,69 @@ on_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
     g_object_unref(css);
 }
 
+void
+on_app_menu_popup(GtkWidget *attach, GMenuModel *model,
+                  GdkEventButton *event)
+{
+    GtkWidget *menu = gtk_menu_new_from_model(model);
+    g_object_unref(model);           /* the menu holds its own reference    */
+    gtk_menu_attach_to_widget(GTK_MENU(menu), attach, NULL);
+    /* "selection-done" fires AFTER the chosen item has activated, so the
+     * destroy never races the action.                                       */
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(gtk_widget_destroy), NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+}
+
+void
+on_app_install_accels(GtkApplication *gtk_app)
+{
+    /* One action may take several keys (redo), and one key may serve
+     * several actions (Primary+M) — GTK tries an accel's actions in the
+     * order they were registered and takes the first the focused window
+     * has and has enabled.  Detailed names with a target ("win.para::code")
+     * are accepted as-is.                                                   */
+    static const struct {
+        const gchar *action;         /* detailed action name                */
+        const gchar *accel;          /* accelerator string                  */
+    } ACCELS[] = {
+        /* app-level: the two the macOS app menu binds itself anyway       */
+        { "app.quit",              "<Primary>q"        },
+        { "app.preferences",       "<Primary>comma"    },
+        /* both windows                                                     */
+        { "win.new-note",          "<Primary>n"        },
+        { "win.find",              "<Primary>f"        },
+        /* library                                                          */
+        { "win.media",             "<Primary>m"        },
+        /* editor                                                           */
+        { "win.para::code",        "<Primary>m"        },
+        { "win.undo",              "<Primary>z"        },
+        { "win.redo",              "<Primary><Shift>z" },
+        { "win.redo",              "<Primary>y"        },
+        { "win.inline::bold",      "<Primary>b"        },
+        { "win.inline::italic",    "<Primary>i"        },
+        { "win.inline::underline", "<Primary>u"        },
+        { "win.insert-date",       "<Primary>d"        },
+        { "win.insert-emoji",      "<Primary>e"        },
+    };
+
+    for (gsize i = 0; i < G_N_ELEMENTS(ACCELS); i++) {
+        /* Collect every accel already bound to this action so a second row
+         * for the same action adds a key rather than replacing the first. */
+        gchar **have = gtk_application_get_accels_for_action(
+            gtk_app, ACCELS[i].action);
+        gsize n = g_strv_length(have);
+        gchar **all = g_new0(gchar *, n + 2);
+        for (gsize j = 0; j < n; j++)
+            all[j] = have[j];
+        all[n] = (gchar *)ACCELS[i].accel;
+        gtk_application_set_accels_for_action(gtk_app, ACCELS[i].action,
+                                              (const gchar *const *)all);
+        g_strfreev(have);
+        g_free(all);
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * exe_dir_from_argv0() — the directory containing the executable; when
  * launched via a bare name from PATH there is no directory part, so fall

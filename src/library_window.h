@@ -72,10 +72,12 @@ void on_library_get_scope(OnApp *app, OnSearchScope *scope, gint64 *id,
 void on_library_sidebar_fit(OnApp *app);
 
 /* ---------------------------------------------------------------------------
- * on_library_apply_native_menubar() — move the library's menu into the
- * native macOS menu bar (hiding the in-window one), or restore it.
- * Compiled in only when the gtk-mac-integration library is available
- * (HAVE_GTKOSX); a no-op otherwise.
+ * on_library_apply_native_menubar() — on macOS, move the library's menu
+ * into the native menu bar (hiding the in-window one), or restore it.  GTK's
+ * quartz backend does the exporting; this only decides whether the
+ * application menubar is set.  Elsewhere the setting means nothing — the
+ * GtkApplicationWindow renders the menubar itself — and this is a no-op
+ * beyond making sure it is set.  Safe with no library window open.
  *   app    — global application context.
  *   native — TRUE for the macOS menu bar, FALSE for the in-window bar.
  * ------------------------------------------------------------------------- */

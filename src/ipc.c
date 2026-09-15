@@ -32,16 +32,29 @@
 #define IPC_REPLY_BUF_SIZE 512
 
 /* ---------------------------------------------------------------------------
- * ipc_socket_path() — the per-user socket both sides agree on.  One instance
- * per user is the unit "a running Notes"; the path lives in the user's
- * runtime dir (short, private) so the Unix sun_path limit is never a concern.
+ * ipc_socket_path() — the socket both sides agree on: one PER DATABASE.  A
+ * CLI must only ever be served by the GUI holding the same database the CLI
+ * would open itself — so a development sandbox (`make run-dev`, its own ini
+ * and database) and the real thing can run side by side without one's
+ * commands landing in the other's notes.  The name carries a hash of the
+ * configured database path, which both sides read from the ini next to
+ * their own binary.  It lives in the user's runtime dir (short, private) so
+ * the Unix sun_path limit is never a concern.
  * Returns a new string (g_free it).
  * ------------------------------------------------------------------------- */
 static gchar *
 ipc_socket_path(void)
 {
-    return g_build_filename(g_get_user_runtime_dir(),
-                            "notes.sock", NULL);
+    gchar *db_dir  = on_app_config_load_db_dir();
+    gchar *db_path = (db_dir != NULL)
+                     ? g_build_filename(db_dir, ON_DB_FILENAME, NULL)
+                     : on_db_default_path();
+    gchar *name = g_strdup_printf("notes-%08x.sock", g_str_hash(db_path));
+    gchar *path = g_build_filename(g_get_user_runtime_dir(), name, NULL);
+    g_free(name);
+    g_free(db_path);
+    g_free(db_dir);
+    return path;
 }
 
 /* ===========================================================================

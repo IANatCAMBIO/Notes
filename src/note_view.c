@@ -1184,31 +1184,6 @@ image_effective_width(GdkPixbuf *orig, gint display_width)
 }
 
 /* ---------------------------------------------------------------------------
- * on_note_image_texture() — THE full-resolution pixbuf → GdkTexture edge
- * for an attached image (the anchored GtkPicture, Copy Image, the modal
- * viewer): GTK decodes the cached PNG bytes itself (D4), so the texture
- * carries every pixel and stays sharp at any display size on HiDPI.  A
- * pixbuf that will not encode (on_image_png_bytes NULL) is wrapped
- * pixel-for-pixel instead.
- * ------------------------------------------------------------------------- */
-GdkTexture *
-on_note_image_texture(GdkPixbuf *orig)
-{
-    GBytes *png = on_image_png_bytes(orig);   /* borrowed                  */
-    GdkTexture *tex = NULL;
-    if (png != NULL) {
-        GError *err = NULL;
-        tex = gdk_texture_new_from_bytes(png, &err);
-        if (tex == NULL) {
-            g_warning("editor: image bytes will not decode: %s",
-                      err->message);
-            g_clear_error(&err);
-        }
-    }
-    return tex != NULL ? tex : on_app_texture_for_pixbuf(orig);
-}
-
-/* ---------------------------------------------------------------------------
  * image_widget_new() — build the GtkPicture showing `orig` at
  * `display_width` logical pixels.  The picture holds the full-resolution
  * texture and is SIZED by a size request: an anchored child is allocated
@@ -1227,7 +1202,7 @@ image_widget_new(GdkPixbuf *orig, gint display_width)
     gint want = image_effective_width(orig, display_width);
     gint want_h = MAX(1, (gint)((gdouble)h * want / w));
 
-    GdkTexture *tex = on_note_image_texture(orig);
+    GdkTexture *tex = on_app_texture_for_pixbuf(orig);
     GtkWidget *picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(tex));
     g_object_unref(tex);
     gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
@@ -1506,7 +1481,7 @@ on_img_copy(GSimpleAction *action, GVariant *param, gpointer user_data)
     GdkPixbuf *orig = ctx_image(v);
     if (orig == NULL)
         return;
-    GdkTexture *tex = on_note_image_texture(orig);
+    GdkTexture *tex = on_app_texture_for_pixbuf(orig);
     gdk_clipboard_set_texture(gtk_widget_get_clipboard(GTK_WIDGET(v)),
                               tex);
     g_object_unref(tex);

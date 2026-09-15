@@ -476,14 +476,18 @@ To audit (unverified candidates, in order of likely payoff):
       top level by basename — verified in gtkicontheme.c), so the
       swap-a-PNG contract survives and GTK does the scale-factor loading
       and caching.
-- [ ] `image_texture()` decodes the PNG bytes a second time although the
-      pixbuf already holds the pixels; measure load time on an
-      image-heavy note before choosing `on_app_texture_for_pixbuf`.
-- [ ] `editor_rederive` (emoji pad, action tint, title) runs per
-      keystroke over the touched range — measure; likely fine.
-- [ ] `render_note_thumb` draws cards with cairo — could snapshot an
-      offscreen `NotesView` instead once Phase 7's extraction exists, so
-      thumbnails and the editor can never render a note differently.
+- [x] `image_texture()` deleted: it re-decoded PNG bytes whose pixels the
+      anchor's pixbuf already held.  `on_app_texture_for_pixbuf` (a memory
+      texture over those pixels, no copy — the bytes reference keeps the
+      pixbuf alive) is THE edge; D4's "prefer from_bytes" was wrong for a
+      pixbuf that already exists and is corrected in app.h.
+- [x] `editor_rederive` — no measurement needed: every pass is bounded by
+      the edited range (start-1 … end), not the buffer.
+- [ ] `render_note_thumb` draws cards with cairo — snapshotting an
+      `OnNoteView` instead needs a realized widget (GtkWidgetPaintable
+      renders only mapped widgets), i.e. an offscreen window per render;
+      not worth it for a 140 px card.  Leave unless thumbnails and the
+      editor visibly disagree.
 - [ ] Grid + notes list + sidebar on the deprecated tree-view family:
       the GTK5 item ("After this port") — `GtkColumnView` autosizes
       columns, retiring `list_autofit`'s PangoLayout measuring.

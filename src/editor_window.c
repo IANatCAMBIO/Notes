@@ -328,7 +328,7 @@ editor_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
 {
     (void)box_w; (void)box_h;
     GdkPixbuf *orig = on_note_view_image_nth(((OnEditor *)host)->view, idx);
-    return orig != NULL ? GDK_PAINTABLE(on_note_image_texture(orig)) : NULL;
+    return orig != NULL ? GDK_PAINTABLE(on_app_texture_for_pixbuf(orig)) : NULL;
 }
 
 /* ---------------------------------------------------------------------------

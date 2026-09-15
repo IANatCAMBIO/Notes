@@ -174,16 +174,6 @@ GdkPixbuf *on_note_view_image_nth(OnNoteView *v, gint ord);
 gboolean on_note_view_image_reveal(OnNoteView *v, gint ord);
 
 /* ---------------------------------------------------------------------------
- * on_note_image_texture() — THE full-resolution pixbuf → GdkTexture edge
- * for an attached image (the anchored picture, Copy Image, the modal
- * viewer): GTK decodes the cached PNG bytes itself (D4), so the texture
- * carries every pixel and stays sharp at any display size on HiDPI.  A
- * pixbuf that will not encode is wrapped pixel-for-pixel instead.
- * Returns a new texture (g_object_unref it).
- * ------------------------------------------------------------------------- */
-GdkTexture *on_note_image_texture(GdkPixbuf *orig);
-
-/* ---------------------------------------------------------------------------
  * on_note_image_open_external() — write a full-resolution image to a
  * temporary PNG and hand it to an image viewer: the program configured
  * under Settings ("image_viewer"), else the platform opener (macOS `open`,

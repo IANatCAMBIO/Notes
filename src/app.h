@@ -236,10 +236,9 @@ void on_app_init_icons_dir(OnApp *app, const gchar *argv0);
  * stays the in-memory image type inside serialize.c (the "on-png" bytes
  * cache, capped decodes); a widget wants a texture.  This wraps the
  * pixbuf's pixels in a GdkMemoryTexture — NOT the deprecated
- * gdk_texture_new_for_pixbuf.  For a full-resolution image whose PNG
- * bytes are cached, prefer gdk_texture_new_from_bytes(on_image_png_bytes())
- * and let GTK decode; this is for pixbufs whose pixels no longer match a
- * PNG (thumbnails, viewer fits, rasterized icons).
+ * gdk_texture_new_for_pixbuf, and not gdk_texture_new_from_bytes over the
+ * cached PNG either: that decodes pixels the pixbuf already holds.  The
+ * bytes reference keeps the pixbuf alive for the texture's lifetime.
  *   pixbuf — the source; not consumed.
  * Returns a new texture (g_object_unref it).
  * ------------------------------------------------------------------------- */

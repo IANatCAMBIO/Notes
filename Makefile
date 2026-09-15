@@ -131,7 +131,10 @@ dev-check: $(DEV_DIR)/notes.ini
 	  echo "$(DEV_DIR)/notes.ini does not point at $(DEV_DIR)/db — refusing" \
 	       "(rm $(DEV_DIR)/notes.ini to regenerate it)"; exit 1; }
 
-$(DEV_DB): dev-check | $(BIN)
+# Both prerequisites are ORDER-ONLY: dev-check is phony, and a phony
+# prerequisite on the left of the bar counts as always newer, so the seed
+# re-ran (and appended its notes again) on every run-dev.
+$(DEV_DB): | dev-check $(BIN)
 	cd $(DEV_DIR) && ./$(BIN) folder add Work && ./$(BIN) folder add Home/Kitchen \
 	  && printf 'Meeting notes\n\n! Send the agenda due 2026-10-01\n! Book the room\n#work' | ./$(BIN) note new --folder Work - \
 	  && printf 'Project plan\n\nA plan with a #work tag and some **body** text.' | ./$(BIN) note new --folder Work - \

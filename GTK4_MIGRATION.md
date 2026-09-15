@@ -716,12 +716,38 @@ add a second idiom.
   background there hid the white selected text.  Tint only
   `:hover:not(:selected)`; the outline uses a fixed dark colour, not
   `currentColor` (white on a selected cell).
+- **D29 · 2026-09-15 — One text-view overlay makes every anchored child
+  unclickable.**  `gtk_text_view_add_overlay` wraps its overlays in a
+  GtkTextViewChild covering the whole text area, parented AFTER the
+  anchored children (`ensure_child`, gtktextview.c); it does not override
+  `contains`, and `gtk_widget_pick` walks children LAST to FIRST, so once
+  a note had a code block (a "copy" link = an overlay) every table cell
+  and image under it picked as the GtkTextViewChild — clicks never reached
+  the cell.  A note without code blocks was fine, which is why a freshly
+  inserted table "worked" and a loaded one "didn't".  Measured with the
+  real editor window headless: `pick` on cell 0 = GtkTextViewChild
+  (bounds 0,45 958x441).  Fix: `gtk_widget_set_can_target(FALSE)` on the
+  link's parent right after `add_overlay`; the links never took their own
+  clicks anyway (`on_view_pressed` hit-tests them), so the only thing lost
+  is the label's cursor, now served by the view's motion controller
+  (`on_view_motion`).  Upstream-worthy with the probe.
+- **D30 · 2026-09-15 — A paragraph style on the LAST line needs a newline
+  to live on.**  Line-spanning tags cover the trailing "\n"
+  (`line_span`); the buffer's last line has none, so H1/H2/code applied
+  there ended at the last character and a typed Enter — which inherits its
+  tags from both neighbours — came out untagged, breaking the block.
+  `apply_paragraph_format` now gives a last line without a newline one
+  (cursor kept in place), the same as it already did for an EMPTY last
+  line.  Harness: "hello" + code + Enter → a second code line.
 
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
 - 2026-09-14 — plan written; survey numbers above.
+- 2026-09-15 — Loaded tables unclickable (D29, the overlay container),
+  code block on the last line (D30), `make run-dev` re-seeding the sandbox
+  every run (order-only prerequisites).
 - 2026-09-15 — Text rendering (D26), table sizing and anchor scroll
   (D27), grid hover (D28), status colour; all verified by hand.
 - 2026-09-15 — Table column fit (D25), CLAUDE.md rewritten, README +

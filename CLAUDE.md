@@ -814,6 +814,15 @@ they explain shapes that survive in the code.
   shades empty code lines itself.
 - **An overlay can never be removed from a GtkTextView**
   (`gtk_text_view_remove` warns "is not a child", D17): pool them.
+- **One overlay makes every anchored child unclickable** (D29): GTK wraps
+  the overlays in a GtkTextViewChild the size of the text area, parented
+  LAST, and picks walk last-to-first — a note with a code block (a copy
+  link) lost every click on its table cells and images.  The link's
+  parent is made non-targetable right after `add_overlay`; the links'
+  clicks and hover cursor are the view's own handlers.
+- **A paragraph tag on the buffer's LAST line has no newline to cover**
+  (D30): `apply_paragraph_format` gives it one, or Enter there breaks the
+  block.
 - **GtkCellRendererPixbuf paints a texture at `-gtk-icon-size` (16 px)
   whatever the cell reserves** (D18): `iconview.<class>.image {
   -gtk-icon-size: Npx }`.

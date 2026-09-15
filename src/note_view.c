@@ -110,6 +110,8 @@
  *                     the private GtkTextViewChild).  So a link whose
  *                     block went away is hidden and kept here, and the
  *                     next block that needs one takes it back.
+ *   link_hover      — the pointer is over a copy link, so the view shows
+ *                     the hand cursor (on_view_motion swaps it back).
  *   code_btn_idle   — idle source id for a pending code-button rebuild.
  *   scroll_on_allocate — an anchor (image, table) was just inserted:
  *                     the caret-follow scroll must run from the NEXT
@@ -181,6 +183,7 @@ struct _OnNoteView {
 
     GSList             *code_buttons;
     GSList             *code_button_pool;
+    gboolean            link_hover;
     guint               code_btn_idle;
     guint               scroll_idle;
     gboolean            scroll_on_allocate;
@@ -516,16 +519,37 @@ apply_paragraph_format(OnNoteView *v, guint32 flag)
         if (flag == 0)
             continue;                /* body text: nothing more to do       */
 
-        /* An empty LAST line has an empty span (no trailing newline), so
-         * a heading/code tag would have nothing to hold onto and the
-         * style would silently not stick.  Give the line its newline to
-         * carry the tag and keep the cursor on the styled line.  (Lists
-         * don't need this — their visible prefix is inserted below.)      */
-        if (gtk_text_iter_equal(&ls, &le) &&
-            (flag & (ON_FMT_H1 | ON_FMT_H2 | ON_FMT_CODEBLOCK))) {
-            gtk_text_buffer_insert(v->buffer, &ls, "\n", -1);
+        /* The LAST line has no trailing newline, and a heading/code tag
+         * lives on that newline: it is what a typed Enter inherits from
+         * (inserted text takes the tags on BOTH its sides), so the block
+         * can grow line by line, and on an EMPTY line it is the only
+         * character the tag could hold at all.  Give the last line its
+         * newline before tagging.  Empty line: the cursor goes back onto
+         * the styled line.  Non-empty line: the cursor stays where the
+         * user left it, at the end of the text — without this, ⌘M on the
+         * last line of a note made a block Enter could not continue.
+         * (Lists don't need this — their visible prefix is inserted below.)*/
+        gboolean empty = gtk_text_iter_equal(&ls, &le);
+        gboolean has_newline = FALSE;    /* does the span end in "\n"?     */
+        if (!empty) {
+            GtkTextIter last = le;
+            gtk_text_iter_backward_char(&last);
+            has_newline = gtk_text_iter_get_char(&last) == '\n';
+        }
+        if ((flag & (ON_FMT_H1 | ON_FMT_H2 | ON_FMT_CODEBLOCK)) &&
+            gtk_text_iter_is_end(&le) && !has_newline) {
+            GtkTextMark *keep = empty ? NULL   /* where the cursor was    */
+                : gtk_text_buffer_create_mark(v->buffer, NULL, &le, TRUE);
+            gtk_text_buffer_insert(v->buffer, &le, "\n", -1);
             line_span(v->buffer, l, &ls, &le);
-            gtk_text_buffer_place_cursor(v->buffer, &ls);
+            if (empty) {
+                gtk_text_buffer_place_cursor(v->buffer, &ls);
+            } else {
+                GtkTextIter at;
+                gtk_text_buffer_get_iter_at_mark(v->buffer, &at, keep);
+                gtk_text_buffer_place_cursor(v->buffer, &at);
+                gtk_text_buffer_delete_mark(v->buffer, keep);
+            }
         }
 
         /* For lists, insert the visible prefix first.                      */
@@ -722,9 +746,12 @@ handle_return_in_list(OnNoteView *v)
  * "on-mark".
  *
  * A label has no click handling of its own, so the click comes from the
- * view's click gesture via code_link_at_view_pos(); the hand cursor is the
- * label's own (gtk_widget_set_cursor_from_name), since every GTK4 widget
- * owns its cursor.
+ * view's click gesture via code_link_at_view_pos(), and the hand cursor
+ * from the view's motion controller (on_view_motion) — NOT from the label:
+ * the links live in a container GTK parents LAST among the view's children
+ * and that claims the whole text area for picking (D29), so it is made
+ * non-targetable, and a widget the pointer can't target cannot serve a
+ * cursor.
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
@@ -940,9 +967,15 @@ code_buttons_rebuild(OnNoteView *v)
             gtk_label_set_markup(GTK_LABEL(link),
                 "<span size=\"8192\" foreground=\"#0066cc\""
                 " underline=\"single\">copy</span>");
-            gtk_widget_set_cursor_from_name(link, "pointer");
             /* Added at the origin; code_buttons_update_positions moves it */
             gtk_text_view_add_overlay(GTK_TEXT_VIEW(v), link, 0, 0);
+            /* GTK wraps every overlay in one GtkTextViewChild covering the
+             * text area, parented AFTER the anchored children — and picks
+             * walk the children last to first, so once any overlay
+             * existed every table cell and image under it stopped taking
+             * clicks (D29).  Off the pick path, the links included: their
+             * clicks were never theirs (on_view_pressed).                  */
+            gtk_widget_set_can_target(gtk_widget_get_parent(link), FALSE);
         }
 
         GtkTextMark *mark = gtk_text_buffer_create_mark(v->buffer, NULL,
@@ -1606,6 +1639,24 @@ image_menu(gboolean shown_full)
     else
         g_menu_append(menu, "Display _Full Size",    "view.img-full");
     return G_MENU_MODEL(menu);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_view_motion() — the view's motion controller: the hand cursor over a
+ * copy link, the text cursor elsewhere.  The view's own cursor is swapped
+ * (GtkTextView sets "text" on itself), only when the state changes.
+ * ------------------------------------------------------------------------- */
+static void
+on_view_motion(GtkEventControllerMotion *controller, gdouble x, gdouble y,
+               gpointer user_data)
+{
+    (void)controller;
+    OnNoteView *v = user_data;       /* the view                            */
+    gboolean over = code_link_at_view_pos(v, x, y) != NULL;
+    if (over == v->link_hover)
+        return;
+    v->link_hover = over;
+    gtk_widget_set_cursor_from_name(GTK_WIDGET(v), over ? "pointer" : "text");
 }
 
 /* ---------------------------------------------------------------------------
@@ -4620,6 +4671,10 @@ on_note_view_init(OnNoteView *v)
                                                GTK_PHASE_CAPTURE);
     g_signal_connect(click, "pressed", G_CALLBACK(on_view_pressed), v);
     gtk_widget_add_controller(GTK_WIDGET(v), GTK_EVENT_CONTROLLER(click));
+
+    GtkEventController *motion = gtk_event_controller_motion_new();
+    g_signal_connect(motion, "motion", G_CALLBACK(on_view_motion), v);
+    gtk_widget_add_controller(GTK_WIDGET(v), motion);
 
     note_view_install_actions(v);
 }

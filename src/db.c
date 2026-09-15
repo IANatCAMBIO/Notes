@@ -867,7 +867,8 @@ bind_order_id(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
  *   sql — an UPDATE with two placeholders: sort_order, then row id.
  *   ids — row ids in the desired order (sort_order = array index).
  *   n   — number of ids.
- * Shared body of on_db_folder_reorder/on_db_note_reorder.  Returns TRUE
+ * Body of on_db_folder_reorder (once shared with a note reorder the GUI
+ * no longer offers: the notes list is always sorted).  Returns TRUE
  * when every update succeeded (failure rolls the batch back).
  * ------------------------------------------------------------------------- */
 static gboolean
@@ -1359,13 +1360,6 @@ on_db_note_count_pinned(OnDatabase *db)
     return (gint)query_int64(db,
         "SELECT COUNT(*) FROM notes WHERE pinned=1 AND " NOTE_VISIBLE_SQL,
         -1);
-}
-
-gboolean
-on_db_note_reorder(OnDatabase *db, const gint64 *note_ids, gsize n)
-{
-    return reorder_rows(db, "UPDATE notes SET sort_order=? WHERE id=?",
-                        note_ids, n);
 }
 
 void

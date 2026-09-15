@@ -210,7 +210,7 @@ put_u32(GByteArray *buf, guint32 v)
  * ------------------------------------------------------------------------- */
 
 /* UTF-8 encoding of U+FFFC, the object-replacement character a child anchor
- * or embedded pixbuf occupies in a text slice.                              */
+ * or embedded paintable occupies in a text slice.                           */
 #define OBJ_REPLACEMENT "\xef\xbf\xbc"
 
 /* seg_flush() — hand the pending text run to the callback and reset it.     */
@@ -242,8 +242,10 @@ on_buffer_walk(GtkTextBuffer *buffer, OnBufferSegFn cb, gpointer data)
     on_flag_run_init(&frun, buffer, ~0u);
 
     while (!gtk_text_iter_is_end(&iter)) {
-        /* Images and tables live on child anchors (raw pixbufs are also
-         * accepted for robustness against buffers built elsewhere).        */
+        /* Images and tables live on child anchors.  A paintable inserted
+         * straight into the buffer (nothing in the app does that) has no
+         * anchor and no pixbuf, so it is dropped like any stray U+FFFC
+         * below.                                                           */
         GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
 
         gboolean checked;            /* the checkbox's state                */
@@ -271,15 +273,10 @@ on_buffer_walk(GtkTextBuffer *buffer, OnBufferSegFn cb, gpointer data)
             continue;
         }
 
-        GdkPixbuf *original = NULL;  /* full-resolution image               */
         gint display_width = 0;      /* the user's chosen display width     */
-        if (anchor != NULL) {
-            original = on_anchor_get_image(anchor, &display_width);
-        } else {
-            original = gtk_text_iter_get_pixbuf(&iter);
-            if (original != NULL)
-                display_width = gdk_pixbuf_get_width(original);
-        }
+        GdkPixbuf *original = (anchor != NULL)   /* full-resolution image   */
+                              ? on_anchor_get_image(anchor, &display_width)
+                              : NULL;
         if (original != NULL) {
             seg_flush(&seg, run, run_flags, cb, data);
             memset(&seg, 0, sizeof seg);

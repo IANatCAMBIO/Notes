@@ -64,9 +64,11 @@ typedef struct SearchJob SearchJob;  /* forward: one in-flight search       */
  *                   the editor when a result is opened.  Taken from the
  *                   parsed query, not the entry text, so opening a hit for
  *                   `cats -dogs` seeds the in-note search with "cats".
- *   win_w/win_h   — the window's current size, tracked by configure
- *                   events and persisted on close so the next search
- *                   window opens at the size this one was left at.
+ *   win_w/win_h   — the window's current size, tracked through the
+ *                   window's default-width/default-height notifies (GTK4
+ *                   writes every user resize back into those) and
+ *                   persisted on close so the next search window opens at
+ *                   the size this one was left at.
  * ------------------------------------------------------------------------- */
 typedef struct {
     OnApp         *app;
@@ -201,11 +203,14 @@ search_done(gpointer user_data)
         OnSearch *sw = job->sw;      /* safe: not cancelled ⇒ window alive  */
         sw->job = NULL;
         gtk_spinner_stop(GTK_SPINNER(sw->spinner));
-        gtk_widget_hide(sw->spinner);
+        gtk_widget_set_visible(sw->spinner, FALSE);
 
         if (job->error != NULL) {
             gtk_label_set_text(GTK_LABEL(sw->status), job->error);
         } else {
+            /* The results list is a GtkTreeView (deprecated since GTK
+             * 4.10, kept on purpose — see GTK4_MIGRATION.md).            */
+            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
             for (guint i = 0; i < job->hits->len; i++) {
                 SearchHit *h = g_ptr_array_index(job->hits, i);
                 GtkTreeIter iter;
@@ -216,6 +221,7 @@ search_done(gpointer user_data)
                                    SR_MODIFIED, h->when,
                                    -1);
             }
+            G_GNUC_END_IGNORE_DEPRECATIONS
             gchar *msg = g_strdup_printf(
                 "%u match%s%s", job->hits->len,
                 job->hits->len == 1 ? "" : "es",
@@ -317,21 +323,23 @@ run_search(OnSearch *sw)
     /* A new request supersedes whatever is still running.                  */
     search_job_cancel(sw);
     gtk_spinner_stop(GTK_SPINNER(sw->spinner));
-    gtk_widget_hide(sw->spinner);
+    gtk_widget_set_visible(sw->spinner, FALSE);
 
-    const gchar *query = gtk_entry_get_text(GTK_ENTRY(sw->entry));
+    const gchar *query = gtk_editable_get_text(GTK_EDITABLE(sw->entry));
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS   /* deprecated GtkListStore, kept   */
     gtk_list_store_clear(sw->store);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     if (query == NULL || *query == '\0') {
         gtk_label_set_text(GTK_LABEL(sw->status), "Type something to search for.");
         return;
     }
 
-    gboolean case_sensitive = gtk_toggle_button_get_active(
-        GTK_TOGGLE_BUTTON(sw->check_case));
-    gboolean use_regex = gtk_toggle_button_get_active(
-        GTK_TOGGLE_BUTTON(sw->check_regex));
-    gboolean scoped = gtk_toggle_button_get_active(
-        GTK_TOGGLE_BUTTON(sw->radio_scoped));
+    gboolean case_sensitive = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(sw->check_case));
+    gboolean use_regex = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(sw->check_regex));
+    gboolean scoped = gtk_check_button_get_active(
+        GTK_CHECK_BUTTON(sw->radio_scoped));
 
     /* Parse (and, in regex mode, compile) up front so a bad pattern errors
      * immediately, on the main thread.                                     */
@@ -378,7 +386,7 @@ run_search(OnSearch *sw)
 
     sw->job = job;
     gtk_label_set_text(GTK_LABEL(sw->status), "Searching\xe2\x80\xa6");
-    gtk_widget_show(sw->spinner);
+    gtk_widget_set_visible(sw->spinner, TRUE);
     gtk_spinner_start(GTK_SPINNER(sw->spinner));
     g_thread_unref(g_thread_new("on-search", search_worker, job));
 }
@@ -391,27 +399,29 @@ on_result_activated(GtkTreeView *view, GtkTreePath *path,
     (void)view; (void)col;
     OnSearch *sw = user_data;        /* owning search window                */
     GtkTreeIter iter;                /* activated row                       */
+    gint64 id;                       /* note id of the row                  */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS   /* deprecated GtkTreeModel, kept   */
     if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(sw->store), &iter, path))
         return;
-    gint64 id;                       /* note id of the row                  */
     gtk_tree_model_get(GTK_TREE_MODEL(sw->store), &iter, SR_ID, &id, -1);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     /* Carry the searched-for term into the editor so it is highlighted in
      * the note: the query's first positive term (a regex query is seeded
      * as-is), which is NULL when the query only excluded things.           */
     on_editor_window_open_search(sw->app, id, sw->highlight);
 }
 
-/* on_search_configure() — track the window's live size so it can be
- * persisted at close (the GdkWindow is already gone by "destroy").          */
-static gboolean
-on_search_configure(GtkWidget *widget, GdkEventConfigure *event,
-                    gpointer user_data)
+/* on_search_size_changed() — notify::default-width / notify::default-height
+ * handler: GTK4 writes every user resize of an unmaximized window back into
+ * those two properties, so reading them here tracks the live size for the
+ * persist at close.                                                         */
+static void
+on_search_size_changed(GObject *window, GParamSpec *pspec,
+                       gpointer user_data)
 {
-    (void)widget;
+    (void)pspec;
     OnSearch *sw = user_data;        /* owning search window                */
-    sw->win_w = event->width;
-    sw->win_h = event->height;
-    return FALSE;                    /* never consume: default handling     */
+    gtk_window_get_default_size(GTK_WINDOW(window), &sw->win_w, &sw->win_h);
 }
 
 /* on_search_destroy() — abandon any running search (the job frees itself
@@ -452,7 +462,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     sw->app = app;
 
     /* --- window (standard titlebar) --------------------------------------*/
-    sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    sw->window = gtk_window_new();
     /* An application window, so the "app." accelerators (Quit,
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(sw->window));
@@ -466,14 +476,19 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
 
     gtk_window_set_transient_for(GTK_WINDOW(sw->window),
                                  GTK_WINDOW(app->library_window));
-    g_signal_connect(sw->window, "configure-event",
-                     G_CALLBACK(on_search_configure), sw);
+    g_signal_connect(sw->window, "notify::default-width",
+                     G_CALLBACK(on_search_size_changed), sw);
+    g_signal_connect(sw->window, "notify::default-height",
+                     G_CALLBACK(on_search_size_changed), sw);
     g_signal_connect(sw->window, "destroy",
                      G_CALLBACK(on_search_destroy), sw);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
-    gtk_container_add(GTK_CONTAINER(sw->window), vbox);
+    gtk_widget_set_margin_start(vbox, 10);
+    gtk_widget_set_margin_end(vbox, 10);
+    gtk_widget_set_margin_top(vbox, 10);
+    gtk_widget_set_margin_bottom(vbox, 10);
+    gtk_window_set_child(GTK_WINDOW(sw->window), vbox);
 
     /* --- query row --------------------------------------------------------*/
     GtkWidget *query_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -489,34 +504,38 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
      * handler's (only used) argument, so no wrapper callbacks needed.      */
     g_signal_connect_swapped(sw->entry, "activate",
                              G_CALLBACK(run_search), sw);
-    gtk_box_pack_start(GTK_BOX(query_row), sw->entry, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(sw->entry, TRUE);
+    gtk_box_append(GTK_BOX(query_row), sw->entry);
 
     GtkWidget *btn = gtk_button_new_with_label("Search");
     g_signal_connect_swapped(btn, "clicked", G_CALLBACK(run_search), sw);
-    gtk_box_pack_start(GTK_BOX(query_row), btn, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(query_row), btn);
 
-    /* Spinner shown while a background search runs (hidden when idle).     */
+    /* Spinner shown while a background search runs; run_search and
+     * search_done own its visibility, so it starts hidden.                 */
     sw->spinner = gtk_spinner_new();
-    gtk_widget_set_no_show_all(sw->spinner, TRUE);
-    gtk_box_pack_start(GTK_BOX(query_row), sw->spinner, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), query_row, FALSE, FALSE, 0);
+    gtk_widget_set_visible(sw->spinner, FALSE);
+    gtk_box_append(GTK_BOX(query_row), sw->spinner);
+    gtk_box_append(GTK_BOX(vbox), query_row);
 
     /* --- scope radios -------------------------------------------------------*/
+    /* Two grouped check buttons render as radios; the group starts with
+     * nothing ticked, so the default is set explicitly either way.         */
     GtkWidget *scope_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    sw->radio_all = gtk_radio_button_new_with_label(NULL, "All Notes");
-    gtk_box_pack_start(GTK_BOX(scope_row), sw->radio_all, FALSE, FALSE, 0);
+    sw->radio_all = gtk_check_button_new_with_label("All Notes");
+    gtk_box_append(GTK_BOX(scope_row), sw->radio_all);
 
-    sw->radio_scoped = gtk_radio_button_new_with_label_from_widget(
-        GTK_RADIO_BUTTON(sw->radio_all), "Selected Folder/Tag");
+    sw->radio_scoped = gtk_check_button_new_with_label("Selected Folder/Tag");
+    gtk_check_button_set_group(GTK_CHECK_BUTTON(sw->radio_scoped),
+                               GTK_CHECK_BUTTON(sw->radio_all));
     gtk_widget_set_tooltip_text(sw->radio_scoped,
         "Search only whatever folder or tag is selected in the library "
         "when you press Search");
-    gtk_box_pack_start(GTK_BOX(scope_row), sw->radio_scoped,
-                       FALSE, FALSE, 0);
-    if (scope_to_sel)
-        gtk_toggle_button_set_active(
-            GTK_TOGGLE_BUTTON(sw->radio_scoped), TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), scope_row, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(scope_row), sw->radio_scoped);
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(scope_to_sel ? sw->radio_scoped : sw->radio_all),
+        TRUE);
+    gtk_box_append(GTK_BOX(vbox), scope_row);
 
     /* --- matching options ---------------------------------------------------*/
     GtkWidget *opt_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -525,11 +544,14 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     gtk_widget_set_tooltip_text(sw->check_regex,
         "Match the whole query as one pattern; quoting and -exclusions "
         "keep their regular-expression meaning instead");
-    gtk_box_pack_start(GTK_BOX(opt_row), sw->check_case,  FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(opt_row), sw->check_regex, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), opt_row, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(opt_row), sw->check_case);
+    gtk_box_append(GTK_BOX(opt_row), sw->check_regex);
+    gtk_box_append(GTK_BOX(vbox), opt_row);
 
     /* --- results -------------------------------------------------------------*/
+    /* A GtkTreeView over a GtkListStore: deprecated since GTK 4.10, kept
+     * on purpose until the GListModel migration (GTK4_MIGRATION.md).      */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     sw->store = gtk_list_store_new(SR_N_COLS,
                                    G_TYPE_INT64,    /* SR_ID               */
                                    G_TYPE_STRING,   /* SR_PATH             */
@@ -552,24 +574,26 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
             "text", SR_MODIFIED, NULL));
     gtk_tree_view_column_set_expand(
         gtk_tree_view_get_column(GTK_TREE_VIEW(results), 0), TRUE);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     g_signal_connect(results, "row-activated",
                      G_CALLBACK(on_result_activated), sw);
 
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll),
                                               FALSE);
-    gtk_container_add(GTK_CONTAINER(scroll), results);
-    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), results);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_box_append(GTK_BOX(vbox), scroll);
 
     /* --- status line -----------------------------------------------------------*/
     sw->status = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(sw->status), 0.0);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->status, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), sw->status);
 
-    gtk_widget_show_all(sw->window);
+    gtk_window_present(GTK_WINDOW(sw->window));
     gtk_widget_grab_focus(sw->entry);
     return sw;
 }
@@ -589,7 +613,7 @@ on_search_window_open_query(OnApp *app, const gchar *query)
 
     /* All Notes + case-insensitive + plain text are exactly the freshly
      * built window's defaults, so only the query needs seeding.            */
-    gtk_entry_set_text(GTK_ENTRY(sw->entry), query);
+    gtk_editable_set_text(GTK_EDITABLE(sw->entry), query);
     gtk_editable_set_position(GTK_EDITABLE(sw->entry), -1);
     run_search(sw);
 }

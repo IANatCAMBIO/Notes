@@ -41,9 +41,6 @@
 #define EDITOR_WIN_DEFAULT_W 640
 #define EDITOR_WIN_DEFAULT_H 509
 
-/* Gap left between a new editor window's frame and the screen edges.       */
-#define EDITOR_SCREEN_MARGIN 12
-
 /* Maximum number of suggestions shown in the tag popup.                    */
 #define TAG_POPUP_MAX 8
 
@@ -83,30 +80,27 @@
  *                     programmatically, so signal handlers know to ignore
  *                     the resulting insert/delete events.
  *   autosave_source — GLib timeout id of the pending autosave, 0 if none.
- *   toggle_buttons  — the four inline-style toggle tool buttons, indexed
+ *   toggle_buttons  — the four inline-style GtkToggleButtons, indexed
  *                     in the same order as INLINE_TOGGLES[], used to
  *                     mirror inline_flags into the toolbar UI.
  *   tag_start       — text mark placed just before a '#' while a tag is
  *                     being typed; NULL when no capture is active.
- *   tag_popup       — popup window listing matching tags (lazily built).
+ *   tag_popup       — GtkPopover listing matching tags (lazily built),
+ *                     parented to the view and pointing at the '#'.
+ *                     Non-autohide, never focusable: the view keeps the
+ *                     keyboard the whole time it is up.
  *   tag_listbox     — GtkListBox inside tag_popup holding suggestions.
  *   code_buttons    — floating "copy" links, one per code block, added
- *                     as children of the text window (upper-right corner
- *                     of each block); hit-tested by the view's own
- *                     button-press and motion handlers.
+ *                     as OVERLAYS of the view in buffer coordinates
+ *                     (upper-right corner of each block); clicks are
+ *                     hit-tested by the view's click gesture, the hand
+ *                     cursor is the label's own.
  *   code_btn_idle   — idle source id for a pending code-button rebuild.
- *   popup_x/popup_y — text-window coordinates of the last right click,
- *                     used by the populate-popup handler to find the
- *                     image (if any) under the pointer.
  *   ctx_offset      — buffer offset of the image or table anchor the last
  *                     context menu was opened ON: the "img-*" and
  *                     "table-*" actions act on the thing under the last
  *                     right click, read back through anchor_at_offset()
  *                     when they run (the anchor may have moved or gone).
- *   hand_cursor     — TRUE while the text window is showing the hand
- *                     cursor because the pointer is over a thumbnail
- *                     image; cached so motion over ordinary text doesn't
- *                     build a GdkCursor per event.
  *   dirty           — TRUE while the note has edits the database hasn't
  *                     seen (set whenever an autosave is queued, cleared
  *                     by editor_save); closing a window with no unsaved
@@ -119,8 +113,9 @@
  *                     need updating.
  *   status_path     — status-bar label (bottom left): the note's folder
  *                     path, same format as the library window's.  Set at
- *                     open and refreshed on window focus-in, so a move
- *                     made in the library shows up on return.
+ *                     open and refreshed when the window becomes active
+ *                     again, so a move made in the library shows up on
+ *                     return.
  *   status_note_id  — status-bar label (bottom right): "id:N", shown
  *                     only while the statusbar_note_id setting is on
  *                     (Settings applies it live through
@@ -174,10 +169,7 @@ typedef struct {
     GSList         *code_buttons;
     guint           code_btn_idle;
     guint           scroll_idle;
-    gint            popup_x;
-    gint            popup_y;
     gint            ctx_offset;
-    gboolean        hand_cursor;
 
     GtkWidget      *search_entry;
     gchar          *pending_search;   /* initial in-note query, applied once */
@@ -219,6 +211,31 @@ typedef struct {
     gboolean        undo_restoring;
     gint            undo_sentences;
 } OnEditor;
+
+/* ---------------------------------------------------------------------------
+ * NotesTextView — the editor's GtkTextView subclass, private to this file.
+ *
+ * The one GObject subclass the GTK4 port introduces, because two things the
+ * GTK3 editor did from signals are vfuncs in GTK4: painting the code-block
+ * line numbers over the text ("draw" → snapshot) and re-anchoring the
+ * floating copy links after a reflow ("size-allocate" → size_allocate).
+ * Its dispose also unparents the #tag popover, which is a child of the view
+ * that GtkTextView does not know about — and gtk_text_view_dispose LOOPS
+ * FOREVER on a child it cannot remove (measured in gtktextview.c 4.22.4:
+ * `while (first_child) gtk_text_view_remove()` warns and never advances), so
+ * that unparent must happen before the parent class runs.
+ *
+ * Fields:
+ *   ed — the owning editor, or NULL once it has been freed.
+ * ------------------------------------------------------------------------- */
+#define NOTES_TYPE_TEXT_VIEW (notes_text_view_get_type())
+G_DECLARE_FINAL_TYPE(NotesTextView, notes_text_view, NOTES, TEXT_VIEW,
+                     GtkTextView)
+
+struct _NotesTextView {
+    GtkTextView parent_instance;
+    OnEditor   *ed;
+};
 
 /* ---------------------------------------------------------------------------
  * INLINE_TOGGLES — table describing the four inline-style toggle buttons:
@@ -335,16 +352,15 @@ line_span(GtkTextBuffer *buffer, gint line, GtkTextIter *start,
  * toggle buttons without re-triggering their "toggled" handlers (each
  * handler is blocked by function+data while the state is pushed).
  * ------------------------------------------------------------------------- */
-static void on_inline_toggle(GtkToggleToolButton *btn, gpointer user_data);
+static void on_inline_toggle(GtkToggleButton *btn, gpointer user_data);
 
 static void
 update_toggle_buttons(OnEditor *ed)
 {
     for (gsize i = 0; i < G_N_ELEMENTS(INLINE_TOGGLES); i++) {
-        GtkToggleToolButton *btn =
-            GTK_TOGGLE_TOOL_BUTTON(ed->toggle_buttons[i]);
+        GtkToggleButton *btn = GTK_TOGGLE_BUTTON(ed->toggle_buttons[i]);
         g_signal_handlers_block_by_func(btn, on_inline_toggle, ed);
-        gtk_toggle_tool_button_set_active(
+        gtk_toggle_button_set_active(
             btn, (ed->inline_flags & INLINE_TOGGLES[i].flag) != 0);
         g_signal_handlers_unblock_by_func(btn, on_inline_toggle, ed);
     }
@@ -415,7 +431,7 @@ on_inline(GSimpleAction *action, GVariant *param, gpointer user_data)
 /* on_inline_toggle() — "toggled" handler for the four style buttons.  The
  * flag each button controls is stashed on it as object data "on-flag".     */
 static void
-on_inline_toggle(GtkToggleToolButton *btn, gpointer user_data)
+on_inline_toggle(GtkToggleButton *btn, gpointer user_data)
 {
     OnEditor *ed  = user_data;       /* owning editor                       */
     guint32  flag = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(btn),
@@ -800,40 +816,41 @@ handle_return_in_list(OnEditor *ed)
  * code blocks — floating per-block "copy" links
  *
  * Every contiguous code-block span gets a small "copy" link pinned to its
- * upper-right corner.  The links are plain GtkLabels added as children of
- * the text view's TEXT window, positioned in buffer coordinates (so they
- * ride scrolling on their own — quirk #1) and repositioned whenever the
- * buffer changes or the view resizes.  Each carries a left-gravity
- * GtkTextMark at its block's start as object data "on-mark".
+ * upper-right corner.  The links are plain GtkLabels added as OVERLAYS of
+ * the text view, positioned in buffer coordinates: GTK allocates an overlay
+ * at buffer_y + top_margin − scroll on every allocation (D6), so they ride
+ * scrolling on their own and the top margin is never our business.  They
+ * are repositioned whenever the buffer changes or the view reflows.  Each
+ * carries a left-gravity GtkTextMark at its block's start as object data
+ * "on-mark".
  *
- * They deliberately have NO input window of their own: the click and the
- * hover cursor both come from the text view's button-press and motion
- * handlers via code_link_at_view_pos(), for the reasons in quirk #22.
+ * A label has no click handling of its own, so the click comes from the
+ * view's click gesture via code_link_at_view_pos(); the hand cursor is the
+ * label's own (gtk_widget_set_cursor_from_name), since every GTK4 widget
+ * owns its cursor.
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
  * code_link_at_view_pos() — the "copy" link under a pointer position, or
  * NULL when that position is not on one.
  *   ed     — the editor.
- *   wx, wy — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
+ *   wx, wy — pointer position in the VIEW's widget coordinates (what a
+ *            gesture on the view reports).
  *
- * The links are plain labels with no input window of their own, so both
- * their clicks and their hover cursor are driven from the text view's own
- * handlers (see quirk #22) — this is the shared hit test.  Comparing
- * against the ALLOCATION is what makes it scroll-proof: GTK re-allocates
- * in-window children as the view scrolls, so an allocation is in the same
- * window coordinates a pointer event arrives in, even though the links
- * are POSITIONED in buffer coordinates.
+ * The test is against the link's bounds computed relative to the view —
+ * where GTK allocated it for the current scroll position — so it is
+ * scroll-proof even though the links are POSITIONED in buffer coordinates.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-code_link_at_view_pos(OnEditor *ed, gint wx, gint wy)
+code_link_at_view_pos(OnEditor *ed, gdouble wx, gdouble wy)
 {
     for (GSList *l = ed->code_buttons; l != NULL; l = l->next) {
         GtkWidget *link = l->data;   /* one floating copy link              */
-        GtkAllocation al;            /* where it sits in the text window    */
-        gtk_widget_get_allocation(link, &al);
-        if (wx >= al.x && wx < al.x + al.width &&
-            wy >= al.y && wy < al.y + al.height)
+        graphene_rect_t bounds;      /* where it sits, view coordinates     */
+        if (gtk_widget_compute_bounds(link, GTK_WIDGET(ed->view), &bounds) &&
+            graphene_rect_contains_point(&bounds,
+                                         &GRAPHENE_POINT_INIT((float)wx,
+                                                              (float)wy)))
             return link;
     }
     return NULL;
@@ -863,10 +880,8 @@ code_copy_link_activate(OnEditor *ed, GtkWidget *link)
 
     gchar *code = gtk_text_buffer_get_text(ed->buffer, &start, &end, FALSE);
     g_strchomp(code);
-    gtk_clipboard_set_text(
-        gtk_widget_get_clipboard(GTK_WIDGET(ed->view),
-                                 GDK_SELECTION_CLIPBOARD),
-        code, -1);
+    gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(ed->view)),
+                           code);
     g_free(code);
     on_app_status(ed->app, "Codeblock copied");
     return TRUE;
@@ -876,22 +891,20 @@ code_copy_link_activate(OnEditor *ed, GtkWidget *link)
  * code_buttons_update_positions() — anchor every copy button to the
  * upper-right corner of its block, in BUFFER coordinates.
  *
- * GTK3 model (verified empirically by origin-probing a test child, see
- * CLAUDE.md): text-window children are anchored to the TEXT — they ride
- * scrolling at 1x on their own, and a move_child() issued while
- * scrolled does not even take effect until the next validate/allocate
- * cycle.  So positions must be buffer-anchored and must NOT be
- * recomputed from the scroll position; this runs only when content or
- * geometry changes (rebuild, size-allocate), never on scroll.
+ * Runs only when content or geometry changes (rebuild, size_allocate),
+ * never on scroll: the overlays ride the scroll by themselves.  Each link
+ * remembers the position it was last moved to ("on-x"/"on-y" object data,
+ * 0/0 from the add) and is moved only when that changes —
+ * gtk_text_view_move_overlay queues an allocation UNCONDITIONALLY
+ * (gtktextviewchild.c), and since size_allocate is what queues this pass,
+ * an unconditional move would re-allocate forever.
  * ------------------------------------------------------------------------- */
 static void
 code_buttons_update_positions(OnEditor *ed)
 {
-    GdkWindow *text_win =            /* the view's scrolling text window    */
-        gtk_text_view_get_window(ed->view, GTK_TEXT_WINDOW_TEXT);
-    if (text_win == NULL)
-        return;
-    gint win_width = gdk_window_get_width(text_win);
+    gint view_width = gtk_widget_get_width(GTK_WIDGET(ed->view));
+    if (view_width <= 0)
+        return;                      /* not allocated yet                   */
 
     for (GSList *l = ed->code_buttons; l != NULL; l = l->next) {
         GtkWidget *btn = l->data;    /* one floating copy button            */
@@ -899,8 +912,10 @@ code_buttons_update_positions(OnEditor *ed)
         if (mark == NULL)
             continue;
 
-        gint bw;                     /* natural width of this link widget   */
-        gtk_widget_get_preferred_width(btn, NULL, &bw);
+        gint bw;                     /* minimum width = what an overlay is
+                                        allocated (gtktextviewchild.c)      */
+        gtk_widget_measure(btn, GTK_ORIENTATION_HORIZONTAL, -1, &bw, NULL,
+                           NULL, NULL);
 
         GtkTextIter it;              /* block start position                */
         gtk_text_buffer_get_iter_at_mark(ed->buffer, &it, mark);
@@ -913,19 +928,20 @@ code_buttons_update_positions(OnEditor *ed)
         gint line_y, line_h;         /* line extent in buffer coords        */
         gtk_text_view_get_line_yrange(ed->view, &it, &line_y, &line_h);
 
-        /* Equal CODE_BTN_MARGIN insets from the shaded top/right edges.
-         * move_child() coordinates land as-is (no top-margin shift on
-         * this path — verified on screen; only the INITIAL allocation of
-         * a freshly added child re-adds the margin).                       */
-        gtk_text_view_move_child(
-            ed->view, btn,
-            win_width - CODEBLOCK_RIGHT_MARGIN - bw - CODE_BTN_MARGIN,
-            line_y + CODE_BTN_MARGIN);
+        /* Equal CODE_BTN_MARGIN insets from the shaded top/right edges.     */
+        gint x = view_width - CODEBLOCK_RIGHT_MARGIN - bw - CODE_BTN_MARGIN;
+        gint y = line_y + CODE_BTN_MARGIN;
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "on-x")) == x &&
+            GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "on-y")) == y)
+            continue;                /* already there: no re-allocation     */
+        g_object_set_data(G_OBJECT(btn), "on-x", GINT_TO_POINTER(x));
+        g_object_set_data(G_OBJECT(btn), "on-y", GINT_TO_POINTER(y));
+        gtk_text_view_move_overlay(ed->view, btn, x, y);
     }
 }
 
 /* ---------------------------------------------------------------------------
- * code_buttons_rebuild() — destroy and recreate the floating copy buttons
+ * code_buttons_rebuild() — remove and recreate the floating copy buttons
  * to match the code blocks currently present in the buffer.
  * ------------------------------------------------------------------------- */
 static void
@@ -985,7 +1001,7 @@ code_buttons_rebuild(OnEditor *ed)
         GtkTextMark *mark = g_object_get_data(G_OBJECT(btn), "on-mark");
         if (mark != NULL)
             gtk_text_buffer_delete_mark(ed->buffer, mark);
-        gtk_widget_destroy(btn);
+        gtk_text_view_remove(ed->view, btn);
     }
     g_slist_free(ed->code_buttons);
     ed->code_buttons = NULL;
@@ -1008,22 +1024,21 @@ code_buttons_rebuild(OnEditor *ed)
                 continue;
         }
 
-        /* One block starts here: build its "copy" hyperlink overlay.
-         * A PLAIN label on purpose — it owns no input window, so its
-         * clicks and its hover cursor both come from the text view's own
-         * button-press and motion handlers (quirk #22).                 */
+        /* One block starts here: build its "copy" hyperlink overlay.  A
+         * plain label: the click is served by the view's gesture, only
+         * the hover cursor is the label's own.                             */
         GtkWidget *link = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(link),
             "<span size=\"8192\" foreground=\"#0066cc\""
             " underline=\"single\">copy</span>");
+        gtk_widget_set_cursor_from_name(link, "pointer");
 
         GtkTextMark *mark = gtk_text_buffer_create_mark(ed->buffer, NULL,
                                                         &it, TRUE);
         g_object_set_data(G_OBJECT(link), "on-mark", mark);
 
-        gtk_text_view_add_child_in_window(ed->view, link,
-                                          GTK_TEXT_WINDOW_TEXT, 0, 0);
-        gtk_widget_show_all(link);
+        /* Added at the origin; code_buttons_update_positions moves it.    */
+        gtk_text_view_add_overlay(ed->view, link, 0, 0);
         ed->code_buttons = g_slist_prepend(ed->code_buttons, link);
 
         /* Jump past this block and continue scanning.                      */
@@ -1051,30 +1066,39 @@ code_buttons_queue_rebuild(OnEditor *ed)
         ed->code_btn_idle = g_idle_add(on_code_btn_idle, ed);
 }
 
-/* ---------------------------------------------------------------------------
- * on_view_draw() — paint line numbers INSIDE each code block: the block's
- * left margin is widened (see editor_apply_line_numbers) and the numbers
- * are drawn onto that strip of the block's own shading, right-aligned
- * just before the code text.  Painted, not text — selection and copying
- * can never include them.  Each block numbers from 1.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_view_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
-{
-    OnEditor *ed = user_data;        /* owning editor                       */
-    if (!ed->app->code_line_numbers)
-        return FALSE;
+/* ===========================================================================
+ * NotesTextView — the vfuncs (see the type's banner near OnEditor)
+ * =========================================================================== */
 
-    GdkWindow *text_win = gtk_text_view_get_window(ed->view,
-                                                   GTK_TEXT_WINDOW_TEXT);
-    if (text_win == NULL || !gtk_cairo_should_draw_window(cr, text_win))
-        return FALSE;
+G_DEFINE_FINAL_TYPE(NotesTextView, notes_text_view, GTK_TYPE_TEXT_VIEW)
+
+/* ---------------------------------------------------------------------------
+ * notes_text_view_snapshot() — chain up (text, overlays, anchored
+ * children), then paint line numbers INSIDE each code block: the block's
+ * left margin is widened (see editor_apply_line_numbers) and the numbers
+ * are drawn onto that strip of the block's own shading, right-aligned just
+ * before the code text.  Painted, not text — selection and copying can
+ * never include them.  Each block numbers from 1.  Cairo through
+ * gtk_snapshot_append_cairo, in the view's widget coordinates
+ * (buffer_to_window_coords with GTK_TEXT_WINDOW_WIDGET).
+ * ------------------------------------------------------------------------- */
+static void
+notes_text_view_snapshot(GtkWidget *widget, GtkSnapshot *snapshot)
+{
+    GTK_WIDGET_CLASS(notes_text_view_parent_class)->snapshot(widget,
+                                                             snapshot);
+
+    OnEditor *ed = NOTES_TEXT_VIEW(widget)->ed;   /* owning editor         */
+    if (ed == NULL || !ed->app->code_line_numbers)
+        return;
     GtkTextTag *tag = lookup_tag(ed->buffer, ON_TAGNAME_CODEBLOCK);
     if (tag == NULL)
-        return FALSE;
+        return;
 
-    cairo_save(cr);
-    gtk_cairo_transform_to_window(cr, widget, text_win);
+    graphene_rect_t bounds =         /* the whole widget: cairo clip        */
+        GRAPHENE_RECT_INIT(0, 0, (float)gtk_widget_get_width(widget),
+                           (float)gtk_widget_get_height(widget));
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot, &bounds);
 
     /* Start at the first visible buffer line.                              */
     GdkRectangle vis;                /* visible area in buffer coords       */
@@ -1118,13 +1142,13 @@ on_view_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
              * it, over the block's shading.                                */
             GdkRectangle rect;       /* first char, buffer coords           */
             gtk_text_view_get_iter_location(ed->view, &it, &rect);
-            gint wx, wy;             /* char position in window coords      */
+            gint wx, wy;             /* char position in widget coords      */
             gtk_text_view_buffer_to_window_coords(
-                ed->view, GTK_TEXT_WINDOW_TEXT, rect.x, rect.y,
+                ed->view, GTK_TEXT_WINDOW_WIDGET, rect.x, rect.y,
                 &wx, &wy);
-            gint wy_line;            /* line-range top in window coords     */
+            gint wy_line;            /* line-range top in widget coords     */
             gtk_text_view_buffer_to_window_coords(
-                ed->view, GTK_TEXT_WINDOW_TEXT, 0, y, NULL, &wy_line);
+                ed->view, GTK_TEXT_WINDOW_WIDGET, 0, y, NULL, &wy_line);
 
             /* Grey gutter band behind the number, spanning the whole
              * line range so adjacent lines tile seamlessly.                */
@@ -1147,8 +1171,74 @@ on_view_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
             break;
     }
     g_object_unref(layout);
-    cairo_restore(cr);
-    return FALSE;
+    cairo_destroy(cr);
+}
+
+/* ---------------------------------------------------------------------------
+ * notes_text_view_size_allocate() — chain up, then present the #tag popover
+ * (a popover child must be presented by its parent's size_allocate, which
+ * GtkTextView does only for its own) and queue a re-anchoring of the copy
+ * buttons: a width change moves their x, a reflow their line_y.  Queued,
+ * not done here — moving an overlay queues another allocation, and the
+ * idle's fast path moves nothing that has not changed.
+ * ------------------------------------------------------------------------- */
+static void
+notes_text_view_size_allocate(GtkWidget *widget, gint width, gint height,
+                              gint baseline)
+{
+    GTK_WIDGET_CLASS(notes_text_view_parent_class)->size_allocate(
+        widget, width, height, baseline);
+
+    OnEditor *ed = NOTES_TEXT_VIEW(widget)->ed;   /* owning editor         */
+    if (ed == NULL)
+        return;
+    if (ed->tag_popup != NULL)
+        gtk_popover_present(GTK_POPOVER(ed->tag_popup));
+    code_buttons_queue_rebuild(ed);
+}
+
+/* ---------------------------------------------------------------------------
+ * notes_text_view_dispose() — take the #tag popover off the view BEFORE
+ * GtkTextView's dispose walks the children it knows (see the type's
+ * banner: a leftover foreign child hangs that walk).  The editor state
+ * outlives the view — the window's "destroy" fires after the child tree
+ * is gone in GTK4 — so the pointers are cleared here for it.
+ * ------------------------------------------------------------------------- */
+static void
+notes_text_view_dispose(GObject *object)
+{
+    NotesTextView *self = NOTES_TEXT_VIEW(object);
+    if (self->ed != NULL) {
+        g_clear_pointer(&self->ed->tag_popup, gtk_widget_unparent);
+        self->ed->tag_listbox = NULL;
+    }
+    G_OBJECT_CLASS(notes_text_view_parent_class)->dispose(object);
+}
+
+/* notes_text_view_class_init() — install the three overrides.               */
+static void
+notes_text_view_class_init(NotesTextViewClass *klass)
+{
+    GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
+    widget_class->snapshot        = notes_text_view_snapshot;
+    widget_class->size_allocate   = notes_text_view_size_allocate;
+    G_OBJECT_CLASS(klass)->dispose = notes_text_view_dispose;
+}
+
+/* notes_text_view_init() — nothing beyond GtkTextView's own setup.          */
+static void
+notes_text_view_init(NotesTextView *self)
+{
+    self->ed = NULL;
+}
+
+/* notes_text_view_new() — a view bound to `ed` (the vfuncs read it).       */
+static GtkWidget *
+notes_text_view_new(OnEditor *ed)
+{
+    NotesTextView *self = g_object_new(NOTES_TYPE_TEXT_VIEW, NULL);
+    self->ed = ed;
+    return GTK_WIDGET(self);
 }
 
 /* editor_apply_line_numbers() — widen/narrow the code-block left margin
@@ -1209,19 +1299,6 @@ on_editor_title_refresh_all(OnApp *app)
 {
     editors_foreach(app, editor_title_refresh);
 }
-
-/* on_view_size_allocate() — re-anchor buttons when the view's geometry
- * changes (width affects their x; reflow affects their line_y).  Scroll
- * needs NO handling: the buttons are text-window children and ride the
- * scroll on their own.                                                      */
-static void
-on_view_size_allocate(GtkWidget *widget, GdkRectangle *allocation,
-                      gpointer user_data)
-{
-    (void)widget; (void)allocation;
-    code_buttons_update_positions((OnEditor *)user_data);
-}
-
 /* ===========================================================================
  * images
  * =========================================================================== */
@@ -1248,51 +1325,74 @@ image_effective_width(GdkPixbuf *orig, gint display_width)
 }
 
 /* ---------------------------------------------------------------------------
- * image_widget_new() — build a HiDPI-aware GtkImage showing `orig` at
- * `display_width` logical pixels.  The backing pixbuf is scaled to
- * display_width × scale-factor physical pixels and wrapped in a cairo
- * surface with the matching device scale, so images stay sharp on Retina
- * displays instead of being stretched by the compositor.
+ * image_texture() — THE full-resolution pixbuf → GdkTexture edge for an
+ * attached image (the anchored GtkPicture, Copy Image, the modal viewer):
+ * GTK decodes the cached PNG bytes itself (D4), so the texture carries every
+ * pixel and stays sharp at any display size on HiDPI.  A pixbuf that will
+ * not encode (on_image_png_bytes NULL) is wrapped pixel-for-pixel instead.
+ * Returns a new texture (g_object_unref it).
  * ------------------------------------------------------------------------- */
-static GtkWidget *
-image_widget_new(OnEditor *ed, GdkPixbuf *orig, gint display_width)
+static GdkTexture *
+image_texture(GdkPixbuf *orig)
 {
-    gint sf = gtk_widget_get_scale_factor(GTK_WIDGET(ed->view));
-    gint w  = gdk_pixbuf_get_width(orig);
-    gint h  = gdk_pixbuf_get_height(orig);
-
-    gint want = image_effective_width(orig, display_width);
-    /* Physical pixels backing the widget; never upscale past the source.   */
-    gint pw = MIN(want * sf, w);
-    gint ph = MAX(1, (gint)((gdouble)h * pw / w));
-
-    GdkPixbuf *backing =             /* pixels actually handed to cairo     */
-        (pw < w) ? gdk_pixbuf_scale_simple(orig, pw, ph,
-                                           GDK_INTERP_BILINEAR)
-                 : g_object_ref(orig);
-
-    cairo_surface_t *surface = gdk_cairo_surface_create_from_pixbuf(
-        backing, sf, gtk_widget_get_window(GTK_WIDGET(ed->view)));
-    GtkWidget *image = gtk_image_new_from_surface(surface);
-    cairo_surface_destroy(surface);
-    g_object_unref(backing);
-    return image;
+    GBytes *png = on_image_png_bytes(orig);   /* borrowed                  */
+    GdkTexture *tex = NULL;
+    if (png != NULL) {
+        GError *err = NULL;
+        tex = gdk_texture_new_from_bytes(png, &err);
+        if (tex == NULL) {
+            g_warning("editor: image bytes will not decode: %s",
+                      err->message);
+            g_clear_error(&err);
+        }
+    }
+    return tex != NULL ? tex : on_app_texture_for_pixbuf(orig);
 }
 
-/* anchor_clear_widgets() — destroy every widget attached at `anchor`
- * (before attaching a replacement).                                         */
-static void
-anchor_clear_widgets(GtkTextChildAnchor *anchor)
+/* ---------------------------------------------------------------------------
+ * image_widget_new() — build the GtkPicture showing `orig` at
+ * `display_width` logical pixels.  The picture holds the full-resolution
+ * texture and is SIZED by a size request: an anchored child is allocated
+ * its MINIMUM size (gtktextlayout.c add_child_attrs, 4.22.4), so with
+ * can-shrink on (minimum 0) the request IS the box, and the texture is
+ * scaled down into it — every source pixel still there for HiDPI.
+ * (can-shrink OFF would make the minimum the texture's full size and the
+ * request could only enlarge it.)  A click on it opens the modal viewer,
+ * hence its hand cursor.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+image_widget_new(GdkPixbuf *orig, gint display_width)
 {
-    GList *widgets = gtk_text_child_anchor_get_widgets(anchor);
-    for (GList *l = widgets; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
-    g_list_free(widgets);
+    gint w    = gdk_pixbuf_get_width(orig);
+    gint h    = gdk_pixbuf_get_height(orig);
+    gint want = image_effective_width(orig, display_width);
+    gint want_h = MAX(1, (gint)((gdouble)h * want / w));
+
+    GdkTexture *tex = image_texture(orig);
+    GtkWidget *picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(tex));
+    g_object_unref(tex);
+    gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
+    gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
+    gtk_widget_set_size_request(picture, want, want_h);
+    gtk_widget_set_cursor_from_name(picture, "pointer");
+    return picture;
+}
+
+/* anchor_clear_widgets() — remove every widget attached at `anchor` from
+ * the view (before attaching a replacement).                                */
+static void
+anchor_clear_widgets(OnEditor *ed, GtkTextChildAnchor *anchor)
+{
+    guint n;                         /* how many are attached               */
+    GtkWidget **widgets = gtk_text_child_anchor_get_widgets(anchor, &n);
+    for (guint i = 0; i < n; i++)
+        gtk_text_view_remove(ed->view, widgets[i]);
+    g_free(widgets);
 }
 
 /* ---------------------------------------------------------------------------
  * attach_image_widget() — (re)create the display widget for an
- * image-carrying anchor, destroying any widget it already had.
+ * image-carrying anchor, removing any widget it already had.
  * ------------------------------------------------------------------------- */
 static void
 attach_image_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
@@ -1303,11 +1403,10 @@ attach_image_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
         return;
 
     /* Drop any existing display widget.                                    */
-    anchor_clear_widgets(anchor);
+    anchor_clear_widgets(ed, anchor);
 
-    GtkWidget *image = image_widget_new(ed, orig, dw);
-    gtk_text_view_add_child_at_anchor(ed->view, image, anchor);
-    gtk_widget_show(image);
+    gtk_text_view_add_child_at_anchor(ed->view, image_widget_new(orig, dw),
+                                      anchor);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1443,7 +1542,7 @@ editor_image_ord(OnEditor *ed, gint offset)
  * image_at_view_pos() — the embedded image under a pointer position, or
  * NULL when that position is not inside one.
  *   ed         — the editor.
- *   wx, wy     — pointer position in GTK_TEXT_WINDOW_TEXT coordinates.
+ *   wx, wy     — pointer position in the view's widget coordinates.
  *   offset_out — filled with the image anchor's buffer offset, optional.
  *   dw_out     — filled with the stored display width, optional.
  * Returns the anchor-owned full-resolution pixbuf (do not unref), or NULL.
@@ -1457,12 +1556,12 @@ editor_image_ord(OnEditor *ed, gint offset)
  * the empty space beside an image.
  * ------------------------------------------------------------------------- */
 static GdkPixbuf *
-image_at_view_pos(OnEditor *ed, gint wx, gint wy,
+image_at_view_pos(OnEditor *ed, gdouble wx, gdouble wy,
                   gint *offset_out, gint *dw_out)
 {
     gint bx, by;                     /* position in buffer coordinates      */
-    gtk_text_view_window_to_buffer_coords(ed->view, GTK_TEXT_WINDOW_TEXT,
-                                          wx, wy, &bx, &by);
+    gtk_text_view_window_to_buffer_coords(ed->view, GTK_TEXT_WINDOW_WIDGET,
+                                          (gint)wx, (gint)wy, &bx, &by);
     GtkTextIter it;                  /* iter under the pointer              */
     gtk_text_view_get_iter_at_position(ed->view, &it, NULL, bx, by);
 
@@ -1539,11 +1638,12 @@ on_img_copy(GSimpleAction *action, GVariant *param, gpointer user_data)
     (void)action; (void)param;
     OnEditor *ed = user_data;        /* owning editor                       */
     GdkPixbuf *orig = ctx_image(ed);
-    if (orig != NULL)
-        gtk_clipboard_set_image(
-            gtk_widget_get_clipboard(GTK_WIDGET(ed->view),
-                                     GDK_SELECTION_CLIPBOARD),
-            orig);
+    if (orig == NULL)
+        return;
+    GdkTexture *tex = image_texture(orig);
+    gdk_clipboard_set_texture(gtk_widget_get_clipboard(GTK_WIDGET(ed->view)),
+                              tex);
+    g_object_unref(tex);
 }
 
 /* image_open_external() — write `orig` (a full-resolution image) to a
@@ -1652,19 +1752,16 @@ editor_viewer_pixbuf(OnEditor *ed, gint ord)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_viewer_render() — the panel's image.  The pixbuf is already in
- * memory on its anchor (the editor never holds images any other way), so
- * this is a scale-and-wrap with no decode at all — unlike the media
- * browser's op, which reads the note's blob.
+ * editor_viewer_render() — the panel's image: the full-resolution texture
+ * of the anchor's pixbuf (the panel scales DOWN to fit, so the box size is
+ * not needed), or NULL when the image is gone — which closes the panel.
  * ------------------------------------------------------------------------- */
-static cairo_surface_t *
+static GdkPaintable *
 editor_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
 {
-    OnEditor  *ed   = host;          /* owning editor                       */
-    GdkPixbuf *orig = editor_viewer_pixbuf(ed, idx);
-    if (orig == NULL)
-        return NULL;
-    return on_image_viewer_fit(GTK_WIDGET(ed->view), orig, box_w, box_h);
+    (void)box_w; (void)box_h;
+    GdkPixbuf *orig = editor_viewer_pixbuf((OnEditor *)host, idx);
+    return orig != NULL ? GDK_PAINTABLE(image_texture(orig)) : NULL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1714,110 +1811,11 @@ static const OnImageViewerOps editor_viewer_ops = {
 };
 
 /* ---------------------------------------------------------------------------
- * editor_hand_cursor() — show the hand ("pointer") cursor over the text
- * window while the pointer sits on an image, and the ordinary
- * text cursor — the one GtkTextView installs itself at realize — the rest
- * of the time.  The current state is cached in ed->hand_cursor so plain
- * motion over text doesn't build a GdkCursor per event.
- * ------------------------------------------------------------------------- */
-static void
-editor_hand_cursor(OnEditor *ed, gboolean hand)
-{
-    if (ed->hand_cursor == hand)
-        return;
-    GdkWindow *win =                 /* the window the cursor sits on       */
-        gtk_text_view_get_window(ed->view, GTK_TEXT_WINDOW_TEXT);
-    if (win == NULL)
-        return;
-
-    GdkCursor *cursor = gdk_cursor_new_from_name(
-        gdk_window_get_display(win), hand ? "pointer" : "text");
-    gdk_window_set_cursor(win, cursor);
-    if (cursor != NULL)
-        g_object_unref(cursor);
-    ed->hand_cursor = hand;
-}
-
-/* ---------------------------------------------------------------------------
- * on_view_motion_notify() — hand cursor over embedded images and over the
- * code blocks' floating "copy" links.
- *
- * Connected AFTER the class handler on purpose: GtkTextView hides the
- * pointer while the user types and restores the text cursor from its own
- * motion handler, which would undo ours if we ran first.  The copy links
- * MUST be served from here rather than from a wrapper widget of their own:
- * the cursor of the text window has exactly one owner, and whoever sets it
- * last per motion event wins (quirk #22).
- * ------------------------------------------------------------------------- */
-static gboolean
-on_view_motion_notify(GtkWidget *widget, GdkEventMotion *event,
-                      gpointer user_data)
-{
-    (void)widget;
-    OnEditor *ed = user_data;        /* owning editor                       */
-    gint wx = (gint)event->x;        /* pointer, text-window coordinates    */
-    gint wy = (gint)event->y;
-    editor_hand_cursor(ed,
-                       code_link_at_view_pos(ed, wx, wy) != NULL ||
-                       image_at_view_pos(ed, wx, wy, NULL, NULL) != NULL);
-    return FALSE;                    /* never consume: default handling     */
-}
-
-/* ---------------------------------------------------------------------------
- * on_view_button_press() — remember where right clicks land (in the text
- * window's coordinates) so on_view_populate_popup() can tell whether the
- * click was on an embedded image; run a code block's floating "copy" link,
- * or show an embedded image in the modal viewer, on a plain left click.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_view_button_press(GtkWidget *widget, GdkEventButton *event,
-                     gpointer user_data)
-{
-    (void)widget;
-    OnEditor *ed = user_data;        /* owning editor                       */
-    if (event->button == GDK_BUTTON_SECONDARY) {
-        ed->popup_x = (gint)event->x;
-        ed->popup_y = (gint)event->y;
-    }
-
-    /* Plain single left click only: modifiers keep their selection
-     * meanings, and the 2BUTTON/3BUTTON events of a double click must not
-     * toggle a second and third time (which would land back where it
-     * started, looking like the click did nothing).                       */
-    if (event->type != GDK_BUTTON_PRESS ||
-        event->button != GDK_BUTTON_PRIMARY ||
-        (event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) != 0)
-        return FALSE;                /* never consume: default handling     */
-
-    /* The copy links sit ON TOP of their block's shading, so they are
-     * tested before anything that reads the text under the pointer.       */
-    GtkWidget *link =                /* copy link under the pointer         */
-        code_link_at_view_pos(ed, (gint)event->x, (gint)event->y);
-    if (link != NULL) {
-        code_copy_link_activate(ed, link);
-        return TRUE;                 /* consumed: no caret move, no drag    */
-    }
-
-    /* A click on an embedded image shows it big in the shared modal viewer.
-     * It used to toggle that image's INLINE size between thumbnail and full
-     * instead; those two states are still on its context menu, where they no
-     * longer compete with the obvious reading of a click on a picture.      */
-    gint offset;                     /* the image's buffer offset           */
-    if (image_at_view_pos(ed, (gint)event->x, (gint)event->y, &offset,
-                          NULL) != NULL) {
-        on_image_viewer_open(ed->img_viewer, editor_image_ord(ed, offset));
-        return TRUE;                 /* consumed: no caret move, no drag    */
-    }
-    return FALSE;                    /* never consume: default handling     */
-}
-
-/* ---------------------------------------------------------------------------
  * editor_image_menu() — the context-menu items for an embedded image, as a
  * menu model naming the "win.img-*" actions: Copy Image, Open, and
  * whichever of Display Full Size / Display as Thumbnail the image is not
- * already showing.  The one definition of that menu; GTK4 hands it to
- * gtk_text_view_set_extra_menu, GTK3 renders it into the view's popup
- * through menu_shell_prepend_model().
+ * already showing.  The one definition of that menu; on_view_pressed hands
+ * it to gtk_text_view_set_extra_menu before the view opens its popup.
  *   shown_full — whether the image is displayed at full size now.
  * Returns a new model (unref it).
  * ------------------------------------------------------------------------- */
@@ -1835,143 +1833,207 @@ editor_image_menu(gboolean shown_full)
 }
 
 /* ---------------------------------------------------------------------------
- * menu_shell_prepend_model() — GTK3 glue: put a model's items at the TOP
- * of an existing GtkMenu, followed by a separator, as actionable menu
- * items.  GTK3 can build a whole menu from a model but cannot splice one
- * into a menu it already built (the text view's own popup); GTK4 does
- * exactly that with gtk_text_view_set_extra_menu, and this goes away.
- *   shell — the text view's popup menu.
- *   model — one flat section of label + action items.
+ * on_view_pressed() — the view's click gesture, in the CAPTURE phase so it
+ * runs before GtkTextView's own bubble-phase gesture (which places the
+ * caret, starts a drag, or opens the context menu).
+ *
+ * A context-menu press (right button, or Ctrl+click on macOS) on an
+ * embedded image hands the view the image items as its extra menu — set
+ * HERE, before the view builds its popup, and gtk_text_view_set_extra_menu
+ * rebuilds the popup whenever the model changes — and remembers that image
+ * as the context the "img-*" actions act on.  Off an image the extra menu
+ * is cleared so a stale one cannot show.
+ *
+ * A plain single left click runs a code block's floating "copy" link, or
+ * shows an embedded image in the modal viewer; either CLAIMS the sequence,
+ * which is what keeps the view's gesture from moving the caret or starting
+ * a drag underneath (the GTK3 handler returned TRUE for the same reason).
+ * Modifiers keep their selection meanings, and the second and third
+ * presses of a double click must not toggle again.
  * ------------------------------------------------------------------------- */
 static void
-menu_shell_prepend_model(GtkMenuShell *shell, GMenuModel *model)
+on_view_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
+                gdouble y, gpointer user_data)
 {
-    GtkWidget *sep = gtk_separator_menu_item_new();
-    gtk_widget_show(sep);
-    gtk_menu_shell_prepend(shell, sep);
+    OnEditor *ed = user_data;        /* owning editor                       */
+    GtkEventController *ctl = GTK_EVENT_CONTROLLER(gesture);
+    GdkEvent *event = gtk_event_controller_get_current_event(ctl);
 
-    /* Prepending reverses the order, so walk the model backwards.         */
-    for (gint i = g_menu_model_get_n_items(model) - 1; i >= 0; i--) {
-        gchar *label  = NULL;        /* the item's label attribute          */
-        gchar *action = NULL;        /* its detailed action name            */
-        g_menu_model_get_item_attribute(model, i, G_MENU_ATTRIBUTE_LABEL,
-                                        "s", &label);
-        g_menu_model_get_item_attribute(model, i, G_MENU_ATTRIBUTE_ACTION,
-                                        "s", &action);
-        GtkWidget *mi = gtk_menu_item_new_with_mnemonic(label);
-        gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(mi), action);
-        gtk_widget_show(mi);
-        gtk_menu_shell_prepend(shell, mi);
-        g_free(label);
-        g_free(action);
+    if (n_press == 1 && event != NULL &&
+        gdk_event_triggers_context_menu(event)) {
+        gint offset;                 /* the image's buffer offset           */
+        gint dw;                     /* stored display width                */
+        GdkPixbuf *orig =            /* image the press landed on           */
+            image_at_view_pos(ed, x, y, &offset, &dw);
+        GMenuModel *items = NULL;    /* the extra menu, or none             */
+        if (orig != NULL) {
+            ed->ctx_offset = offset;
+            items = editor_image_menu(image_shown_full(orig, dw));
+        }
+        gtk_text_view_set_extra_menu(ed->view, items);
+        g_clear_object(&items);
+        return;                      /* the view opens its menu             */
+    }
+
+    if (n_press != 1 ||
+        gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture))
+            != GDK_BUTTON_PRIMARY ||
+        (gtk_event_controller_get_current_event_state(ctl) &
+         (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) != 0)
+        return;                      /* default handling                    */
+
+    /* The copy links sit ON TOP of their block's shading, so they are
+     * tested before anything that reads the text under the pointer.       */
+    GtkWidget *link =                /* copy link under the pointer         */
+        code_link_at_view_pos(ed, x, y);
+    if (link != NULL) {
+        code_copy_link_activate(ed, link);
+        gtk_gesture_set_state(GTK_GESTURE(gesture),
+                              GTK_EVENT_SEQUENCE_CLAIMED);
+        return;
+    }
+
+    /* A click on an embedded image shows it big in the shared modal viewer.
+     * It used to toggle that image's INLINE size between thumbnail and full
+     * instead; those two states are still on its context menu, where they no
+     * longer compete with the obvious reading of a click on a picture.      */
+    gint offset;                     /* the image's buffer offset           */
+    if (image_at_view_pos(ed, x, y, &offset, NULL) != NULL) {
+        on_image_viewer_open(ed->img_viewer, editor_image_ord(ed, offset));
+        gtk_gesture_set_state(GTK_GESTURE(gesture),
+                              GTK_EVENT_SEQUENCE_CLAIMED);
     }
 }
 
+/* ===========================================================================
+ * asynchronous completions
+ *
+ * The clipboard read and the file chooser both finish on a later main-loop
+ * iteration, by which time the editor may have been closed.  Neither holds
+ * a pointer to it: they carry the note id and look the editor up again in
+ * the open-editors table when they complete — an editor that is gone
+ * simply drops the image.
+ * =========================================================================== */
+
+/* editor_lookup() — the open editor for `note_id`, or NULL.  NULL-safe on
+ * a headless OnApp (the CLI has no editors table at all).                   */
+static OnEditor *
+editor_lookup(OnApp *app, gint64 note_id)
+{
+    GtkWidget *win = app->editors != NULL
+        ? g_hash_table_lookup(app->editors, &note_id) : NULL;
+    return win != NULL ? g_object_get_data(G_OBJECT(win), "on-editor")
+                       : NULL;
+}
+
+/* EditorRef — what a completion carries instead of an OnEditor pointer.    */
+typedef struct {
+    OnApp  *app;
+    gint64  note_id;
+} EditorRef;
+
+/* editor_ref_new() — a heap reference to `ed` for a completion callback.   */
+static EditorRef *
+editor_ref_new(OnEditor *ed)
+{
+    EditorRef *ref = g_new(EditorRef, 1);
+    ref->app     = ed->app;
+    ref->note_id = ed->note_id;
+    return ref;
+}
+
+/* editor_ref_take() — resolve and free a reference: the editor, or NULL
+ * when it has been closed since.                                            */
+static OnEditor *
+editor_ref_take(EditorRef *ref)
+{
+    OnEditor *ed = editor_lookup(ref->app, ref->note_id);
+    g_free(ref);
+    return ed;
+}
+
 /* ---------------------------------------------------------------------------
- * on_view_populate_popup() — extend the text view's context menu with
- * image actions when the right click landed on an embedded image, and
- * remember that image as the context the actions act on.
+ * on_paste_texture_read() — the clipboard image has arrived as a texture:
+ * turn it into the pixbuf serialize.c's anchor API wants, via the PNG
+ * bytes — that PNG is exactly what the note will store, and the pixbuf is
+ * what the editor holds.  GTK's own PNG/TIFF/JPEG loaders did the decode,
+ * so a macOS screenshot (TIFF on the pasteboard) needs no pixbuf loader.
  * ------------------------------------------------------------------------- */
 static void
-on_view_populate_popup(GtkTextView *view, GtkWidget *popup,
-                       gpointer user_data)
+on_paste_texture_read(GObject *source, GAsyncResult *result,
+                      gpointer user_data)
 {
-    OnEditor *ed = user_data;        /* owning editor                       */
-    if (!GTK_IS_MENU(popup))
+    OnEditor *ed = editor_ref_take(user_data);
+    GError *err = NULL;
+    GdkTexture *tex = gdk_clipboard_read_texture_finish(
+        GDK_CLIPBOARD(source), result, &err);
+    if (tex == NULL) {
+        g_warning("editor: cannot read clipboard image: %s", err->message);
+        g_clear_error(&err);
         return;
-
-    (void)view;
-    gint offset;                     /* the image's buffer offset           */
-    gint dw;                         /* stored display width                */
-    GdkPixbuf *orig =                /* image the click landed on           */
-        image_at_view_pos(ed, ed->popup_x, ed->popup_y, &offset, &dw);
-    if (orig == NULL)
-        return;
-    ed->ctx_offset = offset;
-
-    GMenuModel *items = editor_image_menu(image_shown_full(orig, dw));
-    menu_shell_prepend_model(GTK_MENU_SHELL(popup), items);
-    g_object_unref(items);
+    }
+    if (ed != NULL) {
+        GBytes *png = gdk_texture_save_to_png_bytes(tex);
+        GInputStream *in = g_memory_input_stream_new_from_bytes(png);
+        GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream(in, NULL, &err);
+        if (pixbuf != NULL) {
+            insert_image_pixbuf(ed, pixbuf);
+            g_object_unref(pixbuf);
+        } else {
+            g_warning("editor: cannot decode pasted image: %s",
+                      err->message);
+            g_clear_error(&err);
+        }
+        g_object_unref(in);
+        g_bytes_unref(png);
+    }
+    g_object_unref(tex);
 }
 
 /* ---------------------------------------------------------------------------
  * on_paste_clipboard() — intercept Ctrl+V: if the clipboard holds an image
- * (e.g. a screenshot), embed it and swallow the default paste; otherwise fall
- * through so GTK pastes text / rich text normally.
+ * (e.g. a screenshot), embed it and swallow the default paste; otherwise
+ * fall through so GTK pastes text / rich text normally.
  *
- * We probe SPECIFIC image atoms rather than gtk_clipboard_wait_is_image_
- * available / gtk_clipboard_wait_for_image: those request the special TARGETS
- * atom, which on macOS makes GDK enumerate every NSPasteboard type and convert
- * each via gdk_atom_intern (gdkselection-quartz.c) — a call that asserts on
- * Apple-private types whose UTI has no MIME string.  gtk_clipboard_wait_for_
- * contents on one concrete image atom goes straight to [NSPasteboard
- * dataForType:] with no enumeration.  It is synchronous on the Quartz backend,
- * so the image is embedded before we decide whether to stop the emission.
- *
- * The default text-paste path (and the right-click/selection-bubble menus)
- * still hit that TARGETS enumeration internally; the resulting benign
- * "gdk_atom_intern: assertion 'atom_name != NULL'" critical is filtered at the
- * source by quartz_log_filter() in main.c.
+ * "Holds an image" is asked of the clipboard's advertised formats joined
+ * with GDK's deserializers — the same test gdk_clipboard_read_texture_async
+ * makes — so every image type GDK can turn into a texture counts (PNG, and
+ * the TIFF macOS screenshots arrive as), and the decision is synchronous
+ * even though the read is not: the signal is stopped here, the bytes come
+ * later.  The GTK3 atom probing (Apple-private pasteboard types that
+ * asserted inside GDK) has no GTK4 counterpart — GdkContentFormats already
+ * carry only what GDK could name.
  * ------------------------------------------------------------------------- */
-static const gchar * const PASTE_IMG_ATOMS[] = {
-    "image/png",                /* public.png  — web / app images            */
-    "image/tiff",               /* public.tiff — macOS screenshots           */
-    "image/jpeg",
-    "image/bmp",
-};
-
 static void
 on_paste_clipboard(GtkTextView *view, gpointer user_data)
 {
-    OnEditor     *ed = user_data;    /* owning editor                        */
-    GtkClipboard *cb = gtk_widget_get_clipboard(GTK_WIDGET(view),
-                                                GDK_SELECTION_CLIPBOARD);
+    OnEditor     *ed = user_data;    /* owning editor                       */
+    GdkClipboard *cb = gtk_widget_get_clipboard(GTK_WIDGET(view));
 
-    for (guint i = 0; i < G_N_ELEMENTS(PASTE_IMG_ATOMS); i++) {
-        GtkSelectionData *sel = gtk_clipboard_wait_for_contents(
-            cb, gdk_atom_intern_static_string(PASTE_IMG_ATOMS[i]));
-        if (sel == NULL)
-            continue;
-        GdkPixbuf *pixbuf = gtk_selection_data_get_length(sel) > 0
-            ? gtk_selection_data_get_pixbuf(sel) : NULL;
-        gtk_selection_data_free(sel);
-        if (pixbuf != NULL) {
-            insert_image_pixbuf(ed, pixbuf);
-            g_object_unref(pixbuf);
-            /* Swallow the signal so the default handler doesn't also paste. */
-            g_signal_stop_emission_by_name(view, "paste-clipboard");
-            return;
-        }
-    }
-    /* Not an image: let GTK's default handler paste text / rich text.       */
+    GdkContentFormats *formats =     /* advertised + what deserializes      */
+        gdk_content_formats_union_deserialize_gtypes(
+            gdk_content_formats_ref(gdk_clipboard_get_formats(cb)));
+    gboolean image = gdk_content_formats_contain_gtype(formats,
+                                                       GDK_TYPE_TEXTURE);
+    gdk_content_formats_unref(formats);
+    if (!image)
+        return;                      /* text: GTK's default handler pastes */
+
+    gdk_clipboard_read_texture_async(cb, NULL, on_paste_texture_read,
+                                     editor_ref_new(ed));
+    /* Swallow the signal so the default handler doesn't also paste.        */
+    g_signal_stop_emission_by_name(view, "paste-clipboard");
 }
 
-/* ---------------------------------------------------------------------------
- * on_insert_image() — "win.insert-image" (Insert menu): pick an image file
- * and embed it at the cursor.
- * ------------------------------------------------------------------------- */
+/* on_insert_image_picked() — the Insert Image chooser closed: embed the
+ * chosen file at the cursor (nothing on cancel or a closed editor).         */
 static void
-on_insert_image(GSimpleAction *action, GVariant *param, gpointer user_data)
+on_insert_image_picked(gchar *path, gpointer user_data)
 {
-    (void)action; (void)param;
-    OnEditor *ed = user_data;        /* owning editor                       */
-
-    GtkWidget *dialog = gtk_file_chooser_dialog_new(
-        "Insert Image", GTK_WINDOW(ed->window),
-        GTK_FILE_CHOOSER_ACTION_OPEN,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Insert", GTK_RESPONSE_ACCEPT,
-        NULL);
-
-    /* Only offer image files.                                              */
-    GtkFileFilter *filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Images");
-    gtk_file_filter_add_pixbuf_formats(filter);
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
-
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        gchar *path = gtk_file_chooser_get_filename(
-            GTK_FILE_CHOOSER(dialog));
+    OnEditor *ed = editor_ref_take(user_data);
+    if (path == NULL)
+        return;
+    if (ed != NULL) {
         GError *err = NULL;
         GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(path, &err);
         if (pixbuf != NULL) {
@@ -1982,9 +2044,23 @@ on_insert_image(GSimpleAction *action, GVariant *param, gpointer user_data)
                       path, err->message);
             g_clear_error(&err);
         }
-        g_free(path);
     }
-    gtk_widget_destroy(dialog);
+    g_free(path);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_insert_image() — "win.insert-image" (Insert menu): pick an image file
+ * and embed it at the cursor.  Asynchronous: the rest is
+ * on_insert_image_picked.
+ * ------------------------------------------------------------------------- */
+static void
+on_insert_image(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action; (void)param;
+    OnEditor *ed = user_data;        /* owning editor                       */
+    on_app_pick_path(GTK_WINDOW(ed->window), "Insert Image", ON_PICK_OPEN,
+                     "_Insert", "Images", NULL, NULL, on_insert_image_picked,
+                     editor_ref_new(ed));
 }
 
 /* ===========================================================================
@@ -2127,12 +2203,12 @@ title_view_sync(OnEditor *ed)
     if (gtk_text_view_get_justification(ed->view) != want)
         gtk_text_view_set_justification(ed->view, want);
 
-    GtkStyleContext *sc = gtk_widget_get_style_context(GTK_WIDGET(ed->view));
-    if ((on && empty) != gtk_style_context_has_class(sc, "on-title-empty")) {
+    GtkWidget *view = GTK_WIDGET(ed->view);
+    if ((on && empty) != gtk_widget_has_css_class(view, "on-title-empty")) {
         if (on && empty)
-            gtk_style_context_add_class(sc, "on-title-empty");
+            gtk_widget_add_css_class(view, "on-title-empty");
         else
-            gtk_style_context_remove_class(sc, "on-title-empty");
+            gtk_widget_remove_css_class(view, "on-title-empty");
     }
 }
 
@@ -2620,11 +2696,7 @@ action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit edit,
     if (synced != NULL)
         *synced = FALSE;
 
-    /* Headless callers (the CLI) have no open-editors table at all.        */
-    GtkWidget *win = app->editors != NULL
-        ? g_hash_table_lookup(app->editors, &note_id) : NULL;
-    OnEditor  *ed  = win != NULL
-        ? g_object_get_data(G_OBJECT(win), "on-editor") : NULL;
+    OnEditor *ed = editor_lookup(app, note_id);   /* NULL headless / closed */
     if (ed != NULL) {
         /* Live buffer: the autosave writes content AND the mirror later.    */
         if (!edit(ed->buffer, ord, arg))
@@ -2712,39 +2784,15 @@ on_editor_action_set_text(OnApp *app, gint64 note_id, gint ord,
  * straight through to the anchor data and autosaves.
  * =========================================================================== */
 
-/* ---------------------------------------------------------------------------
- * on_checkbox_enter() — hyperlink-style hand cursor while hovering a
- * task checkbox (the surrounding text view keeps its I-beam).  Set once
- * on the button's own event window; it applies whenever the pointer is
- * inside the button.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_checkbox_enter(GtkWidget *widget, GdkEventCrossing *event,
-                  gpointer user_data)
-{
-    (void)user_data;
-    GdkCursor *hand =                /* cached on the button itself         */
-        g_object_get_data(G_OBJECT(widget), "on-hand-cursor");
-    if (hand == NULL) {
-        hand = gdk_cursor_new_from_name(
-            gdk_window_get_display(event->window), "pointer");
-        g_object_set_data_full(G_OBJECT(widget), "on-hand-cursor",
-                               hand, g_object_unref);
-    }
-    gdk_window_set_cursor(event->window, hand);
-    return FALSE;
-}
-
 /* on_task_checkbox_toggled() — sync the widget state into the anchor.       */
 static void
-on_task_checkbox_toggled(GtkToggleButton *btn, gpointer user_data)
+on_task_checkbox_toggled(GtkCheckButton *btn, gpointer user_data)
 {
     OnEditor *ed = user_data;        /* owning editor                       */
     GtkTextChildAnchor *anchor =
         g_object_get_data(G_OBJECT(btn), "on-anchor");
     if (anchor != NULL)
-        on_anchor_set_checkbox(anchor,
-                               gtk_toggle_button_get_active(btn));
+        on_anchor_set_checkbox(anchor, gtk_check_button_get_active(btn));
     editor_queue_autosave(ed);
 }
 
@@ -2759,10 +2807,10 @@ attach_checkbox_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
     if (!on_anchor_is_checkbox(anchor, &checked))
         return;
 
-    anchor_clear_widgets(anchor);
+    anchor_clear_widgets(ed, anchor);
 
     GtkWidget *btn = gtk_check_button_new();
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), checked);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(btn), checked);
     /* Anchored children sit with their BOTTOM on the text baseline, so
      * theme padding above/below the indicator lifts the box's center
      * above the text's optical center.  Strip it (pinned for all states,
@@ -2771,15 +2819,14 @@ attach_checkbox_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
     on_app_widget_add_css(btn,
         "checkbutton, checkbutton:hover, checkbutton:active "
         "{ padding: 0; min-height: 0; } check { margin: 0; }");
-    /* Keyboard focus stays in the text; the box is mouse-only.             */
-    gtk_widget_set_can_focus(btn, FALSE);
+    /* Keyboard focus stays in the text; the box is mouse-only, and shows
+     * the hyperlink-style hand while hovered.                              */
+    gtk_widget_set_focusable(btn, FALSE);
+    gtk_widget_set_cursor_from_name(btn, "pointer");
     g_object_set_data(G_OBJECT(btn), "on-anchor", anchor);
     g_signal_connect(btn, "toggled",
                      G_CALLBACK(on_task_checkbox_toggled), ed);
-    g_signal_connect(btn, "enter-notify-event",
-                     G_CALLBACK(on_checkbox_enter), NULL);
     gtk_text_view_add_child_at_anchor(ed->view, btn, anchor);
-    gtk_widget_show(btn);
 
     /* Lower the anchor character with the editor-only negative-rise tag
      * (created at buffer setup) so the box centers on the line's text.
@@ -2914,29 +2961,37 @@ on_table_header_change_state(GSimpleAction *action, GVariant *value,
 }
 
 /* ---------------------------------------------------------------------------
- * on_table_cell_button_press() — right click in a cell: the structural
- * menu (add/remove last row/column, header row, delete the table).  The
- * cell's table becomes the context the "win.table-*" actions act on.
+ * on_table_cell_pressed() — a context-menu press in a cell (its click
+ * gesture, CAPTURE phase so it precedes the cell view's own gesture, which
+ * would open the standard text popup): the structural menu (add/remove
+ * last row/column, header row, delete the table).  The cell's table
+ * becomes the context the "win.table-*" actions act on.
+ *
+ * The popover is parented to the EDITOR's view, not the cell, with the
+ * press translated into its coordinates: every table op rebuilds the grid
+ * — the cell would die while the menu was still its child, and
+ * on_app_menu_popup unparents only from an idle after "closed" (the
+ * action runs before that idle).  The editor's view outlives any table op.
  * ------------------------------------------------------------------------- */
-static gboolean
-on_table_cell_button_press(GtkWidget *entry, GdkEventButton *event,
-                           gpointer user_data)
+static void
+on_table_cell_pressed(GtkGestureClick *gesture, gint n_press, gdouble x,
+                      gdouble y, gpointer user_data)
 {
+    (void)n_press;
     OnEditor *ed = user_data;        /* owning editor                       */
-    if (event->button != GDK_BUTTON_SECONDARY) {
-        /* Anchored children inside a GtkTextView don't reliably receive
-         * focus from the default click handling — force it so the caret
-         * lands in the cell, then let the default handler place it.        */
-        gtk_widget_grab_focus(entry);
-        return FALSE;
-    }
+    GtkWidget *cell =                /* the cell view the press landed in   */
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    GdkEvent *event = gtk_event_controller_get_current_event(
+        GTK_EVENT_CONTROLLER(gesture));
+    if (event == NULL || !gdk_event_triggers_context_menu(event))
+        return;                      /* the cell's own gesture: caret       */
 
     GtkTextChildAnchor *anchor =
-        g_object_get_data(G_OBJECT(entry), "on-anchor");
+        g_object_get_data(G_OBJECT(cell), "on-anchor");
     OnTable *table = (anchor != NULL)
                      ? on_anchor_get_table(anchor) : NULL;
     if (table == NULL)
-        return FALSE;
+        return;
 
     GtkTextIter it;                  /* where the anchor sits               */
     gtk_text_buffer_get_iter_at_child_anchor(ed->buffer, &it, anchor);
@@ -2965,12 +3020,18 @@ on_table_cell_button_press(GtkWidget *entry, GdkEventButton *event,
     g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
     g_object_unref(section);
 
-    on_app_menu_popup(entry, G_MENU_MODEL(menu), event);
-    return TRUE;
+    graphene_point_t at;             /* the press, in the editor view       */
+    if (!gtk_widget_compute_point(cell, GTK_WIDGET(ed->view),
+                                  &GRAPHENE_POINT_INIT((float)x, (float)y),
+                                  &at))
+        at = GRAPHENE_POINT_INIT(0, 0);
+    on_app_menu_popup(GTK_WIDGET(ed->view), G_MENU_MODEL(menu),
+                      at.x, at.y);
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
 /* ---------------------------------------------------------------------------
- * attach_table_widget() — (re)build the GtkGrid of entries representing
+ * attach_table_widget() — (re)build the GtkGrid of cell views representing
  * an anchor's table, replacing any widget it already had.
  * ------------------------------------------------------------------------- */
 static void
@@ -2981,7 +3042,7 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
         return;
 
     /* Drop the previous widget (after a structural change).                */
-    anchor_clear_widgets(anchor);
+    anchor_clear_widgets(ed, anchor);
 
     GtkWidget *grid = gtk_grid_new();
     for (gint r = 0; r < table->rows; r++) {
@@ -3016,17 +3077,20 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
             g_signal_connect(cell_buf, "changed",
                              G_CALLBACK(on_table_cell_changed), ed);
             g_object_set_data(G_OBJECT(cell), "on-anchor", anchor);
-            g_signal_connect(cell, "button-press-event",
-                             G_CALLBACK(on_table_cell_button_press), ed);
+            GtkGesture *press = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(press), 0);
+            gtk_event_controller_set_propagation_phase(
+                GTK_EVENT_CONTROLLER(press), GTK_PHASE_CAPTURE);
+            g_signal_connect(press, "pressed",
+                             G_CALLBACK(on_table_cell_pressed), ed);
+            gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(press));
 
             GtkWidget *frame = gtk_frame_new(NULL);
-            gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
-            gtk_container_add(GTK_CONTAINER(frame), cell);
+            gtk_frame_set_child(GTK_FRAME(frame), cell);
             gtk_grid_attach(GTK_GRID(grid), frame, c, r, 1, 1);
         }
     }
     gtk_text_view_add_child_at_anchor(ed->view, grid, anchor);
-    gtk_widget_show_all(grid);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3225,13 +3289,13 @@ tag_capture_span(OnEditor *ed, GtkTextIter *start, GtkTextIter *end)
 }
 
 /* ---------------------------------------------------------------------------
- * tag_popup_hide() — hide the suggestion popup if it is showing.
+ * tag_popup_hide() — pop the suggestion popover down if it is showing.
  * ------------------------------------------------------------------------- */
 static void
 tag_popup_hide(OnEditor *ed)
 {
     if (ed->tag_popup != NULL)
-        gtk_widget_hide(ed->tag_popup);
+        gtk_popover_popdown(GTK_POPOVER(ed->tag_popup));
 }
 
 /* ---------------------------------------------------------------------------
@@ -3318,7 +3382,12 @@ on_tag_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * tag_popup_ensure() — lazily build the popup window + listbox.
+ * tag_popup_ensure() — lazily build the popover + listbox.  A GtkPopover
+ * parented to the view (notes_text_view_size_allocate presents it, its
+ * dispose unparents it), pointing at the '#' from below with its left edge
+ * on it.  NOT autohide and NOT focusable: the view keeps the keyboard and
+ * the pointer, typing goes on filtering the rows, and a click on a row
+ * cannot move the focus.
  * ------------------------------------------------------------------------- */
 static void
 tag_popup_ensure(OnEditor *ed)
@@ -3326,28 +3395,26 @@ tag_popup_ensure(OnEditor *ed)
     if (ed->tag_popup != NULL)
         return;
 
-    ed->tag_popup = gtk_window_new(GTK_WINDOW_POPUP);
-    gtk_window_set_transient_for(GTK_WINDOW(ed->tag_popup),
-                                 GTK_WINDOW(ed->window));
-    gtk_window_set_type_hint(GTK_WINDOW(ed->tag_popup),
-                             GDK_WINDOW_TYPE_HINT_COMBO);
-
-    GtkWidget *frame = gtk_frame_new(NULL);
-    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_OUT);
-    gtk_container_add(GTK_CONTAINER(ed->tag_popup), frame);
+    ed->tag_popup = gtk_popover_new();
+    gtk_popover_set_autohide(GTK_POPOVER(ed->tag_popup), FALSE);
+    gtk_popover_set_has_arrow(GTK_POPOVER(ed->tag_popup), FALSE);
+    gtk_popover_set_position(GTK_POPOVER(ed->tag_popup), GTK_POS_BOTTOM);
+    gtk_widget_set_halign(ed->tag_popup, GTK_ALIGN_START);
+    gtk_widget_set_can_focus(ed->tag_popup, FALSE);
+    gtk_widget_set_parent(ed->tag_popup, GTK_WIDGET(ed->view));
 
     ed->tag_listbox = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(ed->tag_listbox),
                                     GTK_SELECTION_SINGLE);
-    gtk_container_add(GTK_CONTAINER(frame), ed->tag_listbox);
+    gtk_popover_set_child(GTK_POPOVER(ed->tag_popup), ed->tag_listbox);
     g_signal_connect(ed->tag_listbox, "row-activated",
                      G_CALLBACK(on_tag_row_activated), ed);
 }
 
 /* ---------------------------------------------------------------------------
- * tag_popup_update() — refresh the popup contents to the tags matching
- * the currently typed prefix, position it under the cursor, and show or
- * hide it depending on whether anything matches.
+ * tag_popup_update() — refresh the popover contents to the tags matching
+ * the currently typed prefix, point it at the '#', and show or hide it
+ * depending on whether anything matches.
  * ------------------------------------------------------------------------- */
 static void
 tag_popup_update(OnEditor *ed)
@@ -3368,11 +3435,7 @@ tag_popup_update(OnEditor *ed)
     tag_popup_ensure(ed);
 
     /* Clear old suggestion rows.                                           */
-    GList *children =
-        gtk_container_get_children(GTK_CONTAINER(ed->tag_listbox));
-    for (GList *l = children; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
-    g_list_free(children);
+    gtk_list_box_remove_all(GTK_LIST_BOX(ed->tag_listbox));
 
     /* Fill with case-insensitive prefix matches from the capture-start
      * snapshot (see ed->tag_choices).                                      */
@@ -3388,9 +3451,9 @@ tag_popup_update(OnEditor *ed)
             continue;
 
         GtkWidget *label = gtk_label_new(NULL);
-        gchar *markup = g_markup_printf_escaped("#%s", t->name);
-        gtk_label_set_text(GTK_LABEL(label), markup);
-        g_free(markup);
+        gchar *text = g_strdup_printf("#%s", t->name);
+        gtk_label_set_text(GTK_LABEL(label), text);
+        g_free(text);
         gtk_label_set_xalign(GTK_LABEL(label), 0.0);
         gtk_widget_set_margin_start(label, 8);
         gtk_widget_set_margin_end(label, 8);
@@ -3398,7 +3461,7 @@ tag_popup_update(OnEditor *ed)
         gtk_widget_set_margin_bottom(label, 3);
 
         GtkWidget *row = gtk_list_box_row_new();
-        gtk_container_add(GTK_CONTAINER(row), label);
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
         g_object_set_data_full(G_OBJECT(row), "on-tag-name",
                                g_strdup(t->name), g_free);
         gtk_list_box_insert(GTK_LIST_BOX(ed->tag_listbox), row, -1);
@@ -3417,21 +3480,16 @@ tag_popup_update(OnEditor *ed)
         gtk_list_box_get_row_at_index(GTK_LIST_BOX(ed->tag_listbox), 0);
     gtk_list_box_select_row(GTK_LIST_BOX(ed->tag_listbox), first_row);
 
-    /* Position the popup just below the '#' character.                     */
-    GdkRectangle rect;               /* cursor rectangle in buffer coords   */
+    /* Point the popover at the '#' character: its box in buffer
+     * coordinates, translated into the view's widget coordinates, which is
+     * the space set_pointing_to takes for a popover parented to the view.  */
+    GdkRectangle rect;               /* the '#' in buffer coords            */
     gtk_text_view_get_iter_location(ed->view, &start, &rect);
-    gint wx, wy;                     /* rect origin in widget coords        */
+    GdkRectangle at = rect;          /* the same box, widget coords         */
     gtk_text_view_buffer_to_window_coords(ed->view, GTK_TEXT_WINDOW_WIDGET,
-                                          rect.x, rect.y + rect.height,
-                                          &wx, &wy);
-    GdkWindow *gdkwin =
-        gtk_widget_get_window(GTK_WIDGET(ed->view));
-    gint ox = 0, oy = 0;             /* view origin in screen coords        */
-    if (gdkwin != NULL)
-        gdk_window_get_origin(gdkwin, &ox, &oy);
-
-    gtk_widget_show_all(ed->tag_popup);
-    gtk_window_move(GTK_WINDOW(ed->tag_popup), ox + wx, oy + wy + 2);
+                                          rect.x, rect.y, &at.x, &at.y);
+    gtk_popover_set_pointing_to(GTK_POPOVER(ed->tag_popup), &at);
+    gtk_popover_popup(GTK_POPOVER(ed->tag_popup));
 }
 
 /* ---------------------------------------------------------------------------
@@ -3458,8 +3516,11 @@ tag_popup_move_selection(OnEditor *ed, gint delta)
 /* ===========================================================================
  * undo / redo
  *
- * GTK3's GtkTextBuffer has no undo (that arrived in GTK4), so the editor
- * keeps its own history of whole-buffer SNAPSHOTS: a segment list
+ * GtkTextBuffer's own undo (GTK4) is text-only: it would re-insert a
+ * deleted anchor as an EMPTY anchor, without the image, checkbox state or
+ * table the editor keeps as anchor data.  It is switched off on the note
+ * buffer (editor_build_view) and the editor keeps its own history of
+ * whole-buffer SNAPSHOTS instead: a segment list
  * mirroring the serializer's walk — text runs with ON_FMT_* flags, plus
  * one segment per child anchor (image / checkbox / table).  Images are
  * held by pixbuf REFERENCE, shared across snapshots and with the live
@@ -4400,23 +4461,25 @@ on_cursor_moved(GObject *object, GParamSpec *pspec, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * on_view_key_press() — key handling that must run before GtkTextView's
- * default: tag-popup navigation, Escape and Enter-in-list.  The Primary+key
+ * on_view_key_pressed() — the view's key controller, CAPTURE phase so it
+ * runs before GtkTextView's own bubble-phase controller (and its input
+ * method): tag-popup navigation, Escape and Enter-in-list.  The Primary+key
  * shortcuts are NOT here: they are application accelerators on the "win."
  * actions (on_app_install_accels), which the window fires before the view
  * ever sees the key.
  * Returns TRUE when the key was fully handled here.
  * ------------------------------------------------------------------------- */
 static gboolean
-on_view_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+on_view_key_pressed(GtkEventControllerKey *controller, guint keyval,
+                    guint keycode, GdkModifierType state, gpointer user_data)
 {
-    (void)widget;
+    (void)controller; (void)keycode; (void)state;
     OnEditor *ed = user_data;        /* owning editor                       */
 
     /* While the tag popup is visible it owns the navigation keys.          */
     if (ed->tag_start != NULL && ed->tag_popup != NULL &&
         gtk_widget_get_visible(ed->tag_popup)) {
-        switch (event->keyval) {
+        switch (keyval) {
         case GDK_KEY_Down:
             tag_popup_move_selection(ed, +1);
             return TRUE;
@@ -4441,14 +4504,13 @@ on_view_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
         default:
             break;
         }
-    } else if (ed->tag_start != NULL && event->keyval == GDK_KEY_Escape) {
+    } else if (ed->tag_start != NULL && keyval == GDK_KEY_Escape) {
         tag_capture_end(ed, FALSE);
         return TRUE;
     }
 
     /* Enter inside a list item: continue or end the list.                  */
-    if (event->keyval == GDK_KEY_Return ||
-        event->keyval == GDK_KEY_KP_Enter) {
+    if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
         if (ed->tag_start != NULL)
             tag_capture_end(ed, TRUE);
         if (handle_return_in_list(ed)) {
@@ -4537,7 +4599,7 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
     OnEditor *ed = user_data;        /* owning editor                       */
     editor_search_clear(ed);
 
-    const gchar *query = gtk_entry_get_text(GTK_ENTRY(entry));
+    const gchar *query = gtk_editable_get_text(GTK_EDITABLE(entry));
     if (query == NULL || *query == '\0')
         return;
 
@@ -4567,7 +4629,7 @@ static void
 editor_search_move(OnEditor *ed, gboolean forward)
 {
     const gchar *query =
-        gtk_entry_get_text(GTK_ENTRY(ed->search_entry));
+        gtk_editable_get_text(GTK_EDITABLE(ed->search_entry));
     if (query == NULL || *query == '\0')
         return;
 
@@ -4643,7 +4705,7 @@ editor_apply_search_term(OnEditor *ed, const gchar *term)
 {
     if (term == NULL || *term == '\0')
         return;
-    gtk_entry_set_text(GTK_ENTRY(ed->search_entry), term);
+    gtk_editable_set_text(GTK_EDITABLE(ed->search_entry), term);
     on_search_changed(GTK_SEARCH_ENTRY(ed->search_entry), ed);
     editor_search_move(ed, TRUE);
 }
@@ -4849,12 +4911,24 @@ buffer_is_blank(GtkTextBuffer *buffer)
  * on_editor_destroy() — the window is going away: flush a final save (or
  * delete the note outright when it was left with no content), drop the
  * editor from the open-editors table, and free everything.
+ *
+ * In GTK4 a window's "destroy" is emitted from GtkWidget's dispose, AFTER
+ * GtkWindow's dispose has unparented the child — so by now the toolbar,
+ * the overlay and the status labels are gone, and nothing here may touch
+ * them: the label pointers are cleared first so the save's status update
+ * sees nothing to paint.  The buffer and the view survive on the editor's
+ * own references; the view is released LAST, so its dispose (which
+ * unparents the #tag popover through `ed`) runs while `ed` is whole.
  * ------------------------------------------------------------------------- */
 static void
 on_editor_destroy(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
     OnEditor *ed = user_data;        /* owning editor                       */
+
+    ed->status_path    = NULL;       /* the labels died with the tree       */
+    ed->status_note_id = NULL;
+    ed->status_dirty   = NULL;
 
     if (ed->autosave_source != 0) {
         g_source_remove(ed->autosave_source);
@@ -4904,8 +4978,6 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
                                         no serialize, no PNG encoding      */
     }
 
-    if (ed->tag_popup != NULL)
-        gtk_widget_destroy(ed->tag_popup);
     on_db_tag_list_free(ed->tag_choices);   /* window closed mid-capture   */
     ed->tag_choices = NULL;
 
@@ -4915,6 +4987,8 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
     g_ptr_array_unref(ed->action_marks);
     ed->action_marks = NULL;
     g_object_unref(ed->buffer);
+    g_object_unref(ed->view);        /* its dispose still reads ed          */
+    ed->view = NULL;
     g_free(ed);
 }
 
@@ -4950,8 +5024,8 @@ editor_status_path_update(OnEditor *ed)
 /* ---------------------------------------------------------------------------
  * editor_status_note_id_update() — show the note's database id in the
  * status bar's right label ("id:N"), or hide the label entirely while
- * the statusbar_note_id setting is off (the label is no-show-all, so
- * this function fully owns its visibility).
+ * the statusbar_note_id setting is off (this function fully owns its
+ * visibility; the label is built hidden).
  * ------------------------------------------------------------------------- */
 static void
 editor_status_note_id_update(OnEditor *ed)
@@ -4962,10 +5036,8 @@ editor_status_note_id_update(OnEditor *ed)
         gchar *text = g_strdup_printf("id:%" G_GINT64_FORMAT, ed->note_id);
         gtk_label_set_text(GTK_LABEL(ed->status_note_id), text);
         g_free(text);
-        gtk_widget_show(ed->status_note_id);
-    } else {
-        gtk_widget_hide(ed->status_note_id);
     }
+    gtk_widget_set_visible(ed->status_note_id, ed->app->statusbar_note_id);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5005,16 +5077,17 @@ on_editor_status_refresh_all(OnApp *app)
     editors_foreach(app, editor_status_update);
 }
 
-/* on_editor_focus_in() — the window regained focus: re-read the note's
- * location, so a move or folder rename made in the library while this
- * editor sat in the background shows up on return.                          */
-static gboolean
-on_editor_focus_in(GtkWidget *widget, GdkEventFocus *event,
-                   gpointer user_data)
+/* on_editor_active_changed() — "notify::is-active": the window became the
+ * active one again — re-read the note's location, so a move or folder
+ * rename made in the library while this editor sat in the background
+ * shows up on return.                                                       */
+static void
+on_editor_active_changed(GObject *window, GParamSpec *pspec,
+                         gpointer user_data)
 {
-    (void)widget; (void)event;
-    editor_status_path_update(user_data);
-    return FALSE;                    /* let GTK handle the focus change     */
+    (void)pspec;
+    if (gtk_window_is_active(GTK_WINDOW(window)))
+        editor_status_path_update(user_data);
 }
 
 /* ===========================================================================
@@ -5024,66 +5097,57 @@ on_editor_focus_in(GtkWidget *widget, GdkEventFocus *event,
 /* ---------------------------------------------------------------------------
  * add_para_button() — helper: append a paragraph-style tool button.
  *   ed       — the editor.
- *   toolbar  — the GtkToolbar to append to.
+ *   toolbar  — the toolbar box to append to.
  *   icon     — local icon file basename, or NULL.
  *   fallback — markup shown as the icon when the file is missing.
  *   label    — button text label.
  *   tooltip  — hover help.
- *   flag     — paragraph style the button applies (0 = body).
+ *   style    — the "win.para" target the button applies ("h1", "body", …).
  * ------------------------------------------------------------------------- */
 static void
 add_para_button(OnEditor *ed, GtkWidget *toolbar, const gchar *icon,
                 const gchar *fallback, const gchar *label,
                 const gchar *tooltip, const gchar *style)
 {
-    GtkToolItem *item = on_app_tool_item_new(ed->app, FALSE, icon,
-                                             fallback, label, tooltip);
+    GtkWidget *item = on_app_tool_item_new(ed->app, FALSE, icon,
+                                           fallback, label, tooltip);
     gtk_actionable_set_action_name(GTK_ACTIONABLE(item), "win.para");
     gtk_actionable_set_action_target(GTK_ACTIONABLE(item), "s", style);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
+    gtk_box_append(GTK_BOX(toolbar), item);
 }
 
 /* ---------------------------------------------------------------------------
- * menu_tool_button_new() — helper: a glyph-labelled GtkMenuButton wrapped
- * in a GtkToolItem.  `markup` is Pango markup rendered as the button face
- * so the compact menu buttons match the letter-glyph tool buttons.  The
- * model is rendered as a GtkMenu, not the popover GtkMenuButton defaults
- * to — and not a GtkComboBox: the combo's popup grab is unreliable inside
- * a toolbar (it could close the moment the pointer moved); a real menu
- * holds its grab.  The button never takes the focus: the editing actions
- * are enabled only while the text view has it, and a click here must not
- * disable the very items it is opening.
+ * menu_button_new() — helper: a glyph-faced, frameless GtkMenuButton over
+ * a menu model.  `markup` is Pango markup rendered as the button face so
+ * the compact menu buttons match the letter-glyph tool buttons.  The
+ * button never takes the focus: the editing actions are enabled only
+ * while the text view has it, and a click here must not disable the very
+ * items it is opening.
  *   markup  — the button face.
  *   tooltip — hover help.
  *   model   — the items; OWNERSHIP IS TAKEN.
  * ------------------------------------------------------------------------- */
-static GtkToolItem *
-menu_tool_button_new(const gchar *markup, const gchar *tooltip,
-                     GMenuModel *model)
+static GtkWidget *
+menu_button_new(const gchar *markup, const gchar *tooltip,
+                GMenuModel *model)
 {
-    GtkWidget *btn = gtk_menu_button_new();
-    gtk_button_set_label(GTK_BUTTON(btn), markup);
-    GtkWidget *face = gtk_bin_get_child(GTK_BIN(btn));
-    if (GTK_IS_LABEL(face))          /* set_label's child IS the label      */
-        gtk_label_set_use_markup(GTK_LABEL(face), TRUE);
+    GtkWidget *btn  = gtk_menu_button_new();
+    GtkWidget *face = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(face), markup);
+    gtk_menu_button_set_child(GTK_MENU_BUTTON(btn), face);
+    gtk_menu_button_set_has_frame(GTK_MENU_BUTTON(btn), FALSE);
     gtk_widget_set_focus_on_click(btn, FALSE);
-    /* use-popover first: set after the model, GTK would build a popover
-     * and then rebuild.                                                    */
-    gtk_menu_button_set_use_popover(GTK_MENU_BUTTON(btn), FALSE);
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(btn), model);
     g_object_unref(model);
     gtk_widget_set_tooltip_text(btn, tooltip);
-
-    GtkToolItem *item = gtk_tool_item_new();
-    gtk_container_add(GTK_CONTAINER(item), btn);
-    return item;
+    return btn;
 }
 
 /* ---------------------------------------------------------------------------
  * para_menu() — a compact-toolbar menu of paragraph styles: one item per
  * (label, "win.para" target) pair.
  *   labels / styles / n — parallel arrays.
- * Returns a new model (menu_tool_button_new takes it).
+ * Returns a new model (menu_button_new takes it).
  * ------------------------------------------------------------------------- */
 static GMenuModel *
 para_menu(const gchar *const *labels, const gchar *const *styles, gsize n)
@@ -5098,44 +5162,53 @@ para_menu(const gchar *const *labels, const gchar *const *styles, gsize n)
     return G_MENU_MODEL(menu);
 }
 
+/* search_button_new() — a frameless icon button beside the in-note search
+ * entry, wired to one of the two match-stepping handlers.                  */
+static GtkWidget *
+search_button_new(const gchar *icon_name, const gchar *tooltip,
+                  GCallback clicked, OnEditor *ed)
+{
+    GtkWidget *btn = gtk_button_new_from_icon_name(icon_name);
+    gtk_button_set_has_frame(GTK_BUTTON(btn), FALSE);
+    gtk_widget_set_tooltip_text(btn, tooltip);
+    g_signal_connect(btn, "clicked", clicked, ed);
+    return btn;
+}
+
 /* ---------------------------------------------------------------------------
- * build_toolbar() — construct the formatting toolbar: inline-style
- * toggles, paragraph-style buttons, code-block and image insertion.
- * In compact mode (File → Settings…) the three paragraph-style buttons
- * collapse into an "Aa" Styles menu button and the three list buttons
- * into a "≡" Lists one.
+ * build_toolbar() — construct the formatting toolbar: a horizontal GtkBox
+ * with the "toolbar" style class holding the inline-style toggles, the
+ * paragraph-style buttons, code-block and image insertion.  In compact
+ * mode (File → Settings…) the three paragraph-style buttons collapse into
+ * an "Aa" Styles menu button and the three list buttons into a "≡" Lists
+ * one.  A box demands its full natural width, which becomes the window's
+ * minimum — items can never be silently clipped by narrowing the window.
  * Returns the toolbar widget.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 build_toolbar(OnEditor *ed)
 {
-    GtkWidget *toolbar = gtk_toolbar_new();
-    gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
-                              GTK_ICON_SIZE_SMALL_TOOLBAR);
-    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
-    /* No overflow arrow: the toolbar then demands its full natural width,
-     * which becomes the window's minimum — items can never be silently
-     * clipped by narrowing the window.                                     */
-    gtk_toolbar_set_show_arrow(GTK_TOOLBAR(toolbar), FALSE);
+    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(toolbar, "toolbar");
 
     /* Inline style toggles (B, I, U, S).                                   */
     for (gsize i = 0; i < G_N_ELEMENTS(INLINE_TOGGLES); i++) {
-        GtkToolItem *item = on_app_tool_item_new(
+        GtkWidget *item = on_app_tool_item_new(
             ed->app, TRUE, INLINE_TOGGLES[i].icon, INLINE_TOGGLES[i].markup,
             INLINE_TOGGLES[i].label, INLINE_TOGGLES[i].tooltip);
         g_object_set_data(G_OBJECT(item), "on-flag",
                           GUINT_TO_POINTER(INLINE_TOGGLES[i].flag));
         g_signal_connect(item, "toggled",
                          G_CALLBACK(on_inline_toggle), ed);
-        gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
-        ed->toggle_buttons[i] = GTK_WIDGET(item);
+        gtk_box_append(GTK_BOX(toolbar), item);
+        ed->toggle_buttons[i] = item;
     }
 
     add_para_button(ed, toolbar, "code-block", "{\xc2\xa0}", "Code",
                     "Code block", "code");
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     /* Paragraph styles.  These have no standard icons, so their "icons"
      * are text glyphs (still swappable by dropping a matching PNG — e.g.
@@ -5144,11 +5217,11 @@ build_toolbar(OnEditor *ed)
         static const gchar *const LABELS[] =
             { "Heading _1", "Heading _2", "_Body" };
         static const gchar *const STYLES[] = { "h1", "h2", "body" };
-        gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                           menu_tool_button_new("<b>A</b>a",
-                               "Styles \xe2\x80\x94 paragraph style: "
-                               "heading or body text",
-                               para_menu(LABELS, STYLES, 3)), -1);
+        gtk_box_append(GTK_BOX(toolbar),
+                       menu_button_new("<b>A</b>a",
+                           "Styles \xe2\x80\x94 paragraph style: "
+                           "heading or body text",
+                           para_menu(LABELS, STYLES, 3)));
     } else {
         add_para_button(ed, toolbar, "heading-1", "<b>H1</b>", "Heading 1",
                         "Heading 1", "h1");
@@ -5158,18 +5231,18 @@ build_toolbar(OnEditor *ed)
                         "Plain body text", "body");
     }
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     if (ed->app->compact_editor_toolbar) {
         static const gchar *const LABELS[] =
             { "_Bulleted List", "_Numbered List", "_Task List" };
         static const gchar *const STYLES[] = { "bullet", "number", "check" };
-        gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                           menu_tool_button_new("\xe2\x89\xa1",
-                               "Lists \xe2\x80\x94 bullets, numbers, or "
-                               "task checkboxes",
-                               para_menu(LABELS, STYLES, 3)), -1);
+        gtk_box_append(GTK_BOX(toolbar),
+                       menu_button_new("\xe2\x89\xa1",
+                           "Lists \xe2\x80\x94 bullets, numbers, or "
+                           "task checkboxes",
+                           para_menu(LABELS, STYLES, 3)));
     } else {
         add_para_button(ed, toolbar, "list-bullet", "\xe2\x80\xa2",
                         "Bullets", "Bulleted list", "bullet");
@@ -5183,8 +5256,8 @@ build_toolbar(OnEditor *ed)
                         "check");
     }
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     /* One "Insert ▾" dropdown replaces the Image/Table/Emoji buttons.  The
      * shortcuts (Primary+E, Primary+D) show on the items by themselves.  */
@@ -5194,24 +5267,22 @@ build_toolbar(OnEditor *ed)
     g_menu_append(insert_menu, "_Emoji\xe2\x80\xa6", "win.insert-emoji");
     g_menu_append(insert_menu, "_Date",              "win.insert-date");
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       menu_tool_button_new("+",
-                           "Insert an image, a table, an emoji, or "
-                           "today's date at the cursor",
-                           G_MENU_MODEL(insert_menu)), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   menu_button_new("+",
+                       "Insert an image, a table, an emoji, or "
+                       "today's date at the cursor",
+                       G_MENU_MODEL(insert_menu)));
 
     /* In-note search, pinned to the toolbar's right edge (Primary+F) by an
      * expanding blank spacer.                                              */
-    GtkToolItem *spacer = gtk_separator_tool_item_new();
-    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
-                                     FALSE);
-    gtk_tool_item_set_expand(spacer, TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(toolbar), spacer);
 
     ed->search_entry = gtk_search_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->search_entry),
-                                   "Find in note");
-    gtk_entry_set_width_chars(GTK_ENTRY(ed->search_entry), 18);
+    gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(ed->search_entry),
+                                          "Find in note");
+    gtk_editable_set_width_chars(GTK_EDITABLE(ed->search_entry), 18);
     g_signal_connect(ed->search_entry, "search-changed",
                      G_CALLBACK(on_search_changed), ed);
     g_signal_connect(ed->search_entry, "activate",
@@ -5219,30 +5290,17 @@ build_toolbar(OnEditor *ed)
     g_signal_connect(ed->search_entry, "stop-search",
                      G_CALLBACK(on_search_stop), ed);
 
-    /* Entry + previous/next match buttons as one toolbar item.             */
+    /* Entry + previous/next match buttons as one group.                    */
     GtkWidget *search_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    gtk_box_pack_start(GTK_BOX(search_box), ed->search_entry,
-                       TRUE, TRUE, 0);
-
-    GtkWidget *prev_btn = gtk_button_new_from_icon_name(
-        "go-up-symbolic", GTK_ICON_SIZE_MENU);
-    gtk_button_set_relief(GTK_BUTTON(prev_btn), GTK_RELIEF_NONE);
-    gtk_widget_set_tooltip_text(prev_btn, "Previous match");
-    g_signal_connect(prev_btn, "clicked",
-                     G_CALLBACK(on_search_prev), ed);
-    gtk_box_pack_start(GTK_BOX(search_box), prev_btn, FALSE, FALSE, 0);
-
-    GtkWidget *next_btn = gtk_button_new_from_icon_name(
-        "go-down-symbolic", GTK_ICON_SIZE_MENU);
-    gtk_button_set_relief(GTK_BUTTON(next_btn), GTK_RELIEF_NONE);
-    gtk_widget_set_tooltip_text(next_btn, "Next match (Enter)");
-    g_signal_connect(next_btn, "clicked",
-                     G_CALLBACK(on_search_next), ed);
-    gtk_box_pack_start(GTK_BOX(search_box), next_btn, FALSE, FALSE, 0);
-
-    GtkToolItem *search_item = gtk_tool_item_new();
-    gtk_container_add(GTK_CONTAINER(search_item), search_box);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), search_item, -1);
+    gtk_box_append(GTK_BOX(search_box), ed->search_entry);
+    gtk_box_append(GTK_BOX(search_box),
+                   search_button_new("go-up-symbolic", "Previous match",
+                                     G_CALLBACK(on_search_prev), ed));
+    gtk_box_append(GTK_BOX(search_box),
+                   search_button_new("go-down-symbolic",
+                                     "Next match (Enter)",
+                                     G_CALLBACK(on_search_next), ed));
+    gtk_box_append(GTK_BOX(toolbar), search_box);
 
     return toolbar;
 }
@@ -5256,19 +5314,15 @@ editor_rebuild_toolbar(OnEditor *ed)
     if (ed->toolbar_box == NULL)
         return;
     gchar *query =                   /* in-note search survives the rebuild */
-        g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->search_entry)));
-    gtk_widget_destroy(ed->toolbar);
+        g_strdup(gtk_editable_get_text(GTK_EDITABLE(ed->search_entry)));
+    gtk_box_remove(GTK_BOX(ed->toolbar_box), ed->toolbar);
     ed->toolbar = build_toolbar(ed);
-    gtk_box_pack_start(GTK_BOX(ed->toolbar_box), ed->toolbar,
-                       FALSE, FALSE, 0);
-    gtk_box_reorder_child(GTK_BOX(ed->toolbar_box), ed->toolbar, 0);
-    gtk_widget_show_all(ed->toolbar);
+    gtk_box_prepend(GTK_BOX(ed->toolbar_box), ed->toolbar);
     update_toggle_buttons(ed);       /* fresh toggles: mirror inline_flags  */
     if (*query != '\0')              /* re-runs the search + highlights     */
-        gtk_entry_set_text(GTK_ENTRY(ed->search_entry), query);
+        gtk_editable_set_text(GTK_EDITABLE(ed->search_entry), query);
     g_free(query);
 }
-
 void
 on_editor_rebuild_toolbars_all(OnApp *app)
 {
@@ -5283,9 +5337,17 @@ on_editor_rebuild_toolbars_all(OnApp *app)
 static void
 editor_build_view(OnEditor *ed)
 {
-    ed->view   = GTK_TEXT_VIEW(gtk_text_view_new());
+    /* The editor holds its own reference to the view, so the view's dispose
+     * — where the vfuncs' `ed` back-pointer is last read — runs from
+     * on_editor_destroy while `ed` still exists, never from the window's
+     * child teardown at a moment of GTK's choosing.                        */
+    ed->view   = GTK_TEXT_VIEW(g_object_ref_sink(notes_text_view_new(ed)));
     ed->buffer = gtk_text_view_get_buffer(ed->view);
     g_object_ref(ed->buffer);        /* keep alive for the final save       */
+    /* ONE undo: the editor's snapshot history (see the undo section), not
+     * the buffer's text-only one — which would otherwise also record every
+     * edit and answer the view's own Undo menu item and Ctrl+Z binding.   */
+    gtk_text_buffer_set_enable_undo(ed->buffer, FALSE);
     on_buffer_ensure_tags(ed->buffer);
 
     /* Editor-only highlight for in-note search matches (never appears in
@@ -5391,7 +5453,7 @@ editor_load_content(OnEditor *ed)
 
 /* ---------------------------------------------------------------------------
  * editor_build_layout() — assemble the toolbar, text-view scroll, and status
- * bar into a vertical box and add it to ed->window.
+ * bar into a vertical box and set it as ed->window's child.
  * ------------------------------------------------------------------------- */
 static void
 editor_build_layout(OnEditor *ed)
@@ -5399,40 +5461,42 @@ editor_build_layout(OnEditor *ed)
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     ed->toolbar_box = vbox;
     ed->toolbar     = build_toolbar(ed);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->toolbar, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), ed->toolbar);
+    gtk_box_append(GTK_BOX(vbox),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(scroll),
                                               FALSE);
-    gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(ed->view));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll),
+                                  GTK_WIDGET(ed->view));
 
     /* The modal image viewer stacks over the text, so the scroll goes in an
      * overlay.  Only the text area is covered: the toolbar and status bar
      * stay live, which is fine — the panel is about looking at a picture,
      * not about locking the window.                                        */
     ed->overlay = gtk_overlay_new();
-    gtk_container_add(GTK_CONTAINER(ed->overlay), scroll);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->overlay, TRUE, TRUE, 0);
+    gtk_overlay_set_child(GTK_OVERLAY(ed->overlay), scroll);
+    gtk_widget_set_vexpand(ed->overlay, TRUE);
+    gtk_box_append(GTK_BOX(vbox), ed->overlay);
 
     /* --- status bar: note location (left), note id, save-state dot ------ */
     ed->status_path = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(ed->status_path), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(ed->status_path),
                             PANGO_ELLIPSIZE_MIDDLE);
+    gtk_widget_set_hexpand(ed->status_path, TRUE);
     on_app_widget_add_css(ed->status_path, "label { font-size: 85%; }");
 
-    /* Note id — no-show-all: its updater owns visibility
+    /* Note id — built hidden: its updater owns visibility
      * (statusbar_note_id setting, default off).                            */
     ed->status_note_id = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(ed->status_note_id), 1.0);
     on_app_widget_add_css(ed->status_note_id, "label { font-size: 85%; }");
-    gtk_widget_set_no_show_all(ed->status_note_id, TRUE);
+    gtk_widget_set_visible(ed->status_note_id, FALSE);
 
     /* Save-state dot — the very last thing on the bar, always shown.        */
     ed->status_dirty = gtk_label_new(NULL);
@@ -5444,50 +5508,47 @@ editor_build_layout(OnEditor *ed)
     gtk_widget_set_margin_end(status_bar, 8);
     gtk_widget_set_margin_top(status_bar, 3);
     gtk_widget_set_margin_bottom(status_bar, 3);
-    gtk_box_pack_start(GTK_BOX(status_bar), ed->status_path,  TRUE,  TRUE,  0);
-    /* pack_end reverses, so: … note id  dot                                */
-    gtk_box_pack_end(GTK_BOX(status_bar),   ed->status_dirty,  FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(status_bar),   ed->status_note_id, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(status_bar), ed->status_path);
+    gtk_box_append(GTK_BOX(status_bar), ed->status_note_id);
+    gtk_box_append(GTK_BOX(status_bar), ed->status_dirty);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    gtk_box_append(GTK_BOX(vbox), status_bar);
     editor_status_update(ed);
 
-    gtk_container_add(GTK_CONTAINER(ed->window), vbox);
+    gtk_window_set_child(GTK_WINDOW(ed->window), vbox);
 
     /* Built last, once the overlay can reach the toplevel: the panel installs
-     * its styling for that window's SCREEN.                                */
+     * its styling for that window's display.                               */
     ed->img_viewer = on_image_viewer_new(
         ed->overlay, &editor_viewer_ops, ed, "Open in image viewer",
         "Open this image at full size in an external viewer");
 }
 
 /* ---------------------------------------------------------------------------
- * on_editor_window_key_press() — offer every key to the modal image viewer
- * first: Escape closes it, the arrows walk the note's images.  It takes none
- * while it is closed, so editing keeps all of its own keys.
+ * on_editor_window_key_pressed() — offer every key to the modal image
+ * viewer first: Escape closes it, the arrows walk the note's images.  It
+ * takes none while it is closed, so editing keeps all of its own keys.
  *
- * On the WINDOW, not on the view: a plain g_signal_connect here runs before
- * GtkWindow's class handler forwards the key to the focus widget, which is
- * what lets the panel claim keys off the text view.  The view KEEPS the
- * focus while the panel is up (deliberately — see image_viewer.c), so every
- * key the panel does not want is swallowed here as well: without that,
- * typing at a picture would edit the note blind behind it.
+ * A key controller on the WINDOW in the CAPTURE phase: it runs before the
+ * key reaches the focus widget, which is what lets the panel claim keys off
+ * the text view.  The view KEEPS the focus while the panel is up
+ * (deliberately — see image_viewer.c), so every key the panel does not want
+ * is swallowed here as well: without that, typing at a picture would edit
+ * the note blind behind it.
  * ------------------------------------------------------------------------- */
 static gboolean
-on_editor_window_key_press(GtkWidget *widget, GdkEventKey *event,
-                           gpointer user_data)
+on_editor_window_key_pressed(GtkEventControllerKey *controller, guint keyval,
+                             guint keycode, GdkModifierType state,
+                             gpointer user_data)
 {
-    (void)widget;
+    (void)controller; (void)keycode;
     OnEditor *ed = user_data;        /* owning editor                       */
-    if (on_image_viewer_key_press(ed->img_viewer, event))
+    if (on_image_viewer_key_press(ed->img_viewer, keyval, state))
         return TRUE;
     return on_image_viewer_is_open(ed->img_viewer);   /* modal: eat the rest */
 }
-
-
 
 /* ===========================================================================
  * actions
@@ -5538,43 +5599,43 @@ static const EditorAction EDITOR_ACTIONS[] = {
     { "table-col-del", on_table_command, NULL, FALSE },
     { "table-delete",  on_table_command, NULL, FALSE },
 };
-
 /* ---------------------------------------------------------------------------
  * editor_actions_set_editing() — enable or disable the gated actions.
+ * Tolerates a window that is gone or whose action map is already empty
+ * (the focus leaves the view once more while the window is torn down).
  *   ed      — the editor.
  *   enabled — TRUE while the text view has the focus.
  * ------------------------------------------------------------------------- */
 static void
 editor_actions_set_editing(OnEditor *ed, gboolean enabled)
 {
+    if (ed->window == NULL)
+        return;
     GActionMap *map = G_ACTION_MAP(ed->window);
     for (gsize i = 0; i < G_N_ELEMENTS(EDITOR_ACTIONS); i++) {
         if (!EDITOR_ACTIONS[i].editing)
             continue;
-        g_simple_action_set_enabled(
-            G_SIMPLE_ACTION(g_action_map_lookup_action(
-                map, EDITOR_ACTIONS[i].name)),
-            enabled);
+        GAction *action =            /* NULL once the map is torn down      */
+            g_action_map_lookup_action(map, EDITOR_ACTIONS[i].name);
+        if (action != NULL)
+            g_simple_action_set_enabled(G_SIMPLE_ACTION(action), enabled);
     }
 }
 
-/* on_view_focus_in() / on_view_focus_out() — the gate.                      */
-static gboolean
-on_view_focus_in(GtkWidget *widget, GdkEventFocus *event, gpointer user_data)
+/* on_view_is_focus_changed() — the gate: "notify::is-focus" of the view's
+ * focus controller.  is-focus, not enter/leave — those also fire for the
+ * view's DESCENDANTS, and a table cell (its own GtkTextView) is exactly
+ * where the gate must be closed (D11).                                      */
+static void
+on_view_is_focus_changed(GObject *controller, GParamSpec *pspec,
+                         gpointer user_data)
 {
-    (void)widget; (void)event;
-    editor_actions_set_editing(user_data, TRUE);
-    return FALSE;
+    (void)pspec;
+    editor_actions_set_editing(
+        user_data,
+        gtk_event_controller_focus_is_focus(
+            GTK_EVENT_CONTROLLER_FOCUS(controller)));
 }
-
-static gboolean
-on_view_focus_out(GtkWidget *widget, GdkEventFocus *event, gpointer user_data)
-{
-    (void)widget; (void)event;
-    editor_actions_set_editing(user_data, FALSE);
-    return FALSE;
-}
-
 /* ---------------------------------------------------------------------------
  * editor_install_actions() — add every action to the window: the table
  * above, plus the stateful "table-header" behind the table menu's check
@@ -5603,18 +5664,26 @@ editor_install_actions(OnEditor *ed)
     g_object_unref(header);
 
     /* Nothing has the focus until the window shows; the view takes it then
-     * (on_editor_window_open grabs it after show_all) and the focus-in
-     * handler opens the gate.  Until then the editing actions are off.    */
+     * (on_editor_window_open grabs it after presenting) and the focus
+     * controller opens the gate.  Until then the editing actions are off. */
     editor_actions_set_editing(ed, FALSE);
-    g_signal_connect(ed->view, "focus-in-event",
-                     G_CALLBACK(on_view_focus_in), ed);
-    g_signal_connect(ed->view, "focus-out-event",
-                     G_CALLBACK(on_view_focus_out), ed);
+    GtkEventController *focus = gtk_event_controller_focus_new();
+    g_signal_connect(focus, "notify::is-focus",
+                     G_CALLBACK(on_view_is_focus_changed), ed);
+    gtk_widget_add_controller(GTK_WIDGET(ed->view), focus);
 }
 
 /* ---------------------------------------------------------------------------
- * editor_connect_signals() — connect all buffer/view/window signals.  Called
- * after content is loaded so that loading never triggers autosave handlers.
+ * editor_connect_signals() — connect all buffer signals and install the
+ * view's and the window's event controllers.  Called after content is
+ * loaded so that loading never triggers autosave handlers.
+ *
+ * The view's key controller and click gesture run in the CAPTURE phase:
+ * GtkTextView's own controllers are bubble-phase, and both of ours must
+ * see the event first (Enter-in-list before the view inserts a newline, a
+ * right press before the view builds its popup).  The window's key
+ * controller is capture-phase too, so the modal image viewer is offered
+ * every key before the focus widget.
  * ------------------------------------------------------------------------- */
 static void
 editor_connect_signals(OnEditor *ed)
@@ -5631,123 +5700,36 @@ editor_connect_signals(OnEditor *ed)
                      G_CALLBACK(on_buffer_changed), ed);
     g_signal_connect(ed->buffer, "notify::cursor-position",
                      G_CALLBACK(on_cursor_moved), ed);
-    g_signal_connect(ed->view, "key-press-event",
-                     G_CALLBACK(on_view_key_press), ed);
     g_signal_connect(ed->view, "paste-clipboard",
                      G_CALLBACK(on_paste_clipboard), ed);
-    g_signal_connect(ed->view, "button-press-event",
-                     G_CALLBACK(on_view_button_press), ed);
-    g_signal_connect_after(ed->view, "motion-notify-event",
-                           G_CALLBACK(on_view_motion_notify), ed);
-    g_signal_connect(ed->view, "populate-popup",
-                     G_CALLBACK(on_view_populate_popup), ed);
-    g_signal_connect(ed->view, "size-allocate",
-                     G_CALLBACK(on_view_size_allocate), ed);
-    g_signal_connect_after(ed->view, "draw",
-                           G_CALLBACK(on_view_draw), ed);
-    g_signal_connect(ed->window, "key-press-event",
-                     G_CALLBACK(on_editor_window_key_press), ed);
+
+    GtkEventController *keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(keys, "key-pressed",
+                     G_CALLBACK(on_view_key_pressed), ed);
+    gtk_widget_add_controller(GTK_WIDGET(ed->view), keys);
+
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_view_pressed), ed);
+    gtk_widget_add_controller(GTK_WIDGET(ed->view),
+                              GTK_EVENT_CONTROLLER(click));
+
+    GtkEventController *win_keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(win_keys, GTK_PHASE_CAPTURE);
+    g_signal_connect(win_keys, "key-pressed",
+                     G_CALLBACK(on_editor_window_key_pressed), ed);
+    gtk_widget_add_controller(ed->window, win_keys);
+
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);
-    g_signal_connect(ed->window, "focus-in-event",
-                     G_CALLBACK(on_editor_focus_in), ed);
+    g_signal_connect(ed->window, "notify::is-active",
+                     G_CALLBACK(on_editor_active_changed), ed);
 
     /* Give existing code blocks their floating copy buttons.               */
     code_buttons_queue_rebuild(ed);
-
-}
-
-/* ---------------------------------------------------------------------------
- * editor_workarea() — the usable rectangle of the monitor a new editor
- * should appear on: the one showing the library window, so the editor lands
- * on the display the user is working on; the primary monitor otherwise (an
- * editor opened from the CLI may have no library window yet).  The work
- * AREA, not the full monitor rect, is what positions are measured against —
- * it already excludes the macOS menu bar and Dock, and Linux panels.
- * Returns FALSE when there is no display at all.
- * ------------------------------------------------------------------------- */
-static gboolean
-editor_workarea(OnEditor *ed, GdkRectangle *area)
-{
-    GdkDisplay *display = gdk_display_get_default();
-    if (display == NULL)
-        return FALSE;
-
-    GdkMonitor *monitor = NULL;      /* the display to corner into          */
-    if (ed->app->library_window != NULL) {
-        GdkWindow *lib = gtk_widget_get_window(ed->app->library_window);
-        if (lib != NULL)
-            monitor = gdk_display_get_monitor_at_window(display, lib);
-    }
-    if (monitor == NULL)
-        monitor = gdk_display_get_primary_monitor(display);
-    if (monitor == NULL)
-        monitor = gdk_display_get_monitor(display, 0);
-    if (monitor == NULL)
-        return FALSE;
-
-    gdk_monitor_get_workarea(monitor, area);
-    return TRUE;
-}
-
-/* ---------------------------------------------------------------------------
- * editor_place_correct() — one-shot map handler that fixes up the corner
- * placement, then disconnects itself.  Needed because what gtk_window_move()
- * positions is platform-dependent (see quirk #21): quartz places the CLIENT
- * origin, X11 the frame's top-left.  Rather than encode either convention,
- * measure the frame once it exists and shift by whatever is left over —
- * gtk_window_get_position/move share one coordinate space, so the residual
- * applies cleanly.  On macOS the residual is 0 and no move happens at all.
- * ------------------------------------------------------------------------- */
-static gboolean
-editor_place_correct(GtkWidget *window, GdkEvent *event, gpointer user_data)
-{
-    (void)event;
-    OnEditor    *ed = user_data;     /* owning editor                       */
-    GdkRectangle area, frame;        /* work area / decorated window        */
-    if (editor_workarea(ed, &area)) {
-        gdk_window_get_frame_extents(gtk_widget_get_window(window), &frame);
-        gint dx = (area.x + area.width  - EDITOR_SCREEN_MARGIN)
-                  - (frame.x + frame.width);
-        gint dy = (area.y + area.height - EDITOR_SCREEN_MARGIN)
-                  - (frame.y + frame.height);
-        if (dx != 0 || dy != 0) {
-            gint px, py;             /* current position, same space        */
-            gtk_window_get_position(GTK_WINDOW(window), &px, &py);
-            gtk_window_move(GTK_WINDOW(window), px + dx, py + dy);
-        }
-    }
-    g_signal_handlers_disconnect_by_func(window,
-                                         G_CALLBACK(editor_place_correct), ed);
-    return FALSE;
-}
-
-/* ---------------------------------------------------------------------------
- * editor_place_bottom_right() — open a new editor in the BOTTOM-RIGHT corner
- * of its monitor, EDITOR_SCREEN_MARGIN px clear of the work area's edges.
- *   win_w/win_h — the CLIENT size just handed to gtk_window_set_default_size.
- *
- * The first move uses the client size, which is exact on quartz (where that
- * is what gtk_window_move positions) and close everywhere else; the map
- * handler above trims any remainder.  SOUTH_EAST gravity looks like the
- * tidier answer and is NOT: GTK applies it using the client size it knows
- * pre-map, and on quartz the result lands flush in the corner with the
- * margin silently swallowed (measured).  Clamped so a window taller or
- * wider than the work area still has its titlebar on screen.
- * ------------------------------------------------------------------------- */
-static void
-editor_place_bottom_right(OnEditor *ed, gint win_w, gint win_h)
-{
-    GdkRectangle area;               /* usable area, panels excluded        */
-    if (!editor_workarea(ed, &area))
-        return;                      /* headless: nothing to place against  */
-
-    gint x = area.x + area.width  - EDITOR_SCREEN_MARGIN - win_w;
-    gint y = area.y + area.height - EDITOR_SCREEN_MARGIN - win_h;
-    gtk_window_move(GTK_WINDOW(ed->window),
-                    MAX(x, area.x), MAX(y, area.y));
-    g_signal_connect(ed->window, "map-event",
-                     G_CALLBACK(editor_place_correct), ed);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5768,15 +5750,14 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
      * or the scroll if one was requested — the note may already be up from a
      * prior open).  Its buffer is long since allocated, so the reveal needs
      * no idle deferral here.                                               */
-    GtkWidget *existing = g_hash_table_lookup(app->editors, &note_id);
+    OnEditor *existing = editor_lookup(app, note_id);
     if (existing != NULL) {
-        gtk_window_present(GTK_WINDOW(existing));
-        OnEditor *ed = g_object_get_data(G_OBJECT(existing), "on-editor");
-        if (ed != NULL && search_term != NULL && *search_term != '\0')
-            editor_apply_search_term(ed, search_term);
-        if (ed != NULL && image_ord >= 0)
-            editor_reveal_image(ed, image_ord);
-        return existing;
+        gtk_window_present(GTK_WINDOW(existing->window));
+        if (search_term != NULL && *search_term != '\0')
+            editor_apply_search_term(existing, search_term);
+        if (image_ord >= 0)
+            editor_reveal_image(existing, image_ord);
+        return existing->window;
     }
 
     OnNoteMeta *meta = on_db_note_get(app->db, note_id);
@@ -5809,7 +5790,6 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     gint win_h = EDITOR_WIN_DEFAULT_H;
     on_app_config_get_size("editor_win_w", "editor_win_h", &win_w, &win_h);
     gtk_window_set_default_size(GTK_WINDOW(ed->window), win_w, win_h);
-    editor_place_bottom_right(ed, win_w, win_h);
     {
         gchar *wtitle = g_strdup_printf("Notes - %s", meta->title);
         gtk_window_set_title(GTK_WINDOW(ed->window), wtitle);
@@ -5844,7 +5824,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     }
 
     on_db_note_meta_free(meta);
-    gtk_widget_show_all(ed->window);
+    gtk_window_present(GTK_WINDOW(ed->window));
     gtk_widget_grab_focus(GTK_WIDGET(ed->view));
     return ed->window;
 }

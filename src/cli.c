@@ -239,7 +239,7 @@ note_from_arg(OnDatabase *db, const gchar *arg)
 static gboolean
 cli_require_gtk(void)
 {
-    if (gtk_init_check(NULL, NULL))
+    if (gtk_init_check())
         return TRUE;
     fprintf(stderr, "error: GTK could not initialize (needed to "
                     "process note content)\n");
@@ -1918,11 +1918,8 @@ cmd_backup(OnDatabase *db, const gchar *dest)
 static int
 cmd_export(OnDatabase *db, const gchar *dir, OnExportFormat format)
 {
-    if (!gtk_init_check(NULL, NULL)) {
-        fprintf(stderr, "error: GTK could not initialize (needed to "
-                        "render notes)\n");
+    if (!cli_require_gtk())
         return 2;
-    }
     /* The exporter only touches app->db.                                   */
     OnApp app = { 0 };
     app.db = db;

@@ -43,69 +43,235 @@ on_app_location_text(OnApp *app, const gchar *location)
 }
 
 void
-on_app_notice(GtkWindow *parent, GtkMessageType type,
-              const gchar *title, const gchar *fmt, ...)
+on_app_notice(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 {
     va_list args;                    /* printf-style arguments              */
     va_start(args, fmt);
     gchar *message = g_strdup_vprintf(fmt, args);
     va_end(args);
 
-    GtkWidget *dialog = gtk_message_dialog_new(
-        parent, GTK_DIALOG_MODAL, type, GTK_BUTTONS_OK, "%s", message);
+    /* The heading is the title when there is one, with the message as the
+     * detail line beneath it; without a title the message IS the heading.
+     * gtk_alert_dialog_show copies everything into the window it presents,
+     * so the dialog object is not needed once it is up.                    */
+    GtkAlertDialog *dialog =
+        gtk_alert_dialog_new("%s", title != NULL ? title : message);
     if (title != NULL)
-        gtk_window_set_title(GTK_WINDOW(dialog), title);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+        gtk_alert_dialog_set_detail(dialog, message);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
+    gtk_alert_dialog_show(dialog, parent);
+    g_object_unref(dialog);
     g_free(message);
 }
 
-gchar *
-on_app_pick_path(GtkWindow *parent, const gchar *title,
-                 GtkFileChooserAction action, const gchar *accept_label,
-                 const gchar *filter_name, const gchar *filter_pattern)
+/* PickJob — what on_app_pick_path() carries across the async gap: the
+ * chooser's kind (which decides the *_finish call) and the completion.    */
+typedef struct {
+    OnPickKind  kind;                /* open / save / folder                */
+    OnPickFunc  done;                /* the caller's continuation           */
+    gpointer    user_data;           /* passed to done                      */
+} PickJob;
+
+/* ---------------------------------------------------------------------------
+ * pick_path_done() — GAsyncReadyCallback for on_app_pick_path(): turn the
+ * chooser's result into a filesystem path (NULL when cancelled or
+ * dismissed) and hand it to the job's completion, then drop the dialog and
+ * the job.
+ *   source    — the GtkFileDialog.
+ *   result    — the async result.
+ *   user_data — the PickJob.
+ * ------------------------------------------------------------------------- */
+static void
+pick_path_done(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        title, parent, action,
-        "_Cancel",    GTK_RESPONSE_CANCEL,
-        accept_label, GTK_RESPONSE_ACCEPT,
-        NULL);
+    PickJob       *job    = user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GFile         *file;             /* the selection, NULL if cancelled    */
+
+    /* A cancel comes back as GTK_DIALOG_ERROR_DISMISSED with a NULL file —
+     * that is the answer, not an error worth reporting.                    */
+    switch (job->kind) {
+    case ON_PICK_OPEN:
+        file = gtk_file_dialog_open_finish(dialog, result, NULL);
+        break;
+    case ON_PICK_SAVE:
+        file = gtk_file_dialog_save_finish(dialog, result, NULL);
+        break;
+    default:
+        file = gtk_file_dialog_select_folder_finish(dialog, result, NULL);
+        break;
+    }
+    gchar *path = (file != NULL) ? g_file_get_path(file) : NULL;
+    g_clear_object(&file);
+
+    job->done(path, job->user_data);  /* the completion owns path           */
+    g_object_unref(dialog);          /* the ref on_app_pick_path took       */
+    g_free(job);
+}
+
+void
+on_app_pick_path(GtkWindow *parent, const gchar *title,
+                 OnPickKind kind, const gchar *accept_label,
+                 const gchar *filter_name, const gchar *filter_pattern,
+                 const gchar *start_dir,
+                 OnPickFunc done, gpointer user_data)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, title);
+    gtk_file_dialog_set_modal(dialog, TRUE);
+    gtk_file_dialog_set_accept_label(dialog, accept_label);
+    if (start_dir != NULL) {
+        GFile *folder = g_file_new_for_path(start_dir);
+        gtk_file_dialog_set_initial_folder(dialog, folder);
+        g_object_unref(folder);
+    }
     if (filter_name != NULL) {
         GtkFileFilter *filter = gtk_file_filter_new();
         gtk_file_filter_set_name(filter, filter_name);
-        gtk_file_filter_add_pattern(filter, filter_pattern);
-        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), filter);
+        if (filter_pattern != NULL) {
+            gtk_file_filter_add_pattern(filter, filter_pattern);
+        } else {
+            /* Every format the gdk-pixbuf loaders decode — which is what
+             * the caller will load the pick with — by MIME type (the
+             * one-call gtk_file_filter_add_pixbuf_formats is deprecated). */
+            GSList *formats = gdk_pixbuf_get_formats();
+            for (GSList *l = formats; l != NULL; l = l->next) {
+                gchar **mimes = gdk_pixbuf_format_get_mime_types(l->data);
+                for (gchar **m = mimes; m != NULL && *m != NULL; m++)
+                    gtk_file_filter_add_mime_type(filter, *m);
+                g_strfreev(mimes);
+            }
+            g_slist_free(formats);
+        }
+        GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+        g_list_store_append(filters, filter);
+        gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+        gtk_file_dialog_set_default_filter(dialog, filter);
+        g_object_unref(filters);
+        g_object_unref(filter);
     }
-    gchar *path = NULL;              /* the selection, NULL if cancelled    */
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
-        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_widget_destroy(chooser);
-    return path;
+
+    PickJob *job   = g_new0(PickJob, 1);
+    job->kind      = kind;
+    job->done      = done;
+    job->user_data = user_data;
+    /* The dialog stays referenced until pick_path_done runs.               */
+    switch (kind) {
+    case ON_PICK_OPEN:
+        gtk_file_dialog_open(dialog, parent, NULL, pick_path_done, job);
+        break;
+    case ON_PICK_SAVE:
+        gtk_file_dialog_save(dialog, parent, NULL, pick_path_done, job);
+        break;
+    default:
+        gtk_file_dialog_select_folder(dialog, parent, NULL, pick_path_done,
+                                      job);
+        break;
+    }
 }
 
 void
 on_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
 {
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css, css_text, -1, NULL);
+    gtk_css_provider_load_from_string(css, css_text);
+    /* The per-widget style context is deprecated since 4.10 with no
+     * replacement for a one-off snippet scoped to ONE widget (a display
+     * provider would need a unique name or class per call site).  Allowed
+     * by the port recipe, wrapped so the build stays warning-clean.        */
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     gtk_style_context_add_provider(gtk_widget_get_style_context(widget),
                                    GTK_STYLE_PROVIDER(css),
                                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+G_GNUC_END_IGNORE_DEPRECATIONS
     g_object_unref(css);
 }
 
-void
-on_app_menu_popup(GtkWidget *attach, GMenuModel *model,
-                  GdkEventButton *event)
+/* ---------------------------------------------------------------------------
+ * menu_popup_drop() — take on_app_menu_popup()'s popover down for good:
+ * stop watching its parent, unparent it if it still has one, and release
+ * the reference the popup took.  Safe to call twice (the second call finds
+ * nothing to do).
+ *   popover — the popover.
+ * ------------------------------------------------------------------------- */
+static void
+menu_popup_drop(GtkWidget *popover)
 {
-    GtkWidget *menu = gtk_menu_new_from_model(model);
-    g_object_unref(model);           /* the menu holds its own reference    */
-    gtk_menu_attach_to_widget(GTK_MENU(menu), attach, NULL);
-    /* "selection-done" fires AFTER the chosen item has activated, so the
-     * destroy never races the action.                                       */
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    guint idle = GPOINTER_TO_UINT(
+        g_object_steal_data(G_OBJECT(popover), "on-popup-idle"));
+    if (idle != 0)
+        g_source_remove(idle);
+    gulong handler = GPOINTER_TO_SIZE(
+        g_object_steal_data(G_OBJECT(popover), "on-popup-unrealize"));
+    GtkWidget *parent = gtk_widget_get_parent(popover);
+    if (parent != NULL) {
+        if (handler != 0)
+            g_signal_handler_disconnect(parent, handler);
+        gtk_widget_unparent(popover);
+    }
+    if (g_object_steal_data(G_OBJECT(popover), "on-popup-ref") != NULL)
+        g_object_unref(popover);
+}
+
+/* menu_popup_idle() — idle continuation of menu_popup_closed().            */
+static gboolean
+menu_popup_idle(gpointer data)
+{
+    g_object_set_data(G_OBJECT(data), "on-popup-idle", NULL);
+    menu_popup_drop(data);
+    return G_SOURCE_REMOVE;
+}
+
+/* ---------------------------------------------------------------------------
+ * menu_popup_closed() — "closed" handler for on_app_menu_popup()'s
+ * popover.  The teardown is deferred to an idle: "closed" fires from
+ * inside the popover's own popdown, and the chosen item's action may
+ * still be on the stack.
+ *   popover   — the popover that closed.
+ *   user_data — unused.
+ * ------------------------------------------------------------------------- */
+static void
+menu_popup_closed(GtkPopover *popover, gpointer user_data)
+{
+    (void)user_data;
+    g_object_set_data(G_OBJECT(popover), "on-popup-idle",
+                      GUINT_TO_POINTER(g_idle_add(menu_popup_idle, popover)));
+}
+
+/* ---------------------------------------------------------------------------
+ * menu_popup_parent_unrealize() — the popover's parent is being torn down
+ * (its window destroyed, or it removed from the tree) while the popover is
+ * still up or still waiting for its idle.  Drop the popover NOW: a
+ * GtkTextView disposing with a foreign child left in place never gets past
+ * it (gtk_text_view_dispose loops on its first child and only warns), and
+ * any other parent would leave the idle to unparent from a dead widget.
+ *   parent    — the widget losing its realization.
+ *   user_data — the popover.
+ * ------------------------------------------------------------------------- */
+static void
+menu_popup_parent_unrealize(GtkWidget *parent, gpointer user_data)
+{
+    (void)parent;
+    menu_popup_drop(user_data);
+}
+
+void
+on_app_menu_popup(GtkWidget *attach, GMenuModel *model, gdouble x, gdouble y)
+{
+    GtkWidget *popover = gtk_popover_menu_new_from_model(model);
+    g_object_unref(model);           /* the popover holds its own reference */
+    gtk_widget_set_parent(popover, attach);
+    /* Our own reference outlives the parent's, so the popover stays a valid
+     * object until menu_popup_drop has run whichever way it is reached.     */
+    g_object_set_data(G_OBJECT(popover), "on-popup-ref", g_object_ref(popover));
+    g_object_set_data(G_OBJECT(popover), "on-popup-unrealize",
+        GSIZE_TO_POINTER(g_signal_connect(attach, "unrealize",
+            G_CALLBACK(menu_popup_parent_unrealize), popover)));
+    gtk_popover_set_has_arrow(GTK_POPOVER(popover), FALSE);
+    GdkRectangle at = { (gint)x, (gint)y, 1, 1 };  /* the press, in attach  */
+    gtk_popover_set_pointing_to(GTK_POPOVER(popover), &at);
+    g_signal_connect(popover, "closed", G_CALLBACK(menu_popup_closed), NULL);
+    gtk_popover_popup(GTK_POPOVER(popover));
 }
 
 void
@@ -182,24 +348,53 @@ on_app_init_icons_dir(OnApp *app, const gchar *argv0)
     g_free(exe_dir);
 }
 
-cairo_surface_t *
-on_app_icon_surface(OnApp *app, const gchar *name, gint size)
+GdkTexture *
+on_app_texture_for_pixbuf(GdkPixbuf *pixbuf)
+{
+    /* gdk-pixbuf is 8-bit RGB(A), unpremultiplied — exactly R8G8B8(A8).
+     * read_pixel_bytes shares the pixbuf's buffer, so nothing is copied. */
+    GBytes *bytes = gdk_pixbuf_read_pixel_bytes(pixbuf);
+    GdkTexture *texture = gdk_memory_texture_new(
+        gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf),
+        gdk_pixbuf_get_has_alpha(pixbuf) ? GDK_MEMORY_R8G8B8A8
+                                         : GDK_MEMORY_R8G8B8,
+        bytes, (gsize)gdk_pixbuf_get_rowstride(pixbuf));
+    g_bytes_unref(bytes);
+    return texture;
+}
+
+/* ---------------------------------------------------------------------------
+ * display_scale_factor() — the integer scale factor of the display's
+ * first monitor (2 on Retina), 1 when no display or monitor is known yet.
+ * GTK4 has no "primary" monitor; the first listed one is the app's home
+ * for the purpose of rasterizing icons sharply.
+ * ------------------------------------------------------------------------- */
+static gint
+display_scale_factor(void)
+{
+    GdkDisplay *display = gdk_display_get_default();
+    if (display == NULL)
+        return 1;
+    GdkMonitor *monitor =            /* a new reference                     */
+        g_list_model_get_item(gdk_display_get_monitors(display), 0);
+    if (monitor == NULL)
+        return 1;
+    gint sf = gdk_monitor_get_scale_factor(monitor);
+    g_object_unref(monitor);
+    return sf;
+}
+
+GdkPaintable *
+on_app_icon_paintable(OnApp *app, const gchar *name, gint size)
 {
     static const gchar *EXTS[] = { "svg", "png" };
 
     /* Rasterize at the display's scale factor so icons stay sharp on
-     * HiDPI/Retina screens: `size` is the LOGICAL size, the backing
-     * pixels are size × sf, and the cairo surface's device scale maps
-     * between the two.                                                     */
-    gint sf = 1;                     /* display scale factor                */
-    GdkDisplay *display = gdk_display_get_default();
-    if (display != NULL) {
-        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
-        if (monitor == NULL)
-            monitor = gdk_display_get_monitor(display, 0);
-        if (monitor != NULL)
-            sf = gdk_monitor_get_scale_factor(monitor);
-    }
+     * HiDPI/Retina screens: `size` is the LOGICAL size, the texture holds
+     * size × sf pixels, and the widget that shows it is told the logical
+     * size (gtk_image_set_pixel_size), so GTK draws the extra pixels
+     * rather than upscaling.                                              */
+    gint sf = display_scale_factor();
 
     for (gsize i = 0; i < G_N_ELEMENTS(EXTS); i++) {
         gchar *path = g_strdup_printf("%s%c%s.%s",
@@ -212,11 +407,10 @@ on_app_icon_surface(OnApp *app, const gchar *name, gint size)
             GdkPixbuf *pix = gdk_pixbuf_new_from_file_at_size(
                 path, size * sf, size * sf, NULL);
             if (pix != NULL) {
-                cairo_surface_t *surface =
-                    gdk_cairo_surface_create_from_pixbuf(pix, sf, NULL);
+                GdkTexture *texture = on_app_texture_for_pixbuf(pix);
                 g_object_unref(pix);
                 g_free(path);
-                return surface;
+                return GDK_PAINTABLE(texture);
             }
         }
         g_free(path);
@@ -227,11 +421,12 @@ on_app_icon_surface(OnApp *app, const gchar *name, gint size)
 GtkWidget *
 on_app_icon_image_sized(OnApp *app, const gchar *name, gint size)
 {
-    cairo_surface_t *surface = on_app_icon_surface(app, name, size);
-    if (surface == NULL)
+    GdkPaintable *paintable = on_app_icon_paintable(app, name, size);
+    if (paintable == NULL)
         return NULL;
-    GtkWidget *image = gtk_image_new_from_surface(surface);
-    cairo_surface_destroy(surface);
+    GtkWidget *image = gtk_image_new_from_paintable(paintable);
+    gtk_image_set_pixel_size(GTK_IMAGE(image), size);
+    g_object_unref(paintable);       /* the image holds its own reference   */
     return image;
 }
 
@@ -256,7 +451,7 @@ on_app_icon_image(OnApp *app, const gchar *name)
  *   label           — last-resort text when both are absent
  *
  * Output:
- *   a shown, floating GtkWidget for the caller to parent.  Never NULL.
+ *   a floating GtkWidget for the caller to parent.  Never NULL.
  */
 static GtkWidget *
 tool_icon_widget(OnApp *app, const gchar *icon_name,
@@ -270,35 +465,45 @@ tool_icon_widget(OnApp *app, const gchar *icon_name,
                              fallback_markup != NULL ? fallback_markup
                                                      : label);
     }
-    gtk_widget_show(icon);
     return icon;
 }
 
-GtkToolItem *
+/* Object-data key under which a toolbar button keeps its accessible label,
+ * so on_app_tool_item_set_icon can rebuild the fallback glyph from it.     */
+#define TOOL_LABEL_KEY "on-tool-label"
+
+GtkWidget *
 on_app_tool_item_new(OnApp *app, gboolean toggle, const gchar *icon_name,
                      const gchar *fallback_markup, const gchar *label,
                      const gchar *tooltip)
 {
-    GtkToolItem *item = toggle
-        ? GTK_TOOL_ITEM(gtk_toggle_tool_button_new())
-        : GTK_TOOL_ITEM(gtk_tool_button_new(NULL, NULL));
-    gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), label);
-    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item),
+    GtkWidget *button = toggle ? gtk_toggle_button_new() : gtk_button_new();
+    gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);   /* flat         */
+    /* A toolbar press must not steal the focus from the text view: the
+     * editor's editing actions are gated on that focus (D11).             */
+    gtk_widget_set_focus_on_click(button, FALSE);
+    gtk_button_set_child(GTK_BUTTON(button),
         tool_icon_widget(app, icon_name, fallback_markup, label));
-    gtk_tool_item_set_tooltip_text(item, tooltip);
-    return item;
+    gtk_widget_set_tooltip_text(button, tooltip);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, label,
+                                   -1);
+    g_object_set_data_full(G_OBJECT(button), TOOL_LABEL_KEY,
+                           g_strdup(label), g_free);
+    return button;
 }
 
 void
-on_app_tool_item_set_icon(OnApp *app, GtkToolItem *item,
+on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
                           const gchar *icon_name,
                           const gchar *fallback_markup)
 {
-    /* GTK unparents and drops the old icon widget, which held the only
-     * reference to it, so the previous image is freed by this call.       */
-    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item),
+    /* set_child unparents and drops the old icon widget, which held the
+     * only reference to it, so the previous image is freed by this call.  */
+    gtk_button_set_child(GTK_BUTTON(button),
         tool_icon_widget(app, icon_name, fallback_markup,
-                         gtk_tool_button_get_label(GTK_TOOL_BUTTON(item))));
+                         g_object_get_data(G_OBJECT(button),
+                                           TOOL_LABEL_KEY)));
 }
 
 /* ---------------------------------------------------------------------------
@@ -464,8 +669,12 @@ on_app_apply_touch_assist(OnApp *app)
         on_app_config_get_bool("touch_assist", FALSE);
 
     if (!assist && app->touch_css == NULL) {
+        /* UNVERIFIED on GTK4: the node names below are GTK3's.  GTK 4.22's
+         * theme still styles "cursor-handle" (checked in its compiled CSS);
+         * the magnifier popover's "magnifier" class is assumed.  Settled
+         * when the touch aids are next seen on a Linux box.               */
         GtkCssProvider *css = gtk_css_provider_new();
-        gtk_css_provider_load_from_data(css,
+        gtk_css_provider_load_from_string(css,
             /* Selection/cursor handles: collapse the nodes entirely — no
              * themed teardrop graphic and a 0x0 allocation, so they
              * neither draw nor grab pointer input.                         */
@@ -487,15 +696,14 @@ on_app_apply_touch_assist(OnApp *app)
             "  background: none;"
             "  border: none;"
             "  box-shadow: none;"
-            "}",
-            -1, NULL);
-        gtk_style_context_add_provider_for_screen(
-            gdk_screen_get_default(), GTK_STYLE_PROVIDER(css),
+            "}");
+        gtk_style_context_add_provider_for_display(
+            gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
             GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
         app->touch_css = css;
     } else if (assist && app->touch_css != NULL) {
-        gtk_style_context_remove_provider_for_screen(
-            gdk_screen_get_default(),
+        gtk_style_context_remove_provider_for_display(
+            gdk_display_get_default(),
             GTK_STYLE_PROVIDER(app->touch_css));
         g_object_unref(app->touch_css);
         app->touch_css = NULL;
@@ -509,7 +717,7 @@ on_app_close_all_editors(OnApp *app)
      * list first.                                                          */
     GList *windows = g_hash_table_get_values(app->editors);
     for (GList *l = windows; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
+        gtk_window_destroy(GTK_WINDOW(l->data));
     g_list_free(windows);
 }
 

@@ -232,8 +232,9 @@ render_line_inline(OnExportCtx *ctx, GtkTextBuffer *buffer,
     on_flag_run_init(&frun, buffer, EXPORT_INLINE_MASK);
 
     while (gtk_text_iter_compare(&it, end) < 0) {
-        /* Images and tables live on child anchors; raw pixbufs are also
-         * accepted.                                                        */
+        /* Images and tables live on child anchors (a paintable inserted
+         * straight into the buffer carries no pixbuf and is skipped as a
+         * bare U+FFFC below).                                              */
         GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
         if (anchor != NULL && on_anchor_is_checkbox(anchor, NULL)) {
             /* Checkbox anchors are the line prefix, emitted at the block
@@ -251,8 +252,7 @@ render_line_inline(OnExportCtx *ctx, GtkTextBuffer *buffer,
             continue;
         }
         GdkPixbuf *pixbuf = (anchor != NULL)
-                            ? on_anchor_get_image(anchor, NULL)
-                            : gtk_text_iter_get_pixbuf(&it);
+                            ? on_anchor_get_image(anchor, NULL) : NULL;
         if (pixbuf != NULL) {
             emit_text_run(ctx, run->str, run_flags, raw);
             g_string_truncate(run, 0);

@@ -15,12 +15,14 @@
  *   |          Previous | Next          |
  *   +-----------------------------------+
  *
- * The panel is a GtkOverlay child: a dark event box covering the whole
- * overlay, so it swallows every click meant for the widget behind it and only
- * one picture is ever on show.  The image is fitted to the overlay less
- * ON_IMAGE_VIEWER_INSET on each side and the two label rows under it, and
- * re-fitted on a debounce when the host window is resized.  Nothing is held
- * across a close but the host's own data: the one big surface is dropped.
+ * The panel is a GtkOverlay child: a dark box covering the whole overlay
+ * whose click gesture swallows every press meant for the widget behind it,
+ * so only one picture is ever on show.  The image is a GtkPicture fitted
+ * (scaled DOWN only, aspect kept) to the overlay less ON_IMAGE_VIEWER_INSET
+ * on each side and the two label rows under it; a tick callback that runs
+ * only while the panel is open notices the overlay changing size and asks
+ * the host to render again after a short settle.  Nothing is held across a
+ * close but the host's own data: the texture is dropped.
  *
  * The panel knows nothing about where its pictures come from.  A host fills
  * in OnImageViewerOps and addresses its images by INDEX — for the media
@@ -96,9 +98,12 @@ OnImageViewer *on_image_viewer_new(GtkWidget *overlay,
                                    const gchar *action_tip);
 
 /* on_image_viewer_free() — drop the panel's own state.  Call it from the
- * host's "destroy" handler: it cancels the pending re-render and unhooks
- * from the overlay, so a size-allocate on the dying widget tree cannot
- * reach freed memory.  The widgets themselves belong to the overlay.        */
+ * host's "destroy" handler: it stops the tick and the settle timer, takes
+ * the panel out of the overlay if it is still in one, and releases the
+ * panel's own reference.  GTK4 emits a window's "destroy" AFTER its dispose
+ * has torn the child tree down (the reverse of GTK3), so the overlay may
+ * already be gone by then — the panel holds its own reference to its widget
+ * precisely so this works in either order, and never touches the overlay. */
 void on_image_viewer_free(OnImageViewer *v);
 
 /* on_image_viewer_open() — show image `idx`, replacing whatever was on show.

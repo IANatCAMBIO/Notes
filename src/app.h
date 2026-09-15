@@ -217,13 +217,19 @@ typedef void (*OnPickFunc)(gchar *path, gpointer user_data);
  *   accept_label   — accept-button label (e.g. "_Open").
  *   filter_name    — display name of a single file filter, or NULL for
  *                    no filter (filter_pattern is ignored when NULL).
- *   filter_pattern — glob the filter matches (e.g. "*.db").
+ *   filter_pattern — glob the filter matches (e.g. "*.db"), or NULL with
+ *                    a filter_name for "every image format GDK loads".
+ *   start_dir      — folder the chooser opens in, or NULL for GTK's
+ *                    choice (last used).  A re-pick of a persisted
+ *                    location passes that location, so the chooser
+ *                    starts where the setting points.
  *   done           — completion callback (always called, once).
  *   user_data      — passed to `done`.
  * ------------------------------------------------------------------------- */
 void on_app_pick_path(GtkWindow *parent, const gchar *title,
                       OnPickKind kind, const gchar *accept_label,
                       const gchar *filter_name, const gchar *filter_pattern,
+                      const gchar *start_dir,
                       OnPickFunc done, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
@@ -370,14 +376,12 @@ gboolean on_app_config_get_bool(const gchar *key, gboolean def);
  * provider that hides GTK's touch aids — the teardrop drag handles under
  * selections/the cursor ("cursor-handle" nodes, collapsed to nothing)
  * and the selection magnifier (its popover, rendered transparent).  Some
- * Linux input stacks pop these up for plain mouse selections; GTK3 has
- * no API to turn them off, so CSS is the lever.  Removes the provider
- * again when assistance is re-enabled.  Safe to call any time after GTK
- * is initialized; applies live.  The tap cut/copy/paste bubble is the
- * OTHER half of the setting: CSS cannot hide it safely (its buttons
- * would stay clickable while invisible), so main() suppresses it — and
- * the touch classification behind all of these — with
- * GDK_CORE_DEVICE_EVENTS=1 before GTK init (restart to change).
+ * Linux input stacks pop these up for plain mouse selections; GTK has no
+ * API to turn them off, so CSS is the lever.  Removes the provider again
+ * when assistance is re-enabled.  Safe to call any time after GTK is
+ * initialized; applies live.  The node names are GTK3's and UNVERIFIED on
+ * GTK4 (Phase 7); the GTK3 build also set GDK_CORE_DEVICE_EVENTS=1 to
+ * suppress the tap cut/copy/paste bubble, which has no GTK4 equivalent.
  *   app — the application context (owns the provider).
  * ------------------------------------------------------------------------- */
 void on_app_apply_touch_assist(OnApp *app);

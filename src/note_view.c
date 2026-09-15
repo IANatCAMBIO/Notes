@@ -520,7 +520,10 @@ note_view_snapshot(GtkWidget *widget, GtkSnapshot *snap)
     p.caret_visible = gtk_widget_has_focus(widget) && v->caret_on &&
                       !p.has_sel;
     p.focused = gtk_widget_has_focus(widget);
-    gtk_widget_get_color(widget, &p.fg);
+    /* Our own ink, whatever the window's state: the theme's backdrop
+     * dimming is exactly what quirk #23 was about.                        */
+    static const GdkRGBA ink = { 0.10, 0.10, 0.10, 1 };
+    p.fg = ink;
 
     gtk_snapshot_save(snap);
     gtk_snapshot_translate(snap, &GRAPHENE_POINT_INIT(0, -sy));

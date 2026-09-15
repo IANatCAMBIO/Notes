@@ -524,13 +524,29 @@ text_layout_new(OnDocLayout *L, const OnText *t, OnBlockKind kind,
     }
 
 #ifdef __APPLE__
-    /* Apple Color Emoji overdraws its advance: pad each emoji (D24).       */
+    /* Apple Color Emoji overdraws its advance: pad each emoji (D24).  The
+     * span covers the WHOLE emoji sequence — variation selectors, skin
+     * tones, ZWJ-joined parts — so an attribute boundary never cuts one
+     * (Pango would shape the tail on its own and warn).                    */
     for (const gchar *p = t->text->str; *p != '\0'; p = g_utf8_next_char(p)) {
-        if (is_emoji_char(g_utf8_get_char(p))) {
-            gsize o = (gsize)(p - t->text->str);
-            attr_span(attrs, pango_attr_letter_spacing_new(5 * PANGO_SCALE),
-                      IDX(o), IDX(o + (gsize)(g_utf8_next_char(p) - p)));
+        if (!is_emoji_char(g_utf8_get_char(p)))
+            continue;
+        const gchar *e = g_utf8_next_char(p);
+        while (*e != '\0') {
+            gunichar c = g_utf8_get_char(e);
+            gboolean joiner = c == 0xFE0F || c == 0x200D ||
+                              (c >= 0x1F3FB && c <= 0x1F3FF);
+            gboolean joined = (gsize)(e - t->text->str) > 0 &&
+                              g_utf8_get_char(g_utf8_prev_char(e)) == 0x200D &&
+                              is_emoji_char(c);
+            if (!joiner && !joined)
+                break;
+            e = g_utf8_next_char(e);
         }
+        gsize o = (gsize)(p - t->text->str);
+        attr_span(attrs, pango_attr_letter_spacing_new(5 * PANGO_SCALE),
+                  IDX(o), IDX((gsize)(e - t->text->str)));
+        p = g_utf8_prev_char(e);
     }
 #endif
 

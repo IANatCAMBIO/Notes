@@ -677,16 +677,14 @@ on_touch_assist_toggled(GtkCheckButton *check, gpointer user_data)
  * is the text above it.  Shrunk by padding and font size rather than by a
  * shorter label: the words are what say what the button does.
  *
- * min-height/min-width are named because Adwaita floors both, so trimming
- * the padding alone moves nothing.
+ * min-height/min-width are named (settings_install_css) because the theme
+ * floors both, so trimming the padding alone moves nothing.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_button(const gchar *label)
 {
     GtkWidget *btn = gtk_button_new_with_label(label);
-    on_app_widget_add_css(btn,
-        "button { padding: 1px 8px; min-height: 0; min-width: 0; }"
-        "button label { font-size: 85%; }");
+    gtk_widget_add_css_class(btn, "notes-small-button");
     gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
     return btn;
 }
@@ -698,11 +696,12 @@ small_button(const gchar *label)
  *
  * A default GtkSpinButton is enormous for a three-digit number, and the
  * lever is NOT the obvious one: width_chars alone moves almost
- * nothing, because Adwaita floors `min-width` on the entry and on both
- * stepper buttons, and a floor beats a request.  Both levers are kept
- * because they do different jobs: the CSS removes the floor, and `chars` is
- * what then decides the width — sized to the RANGE, so the widest value a
- * user can reach still fits without the entry scrolling under them.
+ * nothing, because the theme floors the spin button's size and pads it
+ * 8 px a side, and a floor beats a request.  Both levers are kept because
+ * they do different jobs: the CSS (settings_install_css) removes the
+ * floor, and `chars` is what then decides the width — sized to the RANGE,
+ * so the widest value a user can reach still fits without the entry
+ * scrolling under them.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
@@ -710,10 +709,7 @@ small_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
     GtkWidget *spin = gtk_spin_button_new_with_range(lo, hi, step);
     gtk_editable_set_width_chars(GTK_EDITABLE(spin), chars);
     gtk_editable_set_max_width_chars(GTK_EDITABLE(spin), chars);
-    on_app_widget_add_css(spin,
-        "spinbutton { min-width: 0; min-height: 0; }"
-        "spinbutton entry { min-width: 0; min-height: 0; padding: 1px 2px; }"
-        "spinbutton button { min-width: 0; min-height: 0; padding: 0 2px; }");
+    gtk_widget_add_css_class(spin, "notes-small-spin");
     return spin;
 }
 
@@ -834,10 +830,70 @@ on_ai_command_changed(GtkEditable *editable, gpointer user_data)
                       app->ai_command != NULL ? app->ai_command : NULL);
 }
 
+/* ---------------------------------------------------------------------------
+ * settings_install_css() — the Settings window's DISPLAY-level stylesheet,
+ * installed once per process (application priority, so every rule outranks
+ * the theme's in any widget state).  One rule per "notes-" class the
+ * window puts on its widgets:
+ *
+ * 1. small_button: a compact button — the theme floors min-height and
+ *    min-width, so both are named or trimming the padding moves nothing.
+ * 2. small_spin: a spin button no wider than its digits.  GTK4 keeps the
+ *    floor and the 8 px side padding on the `spinbutton` node itself
+ *    (Default theme: `spinbutton:not(.vertical), entry { min-height: 32px;
+ *    padding-left: 8px; padding-right: 8px }`), with a `text` child for the
+ *    digits and `button` children for the steppers — GTK3 had them on an
+ *    `entry` child, which no longer exists.
+ * 3. The Database health plate: a bordered frame in the theme's base
+ *    colour (see the plate comment in on_settings_window_open for why
+ *    named colours).  Verified on GTK 4.22's compiled Default theme:
+ *    @theme_base_color and @borders are both still defined (deprecated
+ *    since 4.16, warning only under GTK_DEBUG=css; the theme exports no
+ *    CSS variables to use instead).
+ * 4. The SHA-256 button: a relief-less label that happens to be clickable,
+ *    stripped of its box so the digest sits on the grid's value column.
+ * ------------------------------------------------------------------------- */
+static void
+settings_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "button.notes-small-button {"
+        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "}"
+        "button.notes-small-button > label { font-size: 85%; }"
+        "spinbutton.notes-small-spin {"
+        "  min-width: 0; min-height: 0; padding: 1px 2px;"
+        "}"
+        "spinbutton.notes-small-spin > text { min-width: 0; min-height: 0; }"
+        "spinbutton.notes-small-spin > button {"
+        "  min-width: 0; min-height: 0; padding: 0 2px;"
+        "}"
+        "frame.notes-plate {"
+        "  background-color: @theme_base_color;"
+        "  border: 1px solid @borders;"
+        "  border-radius: 6px;"
+        "  padding: 8px 10px;"
+        "}"
+        "button.notes-sha-button {"
+        "  padding: 0; margin: 0; border: none; min-height: 0; min-width: 0;"
+        "}"
+        "button.notes-sha-button > label { font-family: monospace; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+}
 
 void
 on_settings_window_open(OnApp *app)
 {
+    settings_install_css();
+
     GtkWidget *window = gtk_window_new();
     /* An application window, so the "app." accelerators (Quit,
      * Preferences) work while it has the focus.                            */
@@ -1019,7 +1075,8 @@ on_settings_window_open(OnApp *app)
      * theme's frame edge rather than doubling it up, since the snippet
      * restates the whole `border` property.
      *
-     * The colours are NAMED theme colours, never literals.
+     * The colours are NAMED theme colours, never literals (the rule is in
+     * settings_install_css).
      * @theme_base_color is the white a light theme paints its entries and
      * lists with, and it follows the theme into dark instead of leaving a
      * white slab there.  Named colours also mean GTK re-resolves them
@@ -1027,11 +1084,7 @@ on_settings_window_open(OnApp *app)
      * the declarations and leaves the plate flat, which is a plain look
      * rather than an unreadable one.                                      */
     GtkWidget *plate = gtk_frame_new(NULL);
-    on_app_widget_add_css(plate,
-        "frame { background-color: @theme_base_color;"
-        "        border: 1px solid @borders;"
-        "        border-radius: 6px;"
-        "        padding: 8px 10px; }");
+    gtk_widget_add_css_class(plate, "notes-plate");
     gtk_frame_set_child(GTK_FRAME(plate), info);
 
     /* Plate and button in a box of their own, and the SECTION MARGINS GO
@@ -1071,7 +1124,7 @@ on_settings_window_open(OnApp *app)
      * rather than beside the one line it used to refresh.                 */
     GtkWidget *health_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     dbs->led_label = gtk_label_new(LED_UNKNOWN);
-    on_app_widget_add_css(dbs->led_label, "label { font-size: 70%; }");
+    gtk_widget_add_css_class(dbs->led_label, "notes-dot-label");
     gtk_box_append(GTK_BOX(health_row), dbs->led_label);
     dbs->health_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(dbs->health_label), 0.0);
@@ -1084,14 +1137,12 @@ on_settings_window_open(OnApp *app)
 
     dbs->sha_btn = gtk_button_new_with_label("\xe2\x80\x94");
     gtk_button_set_has_frame(GTK_BUTTON(dbs->sha_btn), FALSE);
-    /* Every trace of the button's own box: padding, border and margin all
-     * offset the label, and the digest has to start at the same x as the
-     * four values above it or the column the grid exists to make is broken
-     * by the one row that is not a plain label.                           */
-    on_app_widget_add_css(dbs->sha_btn,
-        "button { padding: 0; margin: 0; border: none; min-height: 0;"
-        "         min-width: 0; }"
-        "button label { font-family: monospace; }");
+    /* Every trace of the button's own box goes (settings_install_css):
+     * padding, border and margin all offset the label, and the digest has
+     * to start at the same x as the four values above it or the column the
+     * grid exists to make is broken by the one row that is not a plain
+     * label.                                                              */
+    gtk_widget_add_css_class(dbs->sha_btn, "notes-sha-button");
     /* Attached straight to the grid: this row is one widget, and a box
      * holding a single child is a box that says nothing.                  */
     info_row_attach(info, 4, "SHA-256:", dbs->sha_btn);

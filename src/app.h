@@ -176,15 +176,6 @@ void on_app_status(OnApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 gchar *on_app_location_text(OnApp *app, const gchar *location);
 
 /* ---------------------------------------------------------------------------
- * on_app_widget_add_css() — attach a one-off CSS snippet to a single
- * widget's style context (application priority).  The provider is owned
- * by the style context after this call.
- *   widget   — the widget to style.
- *   css_text — the CSS.
- * ------------------------------------------------------------------------- */
-void on_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
-
-/* ---------------------------------------------------------------------------
  * on_app_notice() — show a modal OK message (a GtkAlertDialog) over
  * `parent` and return at once.  Fire-and-forget: GTK4 has no blocking
  * dialogs, and no caller ever needed the dismissal.
@@ -381,12 +372,25 @@ gboolean on_app_config_get_bool(const gchar *key, gboolean def);
  * Linux input stacks pop these up for plain mouse selections; GTK has no
  * API to turn them off, so CSS is the lever.  Removes the provider again
  * when assistance is re-enabled.  Safe to call any time after GTK is
- * initialized; applies live.  The node names are GTK3's and UNVERIFIED on
- * GTK4 (Phase 7); the GTK3 build also set GDK_CORE_DEVICE_EVENTS=1 to
- * suppress the tap cut/copy/paste bubble, which has no GTK4 equivalent.
+ * initialized; applies live.  The node names are verified against GTK
+ * 4.22.4 (see the function); the GTK3 build also set
+ * GDK_CORE_DEVICE_EVENTS=1 to suppress the tap cut/copy/paste bubble, which
+ * has no GTK4 equivalent.
  *   app — the application context (owns the provider).
  * ------------------------------------------------------------------------- */
 void on_app_apply_touch_assist(OnApp *app);
+
+/* ---------------------------------------------------------------------------
+ * on_app_install_css() — the app-wide DISPLAY-level stylesheet, installed
+ * once per process (later calls are no-ops): the rules for the "notes-"
+ * classes MORE THAN ONE window uses, so each look has one definition.
+ *   notes-status-label — a status-bar label (library and editor): 85%.
+ *   notes-dot-label    — a one-glyph indicator label (the editor's
+ *                        save-state dot, the Settings health LED): 70%.
+ * Per-window rules live in each module's own <module>_install_css().
+ * Call any time after GTK is initialized (there must be a display).
+ * ------------------------------------------------------------------------- */
+void on_app_install_css(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_set() — change one setting: updates the in-memory config

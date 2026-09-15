@@ -69,7 +69,8 @@
 /* How far the sidebar backdrop sits below the toolbar/window background it
  * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
  * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
- * pasted into two CSS declarations in library_build_sidebar.                */
+ * pasted into one CSS declaration in library_install_css, shared by the
+ * tree view and the spacer strip above it.                                  */
 #define SB_BG_SHADE "0.96"
 
 /* Sidebar row kinds (SB_KIND column).                                       */
@@ -2349,8 +2350,7 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
     g_object_set(p->emoji_entry, "show-emoji-icon", TRUE, NULL);
     gtk_widget_set_tooltip_text(p->emoji_entry,
                                 "Optional emoji \xe2\x80\x94 click to pick");
-    on_app_widget_add_css(p->emoji_entry,
-                          "entry { font-size: 18px; min-width: 0; }");
+    gtk_widget_add_css_class(p->emoji_entry, "notes-emoji-entry");
     if (initial_emoji != NULL && *initial_emoji != '\0')
         gtk_editable_set_text(GTK_EDITABLE(p->emoji_entry), initial_emoji);
     gtk_widget_set_halign(p->emoji_entry, GTK_ALIGN_START);
@@ -4282,16 +4282,12 @@ build_ai_pane(OnLibrary *lw)
     gtk_widget_set_hexpand(title, TRUE);
     gtk_box_append(GTK_BOX(header), title);
 
-    /* Compact CSS shared by both header buttons.                             */
-    const gchar *btn_css =
-        "button { padding: 0 4px; min-height: 0; font-size: 85%; }";
-
     /* The expanding title pushes both buttons to the right edge: Copy, then
-     * close (✕) at the far right.                                            */
+     * close (✕) at the far right.  Both compact (library_install_css).       */
     GtkWidget *copy_btn = gtk_button_new_with_label("Copy");
     gtk_button_set_has_frame(GTK_BUTTON(copy_btn), FALSE);
     gtk_widget_set_tooltip_text(copy_btn, "Copy summary to clipboard");
-    on_app_widget_add_css(copy_btn, btn_css);
+    gtk_widget_add_css_class(copy_btn, "notes-ai-button");
     g_signal_connect(copy_btn, "clicked",
                      G_CALLBACK(on_ai_copy_clicked), lw);
     gtk_box_append(GTK_BOX(header), copy_btn);
@@ -4299,7 +4295,7 @@ build_ai_pane(OnLibrary *lw)
     GtkWidget *close_btn = gtk_button_new_with_label("\xe2\x9c\x95");
     gtk_button_set_has_frame(GTK_BUTTON(close_btn), FALSE);
     gtk_widget_set_tooltip_text(close_btn, "Close AI summary");
-    on_app_widget_add_css(close_btn, btn_css);
+    gtk_widget_add_css_class(close_btn, "notes-ai-button");
     g_signal_connect(close_btn, "clicked",
                      G_CALLBACK(on_ai_close_clicked), pane);
     gtk_box_append(GTK_BOX(header), close_btn);
@@ -5800,46 +5796,9 @@ library_build_sidebar(OnLibrary *lw)
         gtk_tree_view_append_column(lw->sidebar, name_col);
     }
 
-    /* Sidebar palette: the backdrop (rows AND the empty area below them —
-     * the tree view paints the whole widget) is the theme's window/toolbar
-     * background taken down a step, so the pane sits just behind the
-     * toolbar above it and reads as distinct from the white notes list
-     * without pinning a grey of its own.  A tree view left alone would
-     * paint the white theme BASE colour instead.  Both CSS colour
-     * functions work from this widget-scoped provider (verified on GTK
-     * 3.24 / Adwaita: @theme_bg_color = rgb(246,245,244), exactly what the
-     * toolbar renders, and shade(…, 0.96) = rgb(238,236,234); GTK4's
-     * Default theme keeps the @theme_* names — re-verify at the CSS sweep,
-     * Phase 7); beware that
-     * an UNDEFINED colour name is NOT a parse error here — it silently
-     * renders transparent.  Then muted grey text and a blue selection bar
-     * (white text for contrast).                                           */
-    on_app_widget_add_css(GTK_WIDGET(lw->sidebar),
-        "treeview.view {"
-        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
-        "  color: rgb(65,65,65);"
-        "}"
-        "treeview.view:selected {"
-        "  background-color: rgb(86,131,224);"
-        "  color: white;"
-        "}"
-        /* Drop indicator: GTK4 draws it as a "dndtarget" sub-node of the
-         * tree view carrying a position class (before / after / into)
-         * with the :drop(active) state, framing the row under the
-         * pointer — a 2px line in the selection blue: top edge for
-         * BEFORE, bottom for AFTER, a full box for INTO.  The node exists
-         * only once enable_model_drag_dest has run (D5, below).           */
-        "treeview.view > dndtarget:drop(active) {"
-        "  border-color: rgb(86,131,224);"
-        "  border-width: 2px;"
-        "  border-style: solid;"
-        "}"
-        "treeview.view > dndtarget:drop(active).before {"
-        "  border-style: solid none none none;"
-        "}"
-        "treeview.view > dndtarget:drop(active).after {"
-        "  border-style: none none solid none;"
-        "}");
+    /* Sidebar palette and drop indicator: the "notes-sidebar" rules in
+     * library_install_css (see its banner for the colours).                */
+    gtk_widget_add_css_class(GTK_WIDGET(lw->sidebar), "notes-sidebar");
 
     GtkTreeSelection *sb_sel = gtk_tree_view_get_selection(lw->sidebar);
     gtk_tree_selection_set_select_function(sb_sel, sidebar_select_func,
@@ -5907,14 +5866,12 @@ library_build_sidebar(OnLibrary *lw)
      * It is a SPACER WIDGET rather than CSS padding: GtkScrolledWindow
      * ignores padding when allocating its child, and a margin on the tree
      * view would scroll away with it.  Painted in the sidebar grey so the
-     * strip reads as part of the pane.  A GtkBox has no background of its
-     * own, so it repeats the tree view's backdrop expression verbatim —
-     * keep the two in step.                                                */
+     * strip reads as part of the pane: a GtkBox has no background of its
+     * own, so library_install_css gives it the tree view's backdrop from
+     * the ONE declaration both share.                                      */
     GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
-    on_app_widget_add_css(sidebar_pad,
-        "box { background-color: shade(@theme_bg_color, "
-        SB_BG_SHADE "); }");
+    gtk_widget_add_css_class(sidebar_pad, "notes-sidebar-pad");
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_pad);
     gtk_box_append(GTK_BOX(sidebar_box), sidebar_scroll);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
@@ -6326,16 +6283,17 @@ library_build_status_bar(OnLibrary *lw)
     gtk_box_append(GTK_BOX(status_bar), lw->status_revealer);
 
     /* Both labels a step smaller than the UI font.                          */
-    on_app_widget_add_css(lw->status_path,  "label { font-size: 85%; }");
-    on_app_widget_add_css(lw->status_event, "label { font-size: 85%; }");
+    gtk_widget_add_css_class(lw->status_path,  "notes-status-label");
+    gtk_widget_add_css_class(lw->status_event, "notes-status-label");
 
     return status_bar;
 }
 
 /* ---------------------------------------------------------------------------
  * library_install_css() — the library's DISPLAY-level stylesheet, installed
- * once per process: rules that must reach nodes a widget-scoped provider
- * cannot.
+ * once per process at application priority (so every rule outranks the
+ * theme's in any widget state), scoped by the "notes-" classes the window
+ * puts on its widgets.
  *
  * 1. Grid thumbnails.  GtkCellRendererPixbuf hands a texture to GTK's icon
  *    helper, which paints a paintable at MIN(cell width, -gtk-icon-size) —
@@ -6351,6 +6309,31 @@ library_build_status_bar(OnLibrary *lw)
  *    on its own node saved with the "cell" class and the :hover state for
  *    the item under the pointer; GTK3's rendering gave that a visible
  *    outline, GTK4's theme has no rule for it, so the outline is ours.
+ * 4. Sidebar palette.  The backdrop (rows AND the empty area below them —
+ *    the tree view paints the whole widget) is the theme's window/toolbar
+ *    background taken down a step (SB_BG_SHADE), so the pane sits just
+ *    behind the toolbar above it and reads as distinct from the white
+ *    notes list without pinning a grey of its own; a tree view left alone
+ *    paints the white theme BASE colour.  The spacer strip above the tree
+ *    (library_build_sidebar) shares the declaration.  Then muted grey text
+ *    and a blue selection bar with white text.  Verified on GTK 4.22's
+ *    compiled Default theme: it still defines @theme_bg_color (#f6f5f4
+ *    light) and still parses shade() — both DEPRECATED since 4.16 (they
+ *    warn only under GTK_DEBUG=css) but the theme exports no CSS variables
+ *    to replace them with.  Beware that an UNDEFINED colour name is NOT a
+ *    parse error — it silently renders transparent.
+ * 5. Sidebar drop indicator.  GTK4 draws it as a "dndtarget" sub-node of
+ *    the tree view carrying a position class (before / after / into) with
+ *    the :drop(active) state, framing the row under the pointer — a 2px
+ *    line in the selection blue: top edge for BEFORE, bottom for AFTER, a
+ *    full box for INTO.  The node exists only once
+ *    enable_model_drag_dest has run (D5).
+ * 6. The emoji entry of the folder dialog: one emoji wide — the theme's
+ *    entry min-width would otherwise span the dialog (D22).
+ * 7. The AI pane's two compact header buttons.
+ * 8. The sidebar/notes divider: a 6 px handle (wide-handle mode gives the
+ *    separator node a 5 px theme floor; min-WIDTH is the lever on a
+ *    horizontal paned).
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -6368,7 +6351,31 @@ library_install_css(void)
         "  background-color: alpha(currentColor, 0.06);"
         "  border: 1px solid alpha(currentColor, 0.35);"
         "  border-radius: 4px;"
-        "}",
+        "}"
+        "treeview.notes-sidebar, box.notes-sidebar-pad {"
+        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
+        "}"
+        "treeview.notes-sidebar { color: rgb(65,65,65); }"
+        "treeview.notes-sidebar:selected {"
+        "  background-color: rgb(86,131,224);"
+        "  color: white;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active) {"
+        "  border-color: rgb(86,131,224);"
+        "  border-width: 2px;"
+        "  border-style: solid;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active).before {"
+        "  border-style: solid none none none;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active).after {"
+        "  border-style: none none solid none;"
+        "}"
+        "entry.notes-emoji-entry { font-size: 18px; min-width: 0; }"
+        "button.notes-ai-button {"
+        "  padding: 0 4px; min-height: 0; font-size: 85%%;"
+        "}"
+        "paned.notes-split > separator { min-width: 6px; }",
         THUMB_SIZE);
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);
@@ -6448,9 +6455,10 @@ on_library_window_create(OnApp *app)
     /* A 6 px divider: wide-handle switches GtkPaned off its hairline style,
      * and the exact width comes from CSS on the handle's own `separator`
      * node (this paned is horizontal, so its separator is vertical and
-     * min-WIDTH is the lever).                                             */
+     * min-WIDTH is the lever) — the "notes-split" rule in
+     * library_install_css.                                                 */
     gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
-    on_app_widget_add_css(paned, "paned > separator { min-width: 6px; }");
+    gtk_widget_add_css_class(paned, "notes-split");
     gtk_paned_set_start_child(GTK_PANED(paned), lw->sidebar_box);
     gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
     gtk_paned_set_shrink_start_child(GTK_PANED(paned), FALSE);

@@ -2884,12 +2884,9 @@ attach_checkbox_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
     gtk_check_button_set_active(GTK_CHECK_BUTTON(btn), checked);
     /* Anchored children sit with their BOTTOM on the text baseline, so
      * theme padding above/below the indicator lifts the box's center
-     * above the text's optical center.  Strip it (pinned for all states,
-     * like the code copy button — quirk of themed sizes) so the widget
-     * is just the bare indicator.                                          */
-    on_app_widget_add_css(btn,
-        "checkbutton, checkbutton:hover, checkbutton:active "
-        "{ padding: 0; min-height: 0; } check { margin: 0; }");
+     * above the text's optical center.  Strip it (editor_install_css) so
+     * the widget is just the bare indicator.                               */
+    gtk_widget_add_css_class(btn, "notes-task-check");
     /* Keyboard focus stays in the text; the box is mouse-only, and shows
      * the hyperlink-style hand while hovered.                              */
     gtk_widget_set_focusable(btn, FALSE);
@@ -3130,13 +3127,9 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
             gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(cell), 3);
             gtk_widget_set_size_request(cell, 64, -1);
 
-            /* Header row: bold on a light grey fill.                       */
+            /* Header row: bold on a light grey fill (editor_install_css). */
             if (table->header && r == 0)
-                on_app_widget_add_css(cell,
-                    "textview, textview text {"
-                    "  background-color: #ececec;"
-                    "  font-weight: bold;"
-                    "}");
+                gtk_widget_add_css_class(cell, "notes-table-header");
 
             g_object_set_data(G_OBJECT(cell_buf), "on-anchor", anchor);
             g_object_set_data(G_OBJECT(cell_buf), "on-row",
@@ -3156,8 +3149,9 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
             gtk_widget_add_controller(cell, GTK_EVENT_CONTROLLER(press));
 
             GtkWidget *frame = gtk_frame_new(NULL);
-            /* Square cells: Adwaita rounds every frame 8 px in GTK4.     */
-            on_app_widget_add_css(frame, "frame { border-radius: 0; }");
+            /* Square cells: the theme rounds every frame 8 px in GTK4
+             * (editor_install_css takes it back off).                    */
+            gtk_widget_add_css_class(frame, "notes-table-cell");
             gtk_frame_set_child(GTK_FRAME(frame), cell);
             gtk_grid_attach(GTK_GRID(grid), frame, c, r, 1, 1);
         }
@@ -5493,11 +5487,10 @@ editor_build_view(OnEditor *ed)
                                "weight", PANGO_WEIGHT_BOLD,
                                "scale",  1.6,
                                NULL);
-    /* Caret sizing while the buffer is EMPTY, where no tag can apply: 160%
-     * matches the scale above, so the caret is already the height of the
-     * title the first keystroke produces.  title_line_sync owns the class. */
-    on_app_widget_add_css(GTK_WIDGET(ed->view),
-                          "textview.on-title-empty { font-size: 160%; }");
+    /* Caret sizing while the buffer is EMPTY, where no tag can apply: the
+     * "on-title-empty" class (rule in editor_install_css, 160% to match
+     * the scale above) makes the caret already the height of the title
+     * the first keystroke produces.  title_view_sync owns the class.       */
 
     gtk_text_view_set_editable(ed->view, TRUE);
     gtk_text_view_set_wrap_mode(ed->view, GTK_WRAP_WORD_CHAR);
@@ -5596,19 +5589,19 @@ editor_build_layout(OnEditor *ed)
     gtk_label_set_ellipsize(GTK_LABEL(ed->status_path),
                             PANGO_ELLIPSIZE_MIDDLE);
     gtk_widget_set_hexpand(ed->status_path, TRUE);
-    on_app_widget_add_css(ed->status_path, "label { font-size: 85%; }");
+    gtk_widget_add_css_class(ed->status_path, "notes-status-label");
 
     /* Note id — built hidden: its updater owns visibility
      * (statusbar_note_id setting, default off).                            */
     ed->status_note_id = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(ed->status_note_id), 1.0);
-    on_app_widget_add_css(ed->status_note_id, "label { font-size: 85%; }");
+    gtk_widget_add_css_class(ed->status_note_id, "notes-status-label");
     gtk_widget_set_visible(ed->status_note_id, FALSE);
 
     /* Save-state dot — the very last thing on the bar, always shown.        */
     ed->status_dirty = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(ed->status_dirty), 1.0);
-    on_app_widget_add_css(ed->status_dirty, "label { font-size: 70%; }");
+    gtk_widget_add_css_class(ed->status_dirty, "notes-dot-label");
 
     GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_margin_start(status_bar, 8);
@@ -5849,6 +5842,49 @@ editor_connect_signals(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_install_css() — the editor's DISPLAY-level stylesheet, installed
+ * once per process (application priority, so every rule outranks the
+ * theme's whatever the widget's state).  One rule per "notes-" class the
+ * editor puts on its widgets; a class-scoped selector reaches the sub-nodes
+ * (`> check`, `> text`) the old per-widget providers reached implicitly.
+ *
+ * 1. Task checkboxes: the bare indicator, no theme padding around it
+ *    (attach_checkbox_widget).
+ * 2. Table header cells: bold on a light grey fill.  GTK4 paints the text
+ *    on the view's `text` child (the theme makes it transparent), so both
+ *    nodes get the colour.
+ * 3. Table cell frames: square — the theme rounds every frame 8 px.
+ * 4. The empty-buffer title caret (title_view_sync): 160% matches the
+ *    on-title-size tag's 1.6 scale.  The class sits on the `textview` node
+ *    itself, since the view takes its default font from its own style.
+ * The status bar's labels take the app-wide classes (on_app_install_css):
+ * notes-status-label for the path and the note id, notes-dot-label for the
+ * save-state dot.
+ * ------------------------------------------------------------------------- */
+static void
+editor_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "checkbutton.notes-task-check { padding: 0; min-height: 0; }"
+        "checkbutton.notes-task-check > check { margin: 0; }"
+        "textview.notes-table-header, textview.notes-table-header > text {"
+        "  background-color: #ececec;"
+        "  font-weight: bold;"
+        "}"
+        "frame.notes-table-cell { border-radius: 0; }"
+        "textview.on-title-empty { font-size: 160%; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+}
+
+/* ---------------------------------------------------------------------------
  * editor_window_open_full() — shared implementation behind the three public
  * open functions.  Both extras are optional and mutually independent:
  *   search_term — pre-populates the in-note search box and jumps to the
@@ -5882,6 +5918,8 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
                   note_id);
         return NULL;
     }
+
+    editor_install_css();
 
     OnEditor *ed = g_new0(OnEditor, 1);
     ed->join_para = -1;

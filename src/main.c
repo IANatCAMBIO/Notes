@@ -316,7 +316,9 @@ on_startup(GtkApplication *gtk_app, gpointer user_data)
     g_free(theme_dir);
     gtk_window_set_default_icon_name("notes");
 
-    /* Hide the touch aids (selection handles, magnifier) unless enabled.   */
+    /* The app-wide stylesheet (the classes every window shares), then hide
+     * the touch aids (selection handles, magnifier) unless enabled.        */
+    on_app_install_css();
     on_app_apply_touch_assist(app);
 }
 

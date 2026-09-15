@@ -170,23 +170,6 @@ on_app_pick_path(GtkWindow *parent, const gchar *title,
     }
 }
 
-void
-on_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
-{
-    GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(css, css_text);
-    /* The per-widget style context is deprecated since 4.10 with no
-     * replacement for a one-off snippet scoped to ONE widget (a display
-     * provider would need a unique name or class per call site).  Allowed
-     * by the port recipe, wrapped so the build stays warning-clean.        */
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    gtk_style_context_add_provider(gtk_widget_get_style_context(widget),
-                                   GTK_STYLE_PROVIDER(css),
-                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-G_GNUC_END_IGNORE_DEPRECATIONS
-    g_object_unref(css);
-}
-
 /* ---------------------------------------------------------------------------
  * menu_popup_drop() — take on_app_menu_popup()'s popover down for good:
  * stop watching its parent, unparent it if it still has one, and release
@@ -694,21 +677,42 @@ on_app_config_load_db_dir(void)
 }
 
 void
+on_app_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "label.notes-status-label { font-size: 85%; }"
+        "label.notes-dot-label { font-size: 70%; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+}
+
+void
 on_app_apply_touch_assist(OnApp *app)
 {
     gboolean assist =                /* default: disabled                   */
         on_app_config_get_bool("touch_assist", FALSE);
 
     if (!assist && app->touch_css == NULL) {
-        /* UNVERIFIED on GTK4: the node names below are GTK3's.  GTK 4.22's
-         * theme still styles "cursor-handle" (checked in its compiled CSS);
-         * the magnifier popover's "magnifier" class is assumed.  Settled
-         * when the touch aids are next seen on a Linux box.               */
+        /* Node names VERIFIED against GTK 4.22.4: GtkTextHandle's CSS name
+         * is "cursor-handle" (gtktexthandle.c, and the Default theme
+         * styles it), and GtkTextView adds the "magnifier" class to the
+         * GtkPopover holding its GtkMagnifier (gtktextview.c).            */
         GtkCssProvider *css = gtk_css_provider_new();
         gtk_css_provider_load_from_string(css,
             /* Selection/cursor handles: collapse the nodes entirely — no
              * themed teardrop graphic and a 0x0 allocation, so they
-             * neither draw nor grab pointer input.                         */
+             * neither draw nor grab pointer input.  -gtk-icon-source is
+             * still the property that paints the teardrop on 4.22
+             * (gtk_text_handle_snapshot -> gtk_css_style_snapshot_icon;
+             * the theme sets it per handle class), so "none" is what
+             * removes the graphic.                                          */
             "cursor-handle {"
             "  -gtk-icon-source: none;"
             "  background: none;"

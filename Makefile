@@ -107,8 +107,8 @@ run: $(BIN)
 DEV_DIR := dev
 DEV_DB  := $(DEV_DIR)/db/$(shell grep -o '"[a-z]*\.db"' src/db.h | tr -d '"')
 
-$(DEV_DIR)/notes.ini: | $(DEV_DIR)
-	printf '[notes]\ndb_dir=%s/$(DEV_DIR)/db\nnative_menubar=1\n' "$$(pwd)" > $@
+$(DEV_DIR)/notes.ini: notes.ini.defaults | $(DEV_DIR)
+	sed 's|^db_dir=.*|db_dir=$(CURDIR)/$(DEV_DIR)/db|' notes.ini.defaults > $@
 
 $(DEV_DIR):
 	mkdir -p $(DEV_DIR)/db
@@ -116,7 +116,15 @@ $(DEV_DIR):
 	ln -sf ../icons $(DEV_DIR)/icons
 	ln -sf ../notes.ini.defaults $(DEV_DIR)/notes.ini.defaults
 
-$(DEV_DB): $(BIN) $(DEV_DIR)/notes.ini
+# dev-check: refuse to touch anything unless the sandbox ini really names
+# the sandbox database — an empty or foreign db_dir would send the seed and
+# the run to the default location (or a real database) instead.
+dev-check: $(DEV_DIR)/notes.ini
+	@grep -q '^db_dir=$(CURDIR)/$(DEV_DIR)/db$$' $(DEV_DIR)/notes.ini || { \
+	  echo "$(DEV_DIR)/notes.ini does not point at $(DEV_DIR)/db — refusing" \
+	       "(rm $(DEV_DIR)/notes.ini to regenerate it)"; exit 1; }
+
+$(DEV_DB): dev-check | $(BIN)
 	cd $(DEV_DIR) && ./$(BIN) folder add Work && ./$(BIN) folder add Home/Kitchen \
 	  && printf 'Meeting notes\n\n! Send the agenda due 2026-10-01\n! Book the room\n#work' | ./$(BIN) note new --folder Work - \
 	  && printf 'Project plan\n\nA plan with a #work tag and some **body** text.' | ./$(BIN) note new --folder Work - \
@@ -126,7 +134,7 @@ $(DEV_DB): $(BIN) $(DEV_DIR)/notes.ini
 	  && ./$(BIN) note tag 3 home
 	@echo "seeded $(DEV_DB)"
 
-run-dev: $(BIN) $(DEV_DB)
+run-dev: $(BIN) $(DEV_DB) dev-check
 	cd $(DEV_DIR) && ./$(BIN)
 
 clean-dev:
@@ -295,4 +303,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run run-dev clean clean-dev app pkgroot deb rpm
+.PHONY: all run run-dev dev-check clean clean-dev app pkgroot deb rpm

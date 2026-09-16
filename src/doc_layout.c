@@ -35,6 +35,12 @@
  * never upscaled); "Display Full Size" on its menu enlarges it.            */
 #define IMAGE_THUMB_W 200
 #define IMAGE_THUMB_H 125
+/* Letter spacing around an emoji on macOS, px (see text_layout_new), and
+ * the extra the caret gets after a line's LAST emoji, where Pango keeps
+ * only the leading half of that spacing and Apple Color Emoji overdraws
+ * its advance to the right: without it the caret stands inside the glyph. */
+#define EMOJI_PAD       9
+#define EMOJI_CARET_PAD 4
 
 /* Colours (the app is a light theme; nothing here follows the widget's
  * backdrop state — that is the point, see CLAUDE.md quirk #23).            */
@@ -336,6 +342,45 @@ is_emoji_char(gunichar c)
            c == 0x2B50 || c == 0x2B55;         /* star, circle              */
 }
 
+/* emoji_sequence_end() — for `p` at an emoji, the byte just past its whole
+ * sequence: variation selectors, skin tones and ZWJ-joined parts.          */
+static const gchar *
+emoji_sequence_end(const gchar *text, const gchar *p)
+{
+    const gchar *e = g_utf8_next_char(p);
+    while (*e != '\0') {
+        gunichar c = g_utf8_get_char(e);
+        gboolean joiner = c == 0xFE0F || c == 0x200D ||
+                          (c >= 0x1F3FB && c <= 0x1F3FF);
+        gboolean joined = e > text &&
+                          g_utf8_get_char(g_utf8_prev_char(e)) == 0x200D &&
+                          is_emoji_char(c);
+        if (!joiner && !joined)
+            break;
+        e = g_utf8_next_char(e);
+    }
+    return e;
+}
+
+/* ends_with_emoji() — does the text before byte `off` end in an emoji
+ * sequence?                                                                 */
+static gboolean
+ends_with_emoji(const gchar *text, gsize off)
+{
+    /* Walk back over the sequence's tail, then check the head.             */
+    const gchar *p = text + off;
+    while (p > text) {
+        const gchar *q = g_utf8_prev_char(p);
+        gunichar c = g_utf8_get_char(q);
+        if (is_emoji_char(c))
+            return emoji_sequence_end(text, q) == text + off;
+        if (!(c == 0xFE0F || c == 0x200D || (c >= 0x1F3FB && c <= 0x1F3FF)))
+            return FALSE;
+        p = q;
+    }
+    return FALSE;
+}
+
 /* image_texture() — decode (once) the image behind `png` into `*cache`.     */
 static GdkTexture *
 image_texture(GBytes *png, gpointer *cache, GDestroyNotify *cache_free)
@@ -527,24 +572,16 @@ text_layout_new(OnDocLayout *L, const OnText *t, OnBlockKind kind,
     /* Apple Color Emoji overdraws its advance: pad each emoji (D24).  The
      * span covers the WHOLE emoji sequence — variation selectors, skin
      * tones, ZWJ-joined parts — so an attribute boundary never cuts one
-     * (Pango would shape the tail on its own and warn).                    */
+     * (Pango would shape the tail on its own and warn).  Pango splits the
+     * spacing half before, half after the glyph and DROPS the trailing
+     * half at a line end (measured: 5 px adds 3 there, 5 mid-line); the
+     * caret after a line's last emoji gets EMOJI_CARET_PAD for that.      */
     for (const gchar *p = t->text->str; *p != '\0'; p = g_utf8_next_char(p)) {
         if (!is_emoji_char(g_utf8_get_char(p)))
             continue;
-        const gchar *e = g_utf8_next_char(p);
-        while (*e != '\0') {
-            gunichar c = g_utf8_get_char(e);
-            gboolean joiner = c == 0xFE0F || c == 0x200D ||
-                              (c >= 0x1F3FB && c <= 0x1F3FF);
-            gboolean joined = (gsize)(e - t->text->str) > 0 &&
-                              g_utf8_get_char(g_utf8_prev_char(e)) == 0x200D &&
-                              is_emoji_char(c);
-            if (!joiner && !joined)
-                break;
-            e = g_utf8_next_char(e);
-        }
+        const gchar *e = emoji_sequence_end(t->text->str, p);
         gsize o = (gsize)(p - t->text->str);
-        attr_span(attrs, pango_attr_letter_spacing_new(5 * PANGO_SCALE),
+        attr_span(attrs, pango_attr_letter_spacing_new(EMOJI_PAD * PANGO_SCALE),
                   IDX(o), IDX((gsize)(e - t->text->str)));
         p = g_utf8_prev_char(e);
     }
@@ -868,8 +905,20 @@ on_doc_layout_caret_rect(OnDocLayout *L, OnPos pos, graphene_rect_t *out)
         idx = pos.offset + (gsize)L->pre_cursor;
     PangoRectangle strong;
     pango_layout_get_cursor_pos(layout, (gint)idx, &strong, NULL);
-    *out = GRAPHENE_RECT_INIT(ox + strong.x / (gdouble)PANGO_SCALE,
-                              oy + strong.y / (gdouble)PANGO_SCALE, 1,
+    gdouble x = ox + strong.x / (gdouble)PANGO_SCALE;
+#ifdef __APPLE__
+    /* After a line's last emoji: clear of the glyph's overdraw.            */
+    if (idx > 0) {
+        gint line, lx;
+        pango_layout_index_to_line_x(layout, (gint)idx, FALSE, &line, &lx);
+        PangoLayoutLine *ll = pango_layout_get_line_readonly(layout, line);
+        const gchar *text = pango_layout_get_text(layout);
+        if ((gsize)(ll->start_index + ll->length) == idx &&
+            ends_with_emoji(text, idx))
+            x += EMOJI_CARET_PAD;
+    }
+#endif
+    *out = GRAPHENE_RECT_INIT(x, oy + strong.y / (gdouble)PANGO_SCALE, 1,
                               strong.height / (gdouble)PANGO_SCALE);
 }
 

@@ -2,13 +2,9 @@
 
 Notes is my take on an Apple Notes–style app, coded in classic C
 with GTK 4 and SQLite — **with the help of Claude Code for edits,
-testing, and code organization**. No electron or interpreted code. Low
-resource usage, and runs the same on macOS and Linux.
-
-Plain GTK 4, **no libadwaita**: nothing here assumes GNOME. It builds and
-runs against nothing but GTK itself, so it fits an XFCE desktop (where
-it works great) — or any other — as naturally as it does macOS, and it
-uses no deprecated GTK API, so it will keep building.
+testing, and code organization**. No electron or interpreted code.
+Plain GTK 4, no libadwaita. Low resource usage, and runs the same on
+macOS and Linux.
 
 ![Notes](Screenshot.png)
 

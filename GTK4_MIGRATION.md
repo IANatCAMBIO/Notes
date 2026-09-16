@@ -686,7 +686,13 @@ add a second idiom.
   full spacing and clears the overdraw; tagging the following character too
   (the GTK3 recipe, from when Pango dropped the run-edge half) widens the
   follower as well — a hole before the next letter.  CLAUDE.md quirk #12's
-  "self + the following char" is therefore wrong for this branch.
+  "self + the following char" is therefore wrong for this branch.  In the
+  drawn view (doc_layout.c) the spacing is 9 px, not 5: Pango puts half
+  of it on each side of the glyph, drops the trailing half at a line end,
+  and Apple Color Emoji overdraws its advance by ~4 px, so at 5 the next
+  letter touched the emoji and the caret after a line-final emoji stood
+  inside it.  9 clears the follower, and the caret after a line's last
+  emoji is drawn EMOJI_CARET_PAD (4 px) further right on top of that.
 
 - **D25 · 2026-09-15 — A GtkTextView no longer requests its content
   WIDTH.**  `gtk_text_view_measure` (4.22) reports margins plus anchored

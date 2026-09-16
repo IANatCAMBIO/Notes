@@ -924,9 +924,11 @@ on_settings_window_open(OnApp *app)
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(window));
     gtk_window_set_title(GTK_WINDOW(window), "Notes - Settings");
-    gtk_window_set_default_size(GTK_WINDOW(window), 220, -1);   /* a floor:
-                                          the scrolled window propagates the
-                                          content's natural width above it */
+    /* No default width: a default size is what a window opens AT, natural
+     * size or not, and 210 px was narrower than the content — the entries
+     * ran under the scrollbar.  The scrolled window propagates the
+     * content's natural width, so the window opens exactly as wide as
+     * that.                                                                */
     gtk_window_set_transient_for(GTK_WINDOW(window),
                                  GTK_WINDOW(app->library_window));
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);

@@ -4621,8 +4621,8 @@ on_title_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
         g_free(pesc);
     }
     gtk_widget_set_visible(preview, show_preview);
-    gtk_widget_set_margin_top(box, comfy ? 7 : 2);
-    gtk_widget_set_margin_bottom(box, comfy ? 7 : 2);
+    gtk_widget_set_margin_top(box, comfy ? 4 : 0);
+    gtk_widget_set_margin_bottom(box, comfy ? 4 : 0);
 }
 
 /* --- notes list: Path / Modified / Created ---------------------------------*/
@@ -5794,6 +5794,11 @@ library_install_css(void)
         /* The Comfortable preview dims through alpha, so it stays
          * readable on the selection highlight (a fixed grey did not).   */
         "columnview.notes-columns label.notes-preview { opacity: 0.65; }"
+        /* Rows carry their own vertical spacing (on_title_bind's margins);
+         * the theme's cell padding on top made them a quarter too tall. */
+        "columnview.notes-columns > listview > row > cell {"
+        "  padding-top: 2px; padding-bottom: 2px;"
+        "}"
         /* Due Date urgency (on_action_due_bind): overdue red, today gold,
          * ahead green — darkened enough to read on the row stripes.      */
         "label.due-overdue { color: #c01c28; }"

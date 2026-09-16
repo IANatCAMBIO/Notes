@@ -303,6 +303,9 @@ bk_section_refresh(DbSection *s)
     g_free(dir);
 }
 
+/* The tallest the Settings window grows before it scrolls.               */
+#define SETTINGS_MAX_HEIGHT 600
+
 /* ---------------------------------------------------------------------------
  * The health block's three states, said in one place.
  *
@@ -924,11 +927,11 @@ on_settings_window_open(OnApp *app)
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(window));
     gtk_window_set_title(GTK_WINDOW(window), "Notes - Settings");
-    /* No default width: a default size is what a window opens AT, natural
-     * size or not, and 210 px was narrower than the content — the entries
-     * ran under the scrollbar.  The scrolled window propagates the
-     * content's natural width, so the window opens exactly as wide as
-     * that.                                                                */
+    /* No default width here: a default size is what a window opens AT,
+     * natural size or not, and 210 px was narrower than the content — the
+     * entries ran under the scrollbar.  The scrolled window propagates the
+     * content's natural width; the one case that needs more is handled at
+     * the end (the scrollbar's own width).                                 */
     gtk_window_set_transient_for(GTK_WINDOW(window),
                                  GTK_WINDOW(app->library_window));
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
@@ -955,7 +958,7 @@ on_settings_window_open(OnApp *app)
     gtk_scrolled_window_set_propagate_natural_width(
         GTK_SCROLLED_WINDOW(outer_scroll), TRUE);
     gtk_scrolled_window_set_max_content_height(
-        GTK_SCROLLED_WINDOW(outer_scroll), 600);
+        GTK_SCROLLED_WINDOW(outer_scroll), SETTINGS_MAX_HEIGHT);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(outer_scroll), vbox);
     gtk_window_set_child(GTK_WINDOW(window), outer_scroll);
 
@@ -1386,6 +1389,27 @@ on_settings_window_open(OnApp *app)
                      G_CALLBACK(on_ai_command_changed), app);
     g_signal_connect(custom_buf, "changed",
                      G_CALLBACK(on_ai_custom_prompt_changed), app);
+
+    /* The scrolled window propagates the content's natural width, but a
+     * vertical scrollbar it will show (content taller than the cap) is
+     * NOT in that request — GtkScrolledWindow counts an AUTOMATIC
+     * scrollbar only once it is up.  The bar then took its width out of
+     * the content, and the widgets on the right ran under it with their
+     * margin clipped.  So when the content will scroll, the window opens
+     * that much wider.  Measured before present, on the built tree.       */
+    gint nat_w, nat_h;
+    gtk_widget_measure(vbox, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &nat_w,
+                       NULL, NULL);
+    gtk_widget_measure(vbox, GTK_ORIENTATION_VERTICAL, nat_w, NULL, &nat_h,
+                       NULL, NULL);
+    if (nat_h > SETTINGS_MAX_HEIGHT) {
+        gint bar_w;
+        gtk_widget_measure(gtk_scrolled_window_get_vscrollbar(
+                               GTK_SCROLLED_WINDOW(outer_scroll)),
+                           GTK_ORIENTATION_HORIZONTAL, -1, NULL, &bar_w,
+                           NULL, NULL);
+        gtk_window_set_default_size(GTK_WINDOW(window), nat_w + bar_w, -1);
+    }
 
     gtk_window_present(GTK_WINDOW(window));
 }

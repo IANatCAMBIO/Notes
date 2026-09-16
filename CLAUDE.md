@@ -818,9 +818,9 @@ GtkTextView exists in the app.**
   (D32): GTK reuses one popup surface for every tooltip and the macOS
   backend's tile layer does not follow a resize of that surface while it
   is hidden, so a tooltip shown within a second of another of a different
-  size was drawn at the OLD width, cut off.  Every tooltip is therefore
-  one fixed width (a custom 320 px label, text centred) — the surface is
-  never resized between showings.
+  size was drawn at the OLD width, cut off.  The helper refuses a tooltip
+  asked for within 550 ms of the previous one hiding and asks again after,
+  so consecutive tooltips come a beat slower and whole.
 - **An input method's client widget is set at REALIZE** (D31): the macOS
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.

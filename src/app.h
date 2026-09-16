@@ -317,12 +317,14 @@ void on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
  * it).  A plain gtk_widget_set_tooltip_text is broken on macOS: GTK keeps
  * ONE tooltip popup surface and re-presents it for every tooltip, and when
  * the next tooltip needs a different size the surface is resized while
- * hidden — which the macOS backend's layer does not follow (D32: the
- * content stays tiled at the previous size and the box comes out cut off
- * mid-text).  It shows on a hover that follows another tooltip within a
- * second or so — sweeping along a toolbar.  So every tooltip here is the
- * same width: a custom label, TOOLTIP_WIDTH wide, text centred, long
- * texts wrapping.  The surface is then never resized between showings.
+ * hidden — which the macOS backend's layer does not follow for about a
+ * second (D32: the content stays tiled at the previous size and the box
+ * comes out cut off mid-text).  It shows on a hover that follows another
+ * tooltip closely — sweeping along a toolbar.  So the helper shows the
+ * text through a custom label and REFUSES a tooltip asked for within
+ * TOOLTIP_MIN_GAP_MS of the previous one hiding, asking again when the
+ * time has passed: tooltips keep their natural size, and consecutive ones
+ * come a beat slower than GTK's browse mode would show them.
  * ------------------------------------------------------------------------- */
 void on_app_set_tooltip(GtkWidget *widget, const gchar *text);
 

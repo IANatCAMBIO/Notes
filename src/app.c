@@ -481,17 +481,47 @@ tool_icon_widget(OnApp *app, const gchar *icon_name,
  * tooltips (see on_app_set_tooltip in app.h for why this exists)
  * ------------------------------------------------------------------------- */
 
-/* Every tooltip is this wide, so the one tooltip surface GTK reuses is
- * never RESIZED between two showings — the macOS backend does not follow
- * a resize of the hidden popup (D32).  Wide enough for the longest
- * toolbar text; longer texts (Settings) wrap.                              */
-#define TOOLTIP_WIDTH 320
+/* A tooltip asked for within this long of the previous one hiding is
+ * refused and asked for again once the time has passed.  550 ms is past
+ * GTK's browse-mode window (500 ms), so the re-ask goes through the
+ * normal hover delay and the popup shows about a second after the last
+ * one hid — measured clean; 400 ms (shown at 464) was still cut.       */
+#define TOOLTIP_MIN_GAP_MS 550
 
 /* Object-data key: the label that shows the widget's tooltip, built once
  * per widget and reused, so GTK sees the same custom widget every query. */
 #define TOOLTIP_LABEL_KEY "on-tooltip-label"
 
-/* on_query_tooltip() — hand GTK the widget's label as the tooltip.         */
+static GtkWidget *tooltip_mapped;    /* the label on show right now, if any */
+static gint64     tooltip_hidden_at; /* when the last one unmapped          */
+
+static void
+on_tooltip_label_map(GtkWidget *label, gpointer data)
+{
+    (void)data;
+    tooltip_mapped = label;
+}
+
+static void
+on_tooltip_label_unmap(GtkWidget *label, gpointer data)
+{
+    (void)data;
+    if (tooltip_mapped == label)
+        tooltip_mapped = NULL;
+    tooltip_hidden_at = g_get_monotonic_time();
+}
+
+/* tooltip_ask_again() — the deferred re-query (holds a widget ref).       */
+static gboolean
+tooltip_ask_again(gpointer widget)
+{
+    gtk_widget_trigger_tooltip_query(widget);
+    g_object_unref(widget);
+    return G_SOURCE_REMOVE;
+}
+
+/* on_query_tooltip() — hand GTK the widget's label as the tooltip, unless
+ * the previous tooltip hid a moment ago: then refuse and ask again later. */
 static gboolean
 on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
                  GtkTooltip *tooltip, gpointer data)
@@ -500,6 +530,14 @@ on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
     GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
     if (label == NULL)
         return FALSE;
+    if (tooltip_mapped == NULL) {
+        gint64 gap = g_get_monotonic_time() - tooltip_hidden_at;
+        if (gap < TOOLTIP_MIN_GAP_MS * 1000) {
+            g_timeout_add((guint)((TOOLTIP_MIN_GAP_MS * 1000 - gap) / 1000) + 1,
+                          tooltip_ask_again, g_object_ref(widget));
+            return FALSE;
+        }
+    }
     gtk_tooltip_set_custom(tooltip, label);
     return TRUE;
 }
@@ -516,9 +554,11 @@ on_app_set_tooltip(GtkWidget *widget, const gchar *text)
     if (label == NULL) {
         label = gtk_label_new(text);
         gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.5);
-        gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
-        gtk_widget_set_size_request(label, TOOLTIP_WIDTH, -1);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), 70);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        g_signal_connect(label, "map", G_CALLBACK(on_tooltip_label_map), NULL);
+        g_signal_connect(label, "unmap", G_CALLBACK(on_tooltip_label_unmap),
+                         NULL);
         g_object_set_data_full(G_OBJECT(widget), TOOLTIP_LABEL_KEY,
                                g_object_ref_sink(label), g_object_unref);
         g_signal_connect(widget, "query-tooltip",

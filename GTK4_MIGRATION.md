@@ -773,12 +773,16 @@ add a second idiom.
   a tooltip shown ≥ 1 s after the previous one hid was fine, one shown
   within GTK's browse-mode window was not).  No GTK-side call helps:
   queue_draw / queue_resize / gdk_surface_queue_render at 50–400 ms after
-  map left it cut; hide+show corrupts the surface (Gdk-CRITICAL).  A
-  tooltip whose surface never changes size cannot hit it, so every
-  tooltip is a custom label `TOOLTIP_WIDTH` (320) wide, text centred;
-  measured with tests/tiptest: A→B→C in browse mode all complete.  All
-  24 tooltip sites use the helper.  Upstream: GdkMacosView should mark
-  the layer dirty from `setFrameSize:` too.
+  map left it cut; hide+show corrupts the surface (Gdk-CRITICAL).  Two
+  workarounds measured clean: a fixed tooltip width (the surface never
+  resizes) and a DELAY — refusing a tooltip asked for within 550 ms of
+  the previous one hiding and asking again after (past GTK's 500 ms
+  browse window, so it shows through the normal hover delay, about a
+  second after the last one hid; 400 ms, shown at 464, was still cut).
+  The delay shipped (natural widths kept; consecutive tooltips a beat
+  slower than browse mode).  All 24 tooltip sites use the helper.
+  Upstream: GdkMacosView should mark the layer dirty from `setFrameSize:`
+  too.
 
 ## Session log
 

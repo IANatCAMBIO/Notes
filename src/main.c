@@ -19,8 +19,8 @@
 
 #ifdef __APPLE__
 /* ---------------------------------------------------------------------------
- * quartz_log_filter() — GLogFunc that drops two specific, benign
- * assertions emitted on macOS and forwards everything else unchanged.
+ * quartz_log_filter() — GLogFunc that drops three specific, benign
+ * messages emitted on macOS and forwards everything else unchanged.
  *
  * 1. When GTK enumerates the clipboard's targets (the "TARGETS" atom — done
  * whenever the right-click/selection menus appear, on rich-text paste, and in
@@ -42,7 +42,20 @@
  * (the quartz backend appends the menubar to its combined model) prints
  * one Gtk-CRITICAL per call and nothing is wrong.  Upstream GTK has no such
  * check; a real tracker fault would abort in the loop below it.
- *   domain  — log domain ("Gdk"/"Gtk" for the offending messages).
+ *
+ * 3. "poll(2) failed due to: Undefined error: 0" (GLib-WARNING) — no poll
+ * failed.  GDK-Quartz's poll function (gdk/quartz/gdkeventloop-quartz.c,
+ * poll_func) hands the fds to a select thread and blocks in
+ * -[NSApp nextEventMatchingMask:]; if Cocoa re-enters the GLib main loop
+ * from inside that call and the iteration grows the context's fd array,
+ * the outer call's array is stale, so it deliberately skips the collect
+ * and returns -1 WITHOUT setting errno — hence "error: 0" — and GLib's
+ * check pass sees the changed fd set and simply re-runs the iteration.
+ * Seen on the code blocks' "copy" link (gtk_clipboard_set_text, whose
+ * -[NSPasteboard declareTypes:owner:] round-trip to the pasteboard server
+ * is the presumed re-entry; the copy itself lands).  A real poll failure
+ * carries a real errno string, so only the errno-0 spelling is dropped.
+ *   domain  — log domain ("Gdk"/"Gtk"/"GLib" for the offending messages).
  *   level   — log level flags.
  *   message — the formatted log text.
  *   data    — unused.
@@ -62,6 +75,9 @@ quartz_log_filter(const gchar   *domain,
         strstr(message, "gtk_menu_tracker_remove_items") != NULL &&
         strstr(message, "*change_point != NULL") != NULL)
         return;                      /* MacPorts' misplaced tracker guard    */
+    if (message != NULL &&
+        strstr(message, "poll(2) failed due to: Undefined error: 0") != NULL)
+        return;                      /* GDK-Quartz's stale-fd bail-out       */
     g_log_default_handler(domain, level, message, data);
 }
 #endif /* __APPLE__ */
@@ -264,15 +280,18 @@ int
 main(int argc, char *argv[])
 {
 #ifdef __APPLE__
-    /* Silence two benign macOS-only criticals — GDK-Quartz's clipboard
-     * one and MacPorts' menu-tracker one (see quartz_log_filter).
-     * Installed before GTK so it covers every paste and the first
-     * menubar.                                                             */
+    /* Silence three benign macOS-only messages — GDK-Quartz's clipboard
+     * critical, MacPorts' menu-tracker one and GLib's errno-0 poll warning
+     * (see quartz_log_filter).  Installed before GTK so it covers every
+     * paste and the first menubar.                                         */
     g_log_set_handler("Gdk",
                       G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_RECURSION,
                       quartz_log_filter, NULL);
     g_log_set_handler("Gtk",
                       G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_RECURSION,
+                      quartz_log_filter, NULL);
+    g_log_set_handler("GLib",
+                      G_LOG_LEVEL_WARNING | G_LOG_FLAG_RECURSION,
                       quartz_log_filter, NULL);
 #endif
 

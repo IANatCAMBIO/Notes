@@ -234,6 +234,8 @@ typedef struct {
     GtkPaned     *notes_paned;         /* vertical paned: stack / AI pane      */
     gboolean      ai_running;          /* TRUE while subprocess is in flight   */
     GCancellable *ai_cancel;           /* cancels the in-flight subprocess     */
+    gint          emoji_pad;           /* on_emoji_pad() for the window's UI
+                                        * font, applied by every text cell   */
 } OnLibrary;
 
 /* How long a status-bar event message stays before fading out.              */
@@ -4830,13 +4832,16 @@ notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                        NL_PREVIEW, &preview,
                        -1);
 
+    /* Both lines go through on_markup_escape_emoji so a color emoji gets
+     * the same padding here as in the editor (ON_EMOJI_GAP).             */
     if (lw->app->comfortable_list) {
-        gchar *esc = g_markup_escape_text(
-            title != NULL && *title != '\0' ? title : "Untitled", -1);
+        gchar *esc = on_markup_escape_emoji(
+            title != NULL && *title != '\0' ? title : "Untitled",
+            lw->emoji_pad);
         gchar *markup;
         gboolean bold = lw->app->bold_list_titles;
         if (preview != NULL && *preview != '\0') {
-            gchar *esc_prev = g_markup_escape_text(preview, -1);
+            gchar *esc_prev = on_markup_escape_emoji(preview, lw->emoji_pad);
             markup = g_strdup_printf(
                 bold ? "<b>%s</b>\n<small><span alpha=\"65%%\">%s</span></small>"
                      :    "%s\n<small><span alpha=\"65%%\">%s</span></small>",
@@ -4852,12 +4857,52 @@ notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
         /* Always drive via "markup" so the Pango attribute list (set when
          * comfortable mode was last active) gets replaced, not left behind
          * to render the plain title in bold.                                */
-        gchar *esc = g_markup_escape_text(title != NULL ? title : "", -1);
+        gchar *esc = on_markup_escape_emoji(title, lw->emoji_pad);
         g_object_set(cell, "markup", esc, "ypad", 2, NULL);
         g_free(esc);
     }
     g_free(title);
     g_free(preview);
+}
+
+/* ---------------------------------------------------------------------------
+ * emoji_text_cell_func() — cell data function rendering a plain-text model
+ * column as markup with the emoji padding applied (on_markup_escape_emoji),
+ * so the grid titles and the Action Items text pad emoji the way the
+ * editor and the notes list do.  user_data is the OnLibrary; the model
+ * column rides on the renderer as "on-column" (set by emoji_text_cell_bind).
+ * A GtkCellLayoutDataFunc, so it installs on a GtkTreeViewColumn (which is
+ * a GtkCellLayout) and on the icon view alike, with no cast.
+ * ------------------------------------------------------------------------- */
+static void
+emoji_text_cell_func(GtkCellLayout *layout, GtkCellRenderer *cell,
+                     GtkTreeModel *model, GtkTreeIter *iter,
+                     gpointer user_data)
+{
+    (void)layout;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    gint column = GPOINTER_TO_INT(   /* the model column to render          */
+        g_object_get_data(G_OBJECT(cell), "on-column"));
+    gchar *text = NULL;              /* the column's plain text             */
+    gtk_tree_model_get(model, iter, column, &text, -1);
+    gchar *markup = on_markup_escape_emoji(text, lw->emoji_pad);
+    g_object_set(cell, "markup", markup, NULL);
+    g_free(markup);
+    g_free(text);
+}
+
+/* ---------------------------------------------------------------------------
+ * emoji_text_cell_bind() — render `column` through `cell` in `layout` with
+ * emoji_text_cell_func (the one place that pairs the func with its
+ * "on-column" data).
+ * ------------------------------------------------------------------------- */
+static void
+emoji_text_cell_bind(OnLibrary *lw, GtkCellLayout *layout,
+                     GtkCellRenderer *cell, gint column)
+{
+    g_object_set_data(G_OBJECT(cell), "on-column", GINT_TO_POINTER(column));
+    gtk_cell_layout_set_cell_data_func(layout, cell, emoji_text_cell_func,
+                                       lw, NULL);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5137,11 +5182,11 @@ add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
 
 /* ---------------------------------------------------------------------------
  * build_action_bar() — the single unified toolbar spanning the window:
- * a folder-actions area, a drawn separator, a note-actions area (ending
- * with the List/Grid toggle and Media), another separator, Settings and
- * Search, a third separator, the AI Summary button (shown only while AI is
- * enabled) — and the search entry pinned to the right edge by an expanding
- * spacer.
+ * a folder-actions area, a drawn separator, a note-actions area, another
+ * separator, the window/app buttons (Sidebar, List/Grid, Search, Media,
+ * Settings), a third separator, the AI Summary button (shown only while AI
+ * is enabled) — and the search entry pinned to the right edge by an
+ * expanding spacer.
  * Returns the toolbar widget.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
@@ -5153,9 +5198,6 @@ build_action_bar(OnLibrary *lw)
     gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
 
     /* --- folder area ---------------------------------------------------- */
-    add_tool_button(lw, toolbar, "sidebar", "\xe2\x97\xa7",
-                    "Folders", "Show or hide the folder pane",
-                    "app.toggle-sidebar");
     add_tool_button(lw, toolbar, "new-folder", "+\xf0\x9f\x93\x81",
                     "New Folder", "Create a folder inside the selection",
                     "app.new-folder");
@@ -5184,6 +5226,11 @@ build_action_bar(OnLibrary *lw)
                        gtk_separator_tool_item_new(), -1);
 
     /* --- app actions ------------------------------------------------------*/
+    /* The two buttons that change what the WINDOW shows sit together, the
+     * sidebar toggle first: the folder pane is not a folder action.        */
+    add_tool_button(lw, toolbar, "sidebar", "\xe2\x97\xa7",
+                    "Folders", "Show or hide the folder pane",
+                    "app.toggle-sidebar");
     /* Icon, label and tooltip are all set by view_button_sync() below,
      * from the view actually showing; these are only what it is built
      * with before the stack can be read.                                   */
@@ -5845,8 +5892,8 @@ library_build_notes_grid(OnLibrary *lw)
                      NULL);
         gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(lw->notes_grid),
                                    txt, FALSE);
-        gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(lw->notes_grid),
-                                       txt, "text", NL_TITLE, NULL);
+        emoji_text_cell_bind(lw, GTK_CELL_LAYOUT(lw->notes_grid), txt,
+                             NL_TITLE);
     }
     gtk_icon_view_set_item_width(lw->notes_grid, THUMB_SIZE);
     gtk_icon_view_set_selection_mode(lw->notes_grid,
@@ -5908,9 +5955,9 @@ library_build_actions_view(OnLibrary *lw)
                      NULL);
         GtkTreeViewColumn *ca = gtk_tree_view_column_new_with_attributes(
             "Action", txt,
-            "text",          AL_TEXT,
             "strikethrough", AL_DONE,
             NULL);
+        emoji_text_cell_bind(lw, GTK_CELL_LAYOUT(ca), txt, AL_TEXT);
         gtk_tree_view_column_set_expand(ca, TRUE);
         gtk_tree_view_column_set_resizable(ca, TRUE);
         gtk_tree_view_append_column(lw->actions_view, ca);
@@ -6079,6 +6126,9 @@ on_library_window_create(OnApp *app)
     gtk_window_set_default_size(GTK_WINDOW(lw->window), 900, 620);
     g_object_set_data_full(G_OBJECT(lw->window), "on-library", lw,
                            library_free);
+    /* Every text cell in this window renders in the window's UI font, so
+     * the emoji padding is measured once here (see ON_EMOJI_GAP).        */
+    lw->emoji_pad = on_emoji_pad(gtk_widget_get_pango_context(lw->window));
 
     /* A weak pointer: closing the library while editors are open must
      * leave app->library_window NULL, not dangling — the "app." actions

@@ -176,6 +176,66 @@ void on_app_status(OnApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 gchar *on_app_location_text(OnApp *app, const gchar *location);
 
 /* ---------------------------------------------------------------------------
+ * Emoji padding.  Apple Color Emoji, drawn through cairo's CoreText path,
+ * inks WIDER than the advance Pango reserves for it (measured at 13 pt:
+ * ink 22 px over a 17 px advance, all of the excess to the RIGHT), so the
+ * character after an emoji lands on its right edge.  The remedy —
+ * everywhere emoji are rendered, so the editor and the library's cells
+ * cannot disagree — is letter spacing on the emoji, and ONLY the emoji:
+ * Pango splits a run's spacing half-per-side, so the emoji's own run gets
+ * half a gap each side.  Tagging the FOLLOWING character as well (the
+ * rule until 2026-09-15) does not help — its left half lands in the same
+ * gap, its right half opens the word after it ("W orld") — and the gap it
+ * made (5 px) was exactly the overhang, i.e. no visible clearance at all.
+ * The amount is MEASURED, not assumed: on_emoji_pad() reads the overhang
+ * off a sample emoji in the caller's font, so a font that fits its
+ * advance (Linux Noto, the fontconfig backend) gets no padding at all.
+ * ------------------------------------------------------------------------- */
+#define ON_EMOJI_GAP 2                   /* px of clear air past the ink      */
+
+/* ---------------------------------------------------------------------------
+ * on_is_emoji_char() — rough emoji detection: the blocks that render via
+ * the color emoji font and overlap neighbouring text on macOS.
+ *   c — the character.
+ * Returns TRUE when it is one.
+ * ------------------------------------------------------------------------- */
+gboolean on_is_emoji_char(gunichar c);
+
+/* ---------------------------------------------------------------------------
+ * on_is_emoji_joiner() — a character that CONTINUES an emoji sequence and
+ * must stay in the same padded run as the emoji before it: the variation
+ * selectors (U+FE0E/FE0F — "\u2764\uFE0F" is the red heart), the zero
+ * width joiner (families, professions), the keycap combiner and the tag
+ * characters (subdivision flags).  A letter-spacing boundary is an
+ * itemization boundary: padding only the base would shape the selector
+ * on its own, as a visible hex box.
+ *   c — the character.
+ * Returns TRUE when it is one.
+ * ------------------------------------------------------------------------- */
+gboolean on_is_emoji_joiner(gunichar c);
+
+/* ---------------------------------------------------------------------------
+ * on_emoji_pad() — the letter spacing an emoji needs in a font, measured:
+ * a sample emoji is laid out in the context's default font and its ink
+ * overhang past the logical advance read off the extents.
+ *   ctx — the widget's PangoContext (gtk_widget_get_pango_context).
+ * Returns the spacing in Pango units — twice (overhang + ON_EMOJI_GAP),
+ * since Pango puts half of it on each side — or 0 when the font's emoji
+ * fit their advance, in which case callers must not pad at all.
+ * ------------------------------------------------------------------------- */
+gint on_emoji_pad(PangoContext *ctx);
+
+/* ---------------------------------------------------------------------------
+ * on_markup_escape_emoji() — escape text for Pango markup and wrap every
+ * run of emoji in a letter-spacing span of `pad` (the padding rule above,
+ * for a GtkCellRendererText or GtkLabel).
+ *   text — plain UTF-8, may be NULL (treated as "").
+ *   pad  — from on_emoji_pad(); 0 = a plain escape.
+ * Returns newly allocated markup; free with g_free().
+ * ------------------------------------------------------------------------- */
+gchar *on_markup_escape_emoji(const gchar *text, gint pad);
+
+/* ---------------------------------------------------------------------------
  * on_app_widget_add_css() — attach a one-off CSS snippet to a single
  * widget's style context (application priority).  The provider is owned
  * by the style context after this call.

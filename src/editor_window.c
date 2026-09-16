@@ -153,6 +153,8 @@ typedef struct {
 
     guint32         inline_flags;
     gboolean        typing_insert;
+    gint            emoji_pad;       /* on_emoji_pad() for the view's font;
+                                      * 0 = the font fits, never pad       */
     gint            internal_change;
     guint           autosave_source;
 
@@ -3030,59 +3032,36 @@ attach_table_widget(OnEditor *ed, GtkTextChildAnchor *anchor)
 }
 
 /* ---------------------------------------------------------------------------
- * is_emoji_char() — rough emoji detection: the blocks that render via the
- * color emoji font and overlap neighbouring text on macOS (Apple Color
- * Emoji draws wider than the advance Pango reserves for it).
- * ------------------------------------------------------------------------- */
-static gboolean
-is_emoji_char(gunichar c)
-{
-    return (c >= 0x1F000 && c <= 0x1FAFF) ||   /* emoji + symbols planes    */
-           (c >= 0x2600  && c <= 0x27BF)  ||   /* misc symbols, dingbats    */
-           (c >= 0x1F1E6 && c <= 0x1F1FF) ||   /* regional indicators       */
-           c == 0x2B50 || c == 0x2B55;         /* star, circle              */
-}
-
-/* ---------------------------------------------------------------------------
- * tag_emoji_in_range() — apply the padding tag around every emoji between
- * the two buffer offsets.  The "on-emoji" tag adds letter spacing, which
- * Pango splits half-per-side at run edges — so the emoji itself gets
- * half a gap each side, and tagging the FOLLOWING character as well
- * doubles the trailing gap (Apple Color Emoji bleeds mostly rightward).
- *
- * macOS-only: on Linux, color emoji fonts (e.g. Noto) fit their advance
- * and need no artificial padding, so this is compiled to a no-op there.
+ * tag_emoji_in_range() — apply the padding tag to every emoji between the
+ * two buffer offsets — the emoji ONLY, never the character after it (the
+ * rule and the measurement are documented at ON_EMOJI_GAP in app.h; the
+ * library's cells apply the same one through on_markup_escape_emoji).
+ * A no-op when the view's font fits its emoji (ed->emoji_pad == 0).
  * Editor-only styling; never serialized.
  * ------------------------------------------------------------------------- */
 static void
 tag_emoji_in_range(OnEditor *ed, gint start_off, gint end_off)
 {
-#ifdef __APPLE__
-    /* Start one character early so text typed directly after an existing
-     * emoji still receives the follower's share of the padding.            */
+    if (ed->emoji_pad == 0)
+        return;
     GtkTextIter it;                  /* scan cursor                         */
-    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it,
-                                       MAX(0, start_off - 1));
+    gtk_text_buffer_get_iter_at_offset(ed->buffer, &it, start_off);
     while (gtk_text_iter_get_offset(&it) < end_off) {
-        if (is_emoji_char(gtk_text_iter_get_char(&it))) {
-            GtkTextIter next = it;   /* the following character             */
-            gtk_text_iter_forward_char(&next);
+        if (on_is_emoji_char(gtk_text_iter_get_char(&it))) {
+            /* The emoji and every joiner behind it — a variation selector
+             * split off by the tag boundary would shape as a hex box.    */
+            GtkTextIter next = it;   /* end of the emoji sequence           */
+            do {
+                gtk_text_iter_forward_char(&next);
+            } while (on_is_emoji_joiner(gtk_text_iter_get_char(&next)));
             gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-emoji",
                                               &it, &next);
-            if (!gtk_text_iter_is_end(&next) &&
-                !is_emoji_char(gtk_text_iter_get_char(&next))) {
-                GtkTextIter after = next;
-                gtk_text_iter_forward_char(&after);
-                gtk_text_buffer_apply_tag_by_name(ed->buffer, "on-emoji",
-                                                  &next, &after);
-            }
+            it = next;
+            continue;
         }
         if (!gtk_text_iter_forward_char(&it))
             break;
     }
-#else
-    (void)ed; (void)start_off; (void)end_off;
-#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -3915,8 +3894,7 @@ undo_restore(OnEditor *ed, const UndoSnap *from, const UndoSnap *to)
     }
 
     /* Editor-only emoji padding is never part of snapshots — refresh it
-     * over the replaced span plus one char each side (the pad tag also
-     * covers the char after an emoji).                                     */
+     * over the replaced span plus one char each side.                      */
     gint emo_s = MAX(prefix - 1, 0);
     gint emo_e = MIN(at + 1, gtk_text_buffer_get_char_count(ed->buffer));
     if (emo_s < emo_e) {
@@ -5292,9 +5270,12 @@ editor_build_view(OnEditor *ed)
      * the serializer's flag table, so it is ignored on save).              */
     gtk_text_buffer_create_tag(ed->buffer, "on-search-hit",
                                "background", "#ffec8b", NULL);
-    /* Editor-only padding around color-emoji glyphs (see is_emoji_char).   */
+    /* Editor-only padding around color-emoji glyphs, measured in this
+     * view's font (see ON_EMOJI_GAP in app.h).                             */
+    ed->emoji_pad = on_emoji_pad(gtk_widget_get_pango_context(
+                                     GTK_WIDGET(ed->view)));
     gtk_text_buffer_create_tag(ed->buffer, "on-emoji",
-                               "letter-spacing", 5 * PANGO_SCALE, NULL);
+                               "letter-spacing", ed->emoji_pad, NULL);
     /* Editor-only: drop each task checkbox a few px so its box centers on
      * the text beside it — anchored children sit with their bottom on the
      * baseline, which parks the box's center above the text's (see

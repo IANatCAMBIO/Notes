@@ -28,6 +28,74 @@ on_app_status(OnApp *app, const gchar *fmt, ...)
     g_free(message);
 }
 
+gboolean
+on_is_emoji_char(gunichar c)
+{
+    return (c >= 0x1F000 && c <= 0x1FAFF) ||   /* emoji + symbols planes    */
+           (c >= 0x2600  && c <= 0x27BF)  ||   /* misc symbols, dingbats    */
+           (c >= 0x1F1E6 && c <= 0x1F1FF) ||   /* regional indicators       */
+           c == 0x2B50 || c == 0x2B55;         /* star, circle              */
+}
+
+gboolean
+on_is_emoji_joiner(gunichar c)
+{
+    return c == 0xFE0E || c == 0xFE0F ||       /* variation selectors 15/16 */
+           c == 0x200D ||                      /* zero width joiner         */
+           c == 0x20E3 ||                      /* combining keycap          */
+           (c >= 0xE0020 && c <= 0xE007F);     /* tag characters            */
+}
+
+gint
+on_emoji_pad(PangoContext *ctx)
+{
+    PangoLayout *layout = pango_layout_new(ctx);
+    pango_layout_set_text(layout, "\xf0\x9f\x8e\x89", -1);   /* party popper */
+    PangoRectangle ink, logical;     /* the sample's extents, in px         */
+    pango_layout_get_pixel_extents(layout, &ink, &logical);
+    g_object_unref(layout);
+
+    gint overhang = ink.x + ink.width - logical.width;
+    if (overhang <= 0)
+        return 0;                    /* the font fits its advance           */
+    return 2 * (overhang + ON_EMOJI_GAP) * PANGO_SCALE;
+}
+
+gchar *
+on_markup_escape_emoji(const gchar *text, gint pad)
+{
+    if (text == NULL)
+        text = "";
+    if (pad == 0)
+        return g_markup_escape_text(text, -1);
+
+    GString *out = g_string_new(NULL); /* the markup being built           */
+    const gchar *p = text;           /* scan cursor                         */
+    const gchar *plain = text;       /* start of the pending unpadded run   */
+    while (*p != '\0') {
+        if (!on_is_emoji_char(g_utf8_get_char(p))) {
+            p = g_utf8_next_char(p);
+            continue;
+        }
+        const gchar *run = p;        /* start of the emoji run              */
+        while (*p != '\0' && (on_is_emoji_char(g_utf8_get_char(p)) ||
+                               on_is_emoji_joiner(g_utf8_get_char(p))))
+            p = g_utf8_next_char(p);
+        gchar *esc = g_markup_escape_text(plain, run - plain);
+        g_string_append(out, esc);
+        g_free(esc);
+        esc = g_markup_escape_text(run, p - run);
+        g_string_append_printf(out, "<span letter_spacing=\"%d\">%s</span>",
+                               pad, esc);
+        g_free(esc);
+        plain = p;
+    }
+    gchar *esc = g_markup_escape_text(plain, -1);
+    g_string_append(out, esc);
+    g_free(esc);
+    return g_string_free(out, FALSE);
+}
+
 gchar *
 on_app_location_text(OnApp *app, const gchar *location)
 {

@@ -296,22 +296,60 @@ on_doc_layout_set_preedit(OnDocLayout *L, OnPos pos, const gchar *text,
         invalidate(L, pos.block);
 }
 
+/* block_hits_equal() — do the hits of block `b` in the two sorted arrays
+ * (from indices *i and *j, advanced past that block) match exactly?         */
+static gboolean
+block_hits_equal(const GArray *a, guint *i, const GArray *c, guint *j,
+                 guint b)
+{
+    gboolean same = TRUE;
+    while (TRUE) {
+        const OnDocHit *x = (a != NULL && *i < a->len)
+            ? &g_array_index(a, OnDocHit, *i) : NULL;
+        const OnDocHit *y = (c != NULL && *j < c->len)
+            ? &g_array_index(c, OnDocHit, *j) : NULL;
+        gboolean xin = x != NULL && x->block == b;
+        gboolean yin = y != NULL && y->block == b;
+        if (!xin && !yin)
+            return same;
+        if (xin && yin) {
+            if (x->cell != y->cell || x->start != y->start ||
+                x->len != y->len)
+                same = FALSE;
+            (*i)++; (*j)++;
+        } else {
+            same = FALSE;
+            if (xin) (*i)++; else (*j)++;
+        }
+    }
+}
+
 void
 on_doc_layout_set_hits(OnDocLayout *L, const GArray *hits)
 {
-    /* Blocks that had or get a hit re-lay out.                             */
-    if (L->hits != NULL) {
-        for (guint k = 0; k < L->hits->len; k++)
-            invalidate(L, g_array_index(L->hits, OnDocHit, k).block);
+    /* Only a block whose hits CHANGED re-lays out: the view re-runs the
+     * find after every edit while the find box is open, and re-laying
+     * out every block with a hit on every keystroke would make a common
+     * word expensive to type next to.  Both arrays are in block order.  */
+    GArray *next = (hits != NULL && hits->len > 0)
+        ? g_array_sized_new(FALSE, FALSE, sizeof(OnDocHit), hits->len)
+        : NULL;
+    if (next != NULL)
+        g_array_append_vals(next, hits->data, hits->len);
+    guint i = 0, j = 0;
+    while ((L->hits != NULL && i < L->hits->len) ||
+           (next != NULL && j < next->len)) {
+        guint bi = (L->hits != NULL && i < L->hits->len)
+            ? g_array_index(L->hits, OnDocHit, i).block : G_MAXUINT;
+        guint bj = (next != NULL && j < next->len)
+            ? g_array_index(next, OnDocHit, j).block : G_MAXUINT;
+        guint b = MIN(bi, bj);
+        if (!block_hits_equal(L->hits, &i, next, &j, b))
+            invalidate(L, b);
+    }
+    if (L->hits != NULL)
         g_array_unref(L->hits);
-        L->hits = NULL;
-    }
-    if (hits != NULL && hits->len > 0) {
-        L->hits = g_array_sized_new(FALSE, FALSE, sizeof(OnDocHit), hits->len);
-        g_array_append_vals(L->hits, hits->data, hits->len);
-        for (guint k = 0; k < L->hits->len; k++)
-            invalidate(L, g_array_index(L->hits, OnDocHit, k).block);
-    }
+    L->hits = next;
 }
 
 /* ===========================================================================
@@ -1165,17 +1203,31 @@ static void
 line_of(OnDocLayout *L, PangoLayout *layout, OnPos pos, gint *line, gint *x)
 {
     gsize idx = idx_of(L, pos.block, pos.cell, pos.offset);
-    pango_layout_index_to_line_x(layout, (gint)idx, FALSE, line, x);
+    gint lx;                         /* line-relative; not what we want    */
+    pango_layout_index_to_line_x(layout, (gint)idx, FALSE, line, &lx);
+    /* The x is LAYOUT-relative — index_to_pos includes the line's own
+     * alignment offset, which the centred title line has plenty of.  A
+     * line-relative x carried from the title into the left-aligned body
+     * landed the caret several characters off; and every consumer of
+     * goal_x (page moves seed it from the caret rect) is layout-relative. */
+    PangoRectangle r;
+    pango_layout_index_to_pos(layout, (gint)idx, &r);
+    *x = r.x;
 }
 
-/* pos_in_line() — the position at x (Pango units) on a layout's line.      */
+/* pos_in_line() — the position at LAYOUT-relative x (Pango units) on a
+ * layout's line: xy_to_index at the line's middle, so an aligned line's
+ * offset is accounted for.                                                 */
 static gsize
 pos_in_line(OnDocLayout *L, PangoLayout *layout, guint block, gint cell,
             gint line, gint x)
 {
     PangoLayoutLine *ll = pango_layout_get_line_readonly(layout, line);
+    PangoRectangle r;                /* the line's start, layout-relative   */
+    pango_layout_index_to_pos(layout, ll->start_index, &r);
     gint index, trailing;
-    pango_layout_line_x_to_index(ll, x, &index, &trailing);
+    pango_layout_xy_to_index(layout, x, r.y + r.height / 2, &index,
+                             &trailing);
     const gchar *text = pango_layout_get_text(layout);
     const gchar *p = text + index;
     while (trailing-- > 0 && *p != '\0')
@@ -1247,6 +1299,18 @@ on_doc_layout_move(OnDocLayout *L, OnPos pos, OnDocMove how, gint *goal_x)
         PangoLayoutLine *ll = pango_layout_get_line_readonly(layout, line);
         gsize s = (gsize)ll->start_index;
         gsize e = s + (gsize)ll->length;
+        if (line + 1 < pango_layout_get_line_count(layout)) {
+            /* A wrapped line's length includes the whitespace it broke
+             * at, and that index IS the next line's start — End would
+             * land there.  The end of the line is before that space.  */
+            const gchar *text = pango_layout_get_text(layout);
+            while (e > s) {
+                const gchar *q = g_utf8_prev_char(text + e);
+                if (!g_unichar_isspace(g_utf8_get_char(q)))
+                    break;
+                e = (gsize)(q - text);
+            }
+        }
         out.offset = off_of(L, pos.block, pos.cell,
                             how == ON_MOVE_LINE_START ? s : e);
         return out;

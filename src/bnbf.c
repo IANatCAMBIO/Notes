@@ -302,8 +302,6 @@ void
 on_bnbf_write_text(OnBnbfWriter *w, guint32 flags, const gchar *text,
                    gsize n)
 {
-    if (n == 0)
-        return;
     put_rec(w, ON_REC_TEXT);
     put_u32(w->out, flags);
     put_u32(w->out, (guint32)n);

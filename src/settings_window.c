@@ -651,9 +651,10 @@ on_viewer_browse_clicked(GtkButton *btn, gpointer user_data)
 }
 
 /* on_touch_assist_toggled() — the checkbox DISABLES the touch aids, so
- * active = touch_assist off.  The CSS half (handles, magnifier) applies
- * live; the tap-popup half is the GDK_CORE_DEVICE_EVENTS env var in
- * main(), which only takes effect on the next start.                        */
+ * active = touch_assist off.  Applies live: it is CSS over the handles
+ * and the magnifier (on_app_apply_touch_assist).  The GTK3 build also
+ * suppressed the tap cut/copy/paste bubble through an env var read at
+ * start-up; GTK4 has no such lever, so nothing here needs a restart.       */
 static void
 on_touch_assist_toggled(GtkCheckButton *check, gpointer user_data)
 {
@@ -661,7 +662,6 @@ on_touch_assist_toggled(GtkCheckButton *check, gpointer user_data)
     on_app_config_set("touch_assist",
                       gtk_check_button_get_active(check) ? "0" : "1");
     on_app_apply_touch_assist(app);
-    on_app_status(app, "Touch assistance fully applies after a restart");
 }
 
 /* ---------------------------------------------------------------------------
@@ -1006,11 +1006,9 @@ on_settings_window_open(OnApp *app)
         gtk_box_append(GTK_BOX(vbox), bool_check_new(app, EDITOR_CHECKS[i]));
 
     GtkWidget *touch_check = gtk_check_button_new_with_label(
-        "Disable touch assistance (selection handles, magnifier, "
-        "tap popup)");
+        "Disable touch assistance (selection handles, magnifier)");
     on_app_set_tooltip(touch_check,
-        "Hides the touch aids GTK pops up under text selections.\n"
-        "The tap cut/copy/paste popup needs a restart to change.");
+        "Hides the touch aids GTK pops up under text selections.");
     gtk_widget_set_margin_start(touch_check, 12);
     gtk_check_button_set_active(
         GTK_CHECK_BUTTON(touch_check),

@@ -866,6 +866,12 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                 case ON_REC_TEXT: {
                     const gchar *p   = rec.text;
                     const gchar *end = rec.text + rec.n_text;
+                    if (rec.n_text == 0 && L.cur == NULL) {
+                        /* A style-only record: the saver's way of keeping
+                         * an EMPTY trailing heading/code line's kind.  */
+                        note_para(&L, para_bit(&L, rec.flags));
+                        L.cur = on_block_new_text(ON_BLOCK_PARA);
+                    }
                     while (p < end) {
                         gsize brk;               /* bytes of the break     */
                         const gchar *q = line_break(p, end, &brk);
@@ -926,6 +932,8 @@ typedef struct {
 static void
 sv_flush(Saver *S)
 {
+    if (S->pend->len == 0)
+        return;
     on_bnbf_write_text(&S->w, S->pend_flags, S->pend->str, S->pend->len);
     g_string_truncate(S->pend, 0);
 }
@@ -1025,8 +1033,18 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
             sv_runs(&S, b->text, para);
             break;
         }
-        if (i + 1 < d->blocks->len)
+        if (i + 1 < d->blocks->len) {
             sv_text(&S, para | b->eol_flags, "\n", 1);
+        } else if (para != 0 && b->text != NULL &&
+                   b->text->text->len == 0) {
+            /* The last line has no newline to carry its style, and an
+             * EMPTY heading or code line has no run either: an empty
+             * TEXT record under the paragraph flag records the kind.
+             * (Bullet and number lines write their prefix, a task line
+             * its CHECK record, so only H1/H2/CODE need this.)          */
+            sv_flush(&S);
+            on_bnbf_write_text(&S.w, para, "", 0);
+        }
     }
     sv_flush(&S);
     g_string_free(S.pend, TRUE);

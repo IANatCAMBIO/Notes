@@ -40,14 +40,18 @@ check 0 para
 check 1 para after table
 undo
 check 0 para First line here
-# Copy the first block (the selection ends before the table's text) and
-# paste it into the empty line Enter makes at the end.
+# Copy the first block and paste it into the empty line Enter makes at the
+# end.  (Down from the CENTRED title lands in the column under the caret —
+# the second one — so it is selected with Shift+Home instead; a range that
+# ends inside a cell takes the table, see test_document's ranges.)
 click 30 20
-key Down shift
-caret 1 0
+key End
+key Home shift
+caret 0 0
 key c primary
 settle 300
 key End
+key Down
 key Down
 key Down
 key Down

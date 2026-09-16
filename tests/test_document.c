@@ -284,6 +284,31 @@ test_empty_styled_line(void)
     assert_roundtrip(d, blob);
     on_document_free(d);
     g_bytes_unref(blob);
+
+    /* A TRAILING empty heading/code line has no newline and no run to
+     * carry its style: the saver writes an empty TEXT record under the
+     * paragraph flag, and the loader reads the kind back off it.         */
+    blob_begin(&b);
+    blob_text(&b, 0, "a\n");
+    blob_text(&b, ON_FMT_H1, "");
+    blob = blob_end(&b);
+    d = load_clean(blob);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_H1);
+    g_assert_cmpstr(block_text(d, 1), ==, "");
+    assert_roundtrip(d, blob);
+    on_document_free(d);
+    g_bytes_unref(blob);
+    /* Built from the model side: Enter on the last line, then Heading.    */
+    d = on_document_from_text("a\n");
+    on_document_set_kind(d, 1, ON_BLOCK_CODE);
+    gsize n;
+    guint8 *out = on_document_to_bnbf(d, &n);
+    OnDocument *back = on_document_from_bnbf(out, n, NULL);
+    g_assert_cmpint(on_document_block(back, 1)->kind, ==, ON_BLOCK_CODE);
+    on_document_free(back);
+    on_document_free(d);
+    g_free(out);
 }
 
 static void

@@ -202,7 +202,9 @@ typedef struct {
 void on_bnbf_writer_init(OnBnbfWriter *w);
 
 /* on_bnbf_write_text() — a TEXT record of `n` bytes under `flags`.  An
- * empty run (n == 0) writes nothing.                                      */
+ * empty record (n == 0) IS written: it carries a paragraph style for a
+ * line that has no text — the one way a trailing empty heading or code
+ * line keeps its kind (the loader treats it as an empty piece).           */
 void on_bnbf_write_text(OnBnbfWriter *w, guint32 flags, const gchar *text,
                         gsize n);
 

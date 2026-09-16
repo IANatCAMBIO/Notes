@@ -43,18 +43,20 @@
  * one Gtk-CRITICAL per call and nothing is wrong.  Upstream GTK has no such
  * check; a real tracker fault would abort in the loop below it.
  *
- * 3. "poll(2) failed due to: Undefined error: 0" (GLib-WARNING) — no poll
- * failed.  GDK's macOS poll function (gdk/macos/gdkmacoseventsource.c,
+ * 3. "poll(2) failed due to: …" (GLib-WARNING) — no poll failed.  GDK's macOS poll function (gdk/macos/gdkmacoseventsource.c,
  * poll_func — the same design as GTK3's gdkeventloop-quartz.c) hands the
  * fds to a select thread and blocks in -[NSApp nextEventMatchingMask:];
  * if Cocoa re-enters the GLib main loop from inside that call, the outer
  * call's fd array may be stale, so it deliberately skips the collect and
- * returns -1 WITHOUT setting errno — hence "error: 0" — and GLib's check
- * pass sees the changed fd set and simply re-runs the iteration.  Seen on
- * the code blocks' "copy" link (the clipboard write's round-trip to the
- * pasteboard server is the presumed re-entry; the copy itself lands).  A
- * real poll failure carries a real errno string, so only the errno-0
- * spelling is dropped.
+ * returns -1 WITHOUT setting errno, and GLib's check pass sees the changed
+ * fd set and simply re-runs the iteration.  Seen on the code blocks'
+ * "copy" link (the clipboard write's round-trip to the pasteboard server
+ * is the presumed re-entry; the copy itself lands).  The errno in the
+ * message is whatever an EARLIER syscall left there — "Undefined error:
+ * 0", "Invalid argument" and "No such file or directory" have all been
+ * seen for this one path — so the whole prefix is dropped: on this
+ * backend a poll failure GLib could report is not distinguishable from
+ * the bail-out anyway.
  *
  * The first two message texts are GTK3's (GTK4 has no GdkAtom at all, and
  * its menu tracker is the same code under the same MacPorts patch); they
@@ -81,8 +83,8 @@ quartz_log_filter(const gchar   *domain,
         strstr(message, "*change_point != NULL") != NULL)
         return;                      /* MacPorts' misplaced tracker guard    */
     if (message != NULL &&
-        strstr(message, "poll(2) failed due to: Undefined error: 0") != NULL)
-        return;                      /* GDK-Quartz's stale-fd bail-out       */
+        strstr(message, "poll(2) failed due to:") != NULL)
+        return;                      /* GDK's macOS stale-fd bail-out        */
     g_log_default_handler(domain, level, message, data);
 }
 #endif /* __APPLE__ */

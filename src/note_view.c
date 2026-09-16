@@ -143,6 +143,7 @@ static void typing_end(OnNoteView *v);
 static void after_edit(OnNoteView *v);
 static void scroll_to_caret(OnNoteView *v);
 static void im_sync_location(OnNoteView *v);
+static GArray *find_hits(OnNoteView *v, const gchar *needle);
 static void blink_restart(OnNoteView *v);
 static void im_reset(OnNoteView *v);
 
@@ -360,6 +361,14 @@ after_edit(OnNoteView *v)
     v->caret = clamp_pos(v, v->caret);
     v->anchor = clamp_pos(v, v->anchor);
     blink_restart(v);
+    if (v->find_text != NULL) {
+        /* The highlights are byte ranges: an edit before a hit would
+         * leave its yellow on the wrong characters.  The layout re-lays
+         * out only the blocks whose hits actually changed.               */
+        GArray *hits = find_hits(v, v->find_text);
+        on_doc_layout_set_hits(v->layout, hits);
+        g_array_unref(hits);
+    }
     gtk_widget_queue_resize(GTK_WIDGET(v));
     v->scroll_pending = TRUE;        /* after the new size is known         */
     im_sync_location(v);
@@ -1175,27 +1184,48 @@ weak_take(GWeakRef *ref)
     return v;
 }
 
+/* on_paste_spliced() — the whole BNBF fragment has arrived.  The source
+ * is a memory stream in-process but a PIPE from another instance, and one
+ * read on a pipe returns one chunk: a single 64 MiB read_bytes() parsed a
+ * truncated blob (and allocated 64 MiB to do it).  A splice reads to EOF. */
+static void
+on_paste_spliced(GObject *source, GAsyncResult *res, gpointer data)
+{
+    OnNoteView *v = weak_take(data);
+    GMemoryOutputStream *mem = G_MEMORY_OUTPUT_STREAM(source);
+    gboolean ok = g_output_stream_splice_finish(G_OUTPUT_STREAM(mem), res,
+                                                NULL) >= 0;
+    if (ok && v != NULL) {
+        GBytes *bytes = g_memory_output_stream_steal_as_bytes(mem);
+        gsize n;
+        const guint8 *d = g_bytes_get_data(bytes, &n);
+        OnDocument *frag = on_document_from_bnbf(d, n, NULL);
+        paste_fragment(v, frag, FALSE);
+        on_document_free(frag);
+        g_bytes_unref(bytes);
+    }
+    g_object_unref(mem);
+    g_clear_object(&v);
+}
+
 static void
 on_paste_bytes(GObject *source, GAsyncResult *res, gpointer data)
 {
-    OnNoteView *v = weak_take(data);
+    GWeakRef *ref = data;            /* handed on to the splice             */
     const gchar *mime = NULL;
     GInputStream *in = gdk_clipboard_read_finish(GDK_CLIPBOARD(source), res,
                                                  &mime, NULL);
-    if (in != NULL && v != NULL) {
-        GBytes *bytes = g_input_stream_read_bytes(in, 64 * 1024 * 1024, NULL,
-                                                  NULL);
-        if (bytes != NULL) {
-            gsize n;
-            const guint8 *d = g_bytes_get_data(bytes, &n);
-            OnDocument *frag = on_document_from_bnbf(d, n, NULL);
-            paste_fragment(v, frag, FALSE);
-            on_document_free(frag);
-            g_bytes_unref(bytes);
-        }
+    if (in == NULL) {
+        g_clear_object(&(OnNoteView *){ weak_take(ref) });
+        return;
     }
-    g_clear_object(&in);
-    g_clear_object(&v);
+    GOutputStream *mem = g_memory_output_stream_new_resizable();
+    g_output_stream_splice_async(mem, in,
+                                 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
+                                 G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+                                 G_PRIORITY_DEFAULT, NULL, on_paste_spliced,
+                                 ref);
+    g_object_unref(in);              /* the splice holds its own ref        */
 }
 
 static void

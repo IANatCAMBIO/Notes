@@ -259,17 +259,19 @@ cli_read_content(const gchar *arg)
 
 /* ---------------------------------------------------------------------------
  * document_append_block() — a fresh PARA block at the end of `doc`, ready
- * for appended content: the last block itself when it is an empty text
- * block, else a new one after it.  What "append to a note" means for
- * plain text and an image; a #tag token only wants a space (see
- * document_append_tag).  Returns the block's index.
+ * for appended content: the last block itself when it is an empty
+ * PARAGRAPH (an empty bullet, task or code line is a line of ITS kind —
+ * appending into it would make the text a list item or code), else a
+ * new one after it.  What "append to a note" means for plain text and an
+ * image; a #tag token only wants a space (see document_append_tag).
+ * Returns the block's index.
  * ------------------------------------------------------------------------- */
 static guint
 document_append_block(OnDocument *doc)
 {
     guint last = on_document_n_blocks(doc) - 1;
     OnBlock *b = on_document_block(doc, last);
-    if (b->text != NULL && b->text->text->len == 0)
+    if (b->kind == ON_BLOCK_PARA && b->text->text->len == 0)
         return last;
     on_document_insert_block(doc, last + 1, on_block_new_text(ON_BLOCK_PARA));
     return last + 1;

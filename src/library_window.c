@@ -1172,6 +1172,12 @@ refresh_notes(OnLibrary *lw)
         gtk_stack_set_visible_child_name(GTK_STACK(lw->stack),
                                          lw->grid_pref ? "grid" : "list");
 
+    /* The list's density class, for the row-height CSS.                   */
+    if (lw->app->comfortable_list)
+        gtk_widget_remove_css_class(GTK_WIDGET(lw->notes_list), "notes-compact");
+    else
+        gtk_widget_add_css_class(GTK_WIDGET(lw->notes_list), "notes-compact");
+
     /* Thumbnails are only rendered while the grid is showing: list mode
      * never pays for them (they used to be regenerated for the edited
      * note on EVERY autosave), and switching to grid refreshes.            */
@@ -5799,6 +5805,13 @@ library_install_css(void)
          * the theme's cell padding on top made them a quarter too tall. */
         "columnview.notes-columns > listview > row > cell {"
         "  padding-top: 2px; padding-bottom: 2px;"
+        "}"
+        /* Compact density: rows the height of the sidebar's, 20 px — a
+         * 15 px label plus this, uneven because a half pixel rounds down
+         * (the density class is set by refresh_notes; measured on 4.22's
+         * Default theme).                                                */
+        "columnview.notes-compact > listview > row > cell {"
+        "  padding-top: 3px; padding-bottom: 2px;"
         "}"
         /* Due Date urgency (on_action_due_bind): overdue red, today gold,
          * ahead green — darkened enough to read on the row stripes.      */

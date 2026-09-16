@@ -924,7 +924,9 @@ on_settings_window_open(OnApp *app)
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(window));
     gtk_window_set_title(GTK_WINDOW(window), "Notes - Settings");
-    gtk_window_set_default_size(GTK_WINDOW(window), 220, -1);
+    gtk_window_set_default_size(GTK_WINDOW(window), 220, -1);   /* a floor:
+                                          the scrolled window propagates the
+                                          content's natural width above it */
     gtk_window_set_transient_for(GTK_WINDOW(window),
                                  GTK_WINDOW(app->library_window));
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
@@ -944,6 +946,11 @@ on_settings_window_open(OnApp *app)
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(outer_scroll), FALSE);
     gtk_scrolled_window_set_propagate_natural_height(
+        GTK_SCROLLED_WINDOW(outer_scroll), TRUE);
+    /* And the natural WIDTH: without it the window came up at its default
+     * width while the content wanted more, and the right-hand widgets
+     * ran under the scrollbar with their margin clipped off.             */
+    gtk_scrolled_window_set_propagate_natural_width(
         GTK_SCROLLED_WINDOW(outer_scroll), TRUE);
     gtk_scrolled_window_set_max_content_height(
         GTK_SCROLLED_WINDOW(outer_scroll), 600);

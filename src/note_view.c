@@ -2778,7 +2778,14 @@ on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len)
     v->doc = doc;
     on_document_set_observer(v->doc, &OBSERVER, v);
     on_doc_layout_set_document(v->layout, v->doc);
+    /* The caret starts on the first line of TEXT: under the first-line-
+     * title setting, block 0 is the note's title and the body begins at
+     * block 1 — an existing note opens ready to be read or added to, not
+     * to be renamed.  A blank note (one empty block) and the setting off
+     * both start at 0,0; clamp_pos keeps a one-block note in range.     */
     OnPos start = { 0, -1, 0 };
+    if (v->app->first_line_title && on_document_n_blocks(v->doc) > 1)
+        start.block = 1;
     v->caret = v->anchor = clamp_pos(v, start);
     v->goal_x = -1;
     v->inline_flags = 0;

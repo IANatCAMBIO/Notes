@@ -1518,7 +1518,6 @@ dialog_new(GtkWindow *parent, const gchar *title, GtkWidget *content,
     gtk_window_set_modal(GTK_WINDOW(dlg), TRUE);
     gtk_window_set_destroy_with_parent(GTK_WINDOW(dlg), TRUE);
     gtk_window_set_resizable(GTK_WINDOW(dlg), FALSE);
-    gtk_widget_add_css_class(dlg, "notes-dialog");   /* library_install_css */
     g_object_set_data(G_OBJECT(dlg), "on-respond", (gpointer)fn);
     g_object_set_data(G_OBJECT(dlg), "on-respond-data", data);
 
@@ -5833,7 +5832,8 @@ library_build_status_bar(OnLibrary *lw)
  * theme's in any widget state), scoped by the "notes-" classes the window
  * puts on its widgets.
  *
- * 1. Dialog padding: the `dialog_new` window has none of its own.
+ * 1. GTK's alert dialogs: ordinary, spaced buttons with a margin instead
+ *    of the theme's joined full-width bar (window.dialog.message).
  * 2. Grid cards (`gridview.notes-grid > child`): padding, a hover outline
  *    on every card, and a tint only on an UNSELECTED one — a
  *    near-transparent tint under text the selected state has turned white
@@ -5879,8 +5879,17 @@ library_install_css(void)
         return;
     installed = TRUE;
     gchar *css = g_strdup_printf(
-        "window.notes-dialog .dialog-action-area {"
-        "  padding: 0 12px 12px 12px;"
+        /* GTK's alert dialogs (confirm(), Open Database…'s Session Only /
+         * Set as Default): the Default theme joins their buttons into one
+         * full-width, flush bar of 10 px-tall buttons (its "csd" message
+         * dialog).  Ordinary buttons, spaced, with the window margin the
+         * dialog_new scaffold gives its own.                              */
+        "window.dialog.message.csd .dialog-action-area button {"
+        "  padding: 4px 14px; border-radius: 5px; border-style: solid;"
+        "  margin: 0;"
+        "}"
+        "window.dialog.message .dialog-action-area {"
+        "  padding: 0 12px 12px 12px; border-spacing: 6px;"
         "}"
         /* The grid's cards: a hover outline on every one, the tint only on
          * an UNSELECTED one — a near-transparent tint under text the

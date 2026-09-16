@@ -821,12 +821,12 @@ refresh_sidebar(OnLibrary *lw)
 /* ---------------------------------------------------------------------------
  * render_note_thumb() — draw a square THUMB_SIZE card for one note: its
  * first embedded image (if any) above the beginning of its body text,
- * returned as a GdkTexture of exactly THUMB_SIZE pixels.  The size is
- * deliberately the LOGICAL one: GtkCellRendererPixbuf lays a texture out
- * at its pixel width (gdk_paintable_get_intrinsic_width), so a card
- * rendered at scale-factor resolution would draw twice as large on a
- * HiDPI display, not sharper.  The title is NOT drawn here — the grid
- * shows it as a real text label under the card.
+ * returned as a GdkTexture of THUMB_SIZE × the grid's scale factor pixels
+ * — the GtkPicture that shows it is THUMB_SIZE logical px, so on a 2×
+ * display the texture is drawn 1:1 and stays sharp (a 1× texture scaled
+ * up was blurry).  Everything is drawn in LOGICAL units under one cairo
+ * scale.  The title is NOT drawn here — the grid shows it as a real text
+ * label under the card.
  *   lw — the library window (for the database).
  *   id — the note to render.
  * Returns a new texture reference.
@@ -866,12 +866,13 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     while (*p && n < 300) { p = g_utf8_next_char(p); n++; }
     gchar *body_cut = g_strndup(body, (gsize)(p - body));
 
-    /* Draw with cairo at the card's pixel size (see the banner comment on
-     * why it is not the scale-factor size).                                */
-    const gint SZ = THUMB_SIZE;      /* square edge length in pixels        */
+    /* Draw with cairo in logical units at the display's scale factor.     */
+    const gint SZ = THUMB_SIZE;      /* square edge length, logical px      */
+    gint scale = gtk_widget_get_scale_factor(GTK_WIDGET(lw->notes_grid));
     cairo_surface_t *surface = cairo_image_surface_create(
-        CAIRO_FORMAT_ARGB32, SZ, SZ);
+        CAIRO_FORMAT_ARGB32, SZ * scale, SZ * scale);
     cairo_t *cr = cairo_create(surface);
+    cairo_scale(cr, scale, scale);
 
     /* White background with a light border.                                */
     cairo_set_source_rgb(cr, 1, 1, 1);
@@ -940,8 +941,9 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     cairo_surface_flush(surface);
     gint stride = cairo_image_surface_get_stride(surface);
     GBytes *pixels = g_bytes_new(cairo_image_surface_get_data(surface),
-                                 (gsize)stride * SZ);
-    GdkTexture *texture = gdk_memory_texture_new(SZ, SZ, GDK_MEMORY_DEFAULT,
+                                 (gsize)stride * SZ * scale);
+    GdkTexture *texture = gdk_memory_texture_new(SZ * scale, SZ * scale,
+                                                 GDK_MEMORY_DEFAULT,
                                                  pixels, (gsize)stride);
     g_bytes_unref(pixels);
     cairo_surface_destroy(surface);
@@ -5774,7 +5776,7 @@ library_install_css(void)
          * an UNSELECTED one — a near-transparent tint under text the
          * selected state has turned white was an invisible title until
          * the mouse left the cell.                                       */
-        "gridview.notes-grid > child { padding: 6px; }"
+        "gridview.notes-grid > child { padding: 6px; transition: none; }"
         "gridview.notes-grid > child:hover {"
         "  outline: 1px solid alpha(black, 0.4);"
         "  outline-offset: -1px;"

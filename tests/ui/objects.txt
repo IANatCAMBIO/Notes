@@ -70,11 +70,13 @@ key BackSpace
 check 3 para First line here
 check 4 para 
 caret 4 0
-# Find highlights and steps to the next match, wrapping.
+# Find highlights every match and selects the first one at or after the
+# caret (wrapping — the caret is at the end here); steps go on from it.
 find line
-step line
 caret 0 10
 step line
 caret 3 10
-step-back line
+step line
 caret 0 10
+step-back line
+caret 3 10

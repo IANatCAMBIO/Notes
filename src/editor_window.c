@@ -667,7 +667,8 @@ on_insert_date(GSimpleAction *action, GVariant *param, gpointer user_data)
 /* ===========================================================================
  * in-note search — the entry; the matching and the highlight are the view's
  *
- * The toolbar's right-edge entry highlights every match as you type; Enter
+ * The toolbar's right-edge entry highlights every match as you type and
+ * selects the first one at or after the caret, scrolled into view; Enter
  * (or the arrow buttons) jumps to the next match, wrapping at the end.
  * Primary+F focuses the entry; Escape returns focus to the text.
  * =========================================================================== */
@@ -731,7 +732,6 @@ editor_apply_search_term(OnEditor *ed, const gchar *term)
         return;
     gtk_editable_set_text(GTK_EDITABLE(ed->search_entry), term);
     on_search_changed(GTK_SEARCH_ENTRY(ed->search_entry), ed);
-    editor_search_move(ed, TRUE);
 }
 
 /* on_initial_search_idle() — apply ed->pending_search once the freshly

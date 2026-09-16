@@ -477,8 +477,10 @@ scroll_to_caret(OnNoteView *v)
     on_doc_layout_caret_rect(v->layout, v->caret, &r);
     gdouble page  = gtk_adjustment_get_page_size(v->vadj);
     gdouble value = gtk_adjustment_get_value(v->vadj);
-    if (page <= 0)
+    if (page <= 0) {
+        v->scroll_pending = TRUE;    /* not allocated yet: after it is      */
         return;
+    }
     gdouble top = r.origin.y - 8, bottom = r.origin.y + r.size.height + 8;
     if (top < value)
         gtk_adjustment_set_value(v->vadj, top);
@@ -2274,6 +2276,14 @@ on_note_view_find(OnNoteView *v, const gchar *text)
         GArray *hits = find_hits(v, v->find_text);
         on_doc_layout_set_hits(v->layout, hits);
         g_array_unref(hits);
+        /* Select the first match at or after the caret and scroll to it,
+         * so the query lands somewhere as it is typed; Next/Previous then
+         * step from THAT selection.  Collapsing the selection to its start
+         * first is what makes a match under the caret the first pick.    */
+        OnPos a, b;
+        sel_bounds(v, &a, &b);
+        v->anchor = v->caret = a;
+        on_note_view_find_step(v, v->find_text, TRUE);
     }
     gtk_widget_queue_draw(GTK_WIDGET(v));
 }

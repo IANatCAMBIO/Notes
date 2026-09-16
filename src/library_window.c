@@ -251,6 +251,8 @@ typedef struct {
     guint         status_timeout;
     GtkWidget    *view_btn;            /* List/Grid toggle; icon names the
                                         * view a click switches TO           */
+    GtkWidget    *done_btn;            /* completed-items toggle; icon names
+                                        * what a click DOES (done_button_sync) */
     GtkWidget    *ai_btn;              /* microchip AI toolbar button          */
     GtkWidget    *ai_pane;             /* output pane below the notes stack    */
     GtkWidget    *ai_text;             /* non-editable text view inside it     */
@@ -334,6 +336,7 @@ thumb_pending_clear(OnLibrary *lw)
 static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
 static void    refresh_all(OnLibrary *lw);
+static void    done_button_sync(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
 static void    sidebar_fit_queue(OnLibrary *lw, gboolean force);
@@ -1171,6 +1174,8 @@ refresh_notes(OnLibrary *lw)
                   "actions") == 0)
         gtk_stack_set_visible_child_name(GTK_STACK(lw->stack),
                                          lw->grid_pref ? "grid" : "list");
+
+    done_button_sync(lw);            /* the setting may have changed        */
 
     /* The list's density class, for the row-height CSS.                   */
     if (lw->app->comfortable_list)
@@ -3282,6 +3287,44 @@ view_button_sync(OnLibrary *lw)
         grid ? "Switch to list view" : "Switch to grid view");
 }
 
+/* ---------------------------------------------------------------------------
+ * done_button_sync() — point the toolbar's completed-items toggle at the
+ * ACTION a click performs, the same rule as the List/Grid button (and the
+ * sister Tasks app's identical button): hidden.png while completed action
+ * items are listed (click to hide them), visible.png while they are hidden
+ * (click to bring them back).  Runs from refresh_notes, so the Settings
+ * checkbox for the same setting keeps it honest too.
+ * ------------------------------------------------------------------------- */
+static void
+done_button_sync(OnLibrary *lw)
+{
+    if (lw->done_btn == NULL)
+        return;
+    gboolean show = lw->app->show_done_actions;
+    on_app_tool_item_set_icon(lw->app, lw->done_btn,
+                              show ? "hidden" : "visible",
+                              "\xf0\x9f\x91\x81");   /* an eye either way */
+    gtk_accessible_update_property(GTK_ACCESSIBLE(lw->done_btn),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   show ? "Hide Completed" : "Show Completed",
+                                   -1);
+    on_app_set_tooltip(lw->done_btn,
+        show ? "Hide completed action items"
+             : "Show completed action items");
+}
+
+/* on_toggle_done() — "win.toggle-done": flip the show_done_actions setting
+ * (the one Settings' "Show completed action items" box sets) and rebuild;
+ * refresh_notes re-points the button.                                      */
+static void
+on_toggle_done(OnLibrary *lw)
+{
+    lw->app->show_done_actions = !lw->app->show_done_actions;
+    on_app_config_set("show_done_actions",
+                      lw->app->show_done_actions ? "1" : "0");
+    refresh_all(lw);
+}
+
 /* on_view_stack_changed() — the stack switched children: re-point the
  * List/Grid button's icon.  One connection covers every route in.           */
 static void
@@ -4950,6 +4993,7 @@ static const LibCommand WIN_COMMANDS[] = {
     { "quicknote",        on_quicknote           },
     { "delete-note",      on_delete_note         },
     { "toggle-view",      on_toggle_view         },
+    { "toggle-done",      on_toggle_done         },
     /* sidebar context menu                                                 */
     { "folder-info",      on_rename_folder       },
     { "folder-restore",   on_restore_folder      },
@@ -5202,6 +5246,11 @@ build_action_bar(OnLibrary *lw)
     lw->view_btn = add_tool_button(lw, toolbar, "grid", "\xe2\x8a\x9e",
                     "Grid", "Switch to grid view",
                     "win.toggle-view");
+    /* Completed action items on/off; icon, label and tooltip are set by
+     * done_button_sync() from the live setting.                          */
+    lw->done_btn = add_tool_button(lw, toolbar, "hidden", "\xf0\x9f\x91\x81",
+                    "Hide Completed", "Hide completed action items",
+                    "win.toggle-done");
     add_tool_button(lw, toolbar, "search", "\xf0\x9f\x94\x8d",
                     "Search", "Open search window",
                     "app.search");
@@ -5982,6 +6031,7 @@ on_library_window_create(OnApp *app)
     /* Likewise the List/Grid button: the toolbar is built after the stack,
      * so it missed the stack's construction-time child change.            */
     view_button_sync(lw);
+    done_button_sync(lw);
 
 
     return lw->window;

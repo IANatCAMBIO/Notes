@@ -28,6 +28,8 @@ safe to re-run.
 | `delete-folder.png`      | Delete Folder                  |
 | `grid.png`               | List/Grid toggle, while the LIST is showing |
 | `list.png`               | List/Grid toggle, while the GRID is showing |
+| `hidden.png`             | Completed-items toggle, while completed action items are SHOWN (click hides them; from the Tasks app) |
+| `visible.png`            | Completed-items toggle, while they are HIDDEN (click shows them; from the Tasks app) |
 | `images.png`             | Media (image browser)          |
 | `sidebar.png`            | Show/hide the folder pane (filing cabinet) |
 | `search.png`             | Search                         |

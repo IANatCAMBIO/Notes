@@ -4831,6 +4831,10 @@ on_sidebar_setup(GtkListItemFactory *f, GtkListItem *item,
     OnLibrary *lw = user_data;       /* owning library window               */
     GtkWidget *expander = gtk_tree_expander_new();
     gtk_tree_expander_set_indent_for_icon(GTK_TREE_EXPANDER(expander), FALSE);
+    /* The same left inset the notes list's Title cell text has (its box
+     * margin plus the theme's cell padding, 14 px), less the row's own
+     * 4 px, so the two panes' text sits the same distance off its edge. */
+    gtk_widget_set_margin_start(expander, 10);
     GtkWidget *label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
     /* Ellipsizing names keeps the pane's MINIMUM width small: without it

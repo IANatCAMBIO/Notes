@@ -62,6 +62,7 @@ LDFLAGS  := $(shell $(PKGCONF) --libs gtk4 sqlite3) -lm
 # All C source files that make up the application.
 SRCS     := src/main.c \
             src/app.c \
+            src/list_rows.c \
             src/cli.c \
             src/db.c \
             src/ipc.c \

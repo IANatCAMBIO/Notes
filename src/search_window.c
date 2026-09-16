@@ -30,16 +30,9 @@
 #include "serialize.h"
 #include "editor_window.h"
 #include "library_window.h"
+#include "list_rows.h"
 
 #include <string.h>
-
-/* Result-list store columns.                                                */
-enum {
-    SR_ID,                           /* gint64: note id                     */
-    SR_PATH,                         /* gchar*: /Folder/Sub/Title path      */
-    SR_MODIFIED,                     /* gchar*: formatted updated_at        */
-    SR_N_COLS
-};
 
 typedef struct SearchJob SearchJob;  /* forward: one in-flight search       */
 
@@ -79,7 +72,8 @@ typedef struct {
     GtkWidget     *radio_scoped;
     GtkWidget     *check_case;
     GtkWidget     *check_regex;
-    GtkListStore  *store;
+    GListStore    *store;            /* results: OnNoteRow (id, path,
+                                        modified); our ref                 */
     GtkWidget     *status;
     GtkWidget     *spinner;
     SearchJob     *job;
@@ -209,20 +203,17 @@ search_done(gpointer user_data)
         if (job->error != NULL) {
             gtk_label_set_text(GTK_LABEL(sw->status), job->error);
         } else {
-            /* The results list is a GtkTreeView (deprecated since GTK
-             * 4.10, kept on purpose — see GTK4_MIGRATION.md).            */
-            G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+            GPtrArray *rows = g_ptr_array_new_with_free_func(g_object_unref);
             for (guint i = 0; i < job->hits->len; i++) {
                 SearchHit *h = g_ptr_array_index(job->hits, i);
-                GtkTreeIter iter;
-                gtk_list_store_append(sw->store, &iter);
-                gtk_list_store_set(sw->store, &iter,
-                                   SR_ID,       h->id,
-                                   SR_PATH,     h->path,
-                                   SR_MODIFIED, h->when,
-                                   -1);
+                OnNoteRow *row = on_note_row_new();
+                row->id       = h->id;
+                row->path     = g_strdup(h->path);
+                row->modified = g_strdup(h->when);
+                g_ptr_array_add(rows, row);
             }
-            G_GNUC_END_IGNORE_DEPRECATIONS
+            g_list_store_splice(sw->store, 0, 0, rows->pdata, rows->len);
+            g_ptr_array_unref(rows);
             gchar *msg = g_strdup_printf(
                 "%u match%s%s", job->hits->len,
                 job->hits->len == 1 ? "" : "es",
@@ -327,9 +318,7 @@ run_search(OnSearch *sw)
     gtk_widget_set_visible(sw->spinner, FALSE);
 
     const gchar *query = gtk_editable_get_text(GTK_EDITABLE(sw->entry));
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS   /* deprecated GtkListStore, kept   */
-    gtk_list_store_clear(sw->store);
-    G_GNUC_END_IGNORE_DEPRECATIONS
+    g_list_store_remove_all(sw->store);
     if (query == NULL || *query == '\0') {
         gtk_label_set_text(GTK_LABEL(sw->status), "Type something to search for.");
         return;
@@ -394,22 +383,44 @@ run_search(OnSearch *sw)
 
 /* on_result_activated() — double-click/Enter on a result opens the note.    */
 static void
-on_result_activated(GtkTreeView *view, GtkTreePath *path,
-                    GtkTreeViewColumn *col, gpointer user_data)
+on_result_activated(GtkColumnView *view, guint position, gpointer user_data)
 {
-    (void)view; (void)col;
+    (void)view;
     OnSearch *sw = user_data;        /* owning search window                */
-    GtkTreeIter iter;                /* activated row                       */
-    gint64 id;                       /* note id of the row                  */
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS   /* deprecated GtkTreeModel, kept   */
-    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(sw->store), &iter, path))
+    OnNoteRow *row = g_list_model_get_item(G_LIST_MODEL(sw->store), position);
+    if (row == NULL)
         return;
-    gtk_tree_model_get(GTK_TREE_MODEL(sw->store), &iter, SR_ID, &id, -1);
-    G_GNUC_END_IGNORE_DEPRECATIONS
     /* Carry the searched-for term into the editor so it is highlighted in
      * the note: the query's first positive term (a regex query is seeded
      * as-is), which is NULL when the query only excluded things.           */
-    on_editor_window_open_search(sw->app, id, sw->highlight);
+    on_editor_window_open_search(sw->app, row->id, sw->highlight);
+    g_object_unref(row);
+}
+
+/* The two result columns show one OnNoteRow string each.                   */
+enum { RF_PATH, RF_MODIFIED };
+
+/* on_result_setup() / on_result_bind() — a label per cell.                  */
+static void
+on_result_setup(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f; (void)user_data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_start(label, 6);
+    gtk_widget_set_margin_end(label, 6);
+    gtk_list_item_set_child(item, label);
+}
+
+static void
+on_result_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f;
+    OnNoteRow *row = gtk_list_item_get_item(item);
+    gtk_label_set_text(GTK_LABEL(gtk_list_item_get_child(item)),
+                       GPOINTER_TO_INT(user_data) == RF_PATH ? row->path
+                                                             : row->modified);
 }
 
 /* on_search_size_changed() — notify::default-width / notify::default-height
@@ -443,6 +454,7 @@ on_search_destroy(GtkWidget *widget, gpointer user_data)
         g_free(h);
     }
     g_free(sw->highlight);
+    g_clear_object(&sw->store);
     g_free(sw);
 }
 
@@ -550,33 +562,28 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
     gtk_box_append(GTK_BOX(vbox), opt_row);
 
     /* --- results -------------------------------------------------------------*/
-    /* A GtkTreeView over a GtkListStore: deprecated since GTK 4.10, kept
-     * on purpose until the GListModel migration (GTK4_MIGRATION.md).      */
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    sw->store = gtk_list_store_new(SR_N_COLS,
-                                   G_TYPE_INT64,    /* SR_ID               */
-                                   G_TYPE_STRING,   /* SR_PATH             */
-                                   G_TYPE_STRING);  /* SR_MODIFIED         */
-
-    GtkWidget *results = gtk_tree_view_new_with_model(
-        GTK_TREE_MODEL(sw->store));
-    g_object_unref(sw->store);       /* the view holds the ref now          */
-    /* No GTK type-ahead popup (auto-picked search column, see quirk 16).  */
-    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(results), FALSE);
-    gtk_tree_view_append_column(
-        GTK_TREE_VIEW(results),
-        gtk_tree_view_column_new_with_attributes(
-            "Path", gtk_cell_renderer_text_new(),
-            "text", SR_PATH, NULL));
-    gtk_tree_view_append_column(
-        GTK_TREE_VIEW(results),
-        gtk_tree_view_column_new_with_attributes(
-            "Modified", gtk_cell_renderer_text_new(),
-            "text", SR_MODIFIED, NULL));
-    gtk_tree_view_column_set_expand(
-        gtk_tree_view_get_column(GTK_TREE_VIEW(results), 0), TRUE);
-    G_GNUC_END_IGNORE_DEPRECATIONS
-    g_signal_connect(results, "row-activated",
+    /* A GtkColumnView over a GListStore of OnNoteRow (list_rows.h); the
+     * store is the window's, the view holds the selection model.        */
+    sw->store = g_list_store_new(ON_TYPE_NOTE_ROW);
+    GtkSingleSelection *sel = gtk_single_selection_new(
+        G_LIST_MODEL(g_object_ref(sw->store)));
+    gtk_single_selection_set_autoselect(sel, FALSE);
+    GtkWidget *results = gtk_column_view_new(GTK_SELECTION_MODEL(sel));
+    const struct { const gchar *title; gint field; gboolean expand; }
+        RCOLS[] = { { "Path", RF_PATH, TRUE }, { "Modified", RF_MODIFIED,
+                                                 FALSE } };
+    for (gsize i = 0; i < G_N_ELEMENTS(RCOLS); i++) {
+        GtkListItemFactory *f = gtk_signal_list_item_factory_new();
+        g_signal_connect(f, "setup", G_CALLBACK(on_result_setup), NULL);
+        g_signal_connect(f, "bind", G_CALLBACK(on_result_bind),
+                         GINT_TO_POINTER(RCOLS[i].field));
+        GtkColumnViewColumn *col = gtk_column_view_column_new(RCOLS[i].title,
+                                                              f);
+        gtk_column_view_column_set_expand(col, RCOLS[i].expand);
+        gtk_column_view_append_column(GTK_COLUMN_VIEW(results), col);
+        g_object_unref(col);
+    }
+    g_signal_connect(results, "activate",
                      G_CALLBACK(on_result_activated), sw);
 
     GtkWidget *scroll = gtk_scrolled_window_new();

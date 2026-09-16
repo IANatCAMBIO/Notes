@@ -43,14 +43,12 @@ svg_loader_available(void)
  * persist, and trigger a full notes-list refresh so row heights update.
  * ------------------------------------------------------------------------- */
 static void
-on_density_combo_changed(GtkComboBox *combo, gpointer user_data)
+on_density_combo_changed(GtkDropDown *combo, GParamSpec *pspec,
+                         gpointer user_data)
 {
+    (void)pspec;
     OnApp *app = user_data;            /* application context                 */
-    /* GtkComboBoxText is deprecated since 4.10 (for GtkDropDown) but
-     * present; allowed by GTK4_MIGRATION.md's recipe, wrapped per call.  */
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    app->comfortable_list = (gtk_combo_box_get_active(combo) == 1);
-    G_GNUC_END_IGNORE_DEPRECATIONS
+    app->comfortable_list = (gtk_drop_down_get_selected(combo) == 1);
     on_app_config_set("list_density_comfortable",
                       app->comfortable_list ? "1" : "0");
     if (app->notify_notes_changed != NULL)
@@ -936,17 +934,12 @@ on_settings_window_open(OnApp *app)
     GtkWidget *density_label = gtk_label_new("List density:");
     gtk_label_set_xalign(GTK_LABEL(density_label), 0.0);
     gtk_grid_attach(GTK_GRID(grid), density_label, 0, 0, 1, 1);
-    /* Deprecated since 4.10 but present — see on_density_combo_changed.  */
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    GtkWidget *density_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(density_combo),
-                                   "Compact");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(density_combo),
-                                   "Comfortable");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(density_combo),
-                             app->comfortable_list ? 1 : 0);
-    G_GNUC_END_IGNORE_DEPRECATIONS
-    g_signal_connect(density_combo, "changed",
+    static const gchar *const DENSITIES[] = { "Compact", "Comfortable",
+                                              NULL };
+    GtkWidget *density_combo = gtk_drop_down_new_from_strings(DENSITIES);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(density_combo),
+                               app->comfortable_list ? 1 : 0);
+    g_signal_connect(density_combo, "notify::selected",
                      G_CALLBACK(on_density_combo_changed), app);
     gtk_grid_attach(GTK_GRID(grid), density_combo, 1, 0, 1, 1);
 

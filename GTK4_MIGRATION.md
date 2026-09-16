@@ -520,7 +520,10 @@ add a second idiom.
   Verified deprecated-not-removed in 4.10+.  The Makefile must NOT define
   `GTK_DISABLE_DEPRECATED`; deprecation warnings are silenced with
   `-Wno-deprecated-declarations` for the two files that use them, NOT
-  globally — everything else should still warn.
+  globally — everything else should still warn.  **Reversed 2026-09-16
+  (D33): the tree views are gone, and with them every deprecation
+  suppression in the tree — the build must stay
+  `-Wdeprecated-declarations` clean.**
 - **2026-09-14 — Phase 2 runs on `main` in GTK3.**  `GMenu`/`GAction` are
   GLib and GTK3 renders them; nothing about it is GTK4-specific, and it
   makes the menu code better whether or not the port proceeds.
@@ -795,6 +798,39 @@ add a second idiom.
   slower than browse mode).  All 24 tooltip sites use the helper.
   Upstream: GdkMacosView should mark the layer dirty from `setFrameSize:`
   too.
+
+- **D33 · 2026-09-16 — The list widgets: GtkColumnView / GtkListView /
+  GtkGridView over GListModels, no GtkTreeView anywhere.**  Item objects
+  are the three plain GObjects in `list_rows.h`; rows are built by
+  GtkSignalListItemFactory setup/bind pairs, an in-place change is
+  `on_row_touch` (items-changed for the one item — the views rebind it,
+  a GtkSortListModel re-sorts it, a GtkMultiSelection keeps it selected
+  by object identity, verified in gtkmultiselection.c), a rebuild is one
+  `g_list_store_splice`.  What the port bought: (1) the notes list and
+  grid share ONE GtkMultiSelection and ONE sorted model, so a header
+  click sorts the grid and a selection made in one view is the other's;
+  (2) quirk #15 is gone — GtkListFactoryWidget selects on RELEASE, so a
+  press on a selected row that becomes a drag never collapses the
+  selection, and the capture-phase veto (D7) is deleted; (3) the autofit
+  measuring pass is gone — a column view sizes columns to content; (4)
+  the drop indicator is a CSS class on the sidebar row under the pointer
+  (one GtkDropTarget per row), so the D5 `enable_model_drag_dest`
+  workaround is gone; (5) header menus are
+  `gtk_column_view_column_set_header_menu` over stateful
+  `win.column-<cfg>-<key>` actions; (6) the sidebar fit reads the list
+  view's natural width instead of walking the model with Pango.  Two
+  things measured on the way: a column's factory cannot reach the row
+  widget, so row-wide controllers go on every cell; and a list view
+  measures only realized rows, so the startup fit is queued from `map`
+  (an idle from the constructor saw a 27 px placeholder).  GtkDialog
+  (two uses) became the `dialog_new` scaffold over a plain GtkWindow, the
+  density GtkComboBoxText a GtkDropDown, and the thumbnail card's
+  `gdk_cairo_set_source_pixbuf` a `gdk_texture_download` into a cairo
+  surface.  Behaviour changes to know: the sidebar's startup fit sizes to
+  the VISIBLE rows (the tree view measured the whole collapsed model);
+  the Due Date urgency colour is set at bind time rather than at draw
+  time, so it rolls over at midnight on the next refresh rather than on
+  the next paint.
 
 ## Session log
 

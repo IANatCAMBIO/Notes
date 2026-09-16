@@ -3,40 +3,34 @@
  *
  * See library_window.h for the layout overview.  Key mechanics:
  *
- *   sidebar    — a GtkTreeView over a GtkTreeStore holding the sections
- *                "All Notes", the folder hierarchy (rooted at a fixed
- *                "Notes" row), a flat "Tags" section, "Pinned Notes",
- *                and — while non-empty — "Trash" (trashed folders as its
- *                children).  Row kinds are distinguished by the SB_KIND
- *                column.
+ *   sidebar    — a GtkListView over a GtkTreeListModel of OnSbRow
+ *                (list_rows.h): the sections "All Notes", "Action Items",
+ *                the folder hierarchy (rooted at a fixed "Notes" row), a
+ *                flat "Tags" section, "Pinned Notes", and — while
+ *                non-empty — "Trash" (trashed folders as its children).
+ *                Row kinds are distinguished by OnSbRow.kind (SB_KIND_*).
  *
- *   notes pane — a GtkListStore shown either as a GtkTreeView (list mode)
- *                or a GtkIconView (grid mode).  Both views stay attached
- *                to the same store; a GtkStack flips between them.
+ *   notes pane — one GListStore of OnNoteRow, sorted by a GtkSortListModel
+ *                that follows the column view's sorter, under ONE
+ *                GtkMultiSelection shared by a GtkColumnView (list mode)
+ *                and a GtkGridView (grid mode): the two views cannot
+ *                disagree about what is selected.  A GtkStack flips
+ *                between them and the Action Items GtkColumnView.
  *
- *   drag&drop  — both notes views are GtkDragSources handing over the
- *                selected note ids, and the sidebar is THE GtkDropTarget:
- *                a note drop moves the notes into the folder (or trashes
- *                them).  The sidebar is a drag source too: a folder row
- *                drops INTO a folder (re-nest), BETWEEN folders
- *                (reorder/re-nest beside the sibling), onto Trash (delete
- *                gesture), or out of Trash (restore).  One boxed value
- *                type, OnDragRows, is the whole content of every drag
- *                (GTK4_MIGRATION.md, D8).
+ *   drag&drop  — every row of the notes views and every folder row of the
+ *                sidebar is a GtkDragSource (installed by the row's
+ *                factory), and every sidebar row is a GtkDropTarget: a
+ *                note drop moves the notes into the folder (or trashes
+ *                them); a folder row drops INTO a folder (re-nest),
+ *                BETWEEN folders (reorder/re-nest beside the sibling),
+ *                onto Trash (delete gesture), or out of Trash (restore).
+ *                One boxed value type, OnDragRows, is the whole content of
+ *                every drag (GTK4_MIGRATION.md, D8).
  * =========================================================================== */
-
-/* This file lives on the DEPRECATED GtkTreeView / GtkIconView family by
- * decision (GTK4_MIGRATION.md, "Tree views stay on the deprecated
- * GtkTreeView family"): the sidebar, the notes list, the Action Items view
- * and the grid keep their tree models and cell renderers until the GTK5
- * migration replaces them with list models.  The per-call deprecation
- * warnings are silenced for the whole file rather than wrapping a few
- * hundred call sites; every OTHER file still warns.                         */
-#define GDK_DISABLE_DEPRECATION_WARNINGS
-#define GTK_DISABLE_DEPRECATION_WARNINGS
 
 #include "library_window.h"
 #include "backup.h"
+#include "list_rows.h"
 #include "editor_window.h"
 #include "export.h"
 #include "media_window.h"
@@ -58,8 +52,7 @@
 #define NL_PREVIEW_CHARS 200
 
 /* strftime format of the Modified and Created cells ("Jun 3, 2026 14:05").
- * ONE definition: list_autofit_time_width() bounds the column width from
- * this same pattern, so the two can never disagree about the shape.         */
+ * ONE definition for the two columns.                                       */
 #define LIST_TIME_FORMAT "%b %e, %Y %H:%M"
 
 /* Blank strip above the sidebar tree, to line its first row's text up with
@@ -70,7 +63,7 @@
  * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
  * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
  * pasted into one CSS declaration in library_install_css, shared by the
- * tree view and the spacer strip above it.                                  */
+ * list view and the spacer strip above it.                                  */
 #define SB_BG_SHADE "0.96"
 
 /* Sidebar row kinds (SB_KIND column).                                       */
@@ -86,41 +79,9 @@ enum {
     SB_KIND_ACTIONS,                 /* the "Action Items" section          */
 };
 
-/* Sidebar GtkTreeStore columns.                                             */
-enum {
-    SB_KIND,                         /* gint: one of SB_KIND_*              */
-    SB_ID,                           /* gint64: folder id or tag id         */
-    SB_NAME,                         /* gchar*: display text (with count)   */
-    SB_RAW,                          /* gchar*: bare name (no count suffix) */
-    SB_N_COLS
-};
-
-/* Notes GtkListStore columns.                                               */
-enum {
-    NL_ID,                           /* gint64: note id                     */
-    NL_TITLE,                        /* gchar*: note title                  */
-    NL_MODIFIED,                     /* gchar*: formatted updated_at        */
-    NL_THUMB,                        /* GdkTexture*: grid thumbnail         */
-    NL_UPDATED,                      /* gint64: raw updated_at (sort key)   */
-    NL_PATH,                         /* gchar*: "/Folder/Sub" location      */
-    NL_CREATED,                      /* gchar*: formatted created_at        */
-    NL_CREATED_RAW,                  /* gint64: raw created_at (sort key)   */
-    NL_PREVIEW,                      /* gchar*: first line of body text      */
-    NL_N_COLS
-};
-
-/* Columns of the Action Items list model (the third notes-pane view).       */
-enum {
-    AL_NOTE_ID,                      /* gint64: owning note id              */
-    AL_ORD,                          /* gint: position among the note's
-                                        action lines (addresses the item)   */
-    AL_DONE,                         /* gboolean: checkbox state            */
-    AL_TEXT,                         /* gchar*: the item text               */
-    AL_DUE,                          /* gchar*: formatted due date ("")     */
-    AL_DUE_RAW,                      /* gint64: due timestamp (sort key;
-                                        0 = none, sorts after any date)     */
-    AL_N_COLS
-};
+/* How many columns the notes list owns (Title, Path, Modified, Created) —
+ * keep in sync with the COLS[] table in library_build_notes_list.           */
+#define N_LIST_COLUMNS 4
 
 /* How many columns the Action Items list owns (done, Action, Due Date).    */
 #define N_ACTION_COLUMNS 3
@@ -189,12 +150,21 @@ G_DEFINE_BOXED_TYPE(OnDragRows, on_drag_rows, on_drag_rows_copy,
  * Fields:
  *   app           — global application context (not owned).
  *   window        — the top-level GtkWindow.
- *   sidebar_store — tree model behind the sidebar.
- *   sidebar       — the sidebar GtkTreeView.
- *   notes_store   — list model behind both notes views.
- *   notes_list    — list-mode view (GtkTreeView).
- *   notes_grid    — grid-mode view (GtkIconView).
- *   stack         — GtkStack switching between list and grid.
+ *   sb_store      — the sidebar's ROOT rows (OnSbRow; folders and tags
+ *                   hang under them in their own children stores).
+ *   sb_tree       — the GtkTreeListModel flattening that tree for the
+ *                   list view: what is expanded is state on ITS rows.
+ *   sb_sel        — the sidebar's GtkSingleSelection.
+ *   sidebar       — the sidebar GtkListView.
+ *   notes_store   — the notes (OnNoteRow), in the order the database
+ *                   returned them.
+ *   notes_sorted  — the same rows under the list view's column sorter;
+ *                   what both notes views and the selection show.
+ *   notes_sel     — THE selection of the notes pane, shared by the list
+ *                   and the grid.
+ *   notes_list    — list-mode view (GtkColumnView).
+ *   notes_grid    — grid-mode view (GtkGridView).
+ *   stack         — GtkStack switching between list, grid and actions.
  *   sel_kind      — SB_KIND_* of the current sidebar selection; controls
  *                   which notes are listed.
  *   sel_id        — folder id (for ROOT/FOLDER) or tag id (for TAG) of
@@ -221,8 +191,6 @@ G_DEFINE_BOXED_TYPE(OnDragRows, on_drag_rows, on_drag_rows_copy,
  *                   macOS only: shown while the "native_menubar" setting
  *                   is off (see on_library_apply_native_menubar).  NULL
  *                   elsewhere.
- *   column_menu_view — the list view whose column header was last
- *                   right-clicked; the "column-<key>" actions act on it.
  *   view_btn      — the toolbar's List/Grid toggle, kept so its ICON can
  *                   be re-pointed at whichever view a click switches TO
  *                   (see view_button_sync()).
@@ -236,13 +204,18 @@ G_DEFINE_BOXED_TYPE(OnDragRows, on_drag_rows, on_drag_rows_copy,
 typedef struct {
     OnApp        *app;
     GtkWidget    *window;
-    GtkTreeStore *sidebar_store;
-    GtkTreeView  *sidebar;
-    GtkListStore *notes_store;
-    GtkTreeView  *notes_list;
-    GtkIconView  *notes_grid;
-    GtkListStore *actions_store;         /* Action Items model (AL_*)      */
-    GtkTreeView  *actions_view;          /* Action Items list view         */
+    GListStore         *sb_store;
+    GtkTreeListModel   *sb_tree;
+    GtkSingleSelection *sb_sel;
+    GtkListView        *sidebar;
+    GListStore         *notes_store;
+    GtkSortListModel   *notes_sorted;
+    GtkMultiSelection  *notes_sel;
+    GtkColumnView      *notes_list;
+    GtkGridView        *notes_grid;
+    GListStore         *actions_store;   /* Action Items rows (OnActionRow) */
+    GtkSortListModel   *actions_sorted;  /* under the actions view's sorter */
+    GtkColumnView      *actions_view;    /* Action Items list view         */
     gboolean      grid_pref;             /* the user's list/grid choice, so
                                             leaving the Action Items view
                                             restores the right mode        */
@@ -250,18 +223,6 @@ typedef struct {
     gint          sel_kind;
     gint64        sel_id;
     gchar        *sel_name;
-    gboolean      list_autofit;          /* list columns auto-size to their
-                                            contents on every refresh (ini
-                                            key "list_autofit")            */
-    gboolean      notes_sel_blocked;     /* selection changes vetoed for
-                                            the span of a press on an
-                                            already-selected list row, so
-                                            a drag keeps the whole
-                                            multi-selection (quirk #15,
-                                            still true on GTK4: D7)        */
-    GtkTreePath  *notes_press_path;      /* the row that press landed on
-                                            (owned): a plain click
-                                            collapses to it on release     */
     gint          populating;
     GHashTable   *thumb_cache;
     GHashTable   *folder_path_cache;     /* folder_id→path string; populated
@@ -276,7 +237,6 @@ typedef struct {
     GtkWidget    *sidebar_box;
     GMenuModel   *menubar_model;         /* File/View menus (owned ref)     */
     GtkWidget    *menubar;               /* in-window bar (macOS only)      */
-    GtkTreeView  *column_menu_view;      /* view the column menu is up for  */
     GtkWidget    *sidebar_paned;         /* horizontal paned holding the sidebar */
     guint         sb_fit_idle;           /* pending sidebar_fit_grow(), or 0;
                                             coalesces the row-expanded burst
@@ -334,22 +294,21 @@ thumb_entry_free(gpointer data)
  * once hung the window for ~40 s on a 1200-note database.
  *
  * Fields:
- *   row        — where to deliver the texture (owned; safely goes
- *                invalid if the model is rebuilt or the row removed).
- *   id         — the note to render.
+ *   row        — where to deliver the texture (an owned reference; a row
+ *                the store has dropped meanwhile is simply not found and
+ *                the job is discarded).
  *   updated_at — its updated_at when the row was populated (cache key).
  * ------------------------------------------------------------------------- */
 typedef struct {
-    GtkTreeRowReference *row;
-    gint64               id;
-    gint64               updated_at;
+    OnNoteRow *row;
+    gint64     updated_at;
 } ThumbJob;
 
 /* thumb_job_free() — release one pending-thumbnail job.                     */
 static void
 thumb_job_free(ThumbJob *job)
 {
-    gtk_tree_row_reference_free(job->row);
+    g_object_unref(job->row);
     g_free(job);
 }
 
@@ -373,11 +332,7 @@ static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
-static void    list_autofit_set(OnLibrary *lw, PangoLayout *lay,
-                                const gchar *key, gint content_w);
-static gboolean list_column_shown(OnLibrary *lw, const gchar *key);
-static gint    list_autofit_time_width(PangoLayout *lay);
-static GtkTreePath *notes_sel_unblock(OnLibrary *lw, gboolean want_path);
+static void    sidebar_fit_queue(OnLibrary *lw);
 static void    close_editors_for_ids(OnLibrary *lw, const gint64 *ids,
                                      gsize n);
 static gboolean trash_notes_core(OnLibrary *lw, const gint64 *ids,
@@ -480,19 +435,19 @@ sb_kind_is_section(gint kind)
 }
 
 /* ---------------------------------------------------------------------------
- * sb_folder_append() — add one folder row to the sidebar, formatting its
- * display text the one way folder rows are formatted: an optional emoji
+ * sb_folder_row() — one folder row for the sidebar, its display text
+ * formatted the one way folder rows are formatted: an optional emoji
  * prefix separated by two spaces, and an optional "(n)" note count.  Shared
- * by the normal tree and the Trash section, which differ only in SB_KIND.
- *   parent_iter — row to nest under (the Notes root, a folder, or Trash).
+ * by the normal tree and the Trash section, which differ only in kind.
  *   f           — the folder.
  *   kind        — SB_KIND_FOLDER or SB_KIND_TRASH_FOLDER.
  *   note_counts — count map, or NULL while counts are hidden.
- *   iter        — receives the new row (for recursing into it); may be NULL.
+ *   expandable  — whether the row gets a children store.
+ * Returns the new row (owned by the caller).
  * ------------------------------------------------------------------------- */
-static void
-sb_folder_append(OnLibrary *lw, GtkTreeIter *parent_iter, const OnFolder *f,
-                 gint kind, GHashTable *note_counts, GtkTreeIter *iter)
+static OnSbRow *
+sb_folder_row(OnLibrary *lw, const OnFolder *f, gint kind,
+              GHashTable *note_counts, gboolean expandable)
 {
     gboolean has_emoji = f->emoji != NULL && *f->emoji != '\0';
     gchar   *display;                /* name (+ emoji prefix, + count)      */
@@ -506,88 +461,150 @@ sb_folder_append(OnLibrary *lw, GtkTreeIter *parent_iter, const OnFolder *f,
             ? g_strdup_printf("%s  %s", f->emoji, f->name)
             : g_strdup(f->name);
     }
-
-    GtkTreeIter local;               /* used when the caller passed NULL    */
-    if (iter == NULL)
-        iter = &local;
-    gtk_tree_store_append(lw->sidebar_store, iter, parent_iter);
-    gtk_tree_store_set(lw->sidebar_store, iter,
-                       SB_KIND, kind,
-                       SB_ID,   f->id,
-                       SB_NAME, display,
-                       SB_RAW,  f->name,
-                       -1);
+    OnSbRow *row = on_sb_row_new(kind, f->id, display, f->name, expandable);
     g_free(display);
+    return row;
 }
 
+/* ---------------------------------------------------------------------------
+ * add_folder_rows() — recursively append the subfolders of `parent_id`
+ * into `into` (a row's children store).  A folder with no subfolders is
+ * a LEAF (no children store), so the list view shows it without an
+ * expander — the tree view drew an arrow on every folder row.
+ *   lw          — the library window.
+ *   parent_id   — database folder id whose children to add (0 = roots).
+ *   into        — the store to append them to.
+ *   note_counts — count map, or NULL.
+ *   children    — the pre-fetched child map (one query for the tree).
+ * ------------------------------------------------------------------------- */
 static void
-add_folder_rows(OnLibrary *lw, gint64 parent_id, GtkTreeIter *parent_iter,
+add_folder_rows(OnLibrary *lw, gint64 parent_id, GListStore *into,
                 GHashTable *note_counts, GHashTable *children)
 {
-    /* Borrowed from the pre-fetched child map — one query for the whole
-     * tree, instead of one per folder as this recursion used to do.         */
     GList *folders = on_db_folder_children(children, parent_id);
     for (GList *l = folders; l != NULL; l = l->next) {
-        OnFolder   *f = l->data;     /* one child folder                    */
-        GtkTreeIter iter;            /* its new row, to recurse under       */
-        sb_folder_append(lw, parent_iter, f, SB_KIND_FOLDER, note_counts,
-                         &iter);
-        add_folder_rows(lw, f->id, &iter, note_counts, children);
+        OnFolder *f = l->data;       /* one child folder                    */
+        gboolean has_kids =
+            on_db_folder_children(children, f->id) != NULL;
+        OnSbRow *row = sb_folder_row(lw, f, SB_KIND_FOLDER, note_counts,
+                                     has_kids);
+        g_list_store_append(into, row);
+        if (has_kids)
+            add_folder_rows(lw, f->id, row->children, note_counts, children);
+        g_object_unref(row);
     }
     /* `folders` belongs to the child map — nothing to free here.            */
 }
 
+/* sb_section_append() — append one section row (no children) to the root. */
+static OnSbRow *
+sb_section_append(OnLibrary *lw, gint kind, const gchar *name,
+                  const gchar *raw, gboolean expandable)
+{
+    OnSbRow *row = on_sb_row_new(kind, 0, name, raw, expandable);
+    g_list_store_append(lw->sb_store, row);
+    g_object_unref(row);             /* the store holds it                  */
+    return row;
+}
+
 /* sb_row_key() — hashable identity of a sidebar row for state that must
- * survive a model rebuild (paths shift when folders move; kind+id don't). */
+ * survive a model rebuild (positions shift when folders move; kind+id
+ * don't).                                                                   */
 static gint64
 sb_row_key(gint kind, gint64 id)
 {
     return id * 16 + kind;
 }
 
-/* SbExpandCtx — working state for the expansion-capture walk below.        */
-typedef struct {
-    OnLibrary  *lw;
-    GHashTable *expanded;                /* set of sb_row_key()s            */
-} SbExpandCtx;
-
-/* sb_expand_capture() — gtk_tree_model_foreach() callback: record the
- * key of every currently-expanded row.                                     */
-static gboolean
-sb_expand_capture(GtkTreeModel *model, GtkTreePath *path,
-                  GtkTreeIter *iter, gpointer data)
+/* sb_tree_row_at() — the GtkTreeListRow at position `pos` of the flattened
+ * sidebar model, and its OnSbRow.  Returns the tree row (caller unrefs),
+ * or NULL past the end.                                                     */
+static GtkTreeListRow *
+sb_tree_row_at(OnLibrary *lw, guint pos, OnSbRow **row)
 {
-    SbExpandCtx *ctx = data;
-    if (gtk_tree_view_row_expanded(ctx->lw->sidebar, path)) {
-        gint   kind;                 /* row kind                            */
-        gint64 id;                   /* row id                              */
-        gtk_tree_model_get(model, iter, SB_KIND, &kind, SB_ID, &id, -1);
-        gint64 *key = g_new(gint64, 1);
-        *key = sb_row_key(kind, id);
-        g_hash_table_add(ctx->expanded, key);
+    GtkTreeListRow *tr =
+        g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), pos);
+    if (tr == NULL)
+        return NULL;
+    OnSbRow *r = gtk_tree_list_row_get_item(tr);   /* a ref: drop it, the
+                                                      tree row keeps one */
+    g_object_unref(r);
+    if (row != NULL)
+        *row = r;
+    return tr;
+}
+
+/* ---------------------------------------------------------------------------
+ * sb_find_chain() — find the row (kind, id) in the OnSbRow tree under
+ * `store`, appending the rows from the top level down to it into `chain`
+ * (the hit last).  Returns TRUE when found.
+ * ------------------------------------------------------------------------- */
+static gboolean
+sb_find_chain(GListStore *store, gint kind, gint64 id, GPtrArray *chain)
+{
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(store));
+    for (guint i = 0; i < n; i++) {
+        OnSbRow *r = g_list_model_get_item(G_LIST_MODEL(store), i);
+        g_ptr_array_add(chain, r);   /* the array holds the ref             */
+        if (r->kind == kind && r->id == id)
+            return TRUE;
+        if (r->children != NULL &&
+            sb_find_chain(r->children, kind, id, chain))
+            return TRUE;
+        g_ptr_array_remove_index(chain, chain->len - 1);
     }
     return FALSE;
 }
 
-/* sb_reveal_path() — expand the ANCESTORS of `path` so the row itself is
- * visible (never the row itself: a collapsed selected folder stays
- * collapsed).                                                               */
-static void
-sb_reveal_path(GtkTreeView *view, GtkTreePath *path)
+/* ---------------------------------------------------------------------------
+ * sb_reveal() — make the sidebar row (kind, id) visible by expanding its
+ * ANCESTORS (never the row itself: a collapsed selected folder stays
+ * collapsed) and return its position in the flattened model, or
+ * GTK_INVALID_LIST_POSITION when there is no such row.  Also hands back
+ * the row.
+ * ------------------------------------------------------------------------- */
+static guint
+sb_reveal(OnLibrary *lw, gint kind, gint64 id, OnSbRow **row_out)
 {
-    GtkTreePath *parent = gtk_tree_path_copy(path);
-    if (gtk_tree_path_up(parent) && gtk_tree_path_get_depth(parent) > 0)
-        gtk_tree_view_expand_to_path(view, parent);
-    gtk_tree_path_free(parent);
+    GPtrArray *chain = g_ptr_array_new_with_free_func(g_object_unref);
+    guint pos = GTK_INVALID_LIST_POSITION;
+    if (sb_find_chain(lw->sb_store, kind, id, chain)) {
+        /* Walk the flattened model once per level: each ancestor is on
+         * screen once the one above it is expanded.                       */
+        guint from = 0;              /* where the next level can start      */
+        for (guint level = 0; level < chain->len; level++) {
+            OnSbRow *want = g_ptr_array_index(chain, level);
+            for (guint i = from; ; i++) {
+                OnSbRow *r;
+                GtkTreeListRow *tr = sb_tree_row_at(lw, i, &r);
+                if (tr == NULL)
+                    break;
+                if (r == want) {
+                    if (level + 1 < chain->len)
+                        gtk_tree_list_row_set_expanded(tr, TRUE);
+                    else
+                        pos = i;
+                    from = i + 1;
+                    g_object_unref(tr);
+                    break;
+                }
+                g_object_unref(tr);
+            }
+        }
+        if (row_out != NULL)
+            *row_out = g_ptr_array_index(chain, chain->len - 1);
+    }
+    g_ptr_array_unref(chain);        /* the rows live on in the stores      */
+    return pos;
 }
 
 /* ---------------------------------------------------------------------------
  * refresh_sidebar() — rebuild the whole sidebar model: the folder tree
  * under the fixed "Notes" root, then the "Tags" section.  Attempts to
  * restore the previous selection by (kind, id), and puts back which rows
- * were expanded (only the very first population expands everything) —
- * a drop used to re-expand every folder because every successful drag
- * refreshes the sidebar.
+ * were expanded (the very first population expands nothing) — a drop used
+ * to re-expand every folder because every successful drag refreshes the
+ * sidebar.
  * ------------------------------------------------------------------------- */
 static void
 refresh_sidebar(OnLibrary *lw)
@@ -603,29 +620,36 @@ refresh_sidebar(OnLibrary *lw)
     }
 
     /* Capture the expansion state (keyed by kind+id, which survive the
-     * rebuild) before the clear wipes it.                                  */
-    SbExpandCtx ectx = {
-        lw, g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                  g_free, NULL) };
-    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
-                           sb_expand_capture, &ectx);
+     * rebuild).  The flattened model lists exactly the rows that are on
+     * screen, and an expanded row is on screen by definition.            */
+    GHashTable *expanded = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                                 g_free, NULL);
+    for (guint i = 0; ; i++) {
+        OnSbRow *r;
+        GtkTreeListRow *tr = sb_tree_row_at(lw, i, &r);
+        if (tr == NULL)
+            break;
+        if (gtk_tree_list_row_get_expanded(tr)) {
+            gint64 *key = g_new(gint64, 1);
+            *key = sb_row_key(r->kind, r->id);
+            g_hash_table_add(expanded, key);
+        }
+        g_object_unref(tr);
+    }
 
-    /* Clearing the store zeroes the sidebar scrollbar; a sidebar rebuild
-     * is never a navigation (counts changed, a folder was added, …), so
-     * the position is always put back.                                     */
+    /* The list view keeps its scroll anchor across an items-changed as far
+     * as it can; a rebuild replaces every item, so the position is put
+     * back explicitly — a sidebar rebuild is never a navigation.          */
     GtkAdjustment *vadj      = view_vadjustment(GTK_WIDGET(lw->sidebar));
     gdouble        scroll_pos = vadj ? gtk_adjustment_get_value(vadj) : 0.0;
 
     lw->populating++;
-    gtk_tree_store_clear(lw->sidebar_store);
+    g_list_store_remove_all(lw->sb_store);
 
     /* Batched counts: one query for all folders, one for all tags —
      * refresh_sidebar runs after every autosave, so per-row COUNT
      * queries added up (especially against a shared/networked db).
-     * Built ONLY when the counts are actually displayed: every reader below
-     * sits inside a `sidebar_counts` branch, so with the setting off (the
-     * default) these two GROUP BY queries were run and thrown away on
-     * every rebuild.                                                        */
+     * Built ONLY when the counts are actually displayed.                    */
     GHashTable *note_counts = NULL;  /* folder id → note count, or NULL     */
     GHashTable *tag_counts  = NULL;  /* tag id → note count, or NULL        */
     if (lw->app->sidebar_counts) {
@@ -644,14 +668,7 @@ refresh_sidebar(OnLibrary *lw)
             ? g_strdup_printf("\xf0\x9f\x93\x8c\xc2\xa0 Pinned Notes (%d)",
                               n_pinned)
             : g_strdup("\xf0\x9f\x93\x8c\xc2\xa0 Pinned Notes");
-        GtkTreeIter iter;
-        gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
-        gtk_tree_store_set(lw->sidebar_store, &iter,
-                           SB_KIND, SB_KIND_PINNED,
-                           SB_ID,   (gint64)0,
-                           SB_NAME, label,
-                           SB_RAW,  "Pinned Notes",
-                           -1);
+        sb_section_append(lw, SB_KIND_PINNED, label, "Pinned Notes", FALSE);
         g_free(label);
     }
 
@@ -660,14 +677,7 @@ refresh_sidebar(OnLibrary *lw)
         ? g_strdup_printf("\xf0\x9f\x94\xae\xc2\xa0 All Notes (%d)",
                           on_db_note_count_visible(lw->app->db))
         : g_strdup("\xf0\x9f\x94\xae\xc2\xa0 All Notes");
-    GtkTreeIter all_iter;            /* the fixed "All Notes" row           */
-    gtk_tree_store_append(lw->sidebar_store, &all_iter, NULL);
-    gtk_tree_store_set(lw->sidebar_store, &all_iter,
-                       SB_KIND, SB_KIND_ALL,
-                       SB_ID,   (gint64)0,
-                       SB_NAME, all_label,
-                       SB_RAW,  "All Notes",
-                       -1);
+    sb_section_append(lw, SB_KIND_ALL, all_label, "All Notes", FALSE);
     g_free(all_label);
 
     /* "Action Items" directly under All Notes — every '!' line across the
@@ -679,44 +689,27 @@ refresh_sidebar(OnLibrary *lw)
         gchar *label = lw->app->sidebar_counts
             ? g_strdup_printf("\xe2\x9d\x97\xc2\xa0 Action Items (%d)", n_open)
             : g_strdup("\xe2\x9d\x97\xc2\xa0 Action Items");
-        GtkTreeIter iter;
-        gtk_tree_store_append(lw->sidebar_store, &iter, NULL);
-        gtk_tree_store_set(lw->sidebar_store, &iter,
-                           SB_KIND, SB_KIND_ACTIONS,
-                           SB_ID,   (gint64)0,
-                           SB_NAME, label,
-                           SB_RAW,  "Action Items",
-                           -1);
+        sb_section_append(lw, SB_KIND_ACTIONS, label, "Action Items", FALSE);
         g_free(label);
     }
 
-    /* "Notes" root — selecting it shows the top-level notes.               */
+    /* "Notes" root — selecting it shows the top-level notes.  Always
+     * expandable, even with no folders yet: New Folder lands under it.    */
     gchar *root_label = lw->app->sidebar_counts
         ? g_strdup_printf("\xf0\x9f\x93\x93\xc2\xa0 Notes (%d)",
                           count_from_map(note_counts, 0))
         : g_strdup("\xf0\x9f\x93\x93\xc2\xa0 Notes");
-    GtkTreeIter root;                /* the fixed root row                  */
-    gtk_tree_store_append(lw->sidebar_store, &root, NULL);
-    gtk_tree_store_set(lw->sidebar_store, &root,
-                       SB_KIND, SB_KIND_ROOT,
-                       SB_ID,   (gint64)0,
-                       SB_NAME, root_label,
-                       SB_RAW,  "Notes",
-                       -1);
+    OnSbRow *root = sb_section_append(lw, SB_KIND_ROOT, root_label, "Notes",
+                                      TRUE);
     g_free(root_label);
-    add_folder_rows(lw, 0, &root, note_counts, children);
+    add_folder_rows(lw, 0, root->children, note_counts, children);
 
     /* "Tags" header + one row per known tag.                               */
     GList *tags = on_db_tag_list(lw->app->db);
     if (tags != NULL) {
-        GtkTreeIter header;          /* the "Tags" section row              */
-        gtk_tree_store_append(lw->sidebar_store, &header, NULL);
-        gtk_tree_store_set(lw->sidebar_store, &header,
-                           SB_KIND, SB_KIND_TAGS_HEADER,
-                           SB_ID,   (gint64)0,
-                           SB_NAME, "\xf0\x9f\x8f\xb7\xef\xb8\x8f\xc2\xa0 Tags",
-                           SB_RAW,  "Tags",
-                           -1);
+        OnSbRow *header = sb_section_append(
+            lw, SB_KIND_TAGS_HEADER, "\xf0\x9f\x8f\xb7\xef\xb8\x8f\xc2\xa0 Tags",
+            "Tags", TRUE);
         for (GList *l = tags; l != NULL; l = l->next) {
             OnTag *t = l->data;      /* one tag                             */
             gchar *raw   = g_strdup_printf("#%s", t->name);
@@ -724,14 +717,10 @@ refresh_sidebar(OnLibrary *lw)
                 ? g_strdup_printf("#%s (%d)", t->name,
                                   count_from_map(tag_counts, t->id))
                 : g_strdup(raw);
-            GtkTreeIter iter;
-            gtk_tree_store_append(lw->sidebar_store, &iter, &header);
-            gtk_tree_store_set(lw->sidebar_store, &iter,
-                               SB_KIND, SB_KIND_TAG,
-                               SB_ID,   t->id,
-                               SB_NAME, label,
-                               SB_RAW,  raw,
-                               -1);
+            OnSbRow *row = on_sb_row_new(SB_KIND_TAG, t->id, label, raw,
+                                         FALSE);
+            g_list_store_append(header->children, row);
+            g_object_unref(row);
             g_free(label);
             g_free(raw);
         }
@@ -746,20 +735,16 @@ refresh_sidebar(OnLibrary *lw)
         gchar *label = lw->app->sidebar_counts
             ? g_strdup_printf("\xf0\x9f\x97\x91\xc2\xa0 Trash (%d)", n_trash)
             : g_strdup("\xf0\x9f\x97\x91\xc2\xa0 Trash");
-        GtkTreeIter trash_iter;      /* the "Trash" section row             */
-        gtk_tree_store_append(lw->sidebar_store, &trash_iter, NULL);
-        gtk_tree_store_set(lw->sidebar_store, &trash_iter,
-                           SB_KIND, SB_KIND_TRASH,
-                           SB_ID,   (gint64)0,
-                           SB_NAME, label,
-                           SB_RAW,  "Trash",
-                           -1);
-        g_free(label);
-
         GList *trashed = on_db_folder_list_trashed(lw->app->db);
-        for (GList *l = trashed; l != NULL; l = l->next)
-            sb_folder_append(lw, &trash_iter, l->data,
-                             SB_KIND_TRASH_FOLDER, note_counts, NULL);
+        OnSbRow *trash = sb_section_append(lw, SB_KIND_TRASH, label, "Trash",
+                                           trashed != NULL);
+        g_free(label);
+        for (GList *l = trashed; l != NULL; l = l->next) {
+            OnSbRow *row = sb_folder_row(lw, l->data, SB_KIND_TRASH_FOLDER,
+                                         note_counts, FALSE);
+            g_list_store_append(trash->children, row);
+            g_object_unref(row);
+        }
         on_db_folder_list_free(trashed);
     }
 
@@ -769,99 +754,60 @@ refresh_sidebar(OnLibrary *lw)
     if (tag_counts != NULL)
         g_hash_table_destroy(tag_counts);
 
-    /* Every rebuild (including the first) restores the captured expansion
-     * state in the walk below; first launch has nothing captured so all
-     * folders stay collapsed.                                               */
-
-    /* Restore the previous selection, falling back to "All Notes".  The
-     * populating guard stays up through the restore: the select_iter
-     * below would otherwise fire the changed handler and rebuild the
+    /* Restore the expansion state and the previous selection, falling back
+     * to the first row (Pinned Notes when any are pinned, All Notes
+     * otherwise).  One walk over the flattened model: expanding a row
+     * splices its children in right after it, so the walk visits them
+     * next and the count grows under it.  The populating guard stays up
+     * through the restore: selection-changed would otherwise rebuild the
      * notes pane a second time — every refresh_sidebar caller already
-     * pairs it with an explicit refresh_notes.                             */
-    GtkTreeSelection *sel = gtk_tree_view_get_selection(lw->sidebar);
-    GtkTreeIter iter;                /* candidate row while searching       */
-    gboolean restored = FALSE;       /* did we find the old selection?      */
-
-    gboolean valid = gtk_tree_model_get_iter_first(
-        GTK_TREE_MODEL(lw->sidebar_store), &iter);
-    /* Depth-first walk of the whole sidebar model.                         */
-    GQueue queue = G_QUEUE_INIT;     /* pending iters (BFS is fine too)     */
-    while (valid || !g_queue_is_empty(&queue)) {
-        if (!valid) {
-            GtkTreeIter *q = g_queue_pop_head(&queue);
-            iter = *q;
-            g_free(q);
-            valid = TRUE;
-        }
-        gint   kind;                 /* row kind                            */
-        gint64 id;                   /* row id                              */
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                           SB_KIND, &kind, SB_ID, &id, -1);
-        GtkTreePath *row_path = gtk_tree_model_get_path(
-            GTK_TREE_MODEL(lw->sidebar_store), &iter);
-
-        /* Re-expand rows that were expanded before the rebuild.            */
-        gint64 ekey = sb_row_key(kind, id);
-        if (g_hash_table_contains(ectx.expanded, &ekey))
-            gtk_tree_view_expand_row(lw->sidebar, row_path, FALSE);
-
-        if (kind == want_kind && id == want_id && !restored) {
-            /* The suppressed handler would have refreshed sel_name; do it
-             * here so a renamed folder/tag keeps it current.               */
-            gchar *raw = NULL;
-            gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                               SB_RAW, &raw, -1);
-            g_free(lw->sel_name);
-            lw->sel_name = raw;      /* ownership transferred               */
-            sb_reveal_path(lw->sidebar, row_path);
-            gtk_tree_selection_select_iter(sel, &iter);
-            restored = TRUE;         /* no break: the walk must finish
-                                        restoring the expansion state       */
-        }
-        gtk_tree_path_free(row_path);
-        GtkTreeIter child;           /* first child, if any                 */
-        if (gtk_tree_model_iter_children(GTK_TREE_MODEL(lw->sidebar_store),
-                                         &child, &iter)) {
-            GtkTreeIter *copy = g_new(GtkTreeIter, 1);
-            *copy = child;
-            g_queue_push_tail(&queue, copy);
-        }
-        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(lw->sidebar_store),
-                                         &iter);
+     * pairs it with an explicit refresh_notes.                            */
+    for (guint i = 0; ; i++) {
+        OnSbRow *r;
+        GtkTreeListRow *tr = sb_tree_row_at(lw, i, &r);
+        if (tr == NULL)
+            break;
+        gint64 ekey = sb_row_key(r->kind, r->id);
+        if (g_hash_table_contains(expanded, &ekey))
+            gtk_tree_list_row_set_expanded(tr, TRUE);
+        g_object_unref(tr);
     }
-    g_queue_clear_full(&queue, g_free);
-    g_hash_table_destroy(ectx.expanded);
+    g_hash_table_destroy(expanded);
 
-    if (!restored) {
-        /* Fall back to the first row (Pinned Notes when any are pinned,
-         * All Notes otherwise) — the state must match the row the
-         * fallback highlights, so read it from the model.                  */
-        if (gtk_tree_model_get_iter_first(
-                GTK_TREE_MODEL(lw->sidebar_store), &iter)) {
-            gint   kind;             /* the first row's identity            */
-            gint64 id;
-            gchar *raw = NULL;
-            gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                               SB_KIND, &kind, SB_ID, &id, SB_RAW, &raw,
-                               -1);
-            lw->sel_kind = kind;
-            lw->sel_id   = id;
+    OnSbRow *want = NULL;            /* the restored row                    */
+    guint sel_pos = sb_reveal(lw, want_kind, want_id, &want);
+    gboolean restored = sel_pos != GTK_INVALID_LIST_POSITION;
+    if (restored) {
+        /* The suppressed handler would have refreshed sel_name; do it
+         * here so a renamed folder/tag keeps it current.                 */
+        g_free(lw->sel_name);
+        lw->sel_name = g_strdup(want->raw);
+    } else {
+        OnSbRow *first;
+        GtkTreeListRow *tr = sb_tree_row_at(lw, 0, &first);
+        if (tr != NULL) {
+            lw->sel_kind = first->kind;
+            lw->sel_id   = first->id;
             g_free(lw->sel_name);
-            lw->sel_name = raw;      /* ownership transferred               */
-            gtk_tree_selection_select_iter(sel, &iter);
+            lw->sel_name = g_strdup(first->raw);
+            sel_pos = 0;
+            g_object_unref(tr);
         }
     }
+    if (sel_pos != GTK_INVALID_LIST_POSITION)
+        gtk_single_selection_set_selected(lw->sb_sel, sel_pos);
     lw->populating--;
 
     /* The old selection no longer exists (deleted folder/pruned tag), so
      * the notes pane still shows its contents: refresh for the new
      * fallback selection.  When the selection was restored, the caller's
-     * own refresh_notes covers it.                                         */
+     * own refresh_notes covers it.                                        */
     if (!restored)
         refresh_notes(lw);
 
     if (scroll_pos > 0)
         scroll_keep_queue(vadj, scroll_pos);
+    sidebar_fit_queue(lw);           /* rows came and went                  */
 }
 
 /* ===========================================================================
@@ -941,14 +887,25 @@ render_note_thumb(OnLibrary *lw, gint64 id)
         scale = MIN(scale, 1.0);
         gdouble dw = iw * scale, dh = ih * scale;
 
+        /* Through a texture: gdk_texture_download writes cairo's own
+         * ARGB32 layout (premultiplied, native order) straight into an
+         * image surface — the gdk-pixbuf cairo bridge is deprecated.     */
+        GdkTexture *tex = on_app_texture_for_pixbuf(img);
+        cairo_surface_t *src = cairo_image_surface_create(
+            CAIRO_FORMAT_ARGB32, iw, ih);
+        gdk_texture_download(tex, cairo_image_surface_get_data(src),
+                             (gsize)cairo_image_surface_get_stride(src));
+        cairo_surface_mark_dirty(src);
         cairo_save(cr);
         cairo_translate(cr, (SZ - dw) / 2.0, y);
         cairo_scale(cr, scale, scale);
-        gdk_cairo_set_source_pixbuf(cr, img, 0, 0);
+        cairo_set_source_surface(cr, src, 0, 0);
         cairo_pattern_set_filter(cairo_get_source(cr),
                                  CAIRO_FILTER_GOOD);
         cairo_paint(cr);
         cairo_restore(cr);
+        cairo_surface_destroy(src);
+        g_object_unref(tex);
         y += dh + 4;
     }
 
@@ -1022,8 +979,10 @@ get_note_thumb(OnLibrary *lw, gint64 id, gint64 updated_at)
 
 /* ---------------------------------------------------------------------------
  * thumb_fill_idle() — render queued thumbnails a time slice at a time and
- * deliver each into its grid row.  Jobs whose row vanished (model rebuilt
- * mid-fill) are simply dropped — the rebuild queued fresh jobs.
+ * deliver each into its grid row: the row's texture is set and the store
+ * told (on_row_touch), which rebinds the grid item.  Jobs whose row is no
+ * longer in the store (model rebuilt mid-fill) are simply dropped — the
+ * rebuild queued fresh jobs.
  * ------------------------------------------------------------------------- */
 static gboolean
 thumb_fill_idle(gpointer user_data)
@@ -1033,18 +992,13 @@ thumb_fill_idle(gpointer user_data)
 
     while (!g_queue_is_empty(&lw->thumb_pending)) {
         ThumbJob *job = g_queue_pop_head(&lw->thumb_pending);
-        GtkTreePath *path = gtk_tree_row_reference_valid(job->row)
-            ? gtk_tree_row_reference_get_path(job->row)
-            : NULL;
-        if (path != NULL) {
-            GdkTexture *thumb =          /* borrowed from the cache         */
-                get_note_thumb(lw, job->id, job->updated_at);
-            GtkTreeIter iter;            /* the row to update               */
-            if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store),
-                                        &iter, path))
-                gtk_list_store_set(lw->notes_store, &iter,
-                                   NL_THUMB, thumb, -1);
-            gtk_tree_path_free(path);
+        guint pos;                   /* the row's place in the store        */
+        if (g_list_store_find(lw->notes_store, job->row, &pos)) {
+            GdkTexture *thumb =      /* borrowed from the cache             */
+                get_note_thumb(lw, job->row->id, job->updated_at);
+            g_set_object(&job->row->thumb, thumb);
+            g_list_model_items_changed(G_LIST_MODEL(lw->notes_store),
+                                       pos, 1, 1);
         }
         thumb_job_free(job);
 
@@ -1059,6 +1013,32 @@ thumb_fill_idle(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/* thumb_queue() — queue a (re)render of `row`'s thumbnail and make sure
+ * the fill idle is running.  The job holds its own reference on the row. */
+static void
+thumb_queue(OnLibrary *lw, OnNoteRow *row, gint64 updated_at)
+{
+    ThumbJob *job = g_new0(ThumbJob, 1);
+    job->row        = g_object_ref(row);
+    job->updated_at = updated_at;
+    g_queue_push_tail(&lw->thumb_pending, job);
+    if (lw->thumb_idle == 0)
+        lw->thumb_idle = g_idle_add(thumb_fill_idle, lw);
+}
+
+/* action_due_text() — the Due Date cell's text for a timestamp, or NULL
+ * for none.  ONE spelling, shared by the populate and the due dialog.      */
+static gchar *
+action_due_text(gint64 due)
+{
+    if (due == 0)
+        return NULL;
+    GDateTime *dt = g_date_time_new_from_unix_local(due);
+    gchar *when = g_date_time_format(dt, "%b %e, %Y");
+    g_date_time_unref(dt);
+    return when;
+}
+
 /* ---------------------------------------------------------------------------
  * refresh_actions() — repopulate the Action Items model (the notes
  * pane's third view) and show it: one row per '!' line across every
@@ -1069,39 +1049,31 @@ static void
 refresh_actions(OnLibrary *lw)
 {
     gboolean keep_scroll = lw->shown_kind == lw->sel_kind;
-    GtkWidget *sw =                  /* the view's scrolled window          */
-        gtk_widget_get_parent(GTK_WIDGET(lw->actions_view));
-    GtkAdjustment *vadj = GTK_IS_SCROLLED_WINDOW(sw)
-        ? gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sw))
-        : NULL;
+    GtkAdjustment *vadj = view_vadjustment(GTK_WIDGET(lw->actions_view));
     gdouble scroll_pos = vadj ? gtk_adjustment_get_value(vadj) : 0.0;
 
     lw->populating++;
-    gtk_list_store_clear(lw->actions_store);
+    GPtrArray *rows = g_ptr_array_new_with_free_func(g_object_unref);
     GList *items = on_db_action_list(lw->app->db);
     for (GList *l = items; l != NULL; l = l->next) {
         OnActionItem *it = l->data;  /* one action item                     */
         if (it->done && !lw->app->show_done_actions)
             continue;                /* Settings: hide completed items      */
-        gchar *when = NULL;          /* formatted due date, or NULL         */
-        if (it->due != 0) {
-            GDateTime *dt = g_date_time_new_from_unix_local(it->due);
-            when = g_date_time_format(dt, "%b %e, %Y");
-            g_date_time_unref(dt);
-        }
-        GtkTreeIter iter;
-        gtk_list_store_append(lw->actions_store, &iter);
-        gtk_list_store_set(lw->actions_store, &iter,
-                           AL_NOTE_ID, it->note_id,
-                           AL_ORD,     it->ord,
-                           AL_DONE,    it->done,
-                           AL_TEXT,    it->text,
-                           AL_DUE,     when != NULL ? when : "",
-                           AL_DUE_RAW, it->due,
-                           -1);
-        g_free(when);
+        OnActionRow *row = on_action_row_new();
+        row->note_id = it->note_id;
+        row->ord     = it->ord;
+        row->done    = it->done;
+        row->text    = g_strdup(it->text);
+        row->due     = action_due_text(it->due);
+        row->due_raw = it->due;
+        g_ptr_array_add(rows, row);
     }
     on_db_action_list_free(items);
+    g_list_store_splice(lw->actions_store, 0,
+                        g_list_model_get_n_items(
+                            G_LIST_MODEL(lw->actions_store)),
+                        rows->pdata, rows->len);
+    g_ptr_array_unref(rows);
     lw->populating--;
 
     gtk_stack_set_visible_child_name(GTK_STACK(lw->stack), "actions");
@@ -1173,13 +1145,14 @@ notes_preview_line(const gchar *body)
  * refresh_notes() — repopulate the notes model from the current sidebar
  * selection (a folder's notes, or a tag's notes).  When the selection is
  * the same one already shown — a content refresh (autosave, editor
- * close), not a navigation — the scroll position is preserved.
+ * close), not a navigation — the scroll position and the selection are
+ * preserved.
  * ------------------------------------------------------------------------- */
 static void
 refresh_notes(OnLibrary *lw)
 {
     /* Whatever happens below, the rows any queued thumbnail jobs point
-     * at are stale (or about to be cleared): drop them.                    */
+     * at are stale (or about to be replaced): drop them.                   */
     thumb_pending_clear(lw);
 
     /* The Action Items selection swaps in its own view and model.          */
@@ -1213,11 +1186,11 @@ refresh_notes(OnLibrary *lw)
 
     /* On a content refresh (autosave, editor close) — same view, not a
      * navigation — capture the selection so we can put it back after the
-     * store rebuild.  Navigations start with no selection by design.        */
+     * rebuild (new row objects: the selection model cannot follow them).
+     * Navigations start with no selection by design.                       */
     GArray *sel_ids = keep_scroll ? selected_note_ids(lw) : NULL;
 
     lw->populating++;
-    gtk_list_store_clear(lw->notes_store);
 
     /* Pick the note list matching the selection.                           */
     GList *notes = notes_for_selection(lw);
@@ -1232,174 +1205,84 @@ refresh_notes(OnLibrary *lw)
 
     /* Body-text previews for the Comfortable list density — ONE query, and
      * only where the preview is actually drawn: compact density never shows
-     * it, and the grid draws thumbnails and the title, never NL_PREVIEW.    */
+     * it, and the grid draws thumbnails and the title, never the preview.  */
     GHashTable *previews = (lw->app->comfortable_list && !want_thumbs)
         ? on_db_note_text_map(lw->app->db, NL_PREVIEW_CHARS) : NULL;
 
-    /* Autofit measuring rides this population loop (no second model
-     * walk, no re-fetching the strings) and only while the LIST is the
-     * visible view — the grid doesn't show these columns, and switching
-     * back to list re-measures (on_view_list).  Repeated folder paths
-     * are measured once, keyed by folder id.
-     *
-     * Only VISIBLE columns are measured: list_autofit_set() throws away the
-     * width of a hidden one, so measuring it was pure waste — and Path and
-     * Created are hidden by default.  The two timestamp columns are not
-     * measured here at all: every value shares LIST_TIME_FORMAT, so
-     * list_autofit_time_width() bounds them once after the loop instead of
-     * once per row (measured ~68 ms for 1300 rows, on every refresh).       */
-    gboolean fit      = lw->list_autofit && !want_thumbs;
-    gboolean fit_path = fit && list_column_shown(lw, "path");
-    gboolean fit_mod  = fit && list_column_shown(lw, "modified");
-    gboolean fit_cre  = fit && list_column_shown(lw, "created");
-    PangoLayout *fit_lay  = NULL;    /* reused measuring layout             */
-    GHashTable  *fit_seen = NULL;    /* folder id → measured path width     */
-    gint fit_path_w = 0;             /* running Path content maximum        */
-    if (fit)
-        fit_lay = gtk_widget_create_pango_layout(
-            GTK_WIDGET(lw->notes_list), NULL);
-    if (fit_path)
-        fit_seen = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                         g_free, NULL);
-
+    GPtrArray *rows = g_ptr_array_new_with_free_func(g_object_unref);
+    GPtrArray *todo = g_ptr_array_new();   /* rows needing a thumbnail   */
     for (GList *l = notes; l != NULL; l = l->next) {
         OnNoteMeta *m = l->data;     /* one note                            */
+        OnNoteRow *row = on_note_row_new();
+        row->id         = m->id;
+        row->title      = g_strdup(m->title);
+        row->updated_at = m->updated_at;
+        row->created_at = m->created_at;
 
         /* Format the modification and creation times like
          * "Jun 3, 2026 14:05".                                             */
         GDateTime *dt = g_date_time_new_from_unix_local(m->updated_at);
-        gchar *when = g_date_time_format(dt, LIST_TIME_FORMAT);
+        row->modified = g_date_time_format(dt, LIST_TIME_FORMAT);
         g_date_time_unref(dt);
         dt = g_date_time_new_from_unix_local(m->created_at);
-        gchar *born = g_date_time_format(dt, LIST_TIME_FORMAT);
+        row->created = g_date_time_format(dt, LIST_TIME_FORMAT);
         g_date_time_unref(dt);
 
         /* "/Folder/Sub" location, "/" for the top level — the same
          * format as the status bar's path label.                           */
         const gchar *fpath = m->folder_id != 0
             ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
-        gchar *where = g_strdup_printf("/%s", fpath != NULL ? fpath : "");
-
-        if (fit_path) {
-            gint w;                  /* width of this note's path           */
-            gpointer cached =
-                g_hash_table_lookup(fit_seen, &m->folder_id);
-            if (cached != NULL) {
-                w = GPOINTER_TO_INT(cached);
-            } else {
-                pango_layout_set_text(fit_lay, where, -1);
-                pango_layout_get_pixel_size(fit_lay, &w, NULL);
-                gint64 *k = g_new(gint64, 1);
-                *k = m->folder_id;
-                g_hash_table_insert(fit_seen, k, GINT_TO_POINTER(w));
-            }
-            fit_path_w = MAX(fit_path_w, w);
-        }
+        row->path = g_strdup_printf("/%s", fpath != NULL ? fpath : "");
 
         /* Thumbnails: only what the cache already has goes in right away
          * — a stale entry still shows (better than a blank card) while
-         * thumb_fill_idle (queued below) renders the replacement.
-         * Rendering every stale/missing thumbnail here froze the GUI.      */
-        GdkTexture *thumb = NULL;        /* borrowed from the cache         */
-        gboolean thumb_todo = FALSE;     /* queue a render for this row?    */
+         * thumb_fill_idle renders the replacement.  Rendering every
+         * stale/missing thumbnail here froze the GUI.                      */
         if (want_thumbs) {
             ThumbEntry *e = g_hash_table_lookup(lw->thumb_cache, &m->id);
             if (e != NULL)
-                thumb = e->texture;
-            thumb_todo = e == NULL || e->updated_at != m->updated_at;
+                row->thumb = g_object_ref(e->texture);
+            if (e == NULL || e->updated_at != m->updated_at)
+                g_ptr_array_add(todo, row);
         }
 
-        gchar *preview = notes_preview_line(
+        row->preview = notes_preview_line(
             previews ? g_hash_table_lookup(previews, &m->id) : NULL);
-
-        GtkTreeIter iter;
-        gtk_list_store_append(lw->notes_store, &iter);
-        gtk_list_store_set(lw->notes_store, &iter,
-                           NL_ID,          m->id,
-                           NL_TITLE,       m->title,
-                           NL_MODIFIED,    when,
-                           NL_THUMB,       thumb,
-                           NL_UPDATED,     m->updated_at,
-                           NL_PATH,        where,
-                           NL_CREATED,     born,
-                           NL_CREATED_RAW, m->created_at,
-                           NL_PREVIEW,     preview,
-                           -1);
-        g_free(preview);
-        if (thumb_todo) {
-            GtkTreePath *path = gtk_tree_model_get_path(
-                GTK_TREE_MODEL(lw->notes_store), &iter);
-            ThumbJob *job = g_new0(ThumbJob, 1);
-            job->row = gtk_tree_row_reference_new(
-                GTK_TREE_MODEL(lw->notes_store), path);
-            job->id         = m->id;
-            job->updated_at = m->updated_at;
-            g_queue_push_tail(&lw->thumb_pending, job);
-            gtk_tree_path_free(path);
-        }
-        g_free(where);
-        g_free(when);
-        g_free(born);
+        g_ptr_array_add(rows, row);
     }
     /* paths == lw->folder_path_cache — kept alive for the next refresh.     */
     if (previews != NULL) g_hash_table_destroy(previews);
     on_db_note_list_free(notes);
 
-    if (fit) {
-        /* Both timestamp columns render the same format, so one bound
-         * serves both.  Computed only if one of them is actually shown.     */
-        gint time_w = (fit_mod || fit_cre)
-                      ? list_autofit_time_width(fit_lay) : 0;
-        if (fit_path)
-            list_autofit_set(lw, fit_lay, "path",     fit_path_w);
-        if (fit_mod)
-            list_autofit_set(lw, fit_lay, "modified", time_w);
-        if (fit_cre)
-            list_autofit_set(lw, fit_lay, "created",  time_w);
-        if (fit_seen != NULL)
-            g_hash_table_destroy(fit_seen);
-        g_object_unref(fit_lay);
+    /* One items-changed for the whole rebuild.                             */
+    g_list_store_splice(lw->notes_store, 0,
+                        g_list_model_get_n_items(G_LIST_MODEL(lw->notes_store)),
+                        rows->pdata, rows->len);
+    for (guint i = 0; i < todo->len; i++) {
+        OnNoteRow *row = g_ptr_array_index(todo, i);
+        thumb_queue(lw, row, row->updated_at);
     }
+    g_ptr_array_unref(todo);
+    g_ptr_array_unref(rows);
     lw->populating--;
 
-    /* Restore the note selection that existed before the store rebuild.     */
+    /* Restore the note selection that existed before the rebuild.           */
     if (sel_ids != NULL) {
-        if (sel_ids->len > 0) {
-            const gchar *mode = gtk_stack_get_visible_child_name(
-                GTK_STACK(lw->stack));
-            gboolean in_grid  = g_strcmp0(mode, "grid") == 0;
-            GtkTreeSelection *list_sel =
-                gtk_tree_view_get_selection(lw->notes_list);
-            GtkTreeIter it;
-            gboolean valid = gtk_tree_model_get_iter_first(
-                GTK_TREE_MODEL(lw->notes_store), &it);
-            while (valid) {
-                gint64 id;
-                gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &it,
-                                   NL_ID, &id, -1);
-                for (guint k = 0; k < sel_ids->len; k++) {
-                    if (g_array_index(sel_ids, gint64, k) == id) {
-                        if (in_grid) {
-                            GtkTreePath *p = gtk_tree_model_get_path(
-                                GTK_TREE_MODEL(lw->notes_store), &it);
-                            gtk_icon_view_select_path(lw->notes_grid, p);
-                            gtk_tree_path_free(p);
-                        } else {
-                            gtk_tree_selection_select_iter(list_sel, &it);
-                        }
-                        break;
-                    }
+        guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->notes_sorted));
+        for (guint i = 0; i < n && sel_ids->len > 0; i++) {
+            OnNoteRow *row =
+                g_list_model_get_item(G_LIST_MODEL(lw->notes_sorted), i);
+            for (guint k = 0; k < sel_ids->len; k++) {
+                if (g_array_index(sel_ids, gint64, k) == row->id) {
+                    gtk_selection_model_select_item(
+                        GTK_SELECTION_MODEL(lw->notes_sel), i, FALSE);
+                    break;
                 }
-                valid = gtk_tree_model_iter_next(
-                    GTK_TREE_MODEL(lw->notes_store), &it);
             }
+            g_object_unref(row);
         }
         g_array_free(sel_ids, TRUE);
     }
-
-    /* Render the queued (stale/missing) thumbnails in idle time slices.    */
-    if (!g_queue_is_empty(&lw->thumb_pending) && lw->thumb_idle == 0)
-        lw->thumb_idle = g_idle_add(thumb_fill_idle, lw);
 
     lw->shown_kind = lw->sel_kind;
     lw->shown_id   = lw->sel_id;
@@ -1428,131 +1311,221 @@ refresh_all(OnLibrary *lw)
  * selection and activation
  * =========================================================================== */
 
+/* sb_selected_row() — the sidebar's selected OnSbRow (borrowed), or NULL. */
+static OnSbRow *
+sb_selected_row(OnLibrary *lw)
+{
+    GtkTreeListRow *tr = gtk_single_selection_get_selected_item(lw->sb_sel);
+    if (tr == NULL)
+        return NULL;
+    OnSbRow *r = gtk_tree_list_row_get_item(tr);
+    g_object_unref(r);               /* the tree row keeps it alive         */
+    return r;
+}
+
 /* ---------------------------------------------------------------------------
  * on_sidebar_selection_changed() — a folder or tag was selected: remember
- * it and refresh the notes pane.
+ * it and refresh the notes pane.  The "Tags" header is not a selection:
+ * a click on it puts the selection back where it was.
  * ------------------------------------------------------------------------- */
 static void
-on_sidebar_selection_changed(GtkTreeSelection *sel, gpointer user_data)
+on_sidebar_selection_changed(GtkSelectionModel *sel, guint position,
+                             guint n_items, gpointer user_data)
 {
+    (void)sel; (void)position; (void)n_items;
     OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->populating > 0)
         return;
 
-    GtkTreeModel *model;             /* the sidebar model                   */
-    GtkTreeIter iter;                /* selected row                        */
-    if (!gtk_tree_selection_get_selected(sel, &model, &iter))
+    OnSbRow *r = sb_selected_row(lw);
+    if (r == NULL)
         return;
-
-    gint   kind;                     /* selected row kind                   */
-    gint64 id;                       /* selected row id                     */
-    gchar *raw = NULL;               /* bare name of the row                */
-    gtk_tree_model_get(model, &iter, SB_KIND, &kind, SB_ID, &id,
-                       SB_RAW, &raw, -1);
-    if (kind == SB_KIND_TAGS_HEADER) {
-        g_free(raw);
-        return;                      /* header row: not a real selection    */
+    if (r->kind == SB_KIND_TAGS_HEADER) {
+        lw->populating++;            /* the revert is not a navigation      */
+        guint back = sb_reveal(lw, lw->sel_kind, lw->sel_id, NULL);
+        if (back != GTK_INVALID_LIST_POSITION)
+            gtk_single_selection_set_selected(lw->sb_sel, back);
+        lw->populating--;
+        return;
     }
 
-    lw->sel_kind = kind;
-    lw->sel_id   = id;
+    lw->sel_kind = r->kind;
+    lw->sel_id   = r->id;
     g_free(lw->sel_name);
-    lw->sel_name = raw;              /* ownership transferred               */
+    lw->sel_name = g_strdup(r->raw);
     refresh_notes(lw);
 }
 
-/* sidebar_select_func() — forbid selecting the "Tags" header row.           */
-static gboolean
-sidebar_select_func(GtkTreeSelection *sel, GtkTreeModel *model,
-                    GtkTreePath *path, gboolean currently_selected,
-                    gpointer user_data)
-{
-    (void)sel; (void)currently_selected; (void)user_data;
-    GtkTreeIter iter;                /* row being (de)selected              */
-    gint kind;                       /* its kind                            */
-    gtk_tree_model_get_iter(model, &iter, path);
-    gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
-    return kind != SB_KIND_TAGS_HEADER;
-}
-
 /* ---------------------------------------------------------------------------
- * open_note_at_path() — open the editor for the note at `path` (NOT
- * owned) in the notes model; the shared tail of both views' activation
- * handlers.
+ * on_note_activated() — double-click/Enter on a note in either view opens
+ * it.  Both views' "activate" signals give the position in the SORTED
+ * model, which is what they show.
  * ------------------------------------------------------------------------- */
 static void
-open_note_at_path(OnLibrary *lw, GtkTreePath *path)
-{
-    GtkTreeIter iter;                /* activated row                       */
-    gint64 id;                       /* its note id                         */
-    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store),
-                                 &iter, path))
-        return;
-    gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
-                       NL_ID, &id, -1);
-    on_editor_window_open(lw->app, id);
-}
-
-/* on_note_list_activated() — double-click/Enter in list mode opens it.      */
-static void
-on_note_list_activated(GtkTreeView *view, GtkTreePath *path,
-                       GtkTreeViewColumn *col, gpointer user_data)
-{
-    (void)view; (void)col;
-    open_note_at_path(user_data, path);
-}
-
-/* on_note_grid_activated() — double-click in grid mode opens the note.      */
-static void
-on_note_grid_activated(GtkIconView *view, GtkTreePath *path,
-                       gpointer user_data)
+on_note_activated(GtkWidget *view, guint position, gpointer user_data)
 {
     (void)view;
-    open_note_at_path(user_data, path);
+    OnLibrary *lw = user_data;       /* owning library window               */
+    OnNoteRow *row =
+        g_list_model_get_item(G_LIST_MODEL(lw->notes_sorted), position);
+    if (row == NULL)
+        return;
+    on_editor_window_open(lw->app, row->id);
+    g_object_unref(row);
 }
 
 /* ---------------------------------------------------------------------------
- * on_action_toggled() — the Action Items checkbox column: flip the item's
- * done state everywhere — the model row (instant feedback), its
- * action_items row, and the note text itself (strikethrough) via
- * on_editor_action_set_done.
+ * on_action_toggled() — the Action Items checkbox: flip the item's done
+ * state everywhere — the row (instant feedback), its action_items row,
+ * and the note text itself (strikethrough) via on_editor_action_set_done.
+ * The check button carries its GtkListItem as "on-item"; a toggle that
+ * the BIND itself caused ("on-binding" set on the item) is not a click.
  * ------------------------------------------------------------------------- */
 static void
-on_action_toggled(GtkCellRendererToggle *cell, gchar *path_str,
-                  gpointer user_data)
+on_action_toggled(GtkCheckButton *check, gpointer user_data)
 {
-    (void)cell;
     OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreeIter iter;                /* the clicked row                     */
-    if (!gtk_tree_model_get_iter_from_string(
-            GTK_TREE_MODEL(lw->actions_store), &iter, path_str))
+    GtkListItem *item = g_object_get_data(G_OBJECT(check), "on-item");
+    if (item == NULL || g_object_get_data(G_OBJECT(item), "on-binding"))
         return;
-
-    gint64   note_id;                /* the item's address                  */
-    gint     ord;
-    gboolean done;
-    gtk_tree_model_get(GTK_TREE_MODEL(lw->actions_store), &iter,
-                       AL_NOTE_ID, &note_id,
-                       AL_ORD,     &ord,
-                       AL_DONE,    &done,
-                       -1);
-    done = !done;
+    OnActionRow *row = gtk_list_item_get_item(item);
+    if (row == NULL)
+        return;
+    gboolean done = gtk_check_button_get_active(check);
+    if (done == row->done)
+        return;
+    row->done = done;
 
     /* A just-completed item disappears immediately when completed items
      * are hidden; otherwise the row simply re-renders checked + struck.    */
-    if (done && !lw->app->show_done_actions)
-        gtk_list_store_remove(lw->actions_store, &iter);
-    else
-        gtk_list_store_set(lw->actions_store, &iter, AL_DONE, done, -1);
+    guint pos;
+    if (done && !lw->app->show_done_actions) {
+        if (g_list_store_find(lw->actions_store, row, &pos))
+            g_list_store_remove(lw->actions_store, pos);
+    } else {
+        on_row_touch(lw->actions_store, row);
+    }
     /* The content rewrite is authoritative and normally rebuilds the
      * mirror itself; only a LIVE editor defers that to its autosave, and
      * only then does the flag need writing here as well.                    */
     gboolean synced = FALSE;         /* did the rewrite update the table?   */
-    if (on_editor_action_set_done(lw->app, note_id, ord, done, &synced) &&
-        !synced)
-        on_db_action_set_done(lw->app->db, note_id, ord, done);
+    if (on_editor_action_set_done(lw->app, row->note_id, row->ord, done,
+                                  &synced) && !synced)
+        on_db_action_set_done(lw->app->db, row->note_id, row->ord, done);
     if (lw->app->sidebar_counts)
         refresh_sidebar(lw);         /* the section's open count changed    */
+}
+
+/* ===========================================================================
+ * dialogs — THE one modal-dialog scaffold of this file, over a plain
+ * GtkWindow (GtkDialog is deprecated since 4.10): a content widget above a
+ * right-aligned row of buttons, each carrying a response id; a click, the
+ * close button and Escape all reach one response function, and the window
+ * is destroyed after it returns.  Entries with activates-default trigger
+ * the default button, as they did on GtkDialog.
+ * =========================================================================== */
+
+/* DialogResponseFunc — what a dialog calls with the chosen response.
+ *   dlg      — the window (about to be destroyed by the scaffold).
+ *   response — the button's id, or GTK_RESPONSE_DELETE_EVENT for a close.
+ *   data     — the caller's.                                                */
+typedef void (*DialogResponseFunc)(GtkWindow *dlg, gint response,
+                                   gpointer data);
+
+/* DialogButton — one button of a dialog: its label, its response id and
+ * whether it is the default (Enter).                                       */
+typedef struct {
+    const gchar *label;
+    gint         response;
+    gboolean     is_default;
+} DialogButton;
+
+/* dialog_respond() — deliver `response` to the dialog's function and
+ * destroy the window.  The function may not be called twice: a button
+ * click destroys the window, whose close-request never fires after.      */
+static void
+dialog_respond(GtkWindow *dlg, gint response)
+{
+    DialogResponseFunc fn = g_object_get_data(G_OBJECT(dlg), "on-respond");
+    gpointer data = g_object_get_data(G_OBJECT(dlg), "on-respond-data");
+    g_object_set_data(G_OBJECT(dlg), "on-respond", NULL);
+    if (fn != NULL)
+        fn(dlg, response, data);
+    gtk_window_destroy(dlg);
+}
+
+/* on_dialog_button() — a dialog button was clicked.                        */
+static void
+on_dialog_button(GtkButton *button, gpointer user_data)
+{
+    dialog_respond(GTK_WINDOW(user_data),
+                   GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button),
+                                                     "on-response")));
+}
+
+/* on_dialog_close() — the window's close button or Escape.                 */
+static gboolean
+on_dialog_close(GtkWindow *dlg, gpointer user_data)
+{
+    (void)user_data;
+    dialog_respond(dlg, GTK_RESPONSE_DELETE_EVENT);
+    return TRUE;                     /* destroyed above                     */
+}
+
+/* ---------------------------------------------------------------------------
+ * dialog_new() — build and present a modal dialog.
+ *   parent   — the transient parent.
+ *   title    — the window title.
+ *   content  — the widget above the buttons (the dialog takes it).
+ *   buttons  — the buttons, left to right.
+ *   n        — how many.
+ *   fn, data — the response function and its data (see dialog_respond).
+ * ------------------------------------------------------------------------- */
+static void
+dialog_new(GtkWindow *parent, const gchar *title, GtkWidget *content,
+           const DialogButton *buttons, gsize n, DialogResponseFunc fn,
+           gpointer data)
+{
+    GtkWidget *dlg = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(dlg), title);
+    gtk_window_set_transient_for(GTK_WINDOW(dlg), parent);
+    gtk_window_set_modal(GTK_WINDOW(dlg), TRUE);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(dlg), TRUE);
+    gtk_window_set_resizable(GTK_WINDOW(dlg), FALSE);
+    gtk_widget_add_css_class(dlg, "notes-dialog");   /* library_install_css */
+    g_object_set_data(G_OBJECT(dlg), "on-respond", (gpointer)fn);
+    g_object_set_data(G_OBJECT(dlg), "on-respond-data", data);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_top(vbox, 12);
+    gtk_widget_set_margin_bottom(vbox, 12);
+    gtk_widget_set_margin_start(vbox, 12);
+    gtk_widget_set_margin_end(vbox, 12);
+    gtk_box_append(GTK_BOX(vbox), content);
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_halign(row, GTK_ALIGN_END);
+    for (gsize i = 0; i < n; i++) {
+        GtkWidget *b = gtk_button_new_with_mnemonic(buttons[i].label);
+        g_object_set_data(G_OBJECT(b), "on-response",
+                          GINT_TO_POINTER(buttons[i].response));
+        g_signal_connect(b, "clicked", G_CALLBACK(on_dialog_button), dlg);
+        gtk_box_append(GTK_BOX(row), b);
+        if (buttons[i].is_default)
+            gtk_window_set_default_widget(GTK_WINDOW(dlg), b);
+    }
+    gtk_box_append(GTK_BOX(vbox), row);
+    gtk_window_set_child(GTK_WINDOW(dlg), vbox);
+
+    /* Escape: GtkWindow binds it to window.close only for dialogs; bind it
+     * here so this one behaves like one.                                   */
+    GtkEventController *keys = gtk_shortcut_controller_new();
+    gtk_shortcut_controller_add_shortcut(
+        GTK_SHORTCUT_CONTROLLER(keys),
+        gtk_shortcut_new(gtk_keyval_trigger_new(GDK_KEY_Escape, 0),
+                         gtk_named_action_new("window.close")));
+    gtk_widget_add_controller(dlg, keys);
+    g_signal_connect(dlg, "close-request", G_CALLBACK(on_dialog_close), NULL);
+    gtk_window_present(GTK_WINDOW(dlg));
 }
 
 /* ---------------------------------------------------------------------------
@@ -1560,19 +1533,15 @@ on_action_toggled(GtkCellRendererToggle *cell, gchar *path_str,
  * as object data on the dialog.
  *
  * Fields:
- *   lw       — the library window.
- *   row      — the Action Items row the date is for (owned; goes invalid
- *              if the model is rebuilt while the dialog is up).
- *   note_id/
- *   ord      — the item's address in the note.
- *   cal      — the GtkCalendar in the dialog.
+ *   lw   — the library window.
+ *   row  — the Action Items row the date is for (owned reference; a row
+ *          the store has dropped meanwhile is simply not found).
+ *   cal  — the GtkCalendar in the dialog.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    OnLibrary           *lw;
-    GtkTreeRowReference *row;
-    gint64               note_id;
-    gint                 ord;
-    GtkWidget           *cal;
+    OnLibrary   *lw;
+    OnActionRow *row;
+    GtkWidget   *cal;
 } DueDialog;
 
 /* due_dialog_free() — GDestroyNotify for the DueDialog on the dialog.       */
@@ -1580,21 +1549,22 @@ static void
 due_dialog_free(gpointer data)
 {
     DueDialog *d = data;
-    gtk_tree_row_reference_free(d->row);
+    g_object_unref(d->row);
     g_free(d);
 }
 
 /* ---------------------------------------------------------------------------
  * on_due_response() — the due-date dialog closed.  Set rewrites the
  * "due YYYY-MM-DD" suffix of the '!' line in the note text
- * (on_editor_action_set_due), Clear removes it; the store row updates
+ * (on_editor_action_set_due), Clear removes it; the row updates
  * immediately, the durable action_items row follows from the content
  * rewrite.  A row that vanished meanwhile (the model was rebuilt under the
  * dialog) is covered by a repopulate, which reads the rewritten mirror.
  * ------------------------------------------------------------------------- */
 static void
-on_due_response(GtkDialog *dlg, gint response, gpointer user_data)
+on_due_response(GtkWindow *dlg, gint response, gpointer user_data)
 {
+    (void)dlg;
     DueDialog *d  = user_data;       /* the dialog's state                  */
     OnLibrary *lw = d->lw;
     gint64 new_due = -1;             /* -1 = leave unchanged                */
@@ -1613,109 +1583,83 @@ on_due_response(GtkDialog *dlg, gint response, gpointer user_data)
     }
 
     if (new_due >= 0 &&
-        on_editor_action_set_due(lw->app, d->note_id, d->ord, new_due)) {
-        GtkTreePath *path = gtk_tree_row_reference_get_path(d->row);
-        GtkTreeIter  iter;           /* the row, if it still exists         */
-        if (path != NULL &&
-            gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->actions_store),
-                                    &iter, path)) {
-            gchar *when = NULL;      /* formatted for the Due Date cell     */
-            if (new_due != 0) {
-                GDateTime *dt = g_date_time_new_from_unix_local(new_due);
-                when = g_date_time_format(dt, "%b %e, %Y");
-                g_date_time_unref(dt);
-            }
-            gtk_list_store_set(lw->actions_store, &iter,
-                               AL_DUE,     when != NULL ? when : "",
-                               AL_DUE_RAW, new_due,
-                               -1);
-            g_free(when);
-        } else {
+        on_editor_action_set_due(lw->app, d->row->note_id, d->row->ord,
+                                 new_due)) {
+        g_free(d->row->due);
+        d->row->due     = action_due_text(new_due);
+        d->row->due_raw = new_due;
+        if (!on_row_touch(lw->actions_store, d->row))
             refresh_notes(lw);
-        }
-        gtk_tree_path_free(path);
     }
-    gtk_window_destroy(GTK_WINDOW(dlg));
 }
 
 /* ---------------------------------------------------------------------------
  * action_due_dialog() — modal calendar for one action item's due date;
  * on_due_response applies the choice.
- *   lw   — the library window.
- *   path — the Action Items row (NOT owned).
+ *   lw  — the library window.
+ *   row — the Action Items row.
  * ------------------------------------------------------------------------- */
 static void
-action_due_dialog(OnLibrary *lw, GtkTreePath *path)
+action_due_dialog(OnLibrary *lw, OnActionRow *row)
 {
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->actions_store);
-    GtkTreeIter iter;                /* the row                             */
-    if (!gtk_tree_model_get_iter(model, &iter, path))
-        return;
     DueDialog *d = g_new0(DueDialog, 1);
     d->lw  = lw;
-    d->row = gtk_tree_row_reference_new(model, path);
-    gint64 due;                      /* the item's current due date         */
-    gtk_tree_model_get(model, &iter,
-                       AL_NOTE_ID, &d->note_id,
-                       AL_ORD,     &d->ord,
-                       AL_DUE_RAW, &due,
-                       -1);
-
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Notes - Due Date", GTK_WINDOW(lw->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "_Clear",  1,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Set",    GTK_RESPONSE_OK,
-        NULL);
-    gtk_widget_add_css_class(dlg, "notes-dialog");   /* library_install_css */
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
-
+    d->row = g_object_ref(row);
     d->cal = gtk_calendar_new();
-    if (due != 0) {                  /* open on the current due date        */
-        GDateTime *dt = g_date_time_new_from_unix_local(due);
-        gtk_calendar_select_day(GTK_CALENDAR(d->cal), dt);
+    if (row->due_raw != 0) {         /* open on the current due date        */
+        GDateTime *dt = g_date_time_new_from_unix_local(row->due_raw);
+        gtk_calendar_set_date(GTK_CALENDAR(d->cal), dt);
         g_date_time_unref(dt);
     }
-    gtk_widget_set_margin_start(d->cal, 8);
-    gtk_widget_set_margin_end(d->cal, 8);
-    gtk_widget_set_margin_top(d->cal, 8);
-    gtk_widget_set_margin_bottom(d->cal, 8);
-    gtk_widget_set_vexpand(d->cal, TRUE);
-    gtk_box_append(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
-                   d->cal);
-
-    g_object_set_data_full(G_OBJECT(dlg), "on-due", d, due_dialog_free);
-    g_signal_connect(dlg, "response", G_CALLBACK(on_due_response), d);
-    gtk_window_present(GTK_WINDOW(dlg));
+    /* The state rides on the calendar, which the dialog takes.            */
+    g_object_set_data_full(G_OBJECT(d->cal), "on-due", d, due_dialog_free);
+    static const DialogButton BUTTONS[] = {
+        { "_Clear",  1,                   FALSE },
+        { "_Cancel", GTK_RESPONSE_CANCEL, FALSE },
+        { "_Set",    GTK_RESPONSE_OK,     TRUE  },
+    };
+    dialog_new(GTK_WINDOW(lw->window), "Notes - Due Date", d->cal, BUTTONS,
+               G_N_ELEMENTS(BUTTONS), on_due_response, d);
 }
 
-/* on_action_row_activated() — double-click: the Due Date cell opens the
- * date selector; any other cell opens the item's note.                      */
+/* on_action_row_activated() — double-click/Enter on an Action Items row
+ * opens the item's note (the Due Date CELL has its own double-click, see
+ * on_due_cell_pressed).                                                     */
 static void
-on_action_row_activated(GtkTreeView *view, GtkTreePath *path,
-                        GtkTreeViewColumn *column, gpointer user_data)
+on_action_row_activated(GtkColumnView *view, guint position,
+                        gpointer user_data)
 {
     (void)view;
     OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreeIter iter;                /* the activated row                   */
-    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->actions_store),
-                                 &iter, path))
+    OnActionRow *row =
+        g_list_model_get_item(G_LIST_MODEL(lw->actions_sorted), position);
+    if (row == NULL)
         return;
-
-    if (column != NULL &&
-        g_strcmp0(g_object_get_data(G_OBJECT(column), "on-colkey"),
-                  "due") == 0) {
-        action_due_dialog(lw, path);
-        return;
-    }
-
-    gint64 note_id;                  /* owning note                         */
-    gtk_tree_model_get(GTK_TREE_MODEL(lw->actions_store), &iter,
-                       AL_NOTE_ID, &note_id, -1);
-    GtkWidget *win = on_editor_window_open(lw->app, note_id);
+    GtkWidget *win = on_editor_window_open(lw->app, row->note_id);
     if (win != NULL)
         gtk_window_present(GTK_WINDOW(win));
+    g_object_unref(row);
+}
+
+/* on_due_cell_pressed() — double-click on a Due Date cell: the calendar.
+ * The press is claimed so the row's own gesture does not also open the
+ * note (a plain double-click elsewhere on the row still does).            */
+static void
+on_due_cell_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                    gpointer user_data)
+{
+    (void)x; (void)y;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    if (n_press != 2)
+        return;
+    GtkWidget *label =
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    GtkListItem *item = g_object_get_data(G_OBJECT(label), "on-item");
+    OnActionRow *row = item != NULL ? gtk_list_item_get_item(item) : NULL;
+    if (row == NULL)
+        return;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
+    action_due_dialog(lw, row);
 }
 
 /* ===========================================================================
@@ -1756,167 +1700,174 @@ folder_move_beside(OnLibrary *lw, gint64 folder_id, gint64 new_parent,
     return ok;
 }
 
-/* ---------------------------------------------------------------------------
- * SbFindCtx — working state for sb_find_row()'s model walk.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gint        kind;                /* SB_KIND_* wanted                    */
-    gint64      id;                  /* SB_ID wanted                        */
-    GtkTreeIter iter;                /* the hit, when found                 */
-    gboolean    found;
-} SbFindCtx;
+/* Where in a sidebar row a drop lands: the top quarter is BEFORE the row,
+ * the bottom quarter AFTER, the middle INTO.                                */
+typedef enum { SB_DROP_BEFORE, SB_DROP_INTO, SB_DROP_AFTER } SbDropPos;
 
-/* sb_find_cb() — gtk_tree_model_foreach() callback for sb_find_row().      */
-static gboolean
-sb_find_cb(GtkTreeModel *model, GtkTreePath *path, GtkTreeIter *iter,
-           gpointer data)
+/* The CSS class each position paints the row with (library_install_css).  */
+static const gchar *const SB_DROP_CLASS[] = {
+    "drop-before", "drop-into", "drop-after",
+};
+
+/* row_item() — the GtkListItem a per-row controller was installed for
+ * (stashed on the controller as "on-item" by the factory's setup).        */
+static GtkListItem *
+row_item(gpointer controller)
 {
-    (void)path;
-    SbFindCtx *ctx = data;
-    gint   kind;                     /* this row's identity                 */
-    gint64 id;
-    gtk_tree_model_get(model, iter, SB_KIND, &kind, SB_ID, &id, -1);
-    if (kind == ctx->kind && id == ctx->id) {
-        ctx->iter  = *iter;
-        ctx->found = TRUE;
-    }
-    return ctx->found;               /* TRUE stops the walk                 */
+    return g_object_get_data(G_OBJECT(controller), "on-item");
+}
+
+/* sb_item_row() — the OnSbRow (borrowed) and its GtkTreeListRow (borrowed)
+ * behind a sidebar list item; NULL when the item is unbound.               */
+static OnSbRow *
+sb_item_row(GtkListItem *item, GtkTreeListRow **tree_row)
+{
+    GtkTreeListRow *tr = gtk_list_item_get_item(item);
+    if (tr == NULL)
+        return NULL;
+    if (tree_row != NULL)
+        *tree_row = tr;
+    OnSbRow *r = gtk_tree_list_row_get_item(tr);
+    g_object_unref(r);
+    return r;
+}
+
+/* sb_row_parent() — the OnSbRow (borrowed) one level above a tree row, or
+ * NULL at the top level.                                                    */
+static OnSbRow *
+sb_row_parent(GtkTreeListRow *tr)
+{
+    GtkTreeListRow *up = gtk_tree_list_row_get_parent(tr);
+    if (up == NULL)
+        return NULL;
+    OnSbRow *r = gtk_tree_list_row_get_item(up);
+    g_object_unref(r);
+    g_object_unref(up);              /* the model keeps the row alive       */
+    return r;
 }
 
 /* ---------------------------------------------------------------------------
- * sb_find_row() — the sidebar row carrying (kind, id).  A drag names its
- * folder by id (OnDragRows); the validation and the drop need its ROW, to
- * refuse a drop onto itself or into its own subtree.
- *   lw   — the library window.
- *   kind — SB_KIND_FOLDER or SB_KIND_TRASH_FOLDER.
- *   id   — the folder id.
- *   iter — receives the row.
- * Returns TRUE if the row exists.
- * ------------------------------------------------------------------------- */
-static gboolean
-sb_find_row(OnLibrary *lw, gint kind, gint64 id, GtkTreeIter *iter)
-{
-    SbFindCtx ctx = { kind, id, { 0 }, FALSE };
-    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store), sb_find_cb,
-                           &ctx);
-    if (ctx.found)
-        *iter = ctx.iter;
-    return ctx.found;
-}
-
-/* ---------------------------------------------------------------------------
- * sidebar_drop_target() — resolve and validate the drop target under the
- * pointer for a drag carrying `rows`.  Which rows are legal depends on
- * what is being dragged: a folder (from the sidebar itself) goes onto
- * folders, the root, or the Trash, never onto itself or into its own
- * subtree — and a folder already in the Trash cannot be dropped on Trash
- * again; notes (from either notes view) go onto any folder-ish row, with
- * the position coerced to INTO (a note drops *into* a folder, never
+ * sidebar_drop_target() — validate a drop of `rows` onto the sidebar row
+ * `target` at `pos`, and coerce the position.  Which rows are legal
+ * depends on what is being dragged: a folder (from the sidebar itself)
+ * goes onto folders, the root, or the Trash, never onto itself or into its
+ * own subtree — and a folder already in the Trash cannot be dropped on
+ * Trash again; notes (from either notes view) go onto any folder-ish row,
+ * with the position coerced to INTO (a note drops *into* a folder, never
  * beside it).
- *   lw       — the library window.
- *   rows     — the drag content, or NULL (not loaded: refuse).
- *   x, y     — pointer position in the sidebar's widget coordinates.
- *   path_out — receives the target row (caller frees) when legal.
- *   pos_out  — receives the drop position when legal.
- *   src_iter — receives the dragged FOLDER's own row (folder drags only).
+ *   lw     — the library window.
+ *   rows   — the drag content, or NULL (not loaded: refuse).
+ *   target — the row under the pointer, its tree row in `tr`.
+ *   pos    — in: where in the row; out: the coerced position.
  * Returns TRUE when the drop is legal.
  * ------------------------------------------------------------------------- */
 static gboolean
-sidebar_drop_target(OnLibrary *lw, const OnDragRows *rows, gint x, gint y,
-                    GtkTreePath **path_out, GtkTreeViewDropPosition *pos_out,
-                    GtkTreeIter *src_iter)
+sidebar_drop_target(OnLibrary *lw, const OnDragRows *rows, OnSbRow *target,
+                    GtkTreeListRow *tr, SbDropPos *pos)
 {
-    *path_out = NULL;
-    *pos_out  = GTK_TREE_VIEW_DROP_BEFORE;
-    if (rows == NULL)
+    (void)lw;
+    if (rows == NULL || target == NULL)
         return FALSE;
+    gint kind = target->kind;
 
-    GtkTreePath *path = NULL;        /* row under the pointer               */
-    GtkTreeViewDropPosition pos;     /* before/into/after                   */
-    if (!gtk_tree_view_get_dest_row_at_pos(lw->sidebar, x, y, &path, &pos))
-        return FALSE;
-
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->sidebar_store);
-    GtkTreeIter iter;                /* target row                          */
-    gint kind = -1;                  /* its kind                            */
-    if (gtk_tree_model_get_iter(model, &iter, path))
-        gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
-
-    gboolean ok = FALSE;             /* is this drop legal?                 */
     if (rows->kind == ON_DRAG_NOTES) {
         if (kind == SB_KIND_FOLDER || kind == SB_KIND_ROOT ||
             kind == SB_KIND_TRASH) {
-            ok  = TRUE;
-            pos = GTK_TREE_VIEW_DROP_INTO_OR_BEFORE;
+            *pos = SB_DROP_INTO;
+            return TRUE;
         }
-    } else {
-        gint src_kind = (rows->kind == ON_DRAG_FOLDER)
-            ? SB_KIND_FOLDER : SB_KIND_TRASH_FOLDER;
-        if (sb_find_row(lw, src_kind, g_array_index(rows->ids, gint64, 0),
-                        src_iter)) {
-            GtkTreePath *src_path = gtk_tree_model_get_path(model, src_iter);
-            if (gtk_tree_path_compare(src_path, path) != 0 &&
-                !gtk_tree_path_is_descendant(path, src_path)) {
-                if (kind == SB_KIND_FOLDER) {
-                    ok = TRUE;       /* nest INTO or reorder beside it      */
-                } else if (kind == SB_KIND_ROOT ||
-                           (kind == SB_KIND_TRASH &&
-                            src_kind == SB_KIND_FOLDER)) {
-                    ok  = TRUE;
-                    pos = GTK_TREE_VIEW_DROP_INTO_OR_BEFORE;
-                }
-            }
-            gtk_tree_path_free(src_path);
-        }
+        return FALSE;
     }
 
-    if (ok) {
-        *path_out = path;
-        *pos_out  = pos;
-    } else {
-        gtk_tree_path_free(path);
+    gint   src_kind = (rows->kind == ON_DRAG_FOLDER)
+        ? SB_KIND_FOLDER : SB_KIND_TRASH_FOLDER;
+    gint64 src_id   = g_array_index(rows->ids, gint64, 0);
+    if (target->kind == src_kind && target->id == src_id)
+        return FALSE;                /* onto itself                         */
+    /* Into its own subtree: the dragged folder among the target's
+     * ancestors.                                                           */
+    for (GtkTreeListRow *up = gtk_tree_list_row_get_parent(tr);
+         up != NULL; ) {
+        OnSbRow *anc = gtk_tree_list_row_get_item(up);
+        g_object_unref(anc);
+        gboolean inside = anc->kind == src_kind && anc->id == src_id;
+        GtkTreeListRow *next = gtk_tree_list_row_get_parent(up);
+        g_object_unref(up);
+        if (inside)
+            return FALSE;
+        up = next;
     }
-    return ok;
+    if (kind == SB_KIND_FOLDER)
+        return TRUE;                 /* nest INTO or reorder beside it      */
+    if (kind == SB_KIND_ROOT ||
+        (kind == SB_KIND_TRASH && src_kind == SB_KIND_FOLDER)) {
+        *pos = SB_DROP_INTO;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* sb_row_drop_pos() — where in a row widget a pointer y falls.             */
+static SbDropPos
+sb_row_drop_pos(GtkWidget *row_widget, gdouble y)
+{
+    gint h = gtk_widget_get_height(row_widget);
+    if (h <= 0)
+        return SB_DROP_INTO;
+    if (y < h / 4.0)
+        return SB_DROP_BEFORE;
+    if (y > h * 3 / 4.0)
+        return SB_DROP_AFTER;
+    return SB_DROP_INTO;
+}
+
+/* sb_row_indicate() — paint (or clear, pos < 0) the drop indicator on a
+ * row widget: one of the three CSS classes.                                */
+static void
+sb_row_indicate(GtkWidget *row_widget, gint pos)
+{
+    for (gsize i = 0; i < G_N_ELEMENTS(SB_DROP_CLASS); i++)
+        gtk_widget_remove_css_class(row_widget, SB_DROP_CLASS[i]);
+    if (pos >= 0)
+        gtk_widget_add_css_class(row_widget, SB_DROP_CLASS[pos]);
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_drop_motion() — GtkDropTarget "enter" AND "motion" (same
- * signature, one handler): validate the row under the pointer against the
- * drag's content and draw the indicator ourselves.  The content is
- * readable here because the target PRELOADS it and every drag is local:
- * for a local drag GtkDropTarget reads the value synchronously from the
- * content provider when the drop starts, so it is never NULL by the first
- * motion (gtkdroptarget.c, gtk_drop_target_load_local).
+ * on_sidebar_drop_motion() — GtkDropTarget "enter" AND "motion" on one
+ * sidebar row (same signature, one handler): validate the row against the
+ * drag's content and paint the indicator.  The content is readable here
+ * because the target PRELOADS it and every drag is local: for a local
+ * drag GtkDropTarget reads the value synchronously from the content
+ * provider when the drop starts, so it is never NULL by the first motion
+ * (gtkdroptarget.c, gtk_drop_target_load_local).
  * Returns the action offered (MOVE), or 0 to refuse.
  * ------------------------------------------------------------------------- */
 static GdkDragAction
 on_sidebar_drop_motion(GtkDropTarget *target, gdouble x, gdouble y,
                        gpointer user_data)
 {
+    (void)x;
     OnLibrary *lw = user_data;       /* owning library window               */
+    GtkWidget *row_widget =
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(target));
     const GValue *value = gtk_drop_target_get_value(target);
     const OnDragRows *rows =         /* the drag's content, once loaded     */
         (value != NULL) ? g_value_get_boxed(value) : NULL;
-    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
-    GtkTreeViewDropPosition pos;     /* indicator position                  */
-    GtkTreeIter src_iter;            /* unused here                         */
-    gboolean ok = sidebar_drop_target(lw, rows, (gint)x, (gint)y,
-                                      &path, &pos, &src_iter);
-
-    gtk_tree_view_set_drag_dest_row(lw->sidebar, ok ? path : NULL, pos);
-    if (path != NULL)
-        gtk_tree_path_free(path);
+    GtkTreeListRow *tr = NULL;
+    OnSbRow *r = sb_item_row(row_item(target), &tr);
+    SbDropPos pos = sb_row_drop_pos(row_widget, y);
+    gboolean ok = sidebar_drop_target(lw, rows, r, tr, &pos);
+    sb_row_indicate(row_widget, ok ? (gint)pos : -1);
     return ok ? GDK_ACTION_MOVE : 0;
 }
 
-/* on_sidebar_drop_leave() — clear the drop indicator.                       */
+/* on_sidebar_drop_leave() — clear the row's drop indicator.                 */
 static void
 on_sidebar_drop_leave(GtkDropTarget *target, gpointer user_data)
 {
-    (void)target;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    gtk_tree_view_set_drag_dest_row(lw->sidebar, NULL,
-                                    GTK_TREE_VIEW_DROP_BEFORE);
+    (void)user_data;
+    sb_row_indicate(
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(target)), -1);
 }
 
 /* Logical pixel size of the custom drag-under-cursor icons.                 */
@@ -1953,193 +1904,116 @@ drag_rows_content(OnLibrary *lw, GtkDragSource *source, OnDragRows *rows)
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_drag_prepare() — GtkDragSource "prepare" on the sidebar: a
- * folder row (in the tree or under Trash) starts a drag carrying its id;
- * any other row refuses, since nothing accepts it.
- *   x, y — the press, in the sidebar's widget coordinates.
+ * on_sidebar_drag_prepare() — GtkDragSource "prepare" on one sidebar row:
+ * a folder row (in the tree or under Trash) starts a drag carrying its
+ * id; any other row refuses, since nothing accepts it.
  * Returns the drag content, or NULL for no drag.
  * ------------------------------------------------------------------------- */
 static GdkContentProvider *
 on_sidebar_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
                         gpointer user_data)
 {
+    (void)x; (void)y;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gint bx, by;                     /* the press in bin-window coordinates */
-    gtk_tree_view_convert_widget_to_bin_window_coords(lw->sidebar,
-                                                      (gint)x, (gint)y,
-                                                      &bx, &by);
-    GtkTreePath *path = NULL;        /* row under the press                 */
-    if (!gtk_tree_view_get_path_at_pos(lw->sidebar, bx, by, &path,
-                                       NULL, NULL, NULL))
+    OnSbRow *r = sb_item_row(row_item(source), NULL);
+    if (r == NULL ||
+        (r->kind != SB_KIND_FOLDER && r->kind != SB_KIND_TRASH_FOLDER))
         return NULL;
-
-    GtkTreeIter iter;                /* that row                            */
-    gint   kind = -1;                /* its kind                            */
-    gint64 id   = 0;                 /* its folder id                       */
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                                path))
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                           SB_KIND, &kind, SB_ID, &id, -1);
-    gtk_tree_path_free(path);
-    if (kind != SB_KIND_FOLDER && kind != SB_KIND_TRASH_FOLDER)
-        return NULL;
-
-    OnDragRows *rows = on_drag_rows_new(kind == SB_KIND_FOLDER
+    OnDragRows *rows = on_drag_rows_new(r->kind == SB_KIND_FOLDER
                                         ? ON_DRAG_FOLDER
                                         : ON_DRAG_TRASHED_FOLDER);
-    g_array_append_val(rows->ids, id);
+    g_array_append_val(rows->ids, r->id);
     return drag_rows_content(lw, source, rows);
 }
 
 /* ---------------------------------------------------------------------------
- * notes_drag_rows() — the content of a note drag that started on the row
- * at `path` (owned — freed here): the whole selection when the pressed
- * note is part of it (multi-select drags), else just that note.
- * Returns a new OnDragRows.
+ * on_note_drag_prepare() — GtkDragSource "prepare" on one row of either
+ * notes view: the whole selection when the pressed note is part of it
+ * (multi-select drags), else just that note.  GTK4's list items select on
+ * RELEASE (gtklistfactorywidget.c), so a press on a selected row that
+ * turns into a drag never collapses the selection — quirk #15 is gone.
+ * Returns the drag content, or NULL when the item is unbound.
  * ------------------------------------------------------------------------- */
-static OnDragRows *
-notes_drag_rows(OnLibrary *lw, GtkTreePath *path)
+static GdkContentProvider *
+on_note_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
+                     gpointer user_data)
 {
-    GtkTreeIter iter;                /* the pressed row                     */
-    gint64 note_id = 0;              /* its note id                         */
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store), &iter,
-                                path))
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
-                           NL_ID, &note_id, -1);
-    gtk_tree_path_free(path);
+    (void)x; (void)y;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    OnNoteRow *row = gtk_list_item_get_item(row_item(source));
+    if (row == NULL)
+        return NULL;
 
     OnDragRows *rows = on_drag_rows_new(ON_DRAG_NOTES);
     GArray *sel = selected_note_ids(lw);
     gboolean in_selection = FALSE;   /* is the pressed note selected?       */
     for (guint i = 0; i < sel->len; i++)
-        if (g_array_index(sel, gint64, i) == note_id)
+        if (g_array_index(sel, gint64, i) == row->id)
             in_selection = TRUE;
     if (in_selection)
         g_array_append_vals(rows->ids, sel->data, sel->len);
     else
-        g_array_append_val(rows->ids, note_id);
+        g_array_append_val(rows->ids, row->id);
     g_array_free(sel, TRUE);
-    return rows;
+    return drag_rows_content(lw, source, rows);
 }
 
 /* ---------------------------------------------------------------------------
- * on_notes_list_drag_prepare() — GtkDragSource "prepare" on the notes
- * list.  A drag from a vetoed press (quirk #15 / D7) keeps the whole
- * multi-selection: the veto is lifted here, and the matching release
- * lands in the DnD machinery, never as a click on the view.
- * Returns the drag content, or NULL when the press missed every row.
- * ------------------------------------------------------------------------- */
-static GdkContentProvider *
-on_notes_list_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
-                           gpointer user_data)
-{
-    OnLibrary *lw = user_data;       /* owning library window               */
-    gint bx, by;                     /* the press in bin-window coordinates */
-    gtk_tree_view_convert_widget_to_bin_window_coords(lw->notes_list,
-                                                      (gint)x, (gint)y,
-                                                      &bx, &by);
-    GtkTreePath *path = NULL;        /* row under the press                 */
-    if (!gtk_tree_view_get_path_at_pos(lw->notes_list, bx, by, &path,
-                                       NULL, NULL, NULL))
-        return NULL;
-    notes_sel_unblock(lw, FALSE);
-    return drag_rows_content(lw, source, notes_drag_rows(lw, path));
-}
-
-/* ---------------------------------------------------------------------------
- * grid_path_at() — the grid item under a point given in the icon view's
- * WIDGET coordinates (what every controller hands over).  GTK4's
- * gtk_icon_view_get_path_at_pos() works in the scrolled content's
- * coordinates, so the adjustments are added first — GTK's own gesture does
- * the same (gtkiconview.c, _gtk_icon_view_get_item_at_widget_coords).
- * Returns the item's path (caller frees), or NULL.
- * ------------------------------------------------------------------------- */
-static GtkTreePath *
-grid_path_at(OnLibrary *lw, gdouble x, gdouble y)
-{
-    GtkScrollable *s = GTK_SCROLLABLE(lw->notes_grid);
-    gdouble cx = x + gtk_adjustment_get_value(gtk_scrollable_get_hadjustment(s));
-    gdouble cy = y + gtk_adjustment_get_value(gtk_scrollable_get_vadjustment(s));
-    return gtk_icon_view_get_path_at_pos(lw->notes_grid, (gint)cx, (gint)cy);
-}
-
-/* on_notes_grid_drag_prepare() — GtkDragSource "prepare" on the grid: the
- * same content as the list's, from the item under the press.               */
-static GdkContentProvider *
-on_notes_grid_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
-                           gpointer user_data)
-{
-    OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreePath *path = grid_path_at(lw, x, y);
-    if (path == NULL)
-        return NULL;
-    return drag_rows_content(lw, source, notes_drag_rows(lw, path));
-}
-
-/* ---------------------------------------------------------------------------
- * on_sidebar_drop() — GtkDropTarget "drop": the button was released over
- * the sidebar.  Fires exactly once per drag, with the release coordinates
- * (D5).  Either note ids from a notes view (move the notes into the target
- * folder, or trash them) or one of the sidebar's own folder rows (re-nest
- * INTO a folder, reorder BEFORE/AFTER a sibling, trash, or restore-by-drag
- * out of the Trash).  The row under the pointer is validated again: the
- * release may land where motion had refused.
+ * on_sidebar_drop() — GtkDropTarget "drop" on one sidebar row: the button
+ * was released over it.  Either note ids from a notes view (move the notes
+ * into the target folder, or trash them) or one of the sidebar's own
+ * folder rows (re-nest INTO a folder, reorder BEFORE/AFTER a sibling,
+ * trash, or restore-by-drag out of the Trash).  The row is validated
+ * again: the release may land where motion had refused.
  * Returns TRUE when something moved (GTK then finishes the drop as a MOVE).
  * ------------------------------------------------------------------------- */
 static gboolean
 on_sidebar_drop(GtkDropTarget *target, const GValue *value,
                 gdouble x, gdouble y, gpointer user_data)
 {
-    (void)target;
+    (void)x;
     OnLibrary *lw = user_data;       /* owning library window               */
     const OnDragRows *rows = g_value_get_boxed(value);
-    gtk_tree_view_set_drag_dest_row(lw->sidebar, NULL,
-                                    GTK_TREE_VIEW_DROP_BEFORE);
+    GtkWidget *row_widget =
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(target));
+    sb_row_indicate(row_widget, -1);
 
-    GtkTreePath *dest_path = NULL;   /* the validated target row            */
-    GtkTreeViewDropPosition pos;
-    GtkTreeIter src_iter;            /* the dragged folder's row            */
-    if (!sidebar_drop_target(lw, rows, (gint)x, (gint)y, &dest_path, &pos,
-                             &src_iter))
+    GtkTreeListRow *tr = NULL;
+    OnSbRow *dest = sb_item_row(row_item(target), &tr);
+    SbDropPos pos = sb_row_drop_pos(row_widget, y);
+    if (!sidebar_drop_target(lw, rows, dest, tr, &pos))
         return FALSE;
-
-    GtkTreeModel *sb_model = GTK_TREE_MODEL(lw->sidebar_store);
-    GtkTreeIter dest_iter;           /* target sidebar row                  */
-    gint   dest_kind = -1;           /* its kind                            */
-    gint64 dest_id   = 0;            /* its folder id                       */
-    gchar *dest_raw  = NULL;         /* its bare name                       */
-    gtk_tree_model_get_iter(sb_model, &dest_iter, dest_path);
-    gtk_tree_model_get(sb_model, &dest_iter,
-                       SB_KIND, &dest_kind, SB_ID, &dest_id,
-                       SB_RAW,  &dest_raw, -1);
-    gtk_tree_path_free(dest_path);
 
     gboolean success = FALSE;        /* whether anything moved              */
     if (rows->kind == ON_DRAG_NOTES) {
         /* --- note ids from the notes pane ---------------------------------*/
         const gint64 *ids = (const gint64 *)rows->ids->data;
         guint n = rows->ids->len;
-        if (dest_kind == SB_KIND_TRASH) {
+        if (dest->kind == SB_KIND_TRASH) {
             /* Dropping on Trash IS the delete gesture.                     */
             success = trash_notes_core(lw, ids, n);
         } else {
             /* ONE transaction for the whole selection: per-note moves
              * fsync per call and froze the GUI on big drops.              */
-            success = on_db_notes_move(lw->app->db, ids, n, dest_id);
+            success = on_db_notes_move(lw->app->db, ids, n, dest->id);
             if (success)
                 on_app_status(lw->app,
                               "Moved %u note%s to \xe2\x80\x9c%s\xe2\x80\x9d",
-                              n, n == 1 ? "" : "s", dest_raw);
+                              n, n == 1 ? "" : "s", dest->raw);
         }
     } else {
         /* --- one of the sidebar's own folder rows --------------------------*/
         gint   src_kind  = (rows->kind == ON_DRAG_FOLDER)
                            ? SB_KIND_FOLDER : SB_KIND_TRASH_FOLDER;
         gint64 folder_id = g_array_index(rows->ids, gint64, 0);
-        gchar *fname     = NULL;     /* its bare name                       */
-        gtk_tree_model_get(sb_model, &src_iter, SB_RAW, &fname, -1);
+        OnSbRow *src = NULL;         /* the dragged folder's row            */
+        GPtrArray *chain = g_ptr_array_new_with_free_func(g_object_unref);
+        if (sb_find_chain(lw->sb_store, src_kind, folder_id, chain))
+            src = g_ptr_array_index(chain, chain->len - 1);
+        gchar *fname = g_strdup(src != NULL ? src->raw : "");
+        g_ptr_array_unref(chain);
 
-        if (dest_kind == SB_KIND_TRASH) {
+        if (dest->kind == SB_KIND_TRASH) {
             /* Dropping on Trash IS the delete gesture (validation already
              * refused a folder that is in the Trash).                      */
             success = trash_folder(lw, folder_id, fname);
@@ -2150,33 +2024,22 @@ on_sidebar_drop(GtkDropTarget *target, const GValue *value,
              * lives under a different parent).  on_db_folder_move
              * re-checks the subtree rule against the database.            */
             gchar *where = NULL;     /* name for the status message         */
-            if (dest_kind == SB_KIND_ROOT ||
-                pos == GTK_TREE_VIEW_DROP_INTO_OR_BEFORE ||
-                pos == GTK_TREE_VIEW_DROP_INTO_OR_AFTER) {
+            if (dest->kind == SB_KIND_ROOT || pos == SB_DROP_INTO) {
                 gint64 new_parent =  /* root drops land at top level        */
-                    (dest_kind == SB_KIND_FOLDER) ? dest_id : 0;
+                    (dest->kind == SB_KIND_FOLDER) ? dest->id : 0;
                 success = on_db_folder_move(lw->app->db, folder_id,
                                             new_parent);
-                where = g_strdup(dest_raw);
+                where = g_strdup(dest->raw);
             } else {
                 /* The dest folder's parent row is the new parent: the
                  * "Notes" root maps to top level (0).                      */
-                GtkTreeIter par_iter;        /* dest's parent row           */
-                gint   par_kind = SB_KIND_ROOT;
-                gint64 par_id   = 0;
-                gchar *par_raw  = NULL;
-                if (gtk_tree_model_iter_parent(sb_model, &par_iter,
-                                               &dest_iter))
-                    gtk_tree_model_get(sb_model, &par_iter,
-                                       SB_KIND, &par_kind,
-                                       SB_ID,   &par_id,
-                                       SB_RAW,  &par_raw, -1);
+                OnSbRow *par = sb_row_parent(tr);
                 gint64 new_parent =
-                    (par_kind == SB_KIND_FOLDER) ? par_id : 0;
-                success = folder_move_beside(
-                    lw, folder_id, new_parent, dest_id,
-                    pos == GTK_TREE_VIEW_DROP_AFTER);
-                where = par_raw ? par_raw : g_strdup("Notes");
+                    (par != NULL && par->kind == SB_KIND_FOLDER) ? par->id
+                                                                 : 0;
+                success = folder_move_beside(lw, folder_id, new_parent,
+                                             dest->id, pos == SB_DROP_AFTER);
+                where = g_strdup(par != NULL ? par->raw : "Notes");
             }
             if (success) {
                 on_app_status(lw->app,
@@ -2196,12 +2059,10 @@ on_sidebar_drop(GtkDropTarget *target, const GValue *value,
         }
         g_free(fname);
     }
-    g_free(dest_raw);
 
     /* The models are rebuilt here, inside the drop handler: GTK finishes
      * the drop only after this returns, so the drag icon lingers for the
-     * refresh (tens of ms).  There is no gtk_drag_finish() to call first
-     * any more — the return value IS the finish.                          */
+     * refresh (tens of ms).  The return value IS the finish.              */
     if (success)
         refresh_all(lw);             /* tree shape and counts changed       */
     return success;
@@ -2254,8 +2115,9 @@ typedef struct {
  * and hand them to the continuation on OK (an empty name is a cancel).
  * ------------------------------------------------------------------------- */
 static void
-on_folder_prompt_response(GtkDialog *dlg, gint response, gpointer user_data)
+on_folder_prompt_response(GtkWindow *dlg, gint response, gpointer user_data)
 {
+    (void)dlg;
     FolderPrompt *p = user_data;     /* the dialog's state                  */
     if (response == GTK_RESPONSE_OK) {
         gchar *name = g_strstrip(g_strdup(
@@ -2275,7 +2137,6 @@ on_folder_prompt_response(GtkDialog *dlg, gint response, gpointer user_data)
         }
         g_free(name);
     }
-    gtk_window_destroy(GTK_WINDOW(dlg));
 }
 
 /* ---------------------------------------------------------------------------
@@ -2299,20 +2160,10 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
                   const gchar *initial_name, gint initial_mode,
                   const gchar *initial_emoji, FolderPromptFunc done)
 {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons(
-        title, GTK_WINDOW(lw->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_OK",     GTK_RESPONSE_OK,
-        NULL);
-    gtk_widget_add_css_class(dialog, "notes-dialog"); /* library_install_css */
-    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
-
     FolderPrompt *p = g_new0(FolderPrompt, 1);
     p->lw     = lw;
     p->folder = folder;
     p->done   = done;
-    g_object_set_data_full(G_OBJECT(dialog), "on-prompt", p, g_free);
 
     /* ── Field grid: labelled emoji + name rows ─────────────────────────── */
     GtkWidget *field_grid = gtk_grid_new();
@@ -2384,12 +2235,14 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
     gtk_box_append(GTK_BOX(radios_box), p->custom_radio);
     gtk_grid_attach(GTK_GRID(field_grid), radios_box, 1, 2, 1, 1);
 
-    gtk_box_append(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),
-                   field_grid);
-
-    g_signal_connect(dialog, "response",
-                     G_CALLBACK(on_folder_prompt_response), p);
-    gtk_window_present(GTK_WINDOW(dialog));
+    /* The state rides on the grid, which the dialog takes.                */
+    g_object_set_data_full(G_OBJECT(field_grid), "on-prompt", p, g_free);
+    static const DialogButton BUTTONS[] = {
+        { "_Cancel", GTK_RESPONSE_CANCEL, FALSE },
+        { "_OK",     GTK_RESPONSE_OK,     TRUE  },
+    };
+    dialog_new(GTK_WINDOW(lw->window), title, field_grid, BUTTONS,
+               G_N_ELEMENTS(BUTTONS), on_folder_prompt_response, p);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2522,28 +2375,21 @@ static GArray *
 selected_note_ids(OnLibrary *lw)
 {
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    const gchar *mode =              /* "list" or "grid"                    */
-        gtk_stack_get_visible_child_name(GTK_STACK(lw->stack));
-
-    GList *paths;                    /* selected row paths                  */
-    if (g_strcmp0(mode, "grid") == 0) {
-        paths = gtk_icon_view_get_selected_items(lw->notes_grid);
-    } else {
-        paths = gtk_tree_selection_get_selected_rows(
-            gtk_tree_view_get_selection(lw->notes_list), NULL);
+    GtkBitset *sel = gtk_selection_model_get_selection(
+        GTK_SELECTION_MODEL(lw->notes_sel));
+    GtkBitsetIter it;
+    guint pos;
+    if (gtk_bitset_iter_init_first(&it, sel, &pos)) {
+        do {
+            OnNoteRow *row =
+                g_list_model_get_item(G_LIST_MODEL(lw->notes_sorted), pos);
+            if (row != NULL) {
+                g_array_append_val(ids, row->id);
+                g_object_unref(row);
+            }
+        } while (gtk_bitset_iter_next(&it, &pos));
     }
-
-    for (GList *l = paths; l != NULL; l = l->next) {
-        GtkTreeIter iter;            /* one selected row                    */
-        if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store),
-                                    &iter, l->data)) {
-            gint64 id;               /* its note id                         */
-            gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
-                               NL_ID, &id, -1);
-            g_array_append_val(ids, id);
-        }
-    }
-    g_list_free_full(paths, (GDestroyNotify)gtk_tree_path_free);
+    gtk_bitset_unref(sel);
     return ids;
 }
 
@@ -3146,41 +2992,37 @@ menu_section_end(GMenu *menu, GMenu **section)
 }
 
 /* ---------------------------------------------------------------------------
- * capture_click_gesture() — a GtkGestureClick on `widget` in the CAPTURE
- * phase, so its "pressed" runs BEFORE the widget's own bubble-phase click
- * gesture.  That order is the whole point for the tree views: GTK4's
- * GtkTreeView CLEAR_AND_SELECTs on the FIRST press of ANY button (measured
- * in gtk/deprecated/gtktreeview.c, gtk_tree_view_click_gesture_pressed),
- * so a right-click handler that wants to keep a multi-selection, and the
- * quirk-15 veto (D7), both have to get there first.  A handler that wants
- * the press for itself CLAIMs the sequence, which is what returning TRUE
- * from a button-press-event used to do.
- *   widget  — the widget to watch.
- *   button  — GDK_BUTTON_* to watch, or 0 for any.
+ * row_click_gesture() — a right-click gesture on one row widget of a list
+ * view, installed by the factory's setup, carrying the row's GtkListItem
+ * as "on-item" so the handler can read the row it was pressed on.  CAPTURE
+ * phase, so it runs before the row's own gesture (which selects on
+ * release); the handler CLAIMs the sequence when it takes the press.
+ *   widget  — the row widget (the factory child).
+ *   item    — its list item.
  *   pressed — the "pressed" handler.
  *   data    — its user data.
- * Returns the gesture, for callers that connect more of its signals.
  * ------------------------------------------------------------------------- */
-static GtkGesture *
-capture_click_gesture(GtkWidget *widget, guint button, GCallback pressed,
-                      gpointer data)
+static void
+row_click_gesture(GtkWidget *widget, GtkListItem *item, GCallback pressed,
+                  gpointer data)
 {
     GtkGesture *click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), button);
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                  GDK_BUTTON_SECONDARY);
     gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
                                                GTK_PHASE_CAPTURE);
+    g_object_set_data(G_OBJECT(click), "on-item", item);
     g_signal_connect(click, "pressed", pressed, data);
     gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click));
-    return click;
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_pressed() — right click in the folder/tag tree: select the
- * row under the pointer and show a context menu mirroring the sidebar
- * toolbar (folder actions + scoped search).  The items name actions, so
- * the row kind only decides which items appear; the handlers read the
- * selection this press just made.  The press is claimed either way.
- *   x, y — the press in the sidebar's widget coordinates.
+ * on_sidebar_pressed() — right click on a folder/tag row: select it and
+ * show a context menu mirroring the sidebar toolbar (folder actions +
+ * scoped search).  The items name actions, so the row kind only decides
+ * which items appear; the handlers read the selection this press just
+ * made.  The press is claimed either way.
+ *   x, y — the press in the row widget's coordinates.
  * ------------------------------------------------------------------------- */
 static void
 on_sidebar_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
@@ -3188,29 +3030,16 @@ on_sidebar_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
 {
     (void)n_press;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gint bx, by;                     /* the press in bin-window coordinates */
-    gtk_tree_view_convert_widget_to_bin_window_coords(lw->sidebar,
-                                                      (gint)x, (gint)y,
-                                                      &bx, &by);
-    GtkTreePath *path = NULL;        /* row under the pointer               */
-    if (!gtk_tree_view_get_path_at_pos(lw->sidebar, bx, by, &path,
-                                       NULL, NULL, NULL))
+    GtkListItem *item = row_item(g);
+    OnSbRow *r = sb_item_row(item, NULL);
+    if (r == NULL)
         return;
     gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
-
-    gtk_tree_selection_select_path(gtk_tree_view_get_selection(lw->sidebar),
-                                   path);
-
-    /* What kind of row was clicked decides which actions make sense.       */
-    GtkTreeIter iter;                /* the clicked row                     */
-    gint kind = SB_KIND_TAGS_HEADER; /* default: nothing to offer           */
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->sidebar_store),
-                                &iter, path))
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
-                           SB_KIND, &kind, -1);
-    gtk_tree_path_free(path);
+    gint kind = r->kind;
     if (kind == SB_KIND_TAGS_HEADER)
         return;                      /* consumed, but no menu               */
+    gtk_single_selection_set_selected(lw->sb_sel,
+                                      gtk_list_item_get_position(item));
 
     GMenu *menu    = g_menu_new();
     GMenu *section = g_menu_new();
@@ -3243,7 +3072,8 @@ on_sidebar_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
     menu_section_end(menu, &section);
     g_object_unref(section);
 
-    on_app_menu_popup(GTK_WIDGET(lw->sidebar), G_MENU_MODEL(menu), x, y);
+    on_app_menu_popup(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+                      G_MENU_MODEL(menu), x, y);
 }
 
 /* ===========================================================================
@@ -3261,8 +3091,6 @@ on_view_list(OnLibrary *lw)
     if (lw->sel_kind == SB_KIND_ACTIONS)
         return;
     gtk_stack_set_visible_child_name(GTK_STACK(lw->stack), "list");
-    if (lw->list_autofit)
-        refresh_notes(lw);           /* re-measure the widths grid skipped  */
 }
 
 static void
@@ -3656,175 +3484,34 @@ show_note_context_menu(OnLibrary *lw, GtkWidget *attach, gint64 note_id,
 }
 
 /* ---------------------------------------------------------------------------
- * notes_ctx_popup() — shared right-click tail of both notes views: read
- * the note id at `path` (owned — freed here) and pop up the note context
- * menu for it, then CLAIM the press so the view's own gesture never sees
- * it (it would collapse the selection).
- *   g      — the press gesture.
- *   attach — the view the press landed in.
- *   path   — the clicked row (consumed).
- *   x, y   — the press, in `attach`'s coordinates.
+ * on_note_pressed() — right click on a row of either notes view: select
+ * the row under the pointer (an existing multi-selection is kept when
+ * clicked inside) and show the note menu; the press is claimed so the
+ * row's own gesture never sees it (it would collapse the selection).
+ *   x, y — the press, in the row widget's coordinates.
  * ------------------------------------------------------------------------- */
 static void
-notes_ctx_popup(OnLibrary *lw, GtkGestureClick *g, GtkWidget *attach,
-                GtkTreePath *path, gdouble x, gdouble y)
-{
-    GtkTreeIter iter;                /* the clicked row                     */
-    gint64 id = 0;                   /* its note id                         */
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store),
-                                &iter, path))
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
-                           NL_ID, &id, -1);
-    gtk_tree_path_free(path);
-
-    if (id != 0)
-        show_note_context_menu(lw, attach, id, x, y);
-    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
-}
-
-/* notes_sel_block_func() — the temporary select function for the span of
- * a press on an already-selected list row: vetoes EVERY selection change. */
-static gboolean
-notes_sel_block_func(GtkTreeSelection *sel, GtkTreeModel *model,
-                     GtkTreePath *path, gboolean selected, gpointer data)
-{
-    (void)sel; (void)model; (void)path; (void)selected; (void)data;
-    return FALSE;
-}
-
-/* notes_sel_unblock() — end a blocked press: selection changes work
- * again (the select function goes back to none); the press path is
- * optionally handed to the caller (transfer), otherwise freed.             */
-static GtkTreePath *
-notes_sel_unblock(OnLibrary *lw, gboolean want_path)
-{
-    if (!lw->notes_sel_blocked)
-        return NULL;
-    gtk_tree_selection_set_select_function(
-        gtk_tree_view_get_selection(lw->notes_list), NULL, NULL, NULL);
-    lw->notes_sel_blocked = FALSE;
-    GtkTreePath *path = lw->notes_press_path;
-    lw->notes_press_path = NULL;
-    if (!want_path) {
-        gtk_tree_path_free(path);
-        path = NULL;
-    }
-    return path;
-}
-
-/* ---------------------------------------------------------------------------
- * on_notes_list_pressed() — CAPTURE-phase press on the notes list (see
- * capture_click_gesture), two jobs:
- *
- * 1. Unmodified primary press on an already-selected row of a
- *    multi-selection: the view's own gesture CLEAR_AND_SELECTs on press
- *    with no deferral for a possible drag (quirk #15, re-measured on GTK4
- *    as D7), which would collapse the selection before a multi-note drag
- *    could start.  Install a selection veto for the span of the press;
- *    on_notes_list_drag_prepare keeps the selection, a plain release
- *    applies the collapse GTK wanted.  The press is NOT claimed — the
- *    view's gesture and the drag source must still see it.
- *
- * 2. Right click: select the row under the pointer (an existing
- *    multi-selection is kept when clicked inside) and show the note menu;
- *    that press IS claimed.
- * ------------------------------------------------------------------------- */
-static void
-on_notes_list_pressed(GtkGestureClick *g, gint n_press, gdouble x,
-                      gdouble y, gpointer user_data)
-{
-    OnLibrary *lw = user_data;       /* owning library window               */
-    guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
-    GtkTreeView *view = lw->notes_list;
-    gint bx, by;                     /* the press in bin-window coordinates */
-    gtk_tree_view_convert_widget_to_bin_window_coords(view, (gint)x, (gint)y,
-                                                      &bx, &by);
-    GtkTreePath *path = NULL;        /* row under the pointer               */
-    if (!gtk_tree_view_get_path_at_pos(view, bx, by, &path,
-                                       NULL, NULL, NULL))
-        return;
-    GtkTreeSelection *sel = gtk_tree_view_get_selection(view);
-
-    if (button == GDK_BUTTON_PRIMARY) {
-        GdkModifierType state = gtk_event_controller_get_current_event_state(
-            GTK_EVENT_CONTROLLER(g));
-        if (n_press == 1 &&
-            !(state & gtk_accelerator_get_default_mod_mask()) &&
-            gtk_tree_selection_path_is_selected(sel, path) &&
-            gtk_tree_selection_count_selected_rows(sel) > 1) {
-            gtk_tree_selection_set_select_function(
-                sel, notes_sel_block_func, NULL, NULL);
-            lw->notes_sel_blocked = TRUE;
-            gtk_tree_path_free(lw->notes_press_path);
-            lw->notes_press_path = path;         /* ownership taken         */
-            return;
-        }
-        gtk_tree_path_free(path);
-        return;
-    }
-    if (button != GDK_BUTTON_SECONDARY) {
-        gtk_tree_path_free(path);
-        return;
-    }
-
-    /* Right-clicking inside an existing multi-selection keeps it (so bulk
-     * actions can target it); clicking elsewhere selects just that row.    */
-    if (!gtk_tree_selection_path_is_selected(sel, path)) {
-        gtk_tree_selection_unselect_all(sel);
-        gtk_tree_selection_select_path(sel, path);
-    }
-    notes_ctx_popup(lw, g, GTK_WIDGET(view), path, x, y);
-}
-
-/* on_notes_list_released() — a blocked press ended WITHOUT a drag: lift
- * the veto and apply the collapse GTK wanted on press (a plain click on a
- * selected row means "select just this one").                              */
-static void
-on_notes_list_released(GtkGestureClick *g, gint n_press, gdouble x,
-                       gdouble y, gpointer user_data)
-{
-    (void)g; (void)n_press; (void)x; (void)y;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreePath *path = notes_sel_unblock(lw, TRUE);
-    if (path != NULL) {
-        gtk_tree_view_set_cursor(lw->notes_list, path, NULL, FALSE);
-        gtk_tree_path_free(path);
-    }
-}
-
-/* on_notes_list_cancel() — the press gesture was cancelled (the drag
- * source claimed the sequence, or the press left the widget): drop the
- * veto without collapsing.  The drag path lifts it in prepare as well;
- * this covers the cancellations that never become a drag.                  */
-static void
-on_notes_list_cancel(GtkGesture *g, GdkEventSequence *seq,
-                     gpointer user_data)
-{
-    (void)g; (void)seq;
-    notes_sel_unblock(user_data, FALSE);
-}
-
-/* ---------------------------------------------------------------------------
- * on_notes_grid_pressed() — right click in grid mode: same as the list's
- * for the icon view (its own gesture only selects on the primary button,
- * but the press is claimed for symmetry).
- * ------------------------------------------------------------------------- */
-static void
-on_notes_grid_pressed(GtkGestureClick *g, gint n_press, gdouble x,
-                      gdouble y, gpointer user_data)
+on_note_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                gpointer user_data)
 {
     (void)n_press;
     OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreePath *path = grid_path_at(lw, x, y);
-    if (path == NULL)
+    GtkListItem *item = row_item(g);
+    OnNoteRow *row = gtk_list_item_get_item(item);
+    if (row == NULL)
         return;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
 
-    /* Keep an existing multi-selection when right-clicking inside it.      */
-    if (!gtk_icon_view_path_is_selected(lw->notes_grid, path)) {
-        gtk_icon_view_unselect_all(lw->notes_grid);
-        gtk_icon_view_select_path(lw->notes_grid, path);
-    }
-    notes_ctx_popup(lw, g, GTK_WIDGET(lw->notes_grid), path, x, y);
+    /* Right-clicking inside an existing multi-selection keeps it (so bulk
+     * actions can target it); clicking elsewhere selects just that row.    */
+    guint pos = gtk_list_item_get_position(item);
+    if (!gtk_selection_model_is_selected(GTK_SELECTION_MODEL(lw->notes_sel),
+                                         pos))
+        gtk_selection_model_select_item(GTK_SELECTION_MODEL(lw->notes_sel),
+                                        pos, TRUE);
+    show_note_context_menu(
+        lw, gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+        row->id, x, y);
 }
 
 /* ===========================================================================
@@ -3869,9 +3556,10 @@ status_path_update(OnLibrary *lw)
  * and refresh_notes() repopulation (which clears the selection row by
  * row) is skipped via the populating guard.                                 */
 static void
-on_notes_selection_status(gpointer view_or_selection, gpointer user_data)
+on_notes_selection_status(GtkSelectionModel *model, guint position,
+                          guint n_items, gpointer user_data)
 {
-    (void)view_or_selection;
+    (void)model; (void)position; (void)n_items;
     OnLibrary *lw = user_data;       /* owning library window               */
     if (lw->populating != 0)
         return;
@@ -4383,68 +4071,54 @@ library_notify_note_saved(OnApp *app, gint64 note_id)
 
     /* Find the row.  Absent means the note is not in the current view, and
      * a save cannot have changed that — nothing to do.                     */
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->notes_store);
-    GtkTreeIter   iter;              /* the saved note's row                */
-    gboolean      found = FALSE;
-    gboolean      valid = gtk_tree_model_get_iter_first(model, &iter);
-    /* NOT a for loop: its increment would run after the match and advance
-     * `iter` off the row we just found — invalidating it outright when the
-     * match is the last row, which is where a just-saved note usually is.   */
-    while (valid && !found) {
-        gint64 id;                   /* this row's note id                  */
-        gtk_tree_model_get(model, &iter, NL_ID, &id, -1);
-        if (id == note_id)
-            found = TRUE;            /* leave `iter` ON the match           */
+    OnNoteRow *row = NULL;
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->notes_store));
+    for (guint i = 0; i < n && row == NULL; i++) {
+        OnNoteRow *r = g_list_model_get_item(G_LIST_MODEL(lw->notes_store), i);
+        if (r->id == note_id)
+            row = r;                 /* keep the ref until the update       */
         else
-            valid = gtk_tree_model_iter_next(model, &iter);
+            g_object_unref(r);
     }
-    if (!found)
+    if (row == NULL)
         return;
 
     OnNoteMeta *m = on_db_note_get(lw->app->db, note_id);
-    if (m == NULL)
+    if (m == NULL) {
+        g_object_unref(row);
         return;
+    }
 
+    g_free(row->title);
+    row->title = g_strdup(m->title);
     GDateTime *dt = g_date_time_new_from_unix_local(m->updated_at);
-    gchar *when = g_date_time_format(dt, LIST_TIME_FORMAT);
+    g_free(row->modified);
+    row->modified   = g_date_time_format(dt, LIST_TIME_FORMAT);
+    row->updated_at = m->updated_at;
     g_date_time_unref(dt);
 
     /* Preview only where it is shown (Comfortable density, list view).      */
-    gchar *preview = NULL;
+    g_clear_pointer(&row->preview, g_free);
     if (lw->app->comfortable_list) {
         gchar *body = on_db_note_body_text(lw->app->db, note_id);
-        preview = notes_preview_line(body);
+        row->preview = notes_preview_line(body);
         g_free(body);
     }
 
-    /* Setting NL_UPDATED is what re-sorts the row to the top under the
-     * default Modified ordering — the same place the old repopulate's
-     * "ORDER BY updated_at DESC" put it.  populating stays DOWN: this is a
-     * real content change and the selection handlers should see it.         */
-    gtk_list_store_set(lw->notes_store, &iter,
-                       NL_TITLE,    m->title,
-                       NL_MODIFIED, when,
-                       NL_UPDATED,  m->updated_at,
-                       NL_PREVIEW,  preview,
-                       -1);
+    /* Touching the row is what re-sorts it to the top under the default
+     * Modified ordering (the sort model re-sorts the changed item) and
+     * rebinds it in both views; the selection follows it by identity.
+     * populating stays DOWN: this is a real content change and the
+     * selection handlers should see it.                                    */
+    on_row_touch(lw->notes_store, row);
 
     /* The grid's thumbnail for this note is now stale; re-render it in idle
      * time exactly as a repopulate would have (list mode pays nothing).     */
     if (g_strcmp0(gtk_stack_get_visible_child_name(GTK_STACK(lw->stack)),
-                  "grid") == 0) {
-        GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
-        ThumbJob *job = g_new0(ThumbJob, 1);
-        job->row        = gtk_tree_row_reference_new(model, path);
-        job->id         = note_id;
-        job->updated_at = m->updated_at;
-        g_queue_push_tail(&lw->thumb_pending, job);
-        gtk_tree_path_free(path);
-        if (lw->thumb_idle == 0)
-            lw->thumb_idle = g_idle_add(thumb_fill_idle, lw);
-    }
+                  "grid") == 0)
+        thumb_queue(lw, row, m->updated_at);
 
-    g_free(preview);
-    g_free(when);
+    g_object_unref(row);
     on_db_note_meta_free(m);
 }
 
@@ -4502,539 +4176,609 @@ on_library_get_scope(OnApp *app, OnSearchScope *scope, gint64 *id,
     }
 }
 
-/* ---------------------------------------------------------------------------
- * sort_by_title() — case-insensitive alphabetical sort for the Title
- * header.
- * ------------------------------------------------------------------------- */
+/* ===========================================================================
+ * sorting — one comparator per sortable column, for GtkCustomSorter.
+ * The column view's own sorter (gtk_column_view_get_sorter) drives the
+ * GtkSortListModel both notes views show, so a header click re-sorts the
+ * grid as well.
+ * =========================================================================== */
+
+/* cmp_title() — case-insensitive alphabetical, the Title header.           */
 static gint
-sort_by_title(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-              gpointer user_data)
+cmp_title(gconstpointer a, gconstpointer b, gpointer user_data)
 {
     (void)user_data;
-    gchar *ta, *tb;                  /* the two titles                      */
-    gtk_tree_model_get(model, a, NL_TITLE, &ta, -1);
-    gtk_tree_model_get(model, b, NL_TITLE, &tb, -1);
-    gint result = utf8_casecmp(ta, tb);
-    g_free(ta); g_free(tb);
-    return result;
+    return utf8_casecmp(((const OnNoteRow *)a)->title,
+                        ((const OnNoteRow *)b)->title);
+}
+
+/* cmp_path() — the Path header; equal paths fall back to the title so
+ * folders group cleanly.                                                    */
+static gint
+cmp_path(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    gint result = utf8_casecmp(((const OnNoteRow *)a)->path,
+                               ((const OnNoteRow *)b)->path);
+    return result != 0 ? result : cmp_title(a, b, user_data);
+}
+
+/* cmp_updated() / cmp_created() — the two time headers.  Deliberately
+ * inverted so the FIRST click (ascending) shows the newest notes on top. */
+static gint
+cmp_updated(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    gint64 ta = ((const OnNoteRow *)a)->updated_at;
+    gint64 tb = ((const OnNoteRow *)b)->updated_at;
+    return (tb > ta) - (tb < ta);
+}
+
+static gint
+cmp_created(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    gint64 ta = ((const OnNoteRow *)a)->created_at;
+    gint64 tb = ((const OnNoteRow *)b)->created_at;
+    return (tb > ta) - (tb < ta);
+}
+
+/* cmp_action_text() — alphabetical, the Action header.                     */
+static gint
+cmp_action_text(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    return utf8_casecmp(((const OnActionRow *)a)->text,
+                        ((const OnActionRow *)b)->text);
+}
+
+/* cmp_action_done() — the checkbox header: open items first.               */
+static gint
+cmp_action_done(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    return (gint)((const OnActionRow *)a)->done -
+           (gint)((const OnActionRow *)b)->done;
+}
+
+/* cmp_action_due() — Due Date header: the first click shows the soonest
+ * deadline on top; items without a due date sort after every dated one.   */
+static gint
+cmp_action_due(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    gint64 da = ((const OnActionRow *)a)->due_raw;
+    gint64 db = ((const OnActionRow *)b)->due_raw;
+    if (da == 0) da = G_MAXINT64;    /* undated: always last                */
+    if (db == 0) db = G_MAXINT64;
+    return (da > db) - (da < db);
 }
 
 /* ===========================================================================
- * list-view column layout (order + visibility)
+ * column layout (order + visibility)
  *
- * Headers drag to reorder (GtkTreeViewColumn reorderable) and right-click
- * for a show/hide menu.  The layout persists in the ini as
- * "<cfgkey>=key:vis,key:vis,..." in display order; each column carries
- * its stable key as object data ("on-colkey").  The machinery is shared
- * by the notes list and the Action Items list: each VIEW carries its ini
- * key ("on-colcfg"), its expected column count ("on-ncols") and its
- * default layout ("on-coldefault") as object data.
+ * Headers drag to reorder (GtkColumnView reorderable) and right-click for
+ * a show/hide menu (each column's built-in header menu).  The layout
+ * persists in the ini as "<cfgkey>=key:vis,key:vis,..." in display order;
+ * each column carries its stable key as object data ("on-colkey") and
+ * each VIEW carries its ini key ("on-colcfg") and its default layout
+ * ("on-coldefault").  The machinery is shared by the notes list and the
+ * Action Items list.  Column widths are GTK's: a column view sizes every
+ * column to its content and gives the expanding one (Title / Action) the
+ * rest — the tree view's autofit measuring pass is gone with it.
  * =========================================================================== */
 
-/* How many columns the notes list owns (Title, Path, Modified, Created) —
- * keep in sync with the COLS[] table in the window constructor.             */
-#define N_LIST_COLUMNS 4
+/* col_key() — a column's stable key.                                        */
+static const gchar *
+col_key(GtkColumnViewColumn *col)
+{
+    return g_object_get_data(G_OBJECT(col), "on-colkey");
+}
+
+/* view_column_by_key() — the view's column carrying `key`, or NULL.         */
+static GtkColumnViewColumn *
+view_column_by_key(GtkColumnView *view, const gchar *key)
+{
+    GListModel *cols = gtk_column_view_get_columns(view);
+    guint n = g_list_model_get_n_items(cols);
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        g_object_unref(c);           /* the view keeps it                   */
+        if (g_strcmp0(col_key(c), key) == 0)
+            return c;
+    }
+    return NULL;
+}
 
 /* ---------------------------------------------------------------------------
- * view_columns_persist() — write a list view's current column order and
- * visibility to the ini.  A partial column list (the view tearing down
- * removes columns one by one) is never persisted.
+ * view_columns_persist() — write a view's current column order and
+ * visibility to the ini.
  * ------------------------------------------------------------------------- */
 static void
-view_columns_persist(GtkTreeView *view)
+view_columns_persist(GtkColumnView *view)
 {
     const gchar *cfg_key =           /* the view's ini key                  */
         g_object_get_data(G_OBJECT(view), "on-colcfg");
-    gint n_cols =                    /* the view's full column count        */
-        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(view), "on-ncols"));
-    GList *cols = gtk_tree_view_get_columns(view);
-    if (cfg_key == NULL || g_list_length(cols) != (guint)n_cols) {
-        g_list_free(cols);
+    if (cfg_key == NULL)
         return;
-    }
+    GListModel *cols = gtk_column_view_get_columns(view);
+    guint n = g_list_model_get_n_items(cols);
     GString *s = g_string_new(NULL);
-    for (GList *l = cols; l != NULL; l = l->next) {
-        const gchar *key =           /* stable column identity              */
-            g_object_get_data(G_OBJECT(l->data), "on-colkey");
-        if (key == NULL)
-            continue;
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
         if (s->len > 0)
             g_string_append_c(s, ',');
-        g_string_append_printf(s, "%s:%d", key,
-            gtk_tree_view_column_get_visible(l->data) ? 1 : 0);
+        g_string_append_printf(s, "%s:%d", col_key(c),
+                               gtk_column_view_column_get_visible(c) ? 1 : 0);
+        g_object_unref(c);
     }
-    g_list_free(cols);
     on_app_config_set(cfg_key, s->str);
     g_string_free(s, TRUE);
 }
 
-/* view_column_by_key() — the view's column carrying `key`, or NULL.         */
-static GtkTreeViewColumn *
-view_column_by_key(GtkTreeView *view, const gchar *key)
-{
-    GtkTreeViewColumn *found = NULL;
-    GList *cols = gtk_tree_view_get_columns(view);
-    for (GList *l = cols; l != NULL && found == NULL; l = l->next)
-        if (g_strcmp0(g_object_get_data(G_OBJECT(l->data), "on-colkey"),
-                      key) == 0)
-            found = l->data;
-    g_list_free(cols);
-    return found;
-}
+/* The "column-<cfg>-<key>" actions: one stateful boolean per column of
+ * each view, named after the view's ini key and the column's stable key.  */
+#define COLUMN_ACTION_PREFIX "column-"
 
-/* list_column_by_key() — notes-list shorthand (autofit uses it a lot).      */
-static GtkTreeViewColumn *
-list_column_by_key(OnLibrary *lw, const gchar *key)
+/* column_action_name() — "column-<cfg>-<key>" (g_free it).                  */
+static gchar *
+column_action_name(GtkColumnView *view, const gchar *key)
 {
-    return view_column_by_key(lw->notes_list, key);
-}
-
-/* list_column_shown() — is the notes list's `key` column visible right now?
- * Autofit consults this BEFORE measuring: list_autofit_set() discards the
- * width of a hidden column, so measuring one is wasted work.                */
-static gboolean
-list_column_shown(OnLibrary *lw, const gchar *key)
-{
-    GtkTreeViewColumn *c = list_column_by_key(lw, key);
-    return c != NULL && gtk_tree_view_column_get_visible(c);
+    return g_strconcat(COLUMN_ACTION_PREFIX,
+                       (const gchar *)g_object_get_data(G_OBJECT(view),
+                                                        "on-colcfg"),
+                       "-", key, NULL);
 }
 
 /* ---------------------------------------------------------------------------
- * list_autofit_time_width() — an upper bound, in pixels, on any timestamp
- * the Modified or Created column can hold.
- *
- * Both columns render one fixed pattern (LIST_TIME_FORMAT), so every value
- * has the same shape and differs only in which month abbreviation and which
- * digits it contains.  Measuring the widest localized month against the
- * widest digit therefore bounds the whole column in ~22 measurements instead
- * of one per row — which at a thousand-plus notes was the most expensive
- * thing refresh_notes() did, repeated on every autosave-driven refresh.
- *
- * A bound rather than the exact maximum is the right answer here: the caller
- * adds AUTOFIT_CELL_EXTRA px of cell chrome on top anyway, and erring wide
- * only pads the column, while erring narrow would clip text (these columns
- * do not ellipsize under autofit).
- *   lay — the measuring layout, in the view's font.
- * Returns the bound in pixels.
- * ------------------------------------------------------------------------- */
-static gint
-list_autofit_time_width(PangoLayout *lay)
-{
-    /* Widest digit glyph — proportional fonts do vary ('1' vs '8').         */
-    gchar widest  = '0';             /* digit with the largest advance      */
-    gint  digit_w = 0;               /* its width                           */
-    for (gchar d = '0'; d <= '9'; d++) {
-        gint w;                      /* width of this digit                 */
-        pango_layout_set_text(lay, &d, 1);
-        pango_layout_get_pixel_size(lay, &w, NULL);
-        if (w > digit_w) {
-            digit_w = w;
-            widest  = d;
-        }
-    }
-
-    /* Each month's name in a full synthetic stamp whose every digit is the
-     * widest one, so no real timestamp can come out wider.                  */
-    gint max_w = 0;                  /* running maximum                     */
-    for (gint month = 1; month <= 12; month++) {
-        GDateTime *dt = g_date_time_new_local(2026, month, 28, 23, 59, 0);
-        if (dt == NULL)
-            continue;
-        gchar *stamp = g_date_time_format(dt, LIST_TIME_FORMAT);
-        g_date_time_unref(dt);
-        if (stamp == NULL)
-            continue;
-        for (gchar *p = stamp; *p != '\0'; p++)
-            if (g_ascii_isdigit(*p))
-                *p = widest;
-        gint w;                      /* width of this month's stamp         */
-        pango_layout_set_text(lay, stamp, -1);
-        pango_layout_get_pixel_size(lay, &w, NULL);
-        max_w = MAX(max_w, w);
-        g_free(stamp);
-    }
-    return max_w;
-}
-
-/* ---------------------------------------------------------------------------
- * view_columns_apply() — put a view's saved column order and visibility
- * back (falling back to its "on-coldefault" layout).  Unknown keys are
- * skipped, missing ones keep their built order and visibility, and at
- * least one column is forced visible (a hand-edited ini can't blank the
- * view).
+ * column_actions_sync() — bring a view's column actions up to date: state =
+ * the column's visibility, enabled unless it is the only visible column
+ * (so the view can't go empty).  Run after every visibility change.
  * ------------------------------------------------------------------------- */
 static void
-view_columns_apply(GtkTreeView *view)
+column_actions_sync(OnLibrary *lw, GtkColumnView *view)
 {
-    const gchar *cfg_key =           /* the view's ini key                  */
-        g_object_get_data(G_OBJECT(view), "on-colcfg");
-    gchar *cfg = cfg_key != NULL ? on_app_config_get(cfg_key) : NULL;
+    GActionMap *map = G_ACTION_MAP(lw->window);
+    GListModel *cols = gtk_column_view_get_columns(view);
+    guint n = g_list_model_get_n_items(cols);
+    gint n_visible = 0;              /* how many columns are shown          */
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        if (gtk_column_view_column_get_visible(c))
+            n_visible++;
+        g_object_unref(c);
+    }
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        gboolean visible = gtk_column_view_column_get_visible(c);
+        gchar *name = column_action_name(view, col_key(c));
+        GSimpleAction *action =
+            G_SIMPLE_ACTION(g_action_map_lookup_action(map, name));
+        if (action != NULL) {
+            g_simple_action_set_state(action, g_variant_new_boolean(visible));
+            g_simple_action_set_enabled(action, !(visible && n_visible == 1));
+        }
+        g_free(name);
+        g_object_unref(c);
+    }
+}
+
+/* on_columns_reordered() — a header drag moved a column: persist.          */
+static void
+on_columns_reordered(GListModel *cols, guint position, guint removed,
+                     guint added, gpointer view)
+{
+    (void)cols; (void)position; (void)removed; (void)added;
+    view_columns_persist(view);
+}
+
+/* view_by_cfg() — the view whose ini key is `cfg`.                          */
+static GtkColumnView *
+view_by_cfg(OnLibrary *lw, const gchar *cfg)
+{
+    if (g_strcmp0(g_object_get_data(G_OBJECT(lw->notes_list), "on-colcfg"),
+                  cfg) == 0)
+        return lw->notes_list;
+    return lw->actions_view;
+}
+
+/* on_column_change_state() — a column's check item flipped: show/hide the
+ * column and persist.  The action name is "column-<cfg>-<key>".            */
+static void
+on_column_change_state(GSimpleAction *action, GVariant *value,
+                       gpointer user_data)
+{
+    OnLibrary *lw = user_data;       /* owning library window               */
+    const gchar *rest =              /* "<cfg>-<key>"                       */
+        g_action_get_name(G_ACTION(action)) + strlen(COLUMN_ACTION_PREFIX);
+    const gchar *dash = strrchr(rest, '-');
+    if (dash == NULL)
+        return;
+    gchar *cfg = g_strndup(rest, (gsize)(dash - rest));
+    GtkColumnView *view = view_by_cfg(lw, cfg);
+    g_free(cfg);
+    GtkColumnViewColumn *c = view_column_by_key(view, dash + 1);
+    if (c == NULL)
+        return;
+    g_simple_action_set_state(action, value);
+    gtk_column_view_column_set_visible(c, g_variant_get_boolean(value));
+    view_columns_persist(view);
+    column_actions_sync(lw, view);
+}
+
+/* ---------------------------------------------------------------------------
+ * view_columns_install() — the layout machinery for one view whose columns
+ * are all appended: register its "column-<cfg>-<key>" actions, give every
+ * column the same header menu (a check item per column), put the saved
+ * order and visibility back (falling back to "on-coldefault"; unknown keys
+ * are skipped, missing ones keep their built state, and at least one
+ * column is forced visible so a hand-edited ini can't blank the view),
+ * and from then on persist every header reorder.
+ *   lw     — the library window.
+ *   view   — the column view, "on-colcfg" and "on-coldefault" set.
+ *   labels — the menu label per column key, for a titleless column.
+ * ------------------------------------------------------------------------- */
+static void
+view_columns_install(OnLibrary *lw, GtkColumnView *view)
+{
+    GActionMap *map = G_ACTION_MAP(lw->window);
+    GListModel *cols = gtk_column_view_get_columns(view);
+    guint n = g_list_model_get_n_items(cols);
+
+    GMenu *menu = g_menu_new();      /* the shared header menu              */
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        gchar *name = column_action_name(view, col_key(c));
+        GSimpleAction *action = g_simple_action_new_stateful(
+            name, NULL, g_variant_new_boolean(TRUE));
+        g_signal_connect(action, "change-state",
+                         G_CALLBACK(on_column_change_state), lw);
+        g_action_map_add_action(map, G_ACTION(action));
+        g_object_unref(action);      /* the map holds it now                */
+        const gchar *label =         /* a titleless column (the checkbox
+                                        one) still needs a menu label       */
+            g_object_get_data(G_OBJECT(c), "on-collabel");
+        if (label == NULL)
+            label = gtk_column_view_column_get_title(c);
+        gchar *detailed = g_strconcat("win.", name, NULL);
+        g_menu_append(menu, label, detailed);
+        g_free(detailed);
+        g_free(name);
+        g_object_unref(c);
+    }
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        gtk_column_view_column_set_header_menu(c, G_MENU_MODEL(menu));
+        g_object_unref(c);
+    }
+    g_object_unref(menu);
+
+    /* The saved layout.                                                    */
+    const gchar *cfg_key = g_object_get_data(G_OBJECT(view), "on-colcfg");
+    gchar *cfg = on_app_config_get(cfg_key);
     if (cfg == NULL || *cfg == '\0') {
         g_free(cfg);
         cfg = g_strdup(g_object_get_data(G_OBJECT(view), "on-coldefault"));
     }
-
-    GtkTreeViewColumn *prev = NULL;  /* each entry moves after the last     */
+    guint at = 0;                    /* where the next listed column goes   */
     gchar **entries = g_strsplit(cfg, ",", -1);
     for (gsize i = 0; entries[i] != NULL; i++) {
         gchar **kv = g_strsplit(entries[i], ":", 2);
-        GtkTreeViewColumn *c =
+        GtkColumnViewColumn *c =
             kv[0] != NULL ? view_column_by_key(view, kv[0]) : NULL;
         if (c != NULL) {
-            gtk_tree_view_move_column_after(view, c, prev);
-            gtk_tree_view_column_set_visible(
+            gtk_column_view_insert_column(view, at++, c);
+            gtk_column_view_column_set_visible(
                 c, kv[1] == NULL || g_strcmp0(kv[1], "0") != 0);
-            prev = c;
         }
         g_strfreev(kv);
     }
     g_strfreev(entries);
     g_free(cfg);
 
-    GList *cols = gtk_tree_view_get_columns(view);
     gboolean any_visible = FALSE;    /* is at least one column shown?       */
-    for (GList *l = cols; l != NULL; l = l->next)
-        any_visible |= gtk_tree_view_column_get_visible(l->data);
-    if (!any_visible && cols != NULL)
-        gtk_tree_view_column_set_visible(cols->data, TRUE);
-    g_list_free(cols);
+    for (guint i = 0; i < n; i++) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, i);
+        any_visible |= gtk_column_view_column_get_visible(c);
+        g_object_unref(c);
+    }
+    if (!any_visible && n > 0) {
+        GtkColumnViewColumn *c = g_list_model_get_item(cols, 0);
+        gtk_column_view_column_set_visible(c, TRUE);
+        g_object_unref(c);
+    }
+    column_actions_sync(lw, view);
+
+    /* Connected only now, so applying the saved layout doesn't re-persist
+     * it; from here on every header drag writes the ini.                  */
+    g_signal_connect(cols, "items-changed", G_CALLBACK(on_columns_reordered),
+                     view);
 }
 
-/* on_view_columns_changed() — a header drag reordered the columns:
- * persist the new layout.  Fires per-column during teardown too, when
- * the library state may already be gone — bail out then.                    */
-static void
-on_view_columns_changed(GtkTreeView *view, gpointer user_data)
-{
-    (void)user_data;
-    if (gtk_widget_in_destruction(GTK_WIDGET(view)))
-        return;
-    view_columns_persist(view);
-}
-
-/* ---------------------------------------------------------------------------
- * list_autofit_apply() — put every column into (or out of) autofit mode.
+/* ===========================================================================
+ * cell factories — what one row of each view looks like.
  *
- * Autofit does NOT use GTK_TREE_VIEW_COLUMN_AUTOSIZE: tree-view columns
- * cache resized/requested widths that override it (they neither grow to
- * long content nor shrink back for short content).  Instead every column
- * goes FIXED, and refresh_notes() MEASURES the content with a
- * PangoLayout as it populates the model (see list_autofit_set) and
- * sets the exact widths — same technique as the sidebar width fit.
- *
- *   ON  — Path and Modified: no ellipsize, FIXED at their measured
- *         content width (grips off — the next refresh would reclaim
- *         them anyway).  Title takes the ellipsis + expand: it fills
- *         the remaining space and is the one column that truncates.
- *   OFF — back to the built modes: Title GROW_ONLY + expand, no
- *         ellipsize; Path FIXED at its current width, ellipsized;
- *         Modified GROW_ONLY; all user-resizable.
- * ------------------------------------------------------------------------- */
-static void
-list_autofit_apply(OnLibrary *lw)
-{
-    GList *cols = gtk_tree_view_get_columns(lw->notes_list);
-    for (GList *l = cols; l != NULL; l = l->next) {
-        GtkTreeViewColumn *c = l->data;  /* one column                      */
-        const gchar *key =               /* stable column identity          */
-            g_object_get_data(G_OBJECT(c), "on-colkey");
-        GtkCellRenderer *cell =          /* its text renderer               */
-            g_object_get_data(G_OBJECT(c), "on-cell");
-        gboolean title = g_strcmp0(key, "title") == 0;
-        gboolean path  = g_strcmp0(key, "path")  == 0;
+ * "setup" builds the widget once per recycled row and installs the row's
+ * controllers, stashing the GtkListItem on each ("on-item") so a handler
+ * can read whichever row the widget shows at the time; "bind" fills it
+ * from the item.  Nothing is unbound explicitly: every bind overwrites.
+ * =========================================================================== */
 
-        if (lw->list_autofit) {
-            g_object_set(cell, "ellipsize",
-                         title ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE,
-                         NULL);
-            gtk_tree_view_column_set_resizable(c, FALSE);
-            gtk_tree_view_column_set_sizing(
-                c, GTK_TREE_VIEW_COLUMN_FIXED);
-            if (title)                   /* floor; expand fills the rest    */
-                gtk_tree_view_column_set_fixed_width(c, 100);
-            gtk_tree_view_column_set_expand(c, title);
-        } else {
-            g_object_set(cell, "ellipsize",
-                         path ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE,
-                         NULL);
-            if (path) {
-                gint w = gtk_tree_view_column_get_width(c);
-                gtk_tree_view_column_set_sizing(
-                    c, GTK_TREE_VIEW_COLUMN_FIXED);
-                gtk_tree_view_column_set_fixed_width(c, w > 0 ? w : 180);
-            } else {
-                gtk_tree_view_column_set_sizing(
-                    c, GTK_TREE_VIEW_COLUMN_GROW_ONLY);
-            }
-            gtk_tree_view_column_set_expand(c, title);
-            gtk_tree_view_column_set_resizable(c, TRUE);
-        }
-        gtk_tree_view_column_queue_resize(c);
-    }
-    g_list_free(cols);
+/* note_cell_controllers() — what every cell of a note row gets: the drag
+ * source for note drops and the right-click menu.  Per CELL because a
+ * column view's row widget is not reachable from a factory; the effect is
+ * the same, a press anywhere on the row.                                  */
+static void
+note_cell_controllers(OnLibrary *lw, GtkWidget *widget, GtkListItem *item)
+{
+    GtkDragSource *drag = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drag), "on-item", item);
+    g_signal_connect(drag, "prepare", G_CALLBACK(on_note_drag_prepare), lw);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(drag));
+    row_click_gesture(widget, item, G_CALLBACK(on_note_pressed), lw);
 }
 
-/* Extra pixels beyond the raw text: the renderer's xpad (10 a side)
- * plus tree-view cell chrome; headers get room for the sort arrow.        */
-#define AUTOFIT_CELL_EXTRA   30
-#define AUTOFIT_HEADER_EXTRA 40
-
-/* ---------------------------------------------------------------------------
- * list_autofit_set() — apply a measured content width to one column
- * (bounded below by what its header label needs).  The measuring itself
- * rides refresh_notes()'s population loop — no second model walk.
- * ------------------------------------------------------------------------- */
-static void
-list_autofit_set(OnLibrary *lw, PangoLayout *lay, const gchar *key,
-                 gint content_w)
+/* cell_label_new() — a left-aligned cell label with the column's padding. */
+static GtkWidget *
+cell_label_new(gboolean ellipsize)
 {
-    GtkTreeViewColumn *c = list_column_by_key(lw, key);
-    if (c == NULL || !gtk_tree_view_column_get_visible(c))
-        return;
-    gint w = 0;                      /* header label width                  */
-    pango_layout_set_text(lay, gtk_tree_view_column_get_title(c), -1);
-    pango_layout_get_pixel_size(lay, &w, NULL);
-    gtk_tree_view_column_set_fixed_width(
-        c, MAX(content_w + AUTOFIT_CELL_EXTRA, w + AUTOFIT_HEADER_EXTRA));
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    if (ellipsize)
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_start(label, 10);
+    gtk_widget_set_margin_end(label, 10);
+    return label;
 }
 
-/* on_autofit_change_state() — "win.autofit" (stateful boolean, the header
- * menu's "Autofit Column Widths" check item) flipped: remember, persist
- * and apply.                                                                */
+/* --- notes list: Title ------------------------------------------------------*/
+
+/* on_title_setup() — a title label over a small preview label.             */
 static void
-on_autofit_change_state(GSimpleAction *action, GVariant *value,
-                        gpointer user_data)
+on_title_setup(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
 {
+    (void)f;
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_margin_start(box, 6);
+    gtk_widget_set_margin_end(box, 6);
+    GtkWidget *title = cell_label_new(TRUE);
+    gtk_widget_set_margin_start(title, 0);
+    gtk_widget_set_margin_end(title, 0);
+    GtkWidget *preview = cell_label_new(TRUE);
+    gtk_widget_set_margin_start(preview, 0);
+    gtk_widget_set_margin_end(preview, 0);
+    gtk_widget_add_css_class(preview, "notes-preview");
+    gtk_box_append(GTK_BOX(box), title);
+    gtk_box_append(GTK_BOX(box), preview);
+    gtk_list_item_set_child(item, box);
+    note_cell_controllers(user_data, box, item);
+}
+
+/* on_title_bind() — the density-dependent rendering:
+ *   Compact      — plain title, no preview line, minimal padding.
+ *   Comfortable  — bold title with a small dimmed body-text preview under
+ *                  it, generous padding.  The preview dims through a CSS
+ *                  alpha (library_install_css) rather than a fixed colour,
+ *                  so it stays readable on the selection highlight.        */
+static void
+on_title_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f;
     OnLibrary *lw = user_data;       /* owning library window               */
-    g_simple_action_set_state(action, value);
-    lw->list_autofit = g_variant_get_boolean(value);
-    on_app_config_set("list_autofit", lw->list_autofit ? "1" : "0");
-    list_autofit_apply(lw);
-    refresh_notes(lw);               /* measuring rides the populate loop   */
+    OnNoteRow *row = gtk_list_item_get_item(item);
+    GtkWidget *box     = gtk_list_item_get_child(item);
+    GtkWidget *title   = gtk_widget_get_first_child(box);
+    GtkWidget *preview = gtk_widget_get_last_child(box);
+    gboolean comfy = lw->app->comfortable_list;
+
+    gchar *esc = on_markup_escape_emoji(
+        row->title != NULL && *row->title != '\0' ? row->title
+                                                  : (comfy ? "Untitled" : ""),
+        lw->emoji_pad);
+    gchar *markup = (comfy && lw->app->bold_list_titles)
+        ? g_strdup_printf("<b>%s</b>", esc) : g_strdup(esc);
+    gtk_label_set_markup(GTK_LABEL(title), markup);
+    g_free(markup);
+    g_free(esc);
+
+    gboolean show_preview = comfy && row->preview != NULL &&
+                            *row->preview != '\0';
+    if (show_preview) {
+        gchar *pesc = on_markup_escape_emoji(row->preview, lw->emoji_pad);
+        gchar *pm = g_strdup_printf("<small>%s</small>", pesc);
+        gtk_label_set_markup(GTK_LABEL(preview), pm);
+        g_free(pm);
+        g_free(pesc);
+    }
+    gtk_widget_set_visible(preview, show_preview);
+    gtk_widget_set_margin_top(box, comfy ? 7 : 2);
+    gtk_widget_set_margin_bottom(box, comfy ? 7 : 2);
 }
 
-/* The "column-<key>" actions: one stateful boolean per column of the view
- * whose header was last right-clicked, named after the column's stable
- * key ("on-colkey").  Created on demand by column_menu_action().           */
-#define COLUMN_ACTION_PREFIX "column-"
+/* --- notes list: Path / Modified / Created ---------------------------------*/
 
-/* on_column_change_state() — a column's check item flipped: show/hide the
- * column of lw->column_menu_view carrying that key and persist.  Autofit
- * re-measuring applies to the notes list only (the Action Items list
- * doesn't autofit).                                                         */
+/* Which OnNoteRow string a plain text column shows (the factory's data). */
+enum { NF_PATH, NF_MODIFIED, NF_CREATED };
+
+/* on_note_text_setup() — a label; the row's controllers ride on it too.   */
 static void
-on_column_change_state(GSimpleAction *action, GVariant *value,
-                       gpointer user_data)
+on_note_text_setup(GtkListItemFactory *f, GtkListItem *item,
+                   gpointer user_data)
 {
+    (void)f;
+    OnLibrary *lw = g_object_get_data(G_OBJECT(f), "on-lw");
+    gint field = GPOINTER_TO_INT(user_data);
+    GtkWidget *label = cell_label_new(field == NF_PATH);
+    gtk_list_item_set_child(item, label);
+    note_cell_controllers(lw, label, item);
+}
+
+static void
+on_note_text_bind(GtkListItemFactory *f, GtkListItem *item,
+                  gpointer user_data)
+{
+    (void)f;
+    OnNoteRow *row = gtk_list_item_get_item(item);
+    const gchar *text = GPOINTER_TO_INT(user_data) == NF_PATH     ? row->path
+                      : GPOINTER_TO_INT(user_data) == NF_MODIFIED ? row->modified
+                                                                  : row->created;
+    gtk_label_set_text(GTK_LABEL(gtk_list_item_get_child(item)), text);
+}
+
+/* --- notes grid ---------------------------------------------------------------*/
+
+/* on_grid_setup() — the thumbnail card with the title under it.            */
+static void
+on_grid_setup(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f;
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_add_css_class(box, "notes-card");
+    GtkWidget *pic = gtk_picture_new();
+    gtk_picture_set_content_fit(GTK_PICTURE(pic), GTK_CONTENT_FIT_CONTAIN);
+    gtk_widget_set_size_request(pic, THUMB_SIZE, THUMB_SIZE);
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 1);
+    gtk_widget_set_size_request(label, THUMB_SIZE, -1);
+    gtk_box_append(GTK_BOX(box), pic);
+    gtk_box_append(GTK_BOX(box), label);
+    gtk_list_item_set_child(item, box);
+    note_cell_controllers(user_data, box, item);
+}
+
+static void
+on_grid_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f;
     OnLibrary *lw = user_data;       /* owning library window               */
-    const gchar *key =               /* the column key after the prefix     */
-        g_action_get_name(G_ACTION(action)) + strlen(COLUMN_ACTION_PREFIX);
-    GtkTreeView *view = lw->column_menu_view;
-    if (view == NULL)
-        return;
-    g_simple_action_set_state(action, value);
-
-    GList *cols = gtk_tree_view_get_columns(view);
-    for (GList *l = cols; l != NULL; l = l->next) {
-        if (g_strcmp0(g_object_get_data(G_OBJECT(l->data), "on-colkey"),
-                      key) == 0)
-            gtk_tree_view_column_set_visible(l->data,
-                                             g_variant_get_boolean(value));
-    }
-    g_list_free(cols);
-    view_columns_persist(view);
-    if (view == lw->notes_list && lw->list_autofit)
-        refresh_notes(lw);           /* a re-shown column needs its width   */
+    OnNoteRow *row = gtk_list_item_get_item(item);
+    GtkWidget *box   = gtk_list_item_get_child(item);
+    GtkWidget *pic   = gtk_widget_get_first_child(box);
+    GtkWidget *label = gtk_widget_get_last_child(box);
+    gtk_picture_set_paintable(GTK_PICTURE(pic), GDK_PAINTABLE(row->thumb));
+    gchar *esc = on_markup_escape_emoji(row->title, lw->emoji_pad);
+    gchar *markup = g_strdup_printf("<b>%s</b>", esc);
+    gtk_label_set_markup(GTK_LABEL(label), markup);
+    g_free(markup);
+    g_free(esc);
 }
 
-/* ---------------------------------------------------------------------------
- * column_menu_action() — the "column-<key>" action for one column, created
- * on the window the first time that column's menu is opened and brought up
- * to date every time: state = the column's visibility, enabled unless it
- * is the only visible column (so the view can't go empty).
- *   lw      — the library window.
- *   key     — the column's stable key.
- *   visible — whether the column is currently shown.
- *   last    — TRUE when it is the only visible one.
- * Returns the detailed action name for the menu item (g_free it).
- * ------------------------------------------------------------------------- */
-static gchar *
-column_menu_action(OnLibrary *lw, const gchar *key, gboolean visible,
-                   gboolean last)
-{
-    gchar *name = g_strconcat(COLUMN_ACTION_PREFIX, key, NULL);
-    GActionMap *map = G_ACTION_MAP(lw->window);
-    GSimpleAction *action =
-        G_SIMPLE_ACTION(g_action_map_lookup_action(map, name));
-    if (action == NULL) {
-        action = g_simple_action_new_stateful(
-            name, NULL, g_variant_new_boolean(visible));
-        g_signal_connect(action, "change-state",
-                         G_CALLBACK(on_column_change_state), lw);
-        g_action_map_add_action(map, G_ACTION(action));
-        g_object_unref(action);      /* the map holds it now                */
-    } else {
-        g_simple_action_set_state(action, g_variant_new_boolean(visible));
-    }
-    g_simple_action_set_enabled(action, !(visible && last));
+/* --- Action Items ---------------------------------------------------------------*/
 
-    gchar *detailed = g_strconcat("win.", name, NULL);
-    g_free(name);
-    return detailed;
-}
-
-/* ---------------------------------------------------------------------------
- * on_column_header_pressed() — right click on a list-view column header:
- * a menu of check items showing/hiding each column of the header's view
- * (the button carries its view as "on-view").  The only remaining
- * visible column's item is disabled so the view can't go empty; the
- * notes list's menu also offers the autofit toggle.  The press is claimed
- * so the header button does not also act on it.
- *   x, y — the press, in the header button's coordinates.
- * ------------------------------------------------------------------------- */
+/* on_action_done_setup() — the checkbox; its toggles reach
+ * on_action_toggled with the list item.                                   */
 static void
-on_column_header_pressed(GtkGestureClick *g, gint n_press, gdouble x,
-                         gdouble y, gpointer user_data)
-{
-    (void)n_press;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    GtkWidget *button =              /* the header button pressed           */
-        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
-    GtkTreeView *view =              /* the view this header belongs to     */
-        g_object_get_data(G_OBJECT(button), "on-view");
-    if (view == NULL)
-        return;
-    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
-    lw->column_menu_view = view;     /* what the column actions act on      */
-
-    GMenu *menu    = g_menu_new();
-    GMenu *section = g_menu_new();
-
-    GList *cols = gtk_tree_view_get_columns(view);
-    gint n_visible = 0;              /* how many columns are shown          */
-    for (GList *l = cols; l != NULL; l = l->next)
-        if (gtk_tree_view_column_get_visible(l->data))
-            n_visible++;
-
-    for (GList *l = cols; l != NULL; l = l->next) {
-        GtkTreeViewColumn *c = l->data;  /* one column                      */
-        gboolean visible = gtk_tree_view_column_get_visible(c);
-        const gchar *label =         /* a titleless column (the checkbox
-                                        one) still needs a menu label       */
-            g_object_get_data(G_OBJECT(c), "on-collabel");
-        if (label == NULL)
-            label = gtk_tree_view_column_get_title(c);
-        gchar *detailed = column_menu_action(
-            lw, g_object_get_data(G_OBJECT(c), "on-colkey"),
-            visible, n_visible == 1);
-        g_menu_append(section, label, detailed);
-        g_free(detailed);
-    }
-    g_list_free(cols);
-
-    if (view == lw->notes_list) {
-        menu_section_end(menu, &section);
-        g_menu_append(section, "Autofit Column Widths", "win.autofit");
-    }
-    menu_section_end(menu, &section);
-    g_object_unref(section);
-
-    on_app_menu_popup(button, G_MENU_MODEL(menu), x, y);
-}
-
-/* ---------------------------------------------------------------------------
- * column_header_menu_add() — wire one column's header for the layout
- * machinery: reorderable by drag, and its header button right-clicks into
- * on_column_header_pressed for `view`'s show/hide menu.  Shared by the
- * notes list and the Action Items list.
- *   lw   — the library window.
- *   col  — the column.
- *   view — the view it belongs to.
- * ------------------------------------------------------------------------- */
-static void
-column_header_menu_add(OnLibrary *lw, GtkTreeViewColumn *col,
-                       GtkTreeView *view)
-{
-    gtk_tree_view_column_set_reorderable(col, TRUE);
-    GtkWidget *btn = gtk_tree_view_column_get_button(col);
-    g_object_set_data(G_OBJECT(btn), "on-view", view);
-    capture_click_gesture(btn, GDK_BUTTON_SECONDARY,
-                          G_CALLBACK(on_column_header_pressed), lw);
-}
-
-/* ---------------------------------------------------------------------------
- * sort_by_path() — case-insensitive alphabetical sort for the Path
- * header; equal paths fall back to the title so folders group cleanly.
- * ------------------------------------------------------------------------- */
-static gint
-sort_by_path(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-             gpointer user_data)
-{
-    (void)user_data;
-    gchar *pa, *pb;                  /* the two paths                       */
-    gtk_tree_model_get(model, a, NL_PATH, &pa, -1);
-    gtk_tree_model_get(model, b, NL_PATH, &pb, -1);
-    gint result = utf8_casecmp(pa, pb);
-    g_free(pa); g_free(pb);
-    return result != 0 ? result : sort_by_title(model, a, b, NULL);
-}
-
-/* ---------------------------------------------------------------------------
- * sort_by_time() — sort for the Modified and Created headers; the model
- * column holding the raw timestamp (NL_UPDATED or NL_CREATED_RAW) rides
- * in as GINT_TO_POINTER user_data.  Deliberately inverted so the FIRST
- * click on either header shows the newest notes on top.
- * ------------------------------------------------------------------------- */
-static gint
-sort_by_time(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-             gpointer user_data)
-{
-    gint col = GPOINTER_TO_INT(user_data);  /* the timestamp column         */
-    gint64 ta, tb;                   /* the two timestamps                  */
-    gtk_tree_model_get(model, a, col, &ta, -1);
-    gtk_tree_model_get(model, b, col, &tb, -1);
-    return (tb > ta) - (tb < ta);
-}
-
-/* sort_actions_by_text() — alphabetical sort for the Action header.         */
-static gint
-sort_actions_by_text(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
+on_action_done_setup(GtkListItemFactory *f, GtkListItem *item,
                      gpointer user_data)
 {
-    (void)user_data;
-    gchar *ta, *tb;                  /* the two item texts                  */
-    gtk_tree_model_get(model, a, AL_TEXT, &ta, -1);
-    gtk_tree_model_get(model, b, AL_TEXT, &tb, -1);
-    gint result = utf8_casecmp(ta, tb);
-    g_free(ta); g_free(tb);
-    return result;
+    (void)f;
+    GtkWidget *check = gtk_check_button_new();
+    gtk_widget_set_halign(check, GTK_ALIGN_CENTER);
+    g_object_set_data(G_OBJECT(check), "on-item", item);
+    g_signal_connect(check, "toggled", G_CALLBACK(on_action_toggled),
+                     user_data);
+    gtk_list_item_set_child(item, check);
 }
 
-/* ---------------------------------------------------------------------------
- * action_due_color_func() — cell data function tinting the Due Date cell
- * by urgency: already passed = red, today = yellow, still ahead = green
- * (each darkened enough to read on the white/light-blue row stripes).
- * Runs at draw time, so the colors roll over at midnight without a
- * refresh.  Rows without a due date reset to the theme color — the
- * renderer is shared, so a stale "foreground" would leak across rows.
- * ------------------------------------------------------------------------- */
 static void
-action_due_color_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                      GtkTreeModel *model, GtkTreeIter *iter,
-                      gpointer user_data)
+on_action_done_bind(GtkListItemFactory *f, GtkListItem *item,
+                    gpointer user_data)
 {
-    (void)col; (void)user_data;
-    gint64 due;                      /* the row's due timestamp             */
-    gtk_tree_model_get(model, iter, AL_DUE_RAW, &due, -1);
-    if (due == 0) {
-        g_object_set(cell, "foreground-set", FALSE, NULL);
-        return;
-    }
+    (void)f; (void)user_data;
+    OnActionRow *row = gtk_list_item_get_item(item);
+    g_object_set_data(G_OBJECT(item), "on-binding", GINT_TO_POINTER(1));
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(gtk_list_item_get_child(item)), row->done);
+    g_object_set_data(G_OBJECT(item), "on-binding", NULL);
+}
 
-    /* Compare calendar DAYS in local time (the stored value is already
-     * local midnight, but day-level compare keeps this DST-proof).         */
+/* on_action_text_setup() — the item text.                                  */
+static void
+on_action_text_setup(GtkListItemFactory *f, GtkListItem *item,
+                     gpointer user_data)
+{
+    (void)f; (void)user_data;
+    gtk_list_item_set_child(item, cell_label_new(TRUE));
+}
+
+/* strike_attrs() — a strikethrough attribute list, or NULL for none.       */
+static PangoAttrList *
+strike_attrs(gboolean done)
+{
+    if (!done)
+        return NULL;
+    PangoAttrList *al = pango_attr_list_new();
+    pango_attr_list_insert(al, pango_attr_strikethrough_new(TRUE));
+    return al;
+}
+
+static void
+on_action_text_bind(GtkListItemFactory *f, GtkListItem *item,
+                    gpointer user_data)
+{
+    (void)f;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    OnActionRow *row = gtk_list_item_get_item(item);
+    GtkLabel *label = GTK_LABEL(gtk_list_item_get_child(item));
+    gchar *markup = on_markup_escape_emoji(row->text, lw->emoji_pad);
+    gtk_label_set_markup(label, markup);
+    g_free(markup);
+    PangoAttrList *al = strike_attrs(row->done);
+    gtk_label_set_attributes(label, al);
+    if (al != NULL)
+        pango_attr_list_unref(al);
+}
+
+/* The three urgency classes of a Due Date cell (library_install_css).     */
+static const gchar *const DUE_CLASS[] = {
+    "due-overdue", "due-today", "due-ahead",
+};
+
+/* on_action_due_setup() — the due date; a double-click opens the calendar. */
+static void
+on_action_due_setup(GtkListItemFactory *f, GtkListItem *item,
+                    gpointer user_data)
+{
+    (void)f;
+    GtkWidget *label = cell_label_new(FALSE);
+    g_object_set_data(G_OBJECT(label), "on-item", item);
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                  GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_due_cell_pressed),
+                     user_data);
+    gtk_widget_add_controller(label, GTK_EVENT_CONTROLLER(click));
+    gtk_list_item_set_child(item, label);
+}
+
+/* on_action_due_bind() — the text, struck when done, tinted by urgency:
+ * already passed = red, today = yellow, still ahead = green.  Calendar
+ * DAYS are compared in local time (the stored value is already local
+ * midnight, but day-level compare keeps this DST-proof).                  */
+static void
+on_action_due_bind(GtkListItemFactory *f, GtkListItem *item,
+                   gpointer user_data)
+{
+    (void)f; (void)user_data;
+    OnActionRow *row = gtk_list_item_get_item(item);
+    GtkWidget *label = gtk_list_item_get_child(item);
+    gtk_label_set_text(GTK_LABEL(label), row->due != NULL ? row->due : "");
+    PangoAttrList *al = strike_attrs(row->done);
+    gtk_label_set_attributes(GTK_LABEL(label), al);
+    if (al != NULL)
+        pango_attr_list_unref(al);
+
+    for (gsize i = 0; i < G_N_ELEMENTS(DUE_CLASS); i++)
+        gtk_widget_remove_css_class(label, DUE_CLASS[i]);
+    if (row->due_raw == 0)
+        return;
     GDateTime *now = g_date_time_new_now_local();
-    GDateTime *dt  = g_date_time_new_from_unix_local(due);
+    GDateTime *dt  = g_date_time_new_from_unix_local(row->due_raw);
     gint today = g_date_time_get_year(now) * 10000 +
                  g_date_time_get_month(now) * 100 +
                  g_date_time_get_day_of_month(now);
@@ -5043,150 +4787,83 @@ action_due_color_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  g_date_time_get_day_of_month(dt);
     g_date_time_unref(now);
     g_date_time_unref(dt);
-
-    const gchar *color = day < today   ? "#c01c28"   /* overdue: red       */
-                       : day == today  ? "#d19a00"   /* today: gold        */
-                                       : "#26a269";  /* ahead: green       */
-    g_object_set(cell, "foreground", color, NULL);
+    gtk_widget_add_css_class(label, DUE_CLASS[day < today ? 0
+                                              : day == today ? 1 : 2]);
 }
 
-/* sort_actions_by_due() — Due Date header: the first click shows the
- * soonest deadline on top; items without a due date sort after every
- * dated one.                                                                */
-static gint
-sort_actions_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-                    gpointer user_data)
-{
-    (void)user_data;
-    gint64 da, db;                   /* the two due timestamps              */
-    gtk_tree_model_get(model, a, AL_DUE_RAW, &da, -1);
-    gtk_tree_model_get(model, b, AL_DUE_RAW, &db, -1);
-    if (da == 0) da = G_MAXINT64;    /* undated: always last                */
-    if (db == 0) db = G_MAXINT64;
-    return (da > db) - (da < db);
-}
+/* --- sidebar ----------------------------------------------------------------------*/
 
-/* ---------------------------------------------------------------------------
- * notes_title_cell_func() — cell data function for the Title column.
- * Handles the alternating row tint AND the density-dependent rendering:
- *   Compact      — plain text title, minimal ypad.
- *   Comfortable  — bold Pango markup title with a small dimmed body-text
- *                  preview on the second line, generous ypad.
- * Alpha-based dimming for the preview keeps it readable on both the
- * selection highlight and the plain row background (fixed grey fails on
- * the blue selection — see hacienda task_desc_markup for the same rule).
- * ------------------------------------------------------------------------- */
+/* on_sidebar_setup() — a tree expander (indent + arrow) around the name
+ * label, with the row's drag source, drop target and right-click menu.   */
 static void
-notes_title_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                      GtkTreeModel *model, GtkTreeIter *iter,
-                      gpointer user_data)
+on_sidebar_setup(GtkListItemFactory *f, GtkListItem *item,
+                 gpointer user_data)
 {
-    (void)col;
-    OnLibrary *lw = user_data;         /* owning library window               */
-
-    /* Alternating row tint — same as notes_row_bg_func.                    */
-    GtkTreePath *path = gtk_tree_model_get_path(model, iter);
-    gboolean even = (gtk_tree_path_get_indices(path)[0] % 2) == 0;
-    gtk_tree_path_free(path);
-    g_object_set(cell, "cell-background", even ? NULL : ROW_TINT, NULL);
-
-    gchar *title   = NULL;
-    gchar *preview = NULL;
-    gtk_tree_model_get(model, iter,
-                       NL_TITLE,   &title,
-                       NL_PREVIEW, &preview,
-                       -1);
-
-    /* Both lines go through on_markup_escape_emoji so a color emoji gets
-     * the same padding here as in the editor (ON_EMOJI_GAP).             */
-    if (lw->app->comfortable_list) {
-        gchar *esc = on_markup_escape_emoji(
-            title != NULL && *title != '\0' ? title : "Untitled",
-            lw->emoji_pad);
-        gchar *markup;
-        gboolean bold = lw->app->bold_list_titles;
-        if (preview != NULL && *preview != '\0') {
-            gchar *esc_prev = on_markup_escape_emoji(preview, lw->emoji_pad);
-            markup = g_strdup_printf(
-                bold ? "<b>%s</b>\n<small><span alpha=\"65%%\">%s</span></small>"
-                     :    "%s\n<small><span alpha=\"65%%\">%s</span></small>",
-                esc, esc_prev);
-            g_free(esc_prev);
-        } else {
-            markup = g_strdup_printf(bold ? "<b>%s</b>" : "%s", esc);
-        }
-        g_object_set(cell, "markup", markup, "ypad", 7, NULL);
-        g_free(markup);
-        g_free(esc);
-    } else {
-        /* Always drive via "markup" so the Pango attribute list (set when
-         * comfortable mode was last active) gets replaced, not left behind
-         * to render the plain title in bold.                                */
-        gchar *esc = on_markup_escape_emoji(title, lw->emoji_pad);
-        g_object_set(cell, "markup", esc, "ypad", 2, NULL);
-        g_free(esc);
-    }
-    g_free(title);
-    g_free(preview);
-}
-
-/* ---------------------------------------------------------------------------
- * emoji_text_cell_func() — cell data function rendering a plain-text model
- * column as markup with the emoji padding applied (on_markup_escape_emoji),
- * so the grid titles and the Action Items text pad emoji the way the
- * editor and the notes list do.  user_data is the OnLibrary; the model
- * column rides on the renderer as "on-column" (set by emoji_text_cell_bind).
- * A GtkCellLayoutDataFunc, so it installs on a GtkTreeViewColumn (which is
- * a GtkCellLayout) and on the icon view alike, with no cast.
- * ------------------------------------------------------------------------- */
-static void
-emoji_text_cell_func(GtkCellLayout *layout, GtkCellRenderer *cell,
-                     GtkTreeModel *model, GtkTreeIter *iter,
-                     gpointer user_data)
-{
-    (void)layout;
+    (void)f;
     OnLibrary *lw = user_data;       /* owning library window               */
-    gint column = GPOINTER_TO_INT(   /* the model column to render          */
-        g_object_get_data(G_OBJECT(cell), "on-column"));
-    gchar *text = NULL;              /* the column's plain text             */
-    gtk_tree_model_get(model, iter, column, &text, -1);
-    gchar *markup = on_markup_escape_emoji(text, lw->emoji_pad);
-    g_object_set(cell, "markup", markup, NULL);
+    GtkWidget *expander = gtk_tree_expander_new();
+    gtk_tree_expander_set_indent_for_icon(GTK_TREE_EXPANDER(expander), FALSE);
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    /* Ellipsizing names keeps the pane's MINIMUM width small: without it
+     * the widest row dictates the minimum and the divider can't be
+     * dragged past it.                                                     */
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_tree_expander_set_child(GTK_TREE_EXPANDER(expander), label);
+    gtk_list_item_set_child(item, expander);
+
+    GtkDragSource *drag = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drag), "on-item", item);
+    g_signal_connect(drag, "prepare", G_CALLBACK(on_sidebar_drag_prepare),
+                     lw);
+    gtk_widget_add_controller(expander, GTK_EVENT_CONTROLLER(drag));
+
+    GtkDropTarget *drop = gtk_drop_target_new(ON_TYPE_DRAG_ROWS,
+                                              GDK_ACTION_MOVE);
+    /* Preload: the content is read when the drag enters, so every motion
+     * can validate against what is actually being dragged (a local drag
+     * loads synchronously — see on_sidebar_drop_motion).                  */
+    gtk_drop_target_set_preload(drop, TRUE);
+    g_object_set_data(G_OBJECT(drop), "on-item", item);
+    g_signal_connect(drop, "enter",  G_CALLBACK(on_sidebar_drop_motion), lw);
+    g_signal_connect(drop, "motion", G_CALLBACK(on_sidebar_drop_motion), lw);
+    g_signal_connect(drop, "leave",  G_CALLBACK(on_sidebar_drop_leave),  lw);
+    g_signal_connect(drop, "drop",   G_CALLBACK(on_sidebar_drop),        lw);
+    gtk_widget_add_controller(expander, GTK_EVENT_CONTROLLER(drop));
+
+    row_click_gesture(expander, item, G_CALLBACK(on_sidebar_pressed), lw);
+}
+
+/* on_sidebar_bind() — the name (bold for section rows), and the tree row
+ * for the expander.                                                        */
+static void
+on_sidebar_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
+{
+    (void)f;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    GtkTreeListRow *tr = NULL;
+    OnSbRow *r = sb_item_row(item, &tr);
+    GtkWidget *expander = gtk_list_item_get_child(item);
+    gtk_tree_expander_set_list_row(GTK_TREE_EXPANDER(expander), tr);
+    GtkWidget *label = gtk_tree_expander_get_child(GTK_TREE_EXPANDER(expander));
+    gchar *esc = on_markup_escape_emoji(r->name, lw->emoji_pad);
+    gchar *markup = sb_kind_is_section(r->kind)
+        ? g_strdup_printf("<b>%s</b>", esc) : g_strdup(esc);
+    gtk_label_set_markup(GTK_LABEL(label), markup);
     g_free(markup);
-    g_free(text);
+    g_free(esc);
 }
 
-/* ---------------------------------------------------------------------------
- * emoji_text_cell_bind() — render `column` through `cell` in `layout` with
- * emoji_text_cell_func (the one place that pairs the func with its
- * "on-column" data).
- * ------------------------------------------------------------------------- */
-static void
-emoji_text_cell_bind(OnLibrary *lw, GtkCellLayout *layout,
-                     GtkCellRenderer *cell, gint column)
+/* factory_new() — a signal factory with setup and bind.                    */
+static GtkListItemFactory *
+factory_new(GCallback setup, GCallback bind, gpointer user_data)
 {
-    g_object_set_data(G_OBJECT(cell), "on-column", GINT_TO_POINTER(column));
-    gtk_cell_layout_set_cell_data_func(layout, cell, emoji_text_cell_func,
-                                       lw, NULL);
-}
-
-/* ---------------------------------------------------------------------------
- * notes_row_bg_func() — cell data function giving list rows alternating
- * white / light-blue backgrounds regardless of theme.
- * ------------------------------------------------------------------------- */
-static void
-notes_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                  GtkTreeModel *model, GtkTreeIter *iter,
-                  gpointer user_data)
-{
-    (void)col; (void)user_data;
-    GtkTreePath *path = gtk_tree_model_get_path(model, iter);
-    gboolean even =                  /* row parity drives the tint          */
-        (gtk_tree_path_get_indices(path)[0] % 2) == 0;
-    gtk_tree_path_free(path);
-    g_object_set(cell,
-                 "cell-background", even ? NULL : ROW_TINT,
-                 NULL);
+    GtkListItemFactory *f = gtk_signal_list_item_factory_new();
+    g_signal_connect(f, "setup", setup, user_data);
+    g_signal_connect(f, "bind",  bind,  user_data);
+    return f;
 }
 
 /* ===========================================================================
@@ -5314,9 +4991,9 @@ commands_install(GActionMap *map, const LibCommand *table, gsize n,
 /* ---------------------------------------------------------------------------
  * library_install_actions() — every action of the library: the "app."
  * commands on the application (once — a second library window in one
- * process reuses them), the "win." commands, the two parameterised note
- * actions and the stateful autofit toggle on the window.  The per-column
- * actions are added lazily by column_menu_action().
+ * process reuses them), the "win." commands and the two parameterised
+ * note actions on the window.  The per-column actions are added by
+ * view_columns_install() when each column view is built.
  * ------------------------------------------------------------------------- */
 static void
 library_install_actions(OnLibrary *lw)
@@ -5338,13 +5015,6 @@ library_install_actions(OnLibrary *lw)
 
     action = g_simple_action_new("note-pin", G_VARIANT_TYPE_BOOLEAN);
     g_signal_connect(action, "activate", G_CALLBACK(on_note_pin), lw);
-    g_action_map_add_action(win_map, G_ACTION(action));
-    g_object_unref(action);
-
-    action = g_simple_action_new_stateful(
-        "autofit", NULL, g_variant_new_boolean(lw->list_autofit));
-    g_signal_connect(action, "change-state",
-                     G_CALLBACK(on_autofit_change_state), lw);
     g_action_map_add_action(win_map, G_ACTION(action));
     g_object_unref(action);
 }
@@ -5548,24 +5218,6 @@ build_action_bar(OnLibrary *lw)
     return toolbar;
 }
 
-/* ---------------------------------------------------------------------------
- * sidebar_name_cell_func() — bold the sidebar's section rows (the Notes
- * root, the Tags header, and Pinned Notes); folders and tags render at
- * normal weight.  Runs per row draw, keyed on SB_KIND.
- * ------------------------------------------------------------------------- */
-static void
-sidebar_name_cell_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                       GtkTreeModel *model, GtkTreeIter *iter,
-                       gpointer user_data)
-{
-    (void)col; (void)user_data;
-    gint kind;                       /* SB_KIND_* of this row               */
-    gtk_tree_model_get(model, iter, SB_KIND, &kind, -1);
-    g_object_set(cell, "weight",
-                 sb_kind_is_section(kind) ? PANGO_WEIGHT_BOLD
-                                          : PANGO_WEIGHT_NORMAL, NULL);
-}
-
 /* library_free() — destructor for the OnLibrary attached to the window.     */
 static void
 library_free(gpointer data)
@@ -5586,8 +5238,15 @@ library_free(gpointer data)
     g_hash_table_destroy(lw->thumb_cache);
     if (lw->folder_path_cache != NULL)
         g_hash_table_destroy(lw->folder_path_cache);
-    if (lw->notes_press_path != NULL)
-        gtk_tree_path_free(lw->notes_press_path);
+    /* Our references on the models (the views hold their own; the
+     * selection models handed to gtk_*_view_new were consumed by them). */
+    g_clear_object(&lw->sb_store);
+    g_clear_object(&lw->sb_tree);
+    g_clear_object(&lw->notes_store);
+    g_clear_object(&lw->notes_sorted);
+    g_clear_object(&lw->notes_sel);
+    g_clear_object(&lw->actions_store);
+    g_clear_object(&lw->actions_sorted);
     /* GTK keeps its own reference to the menubar model while it renders
      * it; these are just ours.                                            */
     g_clear_object(&lw->menubar_model);
@@ -5596,8 +5255,7 @@ library_free(gpointer data)
 }
 
 /* Narrowest the sidebar is ever fitted to: a library of short folder names
- * must not leave a sliver of a pane.  Shared by the one-shot startup fit
- * and by sidebar_fit_apply().                                              */
+ * must not leave a sliver of a pane.                                       */
 #define SB_FIT_MIN_WIDTH 160
 
 /* The most of the paned the sidebar may take when fitting itself to its
@@ -5605,149 +5263,48 @@ library_free(gpointer data)
  * pane still has to be usable.                                             */
 #define SB_FIT_MAX_PERCENT 50
 
-/* sb_fit_ctx — working state passed through gtk_tree_model_foreach() for
- * the sidebar width measurement walk.                                       */
-typedef struct {
-    PangoLayout *lay;   /* reused layout (same font as the sidebar)          */
-    gint         max_w; /* running maximum row pixel width                   */
-    GtkTreeView *view;  /* set to measure only rows the user can SEE (every
-                         * ancestor expanded); NULL measures the whole model */
-} SbFitCtx;
-
-/* sb_row_onscreen() — TRUE when every ANCESTOR of `path` is expanded, i.e.
- * the row is actually drawn.  gtk_tree_view_row_expanded() answers only for
- * the node itself, and GTK remembers the expanded flag of a row nested
- * inside a collapsed parent, so the whole chain has to be walked.
- *   view — the sidebar tree view.
- *   path — the row to test.
- * Returns TRUE if the row is on screen (top-level rows always are).         */
-static gboolean
-sb_row_onscreen(GtkTreeView *view, GtkTreePath *path)
-{
-    GtkTreePath *up  = gtk_tree_path_copy(path);
-    gboolean     vis = TRUE;
-    while (gtk_tree_path_get_depth(up) > 1) {
-        gtk_tree_path_up(up);
-        if (!gtk_tree_view_row_expanded(view, up)) {
-            vis = FALSE;
-            break;
-        }
-    }
-    gtk_tree_path_free(up);
-    return vis;
-}
-
-/* sb_fit_measure() — foreach callback: measure one sidebar row and update
- * the running maximum in ctx->max_w.  Rows hidden inside a collapsed
- * parent are skipped when ctx->view is set.
- *   model / path / iter — standard foreach signature.
- *   data                — SbFitCtx *.
- * Returns FALSE to continue the walk.                                       */
-static gboolean
-sb_fit_measure(GtkTreeModel *model, GtkTreePath *path,
-               GtkTreeIter *iter, gpointer data)
-{
-    SbFitCtx *ctx  = data;
-    gchar    *name = NULL;
-    gint      kind;
-
-    if (ctx->view != NULL && !sb_row_onscreen(ctx->view, path))
-        return FALSE;
-
-    gtk_tree_model_get(model, iter, SB_NAME, &name, SB_KIND, &kind, -1);
-    if (name && *name) {
-        PangoAttrList *al = pango_attr_list_new();
-        if (sb_kind_is_section(kind))
-            pango_attr_list_insert(al,
-                pango_attr_weight_new(PANGO_WEIGHT_BOLD));
-        pango_layout_set_attributes(ctx->lay, al);
-        pango_attr_list_unref(al);
-        pango_layout_set_text(ctx->lay, name, -1);
-
-        gint tw, th;
-        pango_layout_get_pixel_size(ctx->lay, &tw, &th);
-
-        /* 22 px per depth level covers the expander column width +
-         * level-indentation; 10 px base for cell left/right padding.
-         * Measured on GTK3; unverified against GTK4's Default theme.       */
-        gint depth = gtk_tree_path_get_depth(path);
-        gint row_w = tw + depth * 22 + 10;
-        if (row_w > ctx->max_w)
-            ctx->max_w = row_w;
-    }
-    g_free(name);
-    return FALSE;
-}
-
-/* on_sidebar_fit_to_content() — idle callback: set the paned divider to the
- * sidebar tree view's content width, measured with Pango so that ellipsizing
- * on the cell renderer doesn't cause get_preferred_width() to return a tiny
- * value.  Runs once after the window is realized and the model is populated. */
-static gboolean
-on_sidebar_fit_to_content(gpointer user_data)
-{
-    OnLibrary *lw = user_data;
-    SbFitCtx ctx;
-    ctx.lay   = gtk_widget_create_pango_layout(GTK_WIDGET(lw->sidebar), NULL);
-    ctx.max_w = SB_FIT_MIN_WIDTH;   /* never collapse to an unusable width */
-    ctx.view  = NULL;  /* first show: size to the whole tree, collapsed or not */
-    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
-                           sb_fit_measure, &ctx);
-    g_object_unref(ctx.lay);
-    gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), ctx.max_w);
-    return G_SOURCE_REMOVE;
-}
-
 /* ---------------------------------------------------------------------------
  * sidebar_fit_apply() — size the sidebar divider so the VISIBLE rows fit
- * exactly, when the "fit to content" setting is on.
+ * exactly.  The measurement is the list view's own natural width: a list
+ * view realizes only the rows on screen, and each row's natural width is
+ * its full text (the label ellipsizes only under its natural size), so
+ * GTK's measure IS "the widest row the user can see" — the tree view
+ * needed a Pango walk of the model for the same number.  The scrolled
+ * window's vertical scrollbar, which comes and goes as folders open and
+ * close, is added when it shows.  Nothing here reads the CURRENT
+ * allocation, so the arithmetic is the same before and after the first
+ * layout — it only waits for the list to be mapped, since unrealized
+ * rows measure as nothing.
  *
  * Symmetric: expanding a folder widens the pane, collapsing one gives the
  * width back.  Turning the setting ON therefore hands the divider over to
  * this function, and a width the user dragged is not preserved across the
- * next expand or collapse — that is the deal the setting makes, and it is
- * why it ships off.
- *
- *   lw — library window state.
+ * next expand or collapse — that is the deal the setting makes.  The
+ * one-shot startup fit (`force`) runs whatever the setting says.
  * ------------------------------------------------------------------------- */
 static void
-sidebar_fit_apply(OnLibrary *lw)
+sidebar_fit_apply(OnLibrary *lw, gboolean force)
 {
-    if (!lw->app->sidebar_fit_content)
+    if (!force && !lw->app->sidebar_fit_content)
         return;
-
-    SbFitCtx ctx;
-    ctx.lay   = gtk_widget_create_pango_layout(GTK_WIDGET(lw->sidebar), NULL);
-    ctx.max_w = SB_FIT_MIN_WIDTH;    /* the floor doubles as the start      */
-    ctx.view  = lw->sidebar;         /* on-screen rows only                 */
-    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store),
-                           sb_fit_measure, &ctx);
-    g_object_unref(ctx.lay);
-
-    gint avail = gtk_widget_get_width(GTK_WIDGET(lw->sidebar));
-    if (avail <= 1)
-        return;                      /* not realized yet                    */
-
-    /* The DIFFERENCE is applied to the current divider position rather than
-     * the measured width being used as the position: whatever sits between
-     * the pane edge and the tree view — the scrolled window's vertical
-     * scrollbar, which comes and goes as folders are expanded and collapsed
-     * — is then carried along without being measured.  Correct in both
-     * directions, and it reads the scrollbar as it IS: this runs from a
-     * default-priority idle, which GTK services after its own resize
-     * (HIGH_IDLE+10) has re-laid-out the tree.                             */
-    gint pos  = gtk_paned_get_position(GTK_PANED(lw->sidebar_paned));
-    gint want = pos + (ctx.max_w - avail);
-
-    gint full = gtk_widget_get_width(lw->sidebar_paned);
-    if (full > 0) {
-        gint cap = full * SB_FIT_MAX_PERCENT / 100;
-        if (want > cap)
-            want = cap;
+    if (!gtk_widget_get_mapped(GTK_WIDGET(lw->sidebar)))
+        return;
+    gint nat_w;                      /* the list view's natural width       */
+    gtk_widget_measure(GTK_WIDGET(lw->sidebar), GTK_ORIENTATION_HORIZONTAL,
+                       -1, NULL, &nat_w, NULL, NULL);
+    gint want = MAX(nat_w, SB_FIT_MIN_WIDTH);
+    GtkWidget *bar = gtk_scrolled_window_get_vscrollbar(
+        GTK_SCROLLED_WINDOW(gtk_widget_get_parent(GTK_WIDGET(lw->sidebar))));
+    if (gtk_widget_get_visible(bar)) {
+        gint bar_w;
+        gtk_widget_measure(bar, GTK_ORIENTATION_HORIZONTAL, -1, NULL,
+                           &bar_w, NULL, NULL);
+        want += bar_w;
     }
-    if (want < SB_FIT_MIN_WIDTH)
-        want = SB_FIT_MIN_WIDTH;
-    if (want != pos)
+    gint full = gtk_widget_get_width(lw->sidebar_paned);
+    if (full > 0)
+        want = MIN(want, full * SB_FIT_MAX_PERCENT / 100);
+    if (want != gtk_paned_get_position(GTK_PANED(lw->sidebar_paned)))
         gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), want);
 }
 
@@ -5757,14 +5314,14 @@ sidebar_fit_idle(gpointer user_data)
 {
     OnLibrary *lw = user_data;
     lw->sb_fit_idle = 0;
-    sidebar_fit_apply(lw);
+    sidebar_fit_apply(lw, FALSE);
     return G_SOURCE_REMOVE;
 }
 
-/* sidebar_fit_queue() — run sidebar_fit_apply() once the expand or collapse
- * has been laid out.  Deferred because the signals fire before the tree view
- * has re-measured, and coalesced because a model rebuild's expansion-restore
- * walk emits row-expanded once per restored row.
+/* sidebar_fit_queue() — run sidebar_fit_apply() once the expand, collapse
+ * or rebuild has been laid out.  Deferred because the model changes before
+ * the list view has re-measured, and coalesced because a rebuild's
+ * expansion restore changes the model once per restored row.
  *   lw — library window state.                                             */
 static void
 sidebar_fit_queue(OnLibrary *lw)
@@ -5774,18 +5331,34 @@ sidebar_fit_queue(OnLibrary *lw)
     lw->sb_fit_idle = g_idle_add(sidebar_fit_idle, lw);
 }
 
-/* on_sidebar_row_toggled() — "row-expanded" and "row-collapsed" handler:
- * between them, THE trigger for fitting the sidebar to its content.  The
- * expanded half also covers a model rebuild, whose expansion-restore walk
- * expands rows through the same signal.                                    */
+/* on_sidebar_rows_changed() — the flattened sidebar model changed (a row
+ * expanded or collapsed, or a rebuild): THE trigger for fitting the
+ * sidebar to its content.                                                  */
 static void
-on_sidebar_row_toggled(GtkTreeView *view, GtkTreeIter *iter,
-                       GtkTreePath *path, gpointer user_data)
+on_sidebar_rows_changed(GListModel *model, guint position, guint removed,
+                        guint added, gpointer user_data)
 {
-    (void)view;
-    (void)iter;
-    (void)path;
+    (void)model; (void)position; (void)removed; (void)added;
     sidebar_fit_queue(user_data);
+}
+
+/* on_sidebar_first_fit() — idle: the one-shot startup fit, once the list
+ * has had its first layout (queued from its "map").                       */
+static gboolean
+on_sidebar_first_fit(gpointer user_data)
+{
+    sidebar_fit_apply(user_data, TRUE);
+    return G_SOURCE_REMOVE;
+}
+
+/* on_sidebar_mapped() — the list is on screen: fit once its rows have
+ * been laid out, which the next idle is after (the frame clock's layout
+ * runs at redraw priority, above a default idle).                          */
+static void
+on_sidebar_mapped(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    g_idle_add(on_sidebar_first_fit, user_data);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5802,111 +5375,75 @@ on_library_sidebar_fit(OnApp *app)
         sidebar_fit_queue(lw);
 }
 
+/* sb_create_children() — GtkTreeListModel's child model for a row: its
+ * children store (a ref), or NULL for a leaf.                              */
+static GListModel *
+sb_create_children(gpointer item, gpointer user_data)
+{
+    (void)user_data;
+    OnSbRow *r = item;
+    return r->children != NULL ? g_object_ref(G_LIST_MODEL(r->children))
+                               : NULL;
+}
+
+/* scrolled() — a scrolled window around a view, the app's conventions.    */
+static GtkWidget *
+scrolled(GtkWidget *view, GtkPolicyType hpolicy)
+{
+    GtkWidget *sw = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), hpolicy,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(sw), FALSE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sw), view);
+    return sw;
+}
+
 /* ---------------------------------------------------------------------------
- * library_build_sidebar() — build lw->sidebar (GtkTreeView) and
- * lw->sidebar_box (its scroll container), ready to be packed into the paned.
+ * library_build_sidebar() — build lw->sidebar (a GtkListView over the
+ * flattened folder/tag tree) and lw->sidebar_box (its scroll container),
+ * ready to be packed into the paned.
  * ------------------------------------------------------------------------- */
 static void
 library_build_sidebar(OnLibrary *lw)
 {
-    lw->sidebar = GTK_TREE_VIEW(
-        gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->sidebar_store)));
-    gtk_tree_view_set_headers_visible(lw->sidebar, FALSE);
-    /* No GTK type-ahead popup: set_model auto-picks the first column
-     * transformable to string as the search column — here the int id,
-     * so typing raised a search box that matched nothing.               */
-    gtk_tree_view_set_enable_search(lw->sidebar, FALSE);
-    {
-        /* Ellipsizing names keeps the pane's MINIMUM width small: without
-         * it the widest row dictates the minimum and the divider can't be
-         * dragged past it.                                                 */
-        GtkCellRenderer *name_cell = gtk_cell_renderer_text_new();
-        g_object_set(name_cell,
-                     "ellipsize", PANGO_ELLIPSIZE_END, NULL);
-        GtkTreeViewColumn *name_col =
-            gtk_tree_view_column_new_with_attributes(
-                "Name", name_cell, "text", SB_NAME, NULL);
-        /* Section rows (Notes root, Tags, Pinned Notes) render bold.       */
-        gtk_tree_view_column_set_cell_data_func(
-            name_col, name_cell, sidebar_name_cell_func, NULL, NULL);
-        gtk_tree_view_column_set_sizing(name_col,
-                                        GTK_TREE_VIEW_COLUMN_AUTOSIZE);
-        gtk_tree_view_append_column(lw->sidebar, name_col);
-    }
+    lw->sb_store = g_list_store_new(ON_TYPE_SB_ROW);
+    lw->sb_tree  = gtk_tree_list_model_new(
+        G_LIST_MODEL(g_object_ref(lw->sb_store)), FALSE, FALSE,
+        sb_create_children, NULL, NULL);
+    lw->sb_sel = gtk_single_selection_new(
+        G_LIST_MODEL(g_object_ref(lw->sb_tree)));
+    gtk_single_selection_set_autoselect(lw->sb_sel, FALSE);
+    gtk_single_selection_set_can_unselect(lw->sb_sel, FALSE);
+    g_signal_connect(lw->sb_sel, "selection-changed",
+                     G_CALLBACK(on_sidebar_selection_changed), lw);
+    g_signal_connect(lw->sb_tree, "items-changed",
+                     G_CALLBACK(on_sidebar_rows_changed), lw);
 
+    lw->sidebar = GTK_LIST_VIEW(gtk_list_view_new(
+        GTK_SELECTION_MODEL(lw->sb_sel),
+        factory_new(G_CALLBACK(on_sidebar_setup),
+                    G_CALLBACK(on_sidebar_bind), lw)));
     /* Sidebar palette and drop indicator: the "notes-sidebar" rules in
      * library_install_css (see its banner for the colours).                */
     gtk_widget_add_css_class(GTK_WIDGET(lw->sidebar), "notes-sidebar");
 
-    GtkTreeSelection *sb_sel = gtk_tree_view_get_selection(lw->sidebar);
-    gtk_tree_selection_set_select_function(sb_sel, sidebar_select_func,
-                                           NULL, NULL);
-    g_signal_connect(sb_sel, "changed",
-                     G_CALLBACK(on_sidebar_selection_changed), lw);
-
-    /* Drag and drop (see the DnD section): folder rows are a drag source,
-     * and the sidebar is THE drop target — for note rows from either notes
-     * view and for its own folder rows.  Everything is our own controllers;
-     * the deprecated model DnD is not used for content at all.            */
-    GtkDragSource *drag = gtk_drag_source_new();
-    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
-    g_signal_connect(drag, "prepare", G_CALLBACK(on_sidebar_drag_prepare),
-                     lw);
-    gtk_widget_add_controller(GTK_WIDGET(lw->sidebar),
-                              GTK_EVENT_CONTROLLER(drag));
-
-    /* D5 (measured on GTK 4.22.4): gtk_tree_view_set_drag_dest_row(), the
-     * only way to show the drop indicator, SEGFAULTS on the next paint
-     * unless enable_model_drag_dest has run — only that creates the
-     * "dndtarget" CSS node the indicator is drawn through.  Enabled with an
-     * EMPTY format set: the built-in GtkDropTargetAsync then matches
-     * nothing and never fires, while the node exists for our target.      */
-    GdkContentFormats *none = gdk_content_formats_new(NULL, 0);
-    gtk_tree_view_enable_model_drag_dest(lw->sidebar, none, 0);
-    gdk_content_formats_unref(none);
-
-    GtkDropTarget *drop = gtk_drop_target_new(ON_TYPE_DRAG_ROWS,
-                                              GDK_ACTION_MOVE);
-    /* Preload: the content is read when the drag enters, so every motion
-     * can validate against what is actually being dragged (a local drag
-     * loads synchronously — see on_sidebar_drop_motion).                  */
-    gtk_drop_target_set_preload(drop, TRUE);
-    g_signal_connect(drop, "enter",  G_CALLBACK(on_sidebar_drop_motion), lw);
-    g_signal_connect(drop, "motion", G_CALLBACK(on_sidebar_drop_motion), lw);
-    g_signal_connect(drop, "leave",  G_CALLBACK(on_sidebar_drop_leave),  lw);
-    g_signal_connect(drop, "drop",   G_CALLBACK(on_sidebar_drop),        lw);
-    gtk_widget_add_controller(GTK_WIDGET(lw->sidebar),
-                              GTK_EVENT_CONTROLLER(drop));
-
-    capture_click_gesture(GTK_WIDGET(lw->sidebar), GDK_BUTTON_SECONDARY,
-                          G_CALLBACK(on_sidebar_pressed), lw);
-    g_signal_connect(lw->sidebar, "row-expanded",
-                     G_CALLBACK(on_sidebar_row_toggled), lw);
-    g_signal_connect(lw->sidebar, "row-collapsed",
-                     G_CALLBACK(on_sidebar_row_toggled), lw);
-
-    GtkWidget *sidebar_scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_overlay_scrolling(
-        GTK_SCROLLED_WINDOW(sidebar_scroll), FALSE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),
-                                  GTK_WIDGET(lw->sidebar));
+    GtkWidget *sidebar_scroll = scrolled(GTK_WIDGET(lw->sidebar),
+                                         GTK_POLICY_NEVER);
     gtk_widget_set_vexpand(sidebar_scroll, TRUE);
 
-    /* Sidebar column: a fixed spacer, then the tree (all buttons live in
+    /* Sidebar column: a fixed spacer, then the list (all buttons live in
      * the unified toolbar above the paned).  Its minimum width is whatever
-     * the tree content needs — the scrolled window never scrolls
-     * horizontally, so it requests the tree's full natural width.          */
+     * the list content needs — the scrolled window never scrolls
+     * horizontally, so it requests the list's full natural width.          */
     GtkWidget *sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     /* Top padding, so the first row's text sits level with the text in the
      * notes list's column headers (the sidebar has no headers of its own).
      * It is a SPACER WIDGET rather than CSS padding: GtkScrolledWindow
-     * ignores padding when allocating its child, and a margin on the tree
-     * view would scroll away with it.  Painted in the sidebar grey so the
+     * ignores padding when allocating its child, and a margin on the list
+     * would scroll away with it.  Painted in the sidebar grey so the
      * strip reads as part of the pane: a GtkBox has no background of its
-     * own, so library_install_css gives it the tree view's backdrop from
-     * the ONE declaration both share.                                      */
+     * own, so library_install_css gives it the list's backdrop from the
+     * ONE declaration both share.                                          */
     GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
     gtk_widget_add_css_class(sidebar_pad, "notes-sidebar-pad");
@@ -5915,355 +5452,170 @@ library_build_sidebar(OnLibrary *lw)
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
 }
 
+/* column_new() — one column of a column view: title, factory, sorter,
+ * key, resizable; `expand` for the one that takes the leftover width.     */
+static GtkColumnViewColumn *
+column_new(GtkColumnView *view, const gchar *title, GtkListItemFactory *f,
+           GCompareDataFunc cmp, const gchar *key, gboolean expand)
+{
+    GtkColumnViewColumn *col = gtk_column_view_column_new(title, f);
+    GtkSorter *sorter = GTK_SORTER(gtk_custom_sorter_new(cmp, NULL, NULL));
+    gtk_column_view_column_set_sorter(col, sorter);
+    g_object_unref(sorter);
+    gtk_column_view_column_set_resizable(col, TRUE);
+    gtk_column_view_column_set_expand(col, expand);
+    g_object_set_data(G_OBJECT(col), "on-colkey", (gpointer)key);
+    gtk_column_view_append_column(view, col);
+    g_object_unref(col);             /* the view holds it                   */
+    return col;
+}
+
 /* ---------------------------------------------------------------------------
- * library_build_notes_list() — build lw->notes_list (GtkTreeView) with its
- * four columns, sort functions, column layout, gestures and drag source;
- * returns the scroll container ready to be added to the notes stack.
+ * library_build_notes_list() — the notes models (store, sorted model and
+ * THE selection, shared with the grid) and lw->notes_list, a GtkColumnView
+ * with its four columns, sorters and column layout; returns the scroll
+ * container ready to be added to the notes stack.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 library_build_notes_list(OnLibrary *lw)
 {
-    lw->notes_list = GTK_TREE_VIEW(
-        gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
-    /* No GTK type-ahead popup (auto-picked search column, see quirk 16).  */
-    gtk_tree_view_set_enable_search(lw->notes_list, FALSE);
-    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_list), "notes-columns");
-    {
-        /* Title: no static attribute binding — the cell data function drives
-         * both the row tint and the compact/comfortable rendering.          */
-        GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-        g_object_set(r1, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
-        GtkTreeViewColumn *c1 = gtk_tree_view_column_new();
-        gtk_tree_view_column_set_title(c1, "Title");
-        gtk_tree_view_column_pack_start(c1, r1, TRUE);
-        gtk_tree_view_column_set_cell_data_func(c1, r1,
-                                                notes_title_cell_func,
-                                                lw, NULL);
-        gtk_tree_view_column_set_resizable(c1, TRUE);
-        gtk_tree_view_append_column(lw->notes_list, c1);
-
-        /* Path column: the note's folder location ("/Work/Projects").
-         * Fixed width + ellipsize so deep trees can't blow the layout
-         * out; the divider is user-draggable like the others.             */
-        GtkCellRenderer *rp = gtk_cell_renderer_text_new();
-        g_object_set(rp,
-                     "ellipsize", PANGO_ELLIPSIZE_END,
-                     "xpad",      10,
-                     NULL);
-        GtkTreeViewColumn *cp =
-            gtk_tree_view_column_new_with_attributes("Path", rp,
-                                                     "text", NL_PATH,
-                                                     NULL);
-        gtk_tree_view_column_set_cell_data_func(cp, rp, notes_row_bg_func,
-                                                NULL, NULL);
-        gtk_tree_view_column_set_sizing(cp, GTK_TREE_VIEW_COLUMN_FIXED);
-        gtk_tree_view_column_set_fixed_width(cp, 180);
-        gtk_tree_view_column_set_resizable(cp, TRUE);
-        gtk_tree_view_append_column(lw->notes_list, cp);
-
-        GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-        /* Horizontal padding so the timestamps don't hug the column
-         * edges.                                                           */
-        g_object_set(r2, "xpad", 10, NULL);
-        GtkTreeViewColumn *c2 =
-            gtk_tree_view_column_new_with_attributes("Modified", r2,
-                                                     "text", NL_MODIFIED,
-                                                     NULL);
-        gtk_tree_view_column_set_cell_data_func(c2, r2, notes_row_bg_func,
-                                                NULL, NULL);
-        gtk_tree_view_column_set_resizable(c2, TRUE);
-        gtk_tree_view_append_column(lw->notes_list, c2);
-
-        /* Created column — built HIDDEN: a saved list_columns without a
-         * "created" entry (every pre-existing ini) keeps the built state,
-         * so the column stays off until toggled in the header menu.        */
-        GtkCellRenderer *rc = gtk_cell_renderer_text_new();
-        g_object_set(rc, "xpad", 10, NULL);
-        GtkTreeViewColumn *cc =
-            gtk_tree_view_column_new_with_attributes("Created", rc,
-                                                     "text", NL_CREATED,
-                                                     NULL);
-        gtk_tree_view_column_set_cell_data_func(cc, rc, notes_row_bg_func,
-                                                NULL, NULL);
-        gtk_tree_view_column_set_resizable(cc, TRUE);
-        gtk_tree_view_column_set_visible(cc, FALSE);
-        gtk_tree_view_append_column(lw->notes_list, cc);
-        gtk_tree_view_column_set_expand(c1, TRUE);
-
-        /* Clickable headers: Title sorts alphabetically, Modified sorts
-         * most-recent-first (drag reordering works while unsorted).        */
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->notes_store), NL_TITLE,
-            sort_by_title, NULL, NULL);
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->notes_store), NL_UPDATED,
-            sort_by_time, GINT_TO_POINTER(NL_UPDATED), NULL);
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->notes_store), NL_PATH,
-            sort_by_path, NULL, NULL);
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->notes_store), NL_CREATED_RAW,
-            sort_by_time, GINT_TO_POINTER(NL_CREATED_RAW), NULL);
-        gtk_tree_view_column_set_sort_column_id(c1, NL_TITLE);
-        gtk_tree_view_column_set_sort_column_id(cp, NL_PATH);
-        gtk_tree_view_column_set_sort_column_id(c2, NL_UPDATED);
-        gtk_tree_view_column_set_sort_column_id(cc, NL_CREATED_RAW);
-
-        /* Default sort: Modified with the most recent on top
-         * (sort_by_time is deliberately inverted, so ASCENDING =
-         * newest first).  The headers only ever cycle ascending and
-         * descending, so the list is ALWAYS sorted; in-list drag
-         * reordering, which a sorted list store refuses, is therefore
-         * not offered at all — a note drag is a move to a folder.        */
-        gtk_tree_sortable_set_sort_column_id(
-            GTK_TREE_SORTABLE(lw->notes_store), NL_UPDATED,
-            GTK_SORT_ASCENDING);
-
-        /* Column layout management: drag a header to reorder, right-click
-         * one for the show/hide menu; the layout persists in the ini
-         * (applied below once all columns exist).  Each column carries
-         * its renderer so autofit can move the ellipsis around.           */
-        struct { GtkTreeViewColumn *col; GtkCellRenderer *cell;
-                 const gchar *key; } COLS[N_LIST_COLUMNS] = {
-            { c1, r1, "title" }, { cp, rp, "path" }, { c2, r2, "modified" },
-            { cc, rc, "created" },
-        };
-        for (gsize i = 0; i < G_N_ELEMENTS(COLS); i++) {
-            g_object_set_data(G_OBJECT(COLS[i].col), "on-colkey",
-                              (gpointer)COLS[i].key);
-            g_object_set_data(G_OBJECT(COLS[i].col), "on-cell",
-                              COLS[i].cell);
-            column_header_menu_add(lw, COLS[i].col, lw->notes_list);
-        }
-    }
-    g_object_set_data(G_OBJECT(lw->notes_list), "on-colcfg",
-                      (gpointer)"list_columns");
-    g_object_set_data(G_OBJECT(lw->notes_list), "on-ncols",
-                      GINT_TO_POINTER(N_LIST_COLUMNS));
-    g_object_set_data(G_OBJECT(lw->notes_list), "on-coldefault",
-                      (gpointer)"path:0,title:1,modified:1,created:0");
-    view_columns_apply(lw->notes_list);  /* saved order + visibility        */
-    {
-        /* Autofit is the default; only an explicit "0" turns it off.       */
-        lw->list_autofit = on_app_config_get_bool("list_autofit", TRUE);
-        if (lw->list_autofit)
-            list_autofit_apply(lw);
-    }
-    /* Connected only now, so applying the saved layout doesn't re-persist
-     * it; from here on every header drag writes the ini.                   */
-    g_signal_connect(lw->notes_list, "columns-changed",
-                     G_CALLBACK(on_view_columns_changed), lw);
-    gtk_tree_selection_set_mode(
-        gtk_tree_view_get_selection(lw->notes_list),
-        GTK_SELECTION_MULTIPLE);
-    g_signal_connect(gtk_tree_view_get_selection(lw->notes_list),
-                     "changed",
+    lw->notes_store  = g_list_store_new(ON_TYPE_NOTE_ROW);
+    lw->notes_sorted = gtk_sort_list_model_new(
+        G_LIST_MODEL(g_object_ref(lw->notes_store)), NULL);
+    lw->notes_sel    = gtk_multi_selection_new(
+        G_LIST_MODEL(g_object_ref(lw->notes_sorted)));
+    g_signal_connect(lw->notes_sel, "selection-changed",
                      G_CALLBACK(on_notes_selection_status), lw);
 
-    g_signal_connect(lw->notes_list, "row-activated",
-                     G_CALLBACK(on_note_list_activated), lw);
+    lw->notes_list = GTK_COLUMN_VIEW(gtk_column_view_new(
+        GTK_SELECTION_MODEL(g_object_ref(lw->notes_sel))));
+    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_list), "notes-columns");
+    gtk_column_view_set_reorderable(lw->notes_list, TRUE);
+    /* The view's sorter (what the headers set) drives the sorted model. */
+    gtk_sort_list_model_set_sorter(
+        lw->notes_sorted, gtk_column_view_get_sorter(lw->notes_list));
 
-    /* One capture-phase click gesture for ANY button: the quirk-15 veto on
-     * a primary press and the right-click menu (see on_notes_list_pressed);
-     * released / cancel end the veto.                                      */
-    GtkGesture *click = capture_click_gesture(
-        GTK_WIDGET(lw->notes_list), 0, G_CALLBACK(on_notes_list_pressed), lw);
-    g_signal_connect(click, "released",
-                     G_CALLBACK(on_notes_list_released), lw);
-    g_signal_connect(click, "cancel", G_CALLBACK(on_notes_list_cancel), lw);
+    GtkListItemFactory *f;
+    GtkColumnViewColumn *c_mod = NULL;
+    f = factory_new(G_CALLBACK(on_title_setup), G_CALLBACK(on_title_bind),
+                    lw);
+    column_new(lw->notes_list, "Title", f, cmp_title, "title", TRUE);
+    /* The three plain text columns share one factory pair, told apart by
+     * the field they show; the factory carries lw for the controllers.   */
+    const struct { const gchar *title; gint field; GCompareDataFunc cmp;
+                   const gchar *key; } TEXT_COLS[] = {
+        { "Path",     NF_PATH,     cmp_path,    "path"     },
+        { "Modified", NF_MODIFIED, cmp_updated, "modified" },
+        { "Created",  NF_CREATED,  cmp_created, "created"  },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(TEXT_COLS); i++) {
+        f = gtk_signal_list_item_factory_new();
+        g_object_set_data(G_OBJECT(f), "on-lw", lw);
+        g_signal_connect(f, "setup", G_CALLBACK(on_note_text_setup),
+                         GINT_TO_POINTER(TEXT_COLS[i].field));
+        g_signal_connect(f, "bind", G_CALLBACK(on_note_text_bind),
+                         GINT_TO_POINTER(TEXT_COLS[i].field));
+        GtkColumnViewColumn *c = column_new(lw->notes_list, TEXT_COLS[i].title,
+                                            f, TEXT_COLS[i].cmp,
+                                            TEXT_COLS[i].key, FALSE);
+        if (TEXT_COLS[i].field == NF_MODIFIED)
+            c_mod = c;
+        /* Built HIDDEN: a saved list_columns without a "created" entry
+         * (every pre-existing ini) keeps the built state, so the column
+         * stays off until toggled in the header menu.                    */
+        if (TEXT_COLS[i].field == NF_CREATED)
+            gtk_column_view_column_set_visible(c, FALSE);
+    }
 
-    /* Drag source: the selected notes, dropped on a sidebar folder.        */
-    GtkDragSource *drag = gtk_drag_source_new();
-    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
-    g_signal_connect(drag, "prepare",
-                     G_CALLBACK(on_notes_list_drag_prepare), lw);
-    gtk_widget_add_controller(GTK_WIDGET(lw->notes_list),
-                              GTK_EVENT_CONTROLLER(drag));
+    /* Default sort: Modified with the most recent on top (cmp_updated is
+     * deliberately inverted, so ASCENDING = newest first).  The headers
+     * only ever cycle ascending and descending, so the list is ALWAYS
+     * sorted; a note drag is a move to a folder, never a reorder.        */
+    gtk_column_view_sort_by_column(lw->notes_list, c_mod, GTK_SORT_ASCENDING);
 
-    GtkWidget *list_scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(list_scroll),
-                                   GTK_POLICY_AUTOMATIC,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_overlay_scrolling(
-        GTK_SCROLLED_WINDOW(list_scroll), FALSE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(list_scroll),
-                                  GTK_WIDGET(lw->notes_list));
-    return list_scroll;
+    g_object_set_data(G_OBJECT(lw->notes_list), "on-colcfg",
+                      (gpointer)"list_columns");
+    g_object_set_data(G_OBJECT(lw->notes_list), "on-coldefault",
+                      (gpointer)"path:0,title:1,modified:1,created:0");
+    view_columns_install(lw, lw->notes_list);
+
+    g_signal_connect(lw->notes_list, "activate",
+                     G_CALLBACK(on_note_activated), lw);
+    return scrolled(GTK_WIDGET(lw->notes_list), GTK_POLICY_AUTOMATIC);
 }
 
 /* ---------------------------------------------------------------------------
- * library_build_notes_grid() — build lw->notes_grid (GtkIconView) with its
- * thumbnail + title cell layout, gesture and drag source; returns the
- * scroll container.
+ * library_build_notes_grid() — lw->notes_grid, a GtkGridView over the same
+ * sorted model and selection as the list; returns the scroll container.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 library_build_notes_grid(OnLibrary *lw)
 {
-    lw->notes_grid = GTK_ICON_VIEW(
-        gtk_icon_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
+    lw->notes_grid = GTK_GRID_VIEW(gtk_grid_view_new(
+        GTK_SELECTION_MODEL(g_object_ref(lw->notes_sel)),
+        factory_new(G_CALLBACK(on_grid_setup), G_CALLBACK(on_grid_bind),
+                    lw)));
     gtk_widget_add_css_class(GTK_WIDGET(lw->notes_grid), "notes-grid");
-    {
-        /* Custom cell layout: the thumbnail texture with the note title
-         * as a real text label underneath.                                 */
-        GtkCellRenderer *pix = gtk_cell_renderer_pixbuf_new();
-        gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(lw->notes_grid),
-                                   pix, FALSE);
-        gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(lw->notes_grid),
-                                       pix, "texture", NL_THUMB, NULL);
-
-        GtkCellRenderer *txt = gtk_cell_renderer_text_new();
-        g_object_set(txt,
-                     "xalign",      0.5,
-                     "alignment",   PANGO_ALIGN_CENTER,
-                     "wrap-mode",   PANGO_WRAP_WORD_CHAR,
-                     "wrap-width",  THUMB_SIZE,
-                     "weight",      PANGO_WEIGHT_BOLD,
-                     NULL);
-        gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(lw->notes_grid),
-                                   txt, FALSE);
-        emoji_text_cell_bind(lw, GTK_CELL_LAYOUT(lw->notes_grid), txt,
-                             NL_TITLE);
-    }
-    gtk_icon_view_set_item_width(lw->notes_grid, THUMB_SIZE);
-    gtk_icon_view_set_selection_mode(lw->notes_grid,
-                                     GTK_SELECTION_MULTIPLE);
-    g_signal_connect(lw->notes_grid, "selection-changed",
-                     G_CALLBACK(on_notes_selection_status), lw);
-    g_signal_connect(lw->notes_grid, "item-activated",
-                     G_CALLBACK(on_note_grid_activated), lw);
-    capture_click_gesture(GTK_WIDGET(lw->notes_grid), GDK_BUTTON_SECONDARY,
-                          G_CALLBACK(on_notes_grid_pressed), lw);
-
-    /* Drag source: the selected notes, dropped on a sidebar folder.  The
-     * icon view's own model drag source is NOT enabled, so its built-in
-     * drag handling stays out of the way (it only runs when it is).       */
-    GtkDragSource *drag = gtk_drag_source_new();
-    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
-    g_signal_connect(drag, "prepare",
-                     G_CALLBACK(on_notes_grid_drag_prepare), lw);
-    gtk_widget_add_controller(GTK_WIDGET(lw->notes_grid),
-                              GTK_EVENT_CONTROLLER(drag));
-
-    GtkWidget *grid_scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(grid_scroll),
-                                   GTK_POLICY_AUTOMATIC,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_overlay_scrolling(
-        GTK_SCROLLED_WINDOW(grid_scroll), FALSE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid_scroll),
-                                  GTK_WIDGET(lw->notes_grid));
-    return grid_scroll;
+    gtk_grid_view_set_max_columns(lw->notes_grid, 20);
+    g_signal_connect(lw->notes_grid, "activate",
+                     G_CALLBACK(on_note_activated), lw);
+    return scrolled(GTK_WIDGET(lw->notes_grid), GTK_POLICY_AUTOMATIC);
 }
 
 /* ---------------------------------------------------------------------------
- * library_build_actions_view() — build lw->actions_store and lw->actions_view
- * with their three columns, sort functions, and column layout; returns the
- * scroll container ready to be added to the notes stack.
+ * library_build_actions_view() — build lw->actions_store and
+ * lw->actions_view (a GtkColumnView) with their three columns, sorters
+ * and column layout; returns the scroll container.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 library_build_actions_view(OnLibrary *lw)
 {
-    lw->actions_store = gtk_list_store_new(AL_N_COLS,
-                                           G_TYPE_INT64,   /* AL_NOTE_ID   */
-                                           G_TYPE_INT,     /* AL_ORD       */
-                                           G_TYPE_BOOLEAN, /* AL_DONE      */
-                                           G_TYPE_STRING,  /* AL_TEXT      */
-                                           G_TYPE_STRING,  /* AL_DUE       */
-                                           G_TYPE_INT64);  /* AL_DUE_RAW   */
-    lw->actions_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model(
-        GTK_TREE_MODEL(lw->actions_store)));
-    gtk_tree_view_set_enable_search(lw->actions_view, FALSE); /* quirk 16   */
+    lw->actions_store  = g_list_store_new(ON_TYPE_ACTION_ROW);
+    lw->actions_sorted = gtk_sort_list_model_new(
+        G_LIST_MODEL(g_object_ref(lw->actions_store)), NULL);
+    GtkSingleSelection *sel = gtk_single_selection_new(
+        G_LIST_MODEL(g_object_ref(lw->actions_sorted)));
+    gtk_single_selection_set_autoselect(sel, FALSE);
+
+    lw->actions_view = GTK_COLUMN_VIEW(gtk_column_view_new(
+        GTK_SELECTION_MODEL(sel)));
     gtk_widget_add_css_class(GTK_WIDGET(lw->actions_view), "notes-columns");
-    {
-        /* Untitled checkbox column + the item text + the due date; done
-         * rows also render struck through, matching the editor.            */
-        GtkCellRenderer *tog = gtk_cell_renderer_toggle_new();
-        g_signal_connect(tog, "toggled",
-                         G_CALLBACK(on_action_toggled), lw);
-        GtkTreeViewColumn *cd = gtk_tree_view_column_new_with_attributes(
-            "", tog, "active", AL_DONE, NULL);
-        gtk_tree_view_append_column(lw->actions_view, cd);
+    gtk_column_view_set_reorderable(lw->actions_view, TRUE);
+    gtk_sort_list_model_set_sorter(
+        lw->actions_sorted, gtk_column_view_get_sorter(lw->actions_view));
 
-        GtkCellRenderer *txt = gtk_cell_renderer_text_new();
-        g_object_set(txt, "ellipsize", PANGO_ELLIPSIZE_END, "xpad", 10,
-                     NULL);
-        GtkTreeViewColumn *ca = gtk_tree_view_column_new_with_attributes(
-            "Action", txt,
-            "strikethrough", AL_DONE,
-            NULL);
-        emoji_text_cell_bind(lw, GTK_CELL_LAYOUT(ca), txt, AL_TEXT);
-        gtk_tree_view_column_set_expand(ca, TRUE);
-        gtk_tree_view_column_set_resizable(ca, TRUE);
-        gtk_tree_view_append_column(lw->actions_view, ca);
+    /* Untitled checkbox column + the item text + the due date; done rows
+     * also render struck through, matching the editor.                    */
+    GtkColumnViewColumn *cd = column_new(
+        lw->actions_view, "",
+        factory_new(G_CALLBACK(on_action_done_setup),
+                    G_CALLBACK(on_action_done_bind), lw),
+        cmp_action_done, "done", FALSE);
+    g_object_set_data(G_OBJECT(cd), "on-collabel", (gpointer)"Done");
+    column_new(lw->actions_view, "Action",
+               factory_new(G_CALLBACK(on_action_text_setup),
+                           G_CALLBACK(on_action_text_bind), lw),
+               cmp_action_text, "action", TRUE);
+    column_new(lw->actions_view, "Due Date",
+               factory_new(G_CALLBACK(on_action_due_setup),
+                           G_CALLBACK(on_action_due_bind), lw),
+               cmp_action_due, "due", FALSE);
 
-        GtkCellRenderer *rdue = gtk_cell_renderer_text_new();
-        g_object_set(rdue, "xpad", 10, NULL);
-        GtkTreeViewColumn *cdue = gtk_tree_view_column_new_with_attributes(
-            "Due Date", rdue,
-            "text",          AL_DUE,
-            "strikethrough", AL_DONE,
-            NULL);
-        gtk_tree_view_column_set_cell_data_func(cdue, rdue,
-            action_due_color_func, NULL, NULL);
-        gtk_tree_view_column_set_resizable(cdue, TRUE);
-        gtk_tree_view_append_column(lw->actions_view, cdue);
-
-        /* Clickable headers, notes-list style.  AL_DONE sorts with the
-         * default boolean compare.                                         */
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->actions_store), AL_TEXT,
-            sort_actions_by_text, NULL, NULL);
-        gtk_tree_sortable_set_sort_func(
-            GTK_TREE_SORTABLE(lw->actions_store), AL_DUE_RAW,
-            sort_actions_by_due, NULL, NULL);
-        gtk_tree_view_column_set_sort_column_id(cd, AL_DONE);
-        gtk_tree_view_column_set_sort_column_id(ca, AL_TEXT);
-        gtk_tree_view_column_set_sort_column_id(cdue, AL_DUE_RAW);
-
-        /* Column layout: the notes list's conventions — drag a header to
-         * reorder, right-click for show/hide; persists per view.           */
-        struct { GtkTreeViewColumn *col; const gchar *key;
-                 const gchar *label; } ACOLS[N_ACTION_COLUMNS] = {
-            { cd,   "done",   "Done" },   /* titleless: needs a menu label */
-            { ca,   "action", NULL },
-            { cdue, "due",    NULL },
-        };
-        for (gsize i = 0; i < G_N_ELEMENTS(ACOLS); i++) {
-            g_object_set_data(G_OBJECT(ACOLS[i].col), "on-colkey",
-                              (gpointer)ACOLS[i].key);
-            if (ACOLS[i].label != NULL)
-                g_object_set_data(G_OBJECT(ACOLS[i].col), "on-collabel",
-                                  (gpointer)ACOLS[i].label);
-            column_header_menu_add(lw, ACOLS[i].col, lw->actions_view);
-        }
-    }
     g_object_set_data(G_OBJECT(lw->actions_view), "on-colcfg",
                       (gpointer)"action_columns");
-    g_object_set_data(G_OBJECT(lw->actions_view), "on-ncols",
-                      GINT_TO_POINTER(N_ACTION_COLUMNS));
     g_object_set_data(G_OBJECT(lw->actions_view), "on-coldefault",
                       (gpointer)"done:1,action:1,due:1");
-    view_columns_apply(lw->actions_view);
-    g_signal_connect(lw->actions_view, "columns-changed",
-                     G_CALLBACK(on_view_columns_changed), lw);
-    g_signal_connect(lw->actions_view, "row-activated",
+    view_columns_install(lw, lw->actions_view);
+    g_signal_connect(lw->actions_view, "activate",
                      G_CALLBACK(on_action_row_activated), lw);
-
-    GtkWidget *actions_scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(actions_scroll),
-                                   GTK_POLICY_AUTOMATIC,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_overlay_scrolling(
-        GTK_SCROLLED_WINDOW(actions_scroll), FALSE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(actions_scroll),
-                                  GTK_WIDGET(lw->actions_view));
-    return actions_scroll;
+    return scrolled(GTK_WIDGET(lw->actions_view), GTK_POLICY_AUTOMATIC);
 }
 
 /* ---------------------------------------------------------------------------
  * library_build_notes_pane() — build the three note views (list, grid,
  * actions) and assemble them into lw->stack, ready to be packed into the
- * notes paned.
+ * notes paned.  The list is built first: it owns the models the grid
+ * shares.
  * ------------------------------------------------------------------------- */
 static void
 library_build_notes_pane(OnLibrary *lw)
@@ -6336,47 +5688,39 @@ library_build_status_bar(OnLibrary *lw)
  * theme's in any widget state), scoped by the "notes-" classes the window
  * puts on its widgets.
  *
- * 1. Grid thumbnails.  GtkCellRendererPixbuf hands a texture to GTK's icon
- *    helper, which paints a paintable at MIN(cell width, -gtk-icon-size) —
- *    and -gtk-icon-size is 16px unless CSS says otherwise (measured on
- *    4.22 with a pixel probe: a 140 px texture painted 16 px square while
- *    the cell reserved 140).  The renderer saves the icon view's style
- *    context with the "image" class for that paint, so the rule targets
- *    `iconview.notes-grid.image`.
- * 2. Dialog buttons.  GtkDialog's action area has no padding of its own
- *    in GTK4 (the old action-area border went with gtk_dialog_get_action_area),
- *    so the buttons sat flush against the bottom-right corner.
- * 3. Grid hover.  The icon view paints each item's background and frame
- *    on its own node saved with the "cell" class and the :hover state for
- *    the item under the pointer; GTK3's rendering gave that a visible
- *    outline, GTK4's theme has no rule for it, so the outline is ours.
+ * 1. Dialog padding: the `dialog_new` window has none of its own.
+ * 2. Grid cards (`gridview.notes-grid > child`): padding, a hover outline
+ *    on every card, and a tint only on an UNSELECTED one — a
+ *    near-transparent tint under text the selected state has turned white
+ *    was an invisible title until the mouse left the card.
+ * 3. The notes list's alternating row tint, by `row:nth-child(even)`, and
+ *    never over the selection highlight (`:not(:selected)`, since a later
+ *    application-priority rule of equal specificity would win over the
+ *    theme's `row:selected`).  The Comfortable preview's dimming (an
+ *    opacity, so it stays readable on the highlight) and the Due Date
+ *    urgency colours live here too.
  * 4. Sidebar palette.  The backdrop (rows AND the empty area below them —
- *    the tree view paints the whole widget) is the theme's window/toolbar
+ *    the list view paints the whole widget) is the theme's window/toolbar
  *    background taken down a step (SB_BG_SHADE), so the pane sits just
  *    behind the toolbar above it and reads as distinct from the white
- *    notes list without pinning a grey of its own; a tree view left alone
- *    paints the white theme BASE colour.  The spacer strip above the tree
- *    (library_build_sidebar) shares the declaration.  Then muted grey text
- *    and a blue selection bar with white text.  Verified on GTK 4.22's
- *    compiled Default theme: it still defines @theme_bg_color (#f6f5f4
- *    light) and still parses shade() — both DEPRECATED since 4.16 (they
- *    warn only under GTK_DEBUG=css) but the theme exports no CSS variables
- *    to replace them with.  Beware that an UNDEFINED colour name is NOT a
- *    parse error — it silently renders transparent.
- * 5. Sidebar drop indicator.  GTK4 draws it as a "dndtarget" sub-node of
- *    the tree view carrying a position class (before / after / into) with
- *    the :drop(active) state, framing the row under the pointer — a 2px
- *    line in the selection blue: top edge for BEFORE, bottom for AFTER, a
- *    full box for INTO.  The node exists only once
- *    enable_model_drag_dest has run (D5).
+ *    notes list without pinning a grey of its own.  The spacer strip above
+ *    the list (library_build_sidebar) shares the declaration.  Then muted
+ *    grey text and a blue selection bar with white text.  Verified on GTK
+ *    4.22's compiled Default theme: it still defines @theme_bg_color
+ *    (#f6f5f4 light) and still parses shade() — both DEPRECATED since 4.16
+ *    (they warn only under GTK_DEBUG=css) but the theme exports no CSS
+ *    variables to replace them with.  Beware that an UNDEFINED colour name
+ *    is NOT a parse error — it silently renders transparent.
+ * 5. Sidebar drop indicator: the row under the pointer carries one of the
+ *    classes sb_row_indicate paints (drop-into / -before / -after), drawn
+ *    as an inset box-shadow in the selection blue — a full frame for INTO,
+ *    the top edge for BEFORE, the bottom for AFTER.
  * 6. The emoji entry of the folder dialog: one emoji wide — the theme's
  *    entry min-width would otherwise span the dialog (D22).
  * 7. The AI pane's two compact header buttons.
  * 8. The sidebar/notes divider: a 6 px handle (wide-handle mode gives the
  *    separator node a 5 px theme floor; min-WIDTH is the lever on a
  *    horizontal paned).
- * 9. The notes list / Action Items headers: no left border on the first
- *    visible column, which would double the divider's edge line.
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -6386,55 +5730,62 @@ library_install_css(void)
         return;
     installed = TRUE;
     gchar *css = g_strdup_printf(
-        "iconview.notes-grid.image { -gtk-icon-size: %dpx; }"
         "window.notes-dialog .dialog-action-area {"
         "  padding: 0 12px 12px 12px;"
         "}"
-        /* The outline on every hovered cell, selected or not; the tint
-         * only on an UNSELECTED one: this rule outranks the theme's
-         * iconview:selected (more specific), and a near-transparent tint
-         * under text the selected state has turned white was an invisible
-         * title until the mouse left the cell.                           */
-        "iconview.notes-grid.cell:hover {"
-        "  border: 1px solid alpha(black, 0.4);"   /* not currentColor: that is white on a selected cell */
+        /* The grid's cards: a hover outline on every one, the tint only on
+         * an UNSELECTED one — a near-transparent tint under text the
+         * selected state has turned white was an invisible title until
+         * the mouse left the cell.                                       */
+        "gridview.notes-grid > child { padding: 6px; }"
+        "gridview.notes-grid > child:hover {"
+        "  outline: 1px solid alpha(black, 0.4);"
+        "  outline-offset: -1px;"
         "  border-radius: 4px;"
         "}"
-        "iconview.notes-grid.cell:hover:not(:selected) {"
+        "gridview.notes-grid > child:hover:not(:selected) {"
         "  background-color: alpha(currentColor, 0.06);"
         "}"
-        "treeview.notes-sidebar, box.notes-sidebar-pad {"
+        /* The notes list's alternating row tint (the even rows; odd stay
+         * white), never over the selection highlight.                    */
+        "columnview.notes-columns > listview > row:nth-child(even)"
+        ":not(:selected) {"
+        "  background-color: %s;"
+        "}"
+        /* The Comfortable preview dims through alpha, so it stays
+         * readable on the selection highlight (a fixed grey did not).   */
+        "columnview.notes-columns label.notes-preview { opacity: 0.65; }"
+        /* Due Date urgency (on_action_due_bind): overdue red, today gold,
+         * ahead green — darkened enough to read on the row stripes.      */
+        "label.due-overdue { color: #c01c28; }"
+        "label.due-today   { color: #d19a00; }"
+        "label.due-ahead   { color: #26a269; }"
+        "listview.notes-sidebar, box.notes-sidebar-pad {"
         "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
         "}"
-        "treeview.notes-sidebar { color: rgb(65,65,65); }"
-        "treeview.notes-sidebar:selected {"
+        "listview.notes-sidebar { color: rgb(65,65,65); }"
+        "listview.notes-sidebar > row:selected {"
         "  background-color: rgb(86,131,224);"
         "  color: white;"
         "}"
-        "treeview.notes-sidebar > dndtarget:drop(active) {"
-        "  border-color: rgb(86,131,224);"
-        "  border-width: 2px;"
-        "  border-style: solid;"
+        /* The drop indicator, painted by class on the row under the
+         * pointer (sb_row_indicate): a frame for INTO, an edge for
+         * BEFORE/AFTER.                                                  */
+        "listview.notes-sidebar > row.drop-into {"
+        "  box-shadow: inset 0 0 0 2px rgb(86,131,224);"
         "}"
-        "treeview.notes-sidebar > dndtarget:drop(active).before {"
-        "  border-style: solid none none none;"
+        "listview.notes-sidebar > row.drop-before {"
+        "  box-shadow: inset 0 2px 0 0 rgb(86,131,224);"
         "}"
-        "treeview.notes-sidebar > dndtarget:drop(active).after {"
-        "  border-style: none none solid none;"
+        "listview.notes-sidebar > row.drop-after {"
+        "  box-shadow: inset 0 -2px 0 0 rgb(86,131,224);"
         "}"
         "entry.notes-emoji-entry { font-size: 18px; min-width: 0; }"
         "button.notes-ai-button {"
         "  padding: 0 4px; min-height: 0; font-size: 85%%;"
         "}"
-        "paned.notes-split > separator { min-width: 6px; }"
-        /* The theme gives every column header a LEFT + bottom border
-         * (`border-style: none none solid solid`), so the first column's
-         * sat 4 px from the divider's own edge line as a second line.
-         * Hidden columns do not count for :first-child (invisible CSS
-         * nodes are skipped), so this is the first VISIBLE header.      */
-        "treeview.notes-columns > header > button:first-child {"
-        "  border-left-style: none;"
-        "}",
-        THUMB_SIZE);
+        "paned.notes-split > separator { min-width: 6px; }",
+        ROW_TINT);
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);
     gtk_style_context_add_provider_for_display(
@@ -6486,25 +5837,10 @@ on_library_window_create(OnApp *app)
     app->notify_status        = library_notify_status;
     app->notify_ai_changed    = library_notify_ai_changed;
 
-    /* --- models -----------------------------------------------------------*/
-    lw->sidebar_store = gtk_tree_store_new(SB_N_COLS,
-                                           G_TYPE_INT,     /* SB_KIND      */
-                                           G_TYPE_INT64,   /* SB_ID        */
-                                           G_TYPE_STRING,  /* SB_NAME      */
-                                           G_TYPE_STRING); /* SB_RAW       */
-    lw->notes_store = gtk_list_store_new(
-        NL_N_COLS,
-        G_TYPE_INT64,                    /* NL_ID                          */
-        G_TYPE_STRING,                   /* NL_TITLE                       */
-        G_TYPE_STRING,                   /* NL_MODIFIED                    */
-        GDK_TYPE_TEXTURE,                /* NL_THUMB                       */
-        G_TYPE_INT64,                    /* NL_UPDATED                     */
-        G_TYPE_STRING,                   /* NL_PATH                        */
-        G_TYPE_STRING,                   /* NL_CREATED                     */
-        G_TYPE_INT64,                    /* NL_CREATED_RAW                 */
-        G_TYPE_STRING);                  /* NL_PREVIEW                     */
-
-    /* --- panes + status bar -----------------------------------------------*/
+    /* --- panes + status bar (each builds its own models) ------------------*/
+    library_install_actions(lw);         /* the column views register
+                                            actions on the window as they
+                                            are built                       */
     library_build_sidebar(lw);           /* sets lw->sidebar, lw->sidebar_box */
     library_build_notes_pane(lw);        /* sets lw->notes_list, lw->notes_grid,
                                           * lw->actions_view, lw->stack       */
@@ -6541,9 +5877,8 @@ on_library_window_create(OnApp *app)
     gtk_widget_set_vexpand(paned, TRUE);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    /* The actions must exist before anything that names them is built —
-     * the menubar, the toolbar — so their items come up sensitive.        */
-    library_install_actions(lw);
+    /* The actions exist (installed above, before the views) so the
+     * menubar's and toolbar's items come up sensitive.                    */
     lw->menubar_model = build_menubar();
 #ifdef __APPLE__
     /* The in-window rendering of the menubar, for the "native_menubar"
@@ -6580,9 +5915,9 @@ on_library_window_create(OnApp *app)
      * so it missed the stack's construction-time child change.            */
     view_button_sync(lw);
 
-    /* Fit the sidebar pane to its content width on first show.  Done in an
-     * idle so the tree view is fully realized and has measured its rows.     */
-    g_idle_add(on_sidebar_fit_to_content, lw);
+    /* Fit the sidebar pane to its content width on first show — from the
+     * list's "map", the first moment its rows can be measured.            */
+    g_signal_connect(lw->sidebar, "map", G_CALLBACK(on_sidebar_mapped), lw);
 
     return lw->window;
 }

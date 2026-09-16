@@ -44,11 +44,14 @@ was removed 2026-09 once that was measured.  librsvg is
 OPTIONAL now that all app icons are PNGs — it only renders the bundled
 `icons/theme/` symbolic arrows.  GTK4 renders through GL/Vulkan; on a
 machine with software GL, `GSK_RENDERER=cairo` is the fallback.
-**Deprecated GTK4 API is used on purpose** (the GtkTreeView / GtkIconView
-/ GtkListStore family, GtkDialog, GtkStatusbar, GtkComboBoxText — all gone
-in GTK5): call sites are wrapped in `G_GNUC_BEGIN/END_IGNORE_DEPRECATIONS`,
-and `library_window.c`, which lives on the tree views, defines
-`GDK_/GTK_DISABLE_DEPRECATION_WARNINGS` at its top.  No global flag.
+**No deprecated GTK4 API is used** (since 2026-09-16): the tree views,
+cell renderers and list/tree stores are gone (the library and search
+windows are GtkColumnView / GtkListView / GtkGridView over GListModels of
+the `list_rows.h` objects), GtkDialog is the `dialog_new` scaffold in
+library_window.c over a plain GtkWindow, GtkComboBoxText is a
+GtkDropDown, and the pixbuf→cairo bridge is `gdk_texture_download`.  The
+build is `-Wdeprecated-declarations` clean with no suppression anywhere;
+keep it that way — a new deprecation warning is a bug.
 After toggling a dependency, run `make clean && make` so every object
 sees the new flags.
 
@@ -67,10 +70,11 @@ sees the new flags.
 | `src/note_view.[ch]` | **THE rich-text engine**: `OnNoteView`, a drawn `GtkWidget` (GtkScrollable, GtkAccessibleText; 2.7 k lines) that owns the note as an `OnDocument` and paints it through `doc_layout.[ch]` — NO widget ever lives inside it (BLOCK_MODEL.md: the D14/D17/D23/D27/D29 family had nothing to attach to once that was true).  Caret and selection are `OnPos` pairs (block / cell / byte), so a selection crosses tables and images like text; every edit is a document operation (undo = the document's op log, grouped by a 1 s typing pause and 5 sentence enders); typed text goes through `GtkIMContext` (preedit spliced into the block's layout); the clipboard carries `application/x-notes-bnbf` beside plain text so a table or an image pastes as itself; `#tag` capture with a non-focusable GtkPopover at the '#'; Enter/Backspace policy (lists continue, empty item ends the list, headings are one line, Backspace at an item's start makes it body text); the `view.` group for its context menus (`img-*`, `table-*`, cut/copy/paste; the window inserts it on itself, D14); three signals `edited`, `inline-flags-changed`, `image-activated`.  **The keyboard and pointer are also function calls** (`on_note_view_feed_key/text/click`) so `tests/ui_probe.c` can drive it.  Never references the window |
 | `src/doc_layout.[ch]` | The GEOMETRY of a document on screen: one PangoLayout per text block (and per table cell), heights as a prefix sum, invalidated per block by the document observer the view relays; hit testing (`on_doc_layout_hit`: text position, image, checkbox, copy word, table border), cursor movement (`on_doc_layout_move`: grapheme/word/line/block/document steps by Pango's log attrs, with a goal x for vertical runs), caret rects, and the painter (`on_doc_layout_snapshot`: code shading + gutter numbers + "copy" word, list prefixes, drawn task boxes, tables with fitted columns, block and inline images as textures, selection rects, caret).  Derived looks live here as Pango attributes — title line (block 0: centred, H1-sized), '!' action tint, #tag colour, macOS emoji padding, find hits.  **Images are SIZED from the PNG header and decoded only when drawn** (the 615-block note lays out in 18 ms; decoding its 17 screenshots first cost 220) |
 | `src/editor_window.[ch]` | The editor WINDOW (1.7 k lines) hosting one `OnNoteView`: a GtkApplicationWindow (`show-menubar` FALSE, so Linux draws File/View only in the library), the icons-only toolbar (a `GtkBox.toolbar` of `on_app_tool_item_new` buttons; B/I/U/S are GtkToggleButtons mirrored from the view's `inline-flags-changed`; "Aa" Styles / "≡" Lists / "+" Insert are GtkMenuButtons over GMenus naming `win.para::h1` … `win.insert-image`), the `win.` actions (new-note, find, undo, redo, inline(s), para(s), insert-*) that the accelerators name and that call the view API, the editing GATE (D19: the editing actions are disabled while the focus is in the find entry — the one other widget that owns keys — via `editor_gate_widget`), debounced autosave (`dirty`, the serialize + db write, `note_tags` from `on_note_view_take_tags_modified`, `action_items` from `last_actions` vs the fresh extract with mark hint/sync), the modal image viewer host (`editor_viewer_ops` address images by ORDINAL through `on_note_view_image_count/texture/png/reveal`; `image-activated` opens it; the window's CAPTURE-phase key controller offers every key to it first and swallows the rest while it is up, quirk #23), the status bar, and open/destroy (`on_editor_window_open()` etc. — unchanged public API; the async insert-image continuation re-finds the editor by note id through `EditorRef`).  Windows are placed by the compositor: GTK4 has no window positioning (the GTK3 bottom-right placement, quirk #21, is gone) |
-| `src/library_window.[ch]` | Sidebar (folders+counts+emoji prefix, tags+counts), notes list/grid (list: Title/Path/Modified/Created, all resizable + sortable, Path and Created hidden by default; Path fed by `on_db_folder_path_map`; list density Compact/Comfortable — Comfortable renders a bold title + small dimmed body-text preview via `notes_title_cell_func` and `NL_PREVIEW`), notes sorted Modified-newest-first by default (in-list drag reorder is off while sorted — list stores refuse row drops), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+, via `on_app_icon_paintable`; the mechanism is GTK4's: a GtkDragSource on each view whose `prepare` hands over ONE boxed `OnDragRows` {kind, ids} (D8) and a GtkDropTarget on the sidebar — `motion` validates + `gtk_tree_view_set_drag_dest_row`, `leave` clears, `drop` acts — after the D5 workaround `gtk_tree_view_enable_model_drag_dest(sidebar, empty formats, 0)`, without which `set_drag_dest_row` segfaults on the next paint; the multi-select press veto of quirk #15 is a CAPTURE-phase GtkGestureClick + selection veto lifted in `prepare`/release/cancel, D7; grid thumbnails are `GDK_TYPE_TEXTURE` cells painted at `-gtk-icon-size` set by `library_install_css`, D18), sortable headers, context menus, one unified toolbar (folder area \| notes area \| Sidebar, List/Grid, Search, Media, Settings — the sidebar toggle sits LEFT of the List/Grid button since both change what the window shows, not the folders; the List/Grid toggle pictures the view a click switches TO rather than the one on screen — grid.png while the list is up, list.png while the grid is, re-pointed by `view_button_sync()` off the stack's own `notify::visible-child-name` (NOT from the five places that set the child, so a sixth cannot skip it) and synced once after `show_all` because the toolbar is built after the stack; `view_shows_grid()` is THE one reading of the mode, shared by that icon and by the click, so the picture cannot promise a switch the click will not make, and it answers for the THIRD stack child too — in Action Items, neither list nor grid is up, so it reads `grid_pref`, the mode the pane will come back to.  `on_app_tool_item_set_icon()` is the re-pointing call, sharing `tool_icon_widget()` with `on_app_tool_item_new` so a built button and a re-pointed one cannot disagree about the fallback glyph; the single view.png it used until 2026-09-12 is now the sidebar
+| `src/list_rows.[ch]` | The item objects behind the list widgets: `OnSbRow` (sidebar; `children` GListStore for GtkTreeListModel), `OnNoteRow` (notes list/grid and the search results), `OnActionRow` — plain GObjects with public fields, no properties, because every consumer binds by hand in C.  `on_row_touch(store, row)` is THE in-place update protocol: mutate the fields, then items-changed(pos, 1, 1) on the store — views rebind, a sort model re-sorts, a GtkMultiSelection keeps the row selected by identity (gtkmultiselection.c items_changed_cb re-adds the same object) |
+| `src/library_window.[ch]` | **GTK4 list widgets throughout (2026-09-16, D33)**: the sidebar is a GtkListView over a GtkTreeListModel of `OnSbRow` (list_rows.h; a row's `children` store is what expands, a folder with no subfolders is a LEAF with no arrow), the notes pane is ONE `GListStore` of `OnNoteRow` → GtkSortListModel (fed by the column view's own sorter, so a header click re-sorts the grid too) → ONE GtkMultiSelection shared by the GtkColumnView (list) and the GtkGridView (grid), so the two cannot disagree about the selection; Action Items is a GtkColumnView of `OnActionRow`.  Every row is rendered by a GtkSignalListItemFactory (`on_*_setup` builds the widget once and installs the row's controllers with the GtkListItem stashed as "on-item", `on_*_bind` fills it; the density-dependent title/preview is `on_title_bind`), an in-place change is `on_row_touch` (items-changed for that one item: the views rebind it, the sort model re-sorts it, the multi-selection keeps it by object identity), and a rebuild is one `g_list_store_splice`.  Sidebar (folders+counts+emoji prefix, tags+counts): expansion state survives a rebuild keyed by kind+id (the flattened model lists exactly the on-screen rows, an expanded row is on screen by definition), the selection is restored by `sb_reveal` (walks the OnSbRow tree for the row and expands its ANCESTORS, never the row itself), and the Tags header is unselectable by REVERTING a selection that lands on it.  Notes list: Title/Path/Modified/Created, resizable + sortable, Path and Created hidden by default, widths GTK's own (a column view sizes columns to their content; the tree view's autofit measuring pass and its `list_autofit` key are gone), alternating row tint by CSS `row:nth-child(even):not(:selected)`; Comfortable density renders a bold title + small dimmed body-text preview; notes sorted Modified-newest-first by default (a note drag is a move to a folder, never a reorder), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+, via `on_app_icon_paintable`; the mechanism is GTK4's: a GtkDragSource on every row (installed by the factory) whose `prepare` hands over ONE boxed `OnDragRows` {kind, ids} (D8) and a GtkDropTarget on every SIDEBAR row — `motion` validates (`sidebar_drop_target`: never onto itself or into its own subtree, notes coerced INTO) and paints the indicator as a CSS class on the row (`drop-into`/`-before`/`-after`, by thirds of the row height), `leave` clears, `drop` acts; a press on a selected row that becomes a drag keeps the multi-selection because GTK4's list items select on RELEASE — quirk #15 and its veto are gone), sortable headers, context menus (a CAPTURE-phase right-click gesture per row, `row_click_gesture`; column headers use `gtk_column_view_column_set_header_menu` with the stateful `win.column-<cfg>-<key>` actions), one unified toolbar (folder area \| notes area \| Sidebar, List/Grid, Search, Media, Settings — the sidebar toggle sits LEFT of the List/Grid button since both change what the window shows, not the folders; the List/Grid toggle pictures the view a click switches TO rather than the one on screen — grid.png while the list is up, list.png while the grid is, re-pointed by `view_button_sync()` off the stack's own `notify::visible-child-name` (NOT from the five places that set the child, so a sixth cannot skip it) and synced once after `show_all` because the toolbar is built after the stack; `view_shows_grid()` is THE one reading of the mode, shared by that icon and by the click, so the picture cannot promise a switch the click will not make, and it answers for the THIRD stack child too — in Action Items, neither list nor grid is up, so it reads `grid_pref`, the mode the pane will come back to.  `on_app_tool_item_set_icon()` is the re-pointing call, sharing `tool_icon_widget()` with `on_app_tool_item_new` so a built button and a re-pointed one cannot disagree about the fallback glyph; the single view.png it used until 2026-09-12 is now the sidebar
 button's icons/sidebar.png.  Its Quicknote button (archive.png) calls `on_library_quicknote()` — a note in the ROOT folder whatever is selected, editor to the front; THE one implementation, also behind the `notes quicknote` CLI/IPC command \| Search …; the About button that used to sit at the far right, with its expanding spacer and per-style child swap, was removed 2026-08 — About lives in the File menu only), menubar (File/View — ONE separator in each: File is New Note / New Folder / the two Export All items, rule, then Open Database File… / Settings / About / Quit, i.e. what acts on the NOTES above and what is about the app or its file below; View is Notes as List / Notes as Grid / Show-Hide Sidebar, rule, then Media… / Search Notes…, i.e. what the WINDOW looks like above and the two window-openers below.  A rule between every pair of items divides nothing — that is what both menus had until 2026-09-12, matched to the sister Tasks app.  The sidebar item is an ACTION whose LABEL names what a click does: TWO model items, "Hide Sidebar" on `app.sidebar-hide` and "Show Sidebar" on `app.sidebar-show`, each `hidden-when=action-disabled`, and `sidebar_menu_sync()` enables exactly one from the pane's LIVE visibility — synced once after `show_all`, since nothing is visible before it.  Never by editing the model: see "Actions, menus and shortcuts".  Those two, the toolbar's Folders button (`app.toggle-sidebar`) and everything else that changes the pane route through `sidebar_set_visible()`, THE one place that does, so the label cannot drift from the pane), the menubar MODEL (`build_menubar`, `GMenu` over `app.` actions; `on_library_apply_native_menubar` chooses between `gtk_application_set_menubar` — native on macOS, drawn by the GtkApplicationWindow on Linux — and an in-window `gtk_menu_bar_new_from_model` for the setting's OFF state, macOS only), the action tables (`APP_COMMANDS`/`WIN_COMMANDS`: name → `void (*)(OnLibrary *)`, installed by `library_install_actions`), bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
 | `src/search_query.[ch]` | THE query language, shared by the search window's worker and the CLI's `search` (it replaced `on_note_text_matches`, which knew only one literal needle): `on_query_new` parses the text into terms — bare words ANDed, `"quoted phrases"` matched whole, `-word`/`-"phrase"` excluding — and `on_query_matches` tests one note's title+body against all of them, folding the note ONCE however many terms there are. A '-' with space after it and an empty `""` are ordinary text/nothing; an unclosed quote runs to the end; curly quotes count as quotes (macOS input methods). A query of nothing but exclusions matches every note that avoids them, and one that parses to NO terms reports `on_query_is_empty` so callers can prompt instead of returning zero hits. Regex mode has no term syntax at all — the query is one pattern, compiled here so a bad one is caught before any searching. `on_query_highlight_term` (first positive term, unquoted) is what an opened result seeds the editor's in-note search with |
-| `src/search_window.[ch]` | Search over titles + full text on a worker thread (spinner while running); scope = All Notes / live library selection; case + regex options; the query goes through `search_query.[ch]`, and the parsed OnQuery — immutable, so the worker matches with it freely — IS what the job carries |
+| `src/search_window.[ch]` | Search over titles + full text on a worker thread (results: a GtkColumnView over a GListStore of `OnNoteRow` — id, path, modified — activated by position) (spinner while running); scope = All Notes / live library selection; case + regex options; the query goes through `search_query.[ch]`, and the parsed OnQuery — immutable, so the worker matches with it freely — IS what the job carries |
 | `src/image_viewer.[ch]` | THE modal image viewer, shared by the media browser and the editor: a GtkOverlay child (a dark GtkBox covering the whole overlay whose GtkGestureClick swallows every press meant for the widget behind), a `GtkPicture` (GTK_CONTENT_FIT_SCALE_DOWN — never up, aspect kept; sharp on HiDPI because the texture keeps every pixel) wrapped in a render-node paintable whose intrinsic size is the fit to the overlay less `ON_IMAGE_VIEWER_INSET` and the two label rows, so the caption/action row sits under the picture's corner; a caption + host action link row; and a centred "Previous \| Next" row (ONE GtkLabel carrying both words, split by MIDLINE, quirk #24; NO wrap-around — a dead-end word is dim via the CSS alpha class and the key is consumed).  Click anywhere / Escape closes; Left/Right and the words go through `img_step`.  Hosts are DECOUPLED by `OnImageViewerOps` — `count`/`render`/`caption`/`action`, images addressed by INDEX, `count()` re-read on every use; `render()` returns a GdkPaintable (the full texture) the panel takes over, NULL closes it; `action()` runs AFTER the panel has closed itself.  A tick callback that runs only while the panel is open notices the overlay changing size and asks the host to render again after a 150 ms settle.  **The panel NEVER takes the keyboard focus** (`can-focus` FALSE, no link labels; words are hit-tested from the panel's own gesture with `gtk_widget_compute_bounds`, the hand cursor is `gtk_widget_set_cursor_from_name` from its motion controller) — quirk #23.  `on_image_viewer_key_press(v, keyval, state)` is called from the host WINDOW's CAPTURE-phase key controller.  The panel holds its OWN reference to its widget: GTK4 emits a window's `destroy` AFTER its dispose has torn the child tree down (D21), so `on_image_viewer_free` works in either order and never touches the overlay |
 | `src/media_window.[ch]` | Media browser (library toolbar's images.png button, View \| Media…, Ctrl/Cmd+M): every image embedded in the notes the pane is listing, as a GtkFlowBox of square-boxed thumbnails captioned with their note. Note set comes from `notes_for_selection()` in library_window.c — THE one selection→note-list mapping, shared with `refresh_notes` — and is SNAPSHOTTED at open (id+title only). Scanning runs in 40 ms idle slices (`media_scan_idle`), one image per step, holding the current note's blob across yields; image counts come from `on_note_count_images` (record walk, no decode) and each thumbnail from `on_note_image_nth` at thumb size. Capped at MEDIA_MAX_IMAGES (500) with the truncation said in the status line — every cell holds its own decoded pixels. A single click opens the SHARED modal viewer (`image_viewer.[ch]`, which owns the panel, the clicks, the keys and the Previous | Next row); this window supplies `media_viewer_ops` — cells addressed by `MediaCell.idx` (grid order, append-only), a caption, and the "Show in source note" action link, whose render op re-reads the note's blob at panel size rather than upscaling the thumbnail. Getting to the note is that LINK under the image's bottom-right corner, NOT a double click — the first press of a double click dismisses the panel its second press was aimed at, and before the modal design the same collision made a double click open the wrong note (the in-grid expand reflowed the grid under the pointer). The words are plain labels hit-tested by the panel's own gesture (`img_hit`). `media_viewer_action` calls `on_editor_window_open_image()`. `media_add_cell` calls `on_image_viewer_nav_sync` when a cell lands directly after the one on show — a greyed-out "Next" going live mid-scan, the only nav change a scan can cause |
 | `src/settings_window.[ch]` | List density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar (macOS-only checkbox), and the Database section — a health PLATE (a bordered frame over a GtkGrid, so the five values share one x) saying Health / Current database / Data / Size on disk / SHA-256, with ONE `Update` button under the whole plate because it renews every line of it, over the rotating-backup controls.  There is NO control for WHERE the database lives and there must not be one again: that is File → Open Database File… only (see the Database section's own comment) |
@@ -247,23 +251,19 @@ handlers that duplicate a menu item.
   `SB_FIT_MIN_WIDTH` (also the startup fit's floor — ONE constant, not two
   spellings of 160) and `SB_FIT_MAX_PERCENT` of the paned, so neither a
   library of short names nor a deep branch can make the other pane
-  unusable.  Triggered by the tree view's own `row-expanded` +
-  `row-collapsed` (one handler); the expanded half covers a model rebuild
-  too, since refresh_sidebar's expansion-restore walk expands through that
-  same signal, and the handler is idle-coalesced because that walk fires it
-  once per restored row.  Measurement shares `sb_fit_measure` with the
-  one-shot startup fit, switched by `SbFitCtx.view`: set = on-screen rows
-  only (`sb_row_onscreen` walks the ancestors, since
-  `gtk_tree_view_row_expanded` answers only for the node itself and GTK
-  remembers the flag of a row inside a collapsed parent), NULL = the whole
-  model, which is what the startup fit has always measured.  The fit
-  applies the DIFFERENCE to the current position rather than setting the
-  measured width, so the scrolled window's vertical scrollbar — which comes
-  and goes as folders open and close — is carried along without being
-  measured; that is what makes the same arithmetic correct in both
-  directions, and it reads the scrollbar as it IS because the idle is
-  default-priority, which GTK services after its own resize
-  (HIGH_IDLE+10) has re-laid-out the tree), `first_line_title` (`1|0`, default 1 — treat line 0 as the
+  unusable.  Triggered by the flattened GtkTreeListModel's `items-changed`
+  (a row expanded or collapsed, or a rebuild), idle-coalesced.  The
+  measurement is the list view's OWN natural width: a list view realizes
+  only the rows on screen and an ellipsizing label's natural width is its
+  full text, so `gtk_widget_measure` IS "the widest row the user can see"
+  — the Pango walk of the model went with the tree view.  The scrolled
+  window's vertical scrollbar is added when it shows, so nothing reads the
+  current allocation: the arithmetic is the same before and after the
+  first layout, and the fit only waits for the list to be MAPPED (the
+  startup fit is queued from the list's `map`, in an idle, because
+  unrealized rows measure as nothing — an idle queued from the
+  constructor ran with a 27 px placeholder allocation and put the divider
+  at 290), `first_line_title` (`1|0`, default 1 — treat line 0 as the
   note's title: the editor CENTERS it and renders it heading-sized,
   unconditionally and whatever it holds, so a line becomes the title just
   by landing on line 0 (delete the title line and the body line under it
@@ -316,19 +316,14 @@ handlers that duplicate a menu item.
   `path:0,title:1,modified:1,created:0`
   — written on every header drag/toggle, applied at window
   construction; right-click a column header for the show/hide menu),
-  `list_autofit` (`1|0`, default 1 — same header menu: Path/Modified/Created always show
-  their FULL content, Title takes the ellipsis + expand and is the one
-  column that truncates.  Implemented by MEASURING content with a
-  PangoLayout after every refresh (`list_autofit_apply`) and setting
-  FIXED widths — NOT with GTK_TREE_VIEW_COLUMN_AUTOSIZE, which is
-  unusable: columns cache resized/requested widths that override it
-  (never shrinking back), and ellipsizing renderers report a ~3-char
-  minimum so ellipsized columns collapse instead of fitting.  Manual
-  resize grips come back when it's off),
+  (`list_autofit` was REMOVED 2026-09-16 with the tree view: a
+  GtkColumnView sizes every column to its content and gives the expanding
+  Title the rest, which is what autofit measured by hand; a stale line in
+  an existing ini is simply ignored),
   `list_density_comfortable` (`1|0`, default 1 — Comfortable list
   density: tall rows with a bold title and a small dimmed preview of the
-  first body-text line after the title, rendered via `notes_title_cell_func`
-  using Pango alpha rather than a fixed colour so the preview stays
+  first body-text line after the title, rendered by `on_title_bind`, the
+  preview dimmed by CSS opacity rather than a fixed colour so it stays
   readable on the selection highlight; applies live via
   `notify_notes_changed`). The old DB settings table is
   GONE (dropped from the schema and the live DB 2026-07); all
@@ -528,12 +523,15 @@ GtkTextView exists in the app.**
 | 1, 2 (text-window children) | Superseded: overlays in buffer coordinates, GTK adds the top margin every allocation (D6) |
 | 3, 4 (copy link size / line y) | Still apply |
 | 5 (Retina blur via device scale) | Superseded: textures carry their pixels; grid thumbnails are 1× (D18) |
-| 6–11 | Still apply (6: a toolbar is a `GtkBox.toolbar` now) |
+| 6, 7, 9, 10 | Still apply (6: a toolbar is a `GtkBox.toolbar` now) |
+| 8 (multi-row drag) | Superseded: the row's drag source reads the selection model, D33 |
+| 11 (clearing a store zeroes the scrollbar) | Mostly gone: a list view keeps its scroll anchor across one items-changed; `scroll_keep_queue` stays as the belt for a full splice, D33 |
 | 12 (emoji padding) | Changed: the EMOJI only, D24 |
-| 13 (drop protocol) | Superseded: GtkDropTarget, D5 |
-| 14 (expand_all, drag icon) | Superseded: `gtk_drag_source_set_icon` in `prepare` |
-| 15 (multi-select collapse on press) | Still applies; recipe re-derived, D7 |
-| 16–20 | Still apply |
+| 13 (drop protocol) | Superseded twice: GtkDropTarget (D5), now one per sidebar ROW with a CSS-class indicator, D33 |
+| 14 (expand_all, drag icon) | Superseded: expansion is GtkTreeListRow state restored by kind+id; `gtk_drag_source_set_icon` in `prepare` |
+| 15 (multi-select collapse on press) | GONE: GTK4 list items select on RELEASE (gtklistfactorywidget.c), so a drag from a selected row keeps the selection with no veto, D33 |
+| 16 (type-ahead search column) | Gone with the tree view |
+| 17–20 | Still apply |
 | 21 (window placement) | Gone with the feature |
 | 22 (text-window cursor owner) | Superseded: `gtk_widget_set_cursor_from_name` per widget |
 | 23 (backdrop grey after focus grab) | Design kept (panel never takes focus); not re-measured on GTK4 |
@@ -858,10 +856,16 @@ GtkTextView exists in the app.**
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.
 
-- **`gtk_tree_view_set_drag_dest_row` segfaults unless
-  `gtk_tree_view_enable_model_drag_dest` has run** (D5): the drop
-  indicator's CSS node is created only there.  Call it with an EMPTY
-  format set so its own drop target never fires.
+- **GtkColumnView's row widget is not reachable from a column's factory**
+  (D33): a controller that should cover the whole row (the note drag
+  source, the right-click menu) is installed on EVERY column's cell
+  (`note_cell_controllers`); the effect is the same.  The sidebar's
+  GtkListView hands the factory the whole row, so its controllers are one
+  per row.
+- **A GtkListView measures only its REALIZED rows** (D33): the sidebar
+  fit reads the list's natural width, which is exactly the on-screen
+  rows, but it is meaningless before the list is mapped and laid out —
+  queue the first fit from `map`, not from the constructor.
 - **`<Primary>` is Control everywhere** (D13); Command is `<Meta>`.
 - **A popover parented to a GtkTreeView corrupts its CSS node chain and a
   GtkTextView disposing with a foreign child never returns** (D14):
@@ -881,9 +885,6 @@ GtkTextView exists in the app.**
 - **A paragraph tag on the buffer's LAST line has no newline to cover**
   (D30): `apply_paragraph_format` gives it one, or Enter there breaks the
   block.
-- **GtkCellRendererPixbuf paints a texture at `-gtk-icon-size` (16 px)
-  whatever the cell reserves** (D18): `iconview.<class>.image {
-  -gtk-icon-size: Npx }`.
 - **Joining lines keeps the SECOND line's newline and its paragraph tag**
   (D20): the editor re-asserts the first line's style after a join.
 - **A window's `destroy` fires AFTER its dispose has torn the child tree

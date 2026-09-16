@@ -1653,6 +1653,20 @@ move_caret(OnNoteView *v, OnDocMove how, gboolean extend)
         return;
     }
     OnPos p = on_doc_layout_move(v->layout, v->caret, how, &v->goal_x);
+    /* Down off the LAST line of a code block that ends the note: there is
+     * nowhere to go and Enter only adds another code line, so the block
+     * had no exit.  Open a body line under it and land there.            */
+    if (how == ON_MOVE_LINE_DOWN && !extend && on_pos_cmp(p, v->caret) == 0 &&
+        caret_block(v)->kind == ON_BLOCK_CODE &&
+        v->caret.block + 1 == on_document_n_blocks(v->doc)) {
+        guint at = v->caret.block + 1;
+        on_document_insert_block(v->doc, at, on_block_new_text(ON_BLOCK_PARA));
+        OnPos np = { at, -1, 0 };
+        v->caret = v->anchor = np;
+        v->goal_x = -1;
+        after_edit(v);
+        return;
+    }
     set_caret(v, p, extend);
     adopt_flags(v);
 }

@@ -49,3 +49,13 @@ key Up
 key End
 key Delete
 check 7 check task twoend
+# Down off the last line of a code block that ends the note opens a body
+# line under it (Enter would only add another code line).
+key End primary
+key Return
+para code
+text last code line
+check 8 code last code line
+key Down
+check 9 para 
+caret 9 0

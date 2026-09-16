@@ -236,41 +236,52 @@ gint on_emoji_pad(PangoContext *ctx);
 gchar *on_markup_escape_emoji(const gchar *text, gint pad);
 
 /* ---------------------------------------------------------------------------
- * on_app_widget_add_css() — attach a one-off CSS snippet to a single
- * widget's style context (application priority).  The provider is owned
- * by the style context after this call.
- *   widget   — the widget to style.
- *   css_text — the CSS.
- * ------------------------------------------------------------------------- */
-void on_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
-
-/* ---------------------------------------------------------------------------
- * on_app_notice() — run a modal OK message dialog and destroy it.
+ * on_app_notice() — show a modal OK message (a GtkAlertDialog) over
+ * `parent` and return at once.  Fire-and-forget: GTK4 has no blocking
+ * dialogs, and no caller ever needed the dismissal.
  *   parent — transient parent window, or NULL.
- *   type   — GTK_MESSAGE_INFO/WARNING/ERROR.
- *   title  — window title, or NULL for the GTK default.
+ *   title  — the message's heading, or NULL for the plain message only.
  *   fmt    — printf-style message.
  * ------------------------------------------------------------------------- */
-void on_app_notice(GtkWindow *parent, GtkMessageType type,
-                   const gchar *title, const gchar *fmt, ...)
-                   G_GNUC_PRINTF(4, 5);
+void on_app_notice(GtkWindow *parent, const gchar *title,
+                   const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
+
+/* What on_app_pick_path() asks for.                                         */
+typedef enum {
+    ON_PICK_OPEN,                    /* an existing file                    */
+    ON_PICK_SAVE,                    /* a file name to write                */
+    ON_PICK_FOLDER,                  /* an existing directory               */
+} OnPickKind;
+
+/* on_app_pick_path()'s completion: `path` is the chosen filesystem path
+ * (OWNED by the callback: g_free it) or NULL when the chooser was
+ * cancelled.                                                                */
+typedef void (*OnPickFunc)(gchar *path, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * on_app_pick_path() — run a modal file chooser and return the selection.
+ * on_app_pick_path() — run a modal file chooser (a GtkFileDialog) and
+ * hand the selection to `done`.  ASYNCHRONOUS: returns as soon as the
+ * dialog is up; the rest of the caller's work lives in `done`.
  *   parent         — transient parent window, or NULL.
  *   title          — dialog title.
- *   action         — GTK_FILE_CHOOSER_ACTION_OPEN/SELECT_FOLDER/….
+ *   kind           — what to pick (see OnPickKind).
  *   accept_label   — accept-button label (e.g. "_Open").
  *   filter_name    — display name of a single file filter, or NULL for
  *                    no filter (filter_pattern is ignored when NULL).
- *   filter_pattern — glob the filter matches (e.g. "*.db").
- * Returns the chosen path (g_free), or NULL if cancelled.
+ *   filter_pattern — glob the filter matches (e.g. "*.db"), or NULL with
+ *                    a filter_name for "every image format GDK loads".
+ *   start_dir      — folder the chooser opens in, or NULL for GTK's
+ *                    choice (last used).  A re-pick of a persisted
+ *                    location passes that location, so the chooser
+ *                    starts where the setting points.
+ *   done           — completion callback (always called, once).
+ *   user_data      — passed to `done`.
  * ------------------------------------------------------------------------- */
-gchar *on_app_pick_path(GtkWindow *parent, const gchar *title,
-                        GtkFileChooserAction action,
-                        const gchar *accept_label,
-                        const gchar *filter_name,
-                        const gchar *filter_pattern);
+void on_app_pick_path(GtkWindow *parent, const gchar *title,
+                      OnPickKind kind, const gchar *accept_label,
+                      const gchar *filter_name, const gchar *filter_pattern,
+                      const gchar *start_dir,
+                      OnPickFunc done, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
  * on_app_init_icons_dir() — locate the icons/ folder next to the
@@ -281,81 +292,117 @@ gchar *on_app_pick_path(GtkWindow *parent, const gchar *title,
 void on_app_init_icons_dir(OnApp *app, const gchar *argv0);
 
 /* ---------------------------------------------------------------------------
- * on_app_icon_image_sized() — build a GtkImage for icon `name` from
- * "<icons_dir>/<name>.svg" (then .png), rendered at an explicit pixel
- * size.  The bundled icons are elementary SVGs, which need the librsvg
- * gdk-pixbuf loader to decode.
- *   app  — the application context.
- *   name — icon file basename without extension (e.g. "edit-copy").
- *   size — logical pixel size to render at.
- * Returns a new GtkImage, or NULL if no loadable file exists — callers
+ * on_app_texture_for_pixbuf() — THE pixbuf → GdkTexture edge.  A pixbuf
+ * stays the in-memory image type inside serialize.c (the "on-png" bytes
+ * cache, capped decodes); a widget wants a texture.  This wraps the
+ * pixbuf's pixels in a GdkMemoryTexture — NOT the deprecated
+ * gdk_texture_new_for_pixbuf, and not gdk_texture_new_from_bytes over the
+ * cached PNG either: that decodes pixels the pixbuf already holds.  The
+ * bytes reference keeps the pixbuf alive for the texture's lifetime.
+ *   pixbuf — the source; not consumed.
+ * Returns a new texture (g_object_unref it).
+ * ------------------------------------------------------------------------- */
+GdkTexture *on_app_texture_for_pixbuf(GdkPixbuf *pixbuf);
+
+/* ---------------------------------------------------------------------------
+ * on_app_icon_image_sized() — a GtkImage showing icon `name`, at a LOGICAL
+ * pixel size.  The icons are the PNGs in the app-local icons/ folder, which
+ * main() adds to the icon theme's search path: GTK picks them up by
+ * basename as unthemed icons, loads them at the display's scale factor
+ * (sharp on HiDPI, quirk #5), caches them, and draws at the logical size.
+ * Swapping a PNG in icons/ still re-themes a button (restart to see it).
+ *   app  — the application context (unused: the theme knows the folder).
+ *   name — icon file basename without extension (e.g. "new-folder").
+ *   size — logical pixel size to draw at.
+ * Returns a new GtkImage, or NULL if the theme has no such icon — callers
  * fall back to a text label in that case.
  * ------------------------------------------------------------------------- */
 GtkWidget *on_app_icon_image_sized(OnApp *app, const gchar *name,
                                    gint size);
 
 /* ---------------------------------------------------------------------------
- * on_app_icon_surface() — the raw HiDPI-scaled cairo surface behind
- * on_app_icon_image_sized(), for uses that need a surface rather than a
- * widget (e.g. gtk_drag_set_icon_surface).  Same lookup and scaling.
- *   app  — the application context.
+ * on_app_icon_paintable() — the same icon as a paintable, for uses that
+ * need one rather than a widget (gtk_drag_source_set_icon).  Same lookup;
+ * rendered at the display's scale factor.
+ *   app  — the application context (unused).
  *   name — icon file basename without extension (e.g. "folder").
- *   size — logical pixel size to render at.
- * Returns a new surface (caller cairo_surface_destroy's it), or NULL if
- * no loadable file exists.
+ *   size — logical pixel size.
+ * Returns a new paintable (g_object_unref it), or NULL if the theme has no
+ * such icon.
  * ------------------------------------------------------------------------- */
-cairo_surface_t *on_app_icon_surface(OnApp *app, const gchar *name,
-                                     gint size);
+GdkPaintable *on_app_icon_paintable(OnApp *app, const gchar *name,
+                                    gint size);
 
 /* ---------------------------------------------------------------------------
- * on_app_tool_item_new() — create an icon toolbar button.
+ * on_app_tool_item_new() — create an icon toolbar button: a flat
+ * GtkButton (or GtkToggleButton) whose child is the icon widget.  GTK4
+ * has no GtkToolbar; a toolbar is a GtkBox with the "toolbar" style class
+ * holding these.
  *   app             — the application context.
- *   toggle          — TRUE for a GtkToggleToolButton, FALSE for a plain
- *                     GtkToolButton.
+ *   toggle          — TRUE for a GtkToggleButton, FALSE for a GtkButton.
  *   icon_name       — local icon file to use (see on_app_icon_image), or
  *                     NULL for none.
  *   fallback_markup — Pango markup rendered as the "icon" when the icon
  *                     file is missing (e.g. "<b>H1</b>"); NULL to fall
  *                     back to the plain label.
- *   label           — the button's accessible text label; also the icon
- *                     stand-in when both the icon file and
- *                     fallback_markup are absent.
+ *   label           — the button's accessible text label (its accessible
+ *                     name); also the icon stand-in when both the icon
+ *                     file and fallback_markup are absent.
  *   tooltip         — hover help text.
- * Returns the new tool item (not yet shown).
+ * Returns the new button.
  * ------------------------------------------------------------------------- */
-GtkToolItem *on_app_tool_item_new(OnApp *app, gboolean toggle,
-                                  const gchar *icon_name,
-                                  const gchar *fallback_markup,
-                                  const gchar *label,
-                                  const gchar *tooltip);
+GtkWidget *on_app_tool_item_new(OnApp *app, gboolean toggle,
+                                const gchar *icon_name,
+                                const gchar *fallback_markup,
+                                const gchar *label,
+                                const gchar *tooltip);
 
 /* ---------------------------------------------------------------------------
  * on_app_tool_item_set_icon() — re-point an existing toolbar button at a
  * different icon, for a button whose image names the ACTION it offers
  * rather than a fixed command (the library's List/Grid toggle).  Follows
  * the same icon-file-else-fallback-markup rule as on_app_tool_item_new,
- * and keeps the button's label and tooltip untouched.
+ * and keeps the button's accessible label and tooltip untouched.
  *   app             — the application context.
- *   item            — the tool button to re-point.
+ *   button          — the button to re-point (from on_app_tool_item_new).
  *   icon_name       — local icon file basename, or NULL.
  *   fallback_markup — markup shown when the file is missing.
  * ------------------------------------------------------------------------- */
-void on_app_tool_item_set_icon(OnApp *app, GtkToolItem *item,
+void on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
                                const gchar *icon_name,
                                const gchar *fallback_markup);
 
 /* ---------------------------------------------------------------------------
+ * on_app_set_tooltip() — THE way to give a widget a tooltip (NULL removes
+ * it).  A plain gtk_widget_set_tooltip_text is broken on macOS: GTK keeps
+ * ONE tooltip popup surface and re-presents it for every tooltip, and when
+ * the next tooltip needs a different size the surface is resized while
+ * hidden — which the macOS backend's layer does not follow for about a
+ * second (D32: the content stays tiled at the previous size and the box
+ * comes out cut off mid-text).  It shows on a hover that follows another
+ * tooltip closely — sweeping along a toolbar.  So the helper shows the
+ * text through a custom label and REFUSES a tooltip asked for within
+ * TOOLTIP_MIN_GAP_MS of the previous one hiding, asking again when the
+ * time has passed: tooltips keep their natural size, and consecutive ones
+ * come a beat slower than GTK's browse mode would show them.
+ * ------------------------------------------------------------------------- */
+void on_app_set_tooltip(GtkWidget *widget, const gchar *text);
+
+/* ---------------------------------------------------------------------------
  * on_app_menu_popup() — pop up a one-shot context menu built from a menu
- * model, at the pointer of the triggering event.  THE transient-popup
- * scaffold for every right-click menu in the app: the menu is attached to
- * `attach` (so its "win."/"app." action names resolve through that
- * widget's window) and destroys itself once its selection is done.
- *   attach — a widget inside the window whose actions the items name.
- *   model  — the items; OWNERSHIP IS TAKEN (the menu keeps its own ref).
- *   event  — the button press to place the menu at.
+ * model, at a point in a widget.  THE transient-popup scaffold for every
+ * right-click menu in the app: a GtkPopoverMenu parented to the WINDOW's
+ * child box (not to `attach` — see the implementation for why a tree view
+ * or text view cannot take one), pointing at (x, y) translated into that
+ * box, that unparents and drops itself once closed.  Actions resolve
+ * through the window either way.
+ *   attach — the widget the press landed in (any widget in a window).
+ *   model  — the items; OWNERSHIP IS TAKEN (the popover keeps its own ref).
+ *   x, y   — the press position in `attach`'s coordinates (what a
+ *            GtkGestureClick "pressed" handler receives).
  * ------------------------------------------------------------------------- */
 void on_app_menu_popup(GtkWidget *attach, GMenuModel *model,
-                       GdkEventButton *event);
+                       gdouble x, gdouble y);
 
 /* ---------------------------------------------------------------------------
  * on_app_install_accels() — THE keyboard-shortcut table, bound once at
@@ -397,17 +444,28 @@ gboolean on_app_config_get_bool(const gchar *key, gboolean def);
  * provider that hides GTK's touch aids — the teardrop drag handles under
  * selections/the cursor ("cursor-handle" nodes, collapsed to nothing)
  * and the selection magnifier (its popover, rendered transparent).  Some
- * Linux input stacks pop these up for plain mouse selections; GTK3 has
- * no API to turn them off, so CSS is the lever.  Removes the provider
- * again when assistance is re-enabled.  Safe to call any time after GTK
- * is initialized; applies live.  The tap cut/copy/paste bubble is the
- * OTHER half of the setting: CSS cannot hide it safely (its buttons
- * would stay clickable while invisible), so main() suppresses it — and
- * the touch classification behind all of these — with
- * GDK_CORE_DEVICE_EVENTS=1 before GTK init (restart to change).
+ * Linux input stacks pop these up for plain mouse selections; GTK has no
+ * API to turn them off, so CSS is the lever.  Removes the provider again
+ * when assistance is re-enabled.  Safe to call any time after GTK is
+ * initialized; applies live.  The node names are verified against GTK
+ * 4.22.4 (see the function); the GTK3 build also set
+ * GDK_CORE_DEVICE_EVENTS=1 to suppress the tap cut/copy/paste bubble, which
+ * has no GTK4 equivalent.
  *   app — the application context (owns the provider).
  * ------------------------------------------------------------------------- */
 void on_app_apply_touch_assist(OnApp *app);
+
+/* ---------------------------------------------------------------------------
+ * on_app_install_css() — the app-wide DISPLAY-level stylesheet, installed
+ * once per process (later calls are no-ops): the rules for the "notes-"
+ * classes MORE THAN ONE window uses, so each look has one definition.
+ *   notes-status-label — a status-bar label (library and editor): 85%.
+ *   notes-dot-label    — a one-glyph indicator label (the editor's
+ *                        save-state dot, the Settings health LED): 70%.
+ * Per-window rules live in each module's own <module>_install_css().
+ * Call any time after GTK is initialized (there must be a display).
+ * ------------------------------------------------------------------------- */
+void on_app_install_css(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_set() — change one setting: updates the in-memory config

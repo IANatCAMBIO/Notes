@@ -10,21 +10,30 @@
  *                children).  Row kinds are distinguished by the SB_KIND
  *                column.
  *
- *   notes pane — a GtkListStore shown either as a GtkTreeView (list mode,
- *                drag-reorderable) or a GtkIconView (grid mode).  Both
- *                views stay attached to the same store; a GtkStack flips
- *                between them.
+ *   notes pane — a GtkListStore shown either as a GtkTreeView (list mode)
+ *                or a GtkIconView (grid mode).  Both views stay attached
+ *                to the same store; a GtkStack flips between them.
  *
- *   drag&drop  — list rows use GtkTreeView's built-in reordering; the
- *                resulting order is persisted from the "row-deleted"
- *                signal.  Both views are also GTK_TREE_MODEL_ROW drag
- *                sources, and the sidebar accepts those drops to move a
- *                note into a folder.  The sidebar is a drag source too:
- *                a folder row drops INTO a folder (re-nest), BETWEEN
- *                folders (reorder/re-nest beside the sibling), onto
- *                Trash (delete gesture), or out of Trash (restore).
- *                The sidebar's dest protocol is fully custom (quirk #13).
+ *   drag&drop  — both notes views are GtkDragSources handing over the
+ *                selected note ids, and the sidebar is THE GtkDropTarget:
+ *                a note drop moves the notes into the folder (or trashes
+ *                them).  The sidebar is a drag source too: a folder row
+ *                drops INTO a folder (re-nest), BETWEEN folders
+ *                (reorder/re-nest beside the sibling), onto Trash (delete
+ *                gesture), or out of Trash (restore).  One boxed value
+ *                type, OnDragRows, is the whole content of every drag
+ *                (GTK4_MIGRATION.md, D8).
  * =========================================================================== */
+
+/* This file lives on the DEPRECATED GtkTreeView / GtkIconView family by
+ * decision (GTK4_MIGRATION.md, "Tree views stay on the deprecated
+ * GtkTreeView family"): the sidebar, the notes list, the Action Items view
+ * and the grid keep their tree models and cell renderers until the GTK5
+ * migration replaces them with list models.  The per-call deprecation
+ * warnings are silenced for the whole file rather than wrapping a few
+ * hundred call sites; every OTHER file still warns.                         */
+#define GDK_DISABLE_DEPRECATION_WARNINGS
+#define GTK_DISABLE_DEPRECATION_WARNINGS
 
 #include "library_window.h"
 #include "backup.h"
@@ -35,7 +44,6 @@
 #include "serialize.h"
 #include "settings_window.h"
 
-#include <cairo-gobject.h>
 #include <glib/gstdio.h>
 #include <string.h>
 
@@ -61,7 +69,8 @@
 /* How far the sidebar backdrop sits below the toolbar/window background it
  * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
  * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
- * pasted into two CSS declarations in library_build_sidebar.                */
+ * pasted into one CSS declaration in library_install_css, shared by the
+ * tree view and the spacer strip above it.                                  */
 #define SB_BG_SHADE "0.96"
 
 /* Sidebar row kinds (SB_KIND column).                                       */
@@ -91,7 +100,7 @@ enum {
     NL_ID,                           /* gint64: note id                     */
     NL_TITLE,                        /* gchar*: note title                  */
     NL_MODIFIED,                     /* gchar*: formatted updated_at        */
-    NL_THUMB,                        /* cairo_surface_t*: grid thumbnail    */
+    NL_THUMB,                        /* GdkTexture*: grid thumbnail         */
     NL_UPDATED,                      /* gint64: raw updated_at (sort key)   */
     NL_PATH,                         /* gchar*: "/Folder/Sub" location      */
     NL_CREATED,                      /* gchar*: formatted created_at        */
@@ -116,12 +125,63 @@ enum {
 /* How many columns the Action Items list owns (done, Action, Due Date).    */
 #define N_ACTION_COLUMNS 3
 
-/* Drag-and-drop target shared by the notes views (sources) and the
- * sidebar (destination).  GTK_TREE_MODEL_ROW is the built-in target used
- * by GtkTreeView's own reordering machinery, so one target serves both
- * in-list reordering and note→folder drops.                                */
-static const GtkTargetEntry ROW_TARGET =
-    { (gchar *)"GTK_TREE_MODEL_ROW", GTK_TARGET_SAME_APP, 0 };
+/* ---------------------------------------------------------------------------
+ * OnDragRows — THE content of every drag in this window (D8): what is being
+ * dragged, as a boxed GValue that crosses the process-internal drag with no
+ * serialization.  Both notes views and the sidebar produce one; the sidebar
+ * is the only widget that accepts one.  No MIME type exists for it, so a
+ * drop from any other application cannot carry the GType and the target
+ * never sees it.
+ *
+ * Fields:
+ *   kind — what the ids name (see OnDragKind).
+ *   ids  — gint64 note ids, or exactly ONE folder id.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    ON_DRAG_NOTES,                   /* note ids from the notes list/grid   */
+    ON_DRAG_FOLDER,                  /* one folder row of the sidebar tree  */
+    ON_DRAG_TRASHED_FOLDER,          /* one folder row under Trash: a drop
+                                        outside Trash restores it           */
+} OnDragKind;
+
+typedef struct {
+    OnDragKind kind;
+    GArray    *ids;
+} OnDragRows;
+
+/* on_drag_rows_new() — an empty OnDragRows of `kind`.                       */
+static OnDragRows *
+on_drag_rows_new(OnDragKind kind)
+{
+    OnDragRows *rows = g_new(OnDragRows, 1);
+    rows->kind = kind;
+    rows->ids  = g_array_new(FALSE, FALSE, sizeof(gint64));
+    return rows;
+}
+
+/* on_drag_rows_copy() — GBoxedCopyFunc: a deep copy (GValue semantics).    */
+static OnDragRows *
+on_drag_rows_copy(const OnDragRows *src)
+{
+    OnDragRows *rows = on_drag_rows_new(src->kind);
+    g_array_append_vals(rows->ids, src->ids->data, src->ids->len);
+    return rows;
+}
+
+/* on_drag_rows_free() — GBoxedFreeFunc.                                     */
+static void
+on_drag_rows_free(OnDragRows *rows)
+{
+    g_array_free(rows->ids, TRUE);
+    g_free(rows);
+}
+
+/* The GType, registered once by G_DEFINE_BOXED_TYPE (which defines the
+ * getter with external linkage — declared here so the symbol is on record). */
+GType on_drag_rows_get_type(void);
+G_DEFINE_BOXED_TYPE(OnDragRows, on_drag_rows, on_drag_rows_copy,
+                    on_drag_rows_free)
+#define ON_TYPE_DRAG_ROWS (on_drag_rows_get_type())
 
 /* ---------------------------------------------------------------------------
  * OnLibrary — all state for the library window.
@@ -157,9 +217,10 @@ static const GtkTargetEntry ROW_TARGET =
  *                   gtk_application_set_menubar, which GTK renders in the
  *                   native macOS menu bar or, where the shell has none, at
  *                   the top of this GtkApplicationWindow.
- *   menubar       — an in-window GtkMenuBar over the same model, macOS
- *                   only: shown while the "native_menubar" setting is off
- *                   (see on_library_apply_native_menubar).  NULL elsewhere.
+ *   menubar       — an in-window GtkPopoverMenuBar over the same model,
+ *                   macOS only: shown while the "native_menubar" setting
+ *                   is off (see on_library_apply_native_menubar).  NULL
+ *                   elsewhere.
  *   column_menu_view — the list view whose column header was last
  *                   right-clicked; the "column-<key>" actions act on it.
  *   view_btn      — the toolbar's List/Grid toggle, kept so its ICON can
@@ -196,7 +257,8 @@ typedef struct {
                                             the span of a press on an
                                             already-selected list row, so
                                             a drag keeps the whole
-                                            multi-selection (quirk #15)    */
+                                            multi-selection (quirk #15,
+                                            still true on GTK4: D7)        */
     GtkTreePath  *notes_press_path;      /* the row that press landed on
                                             (owned): a plain click
                                             collapses to it on release     */
@@ -224,9 +286,9 @@ typedef struct {
     GtkWidget    *status_event;
     GtkWidget    *status_revealer;
     guint         status_timeout;
-    GtkToolItem  *view_btn;            /* List/Grid toggle; icon names the
+    GtkWidget    *view_btn;            /* List/Grid toggle; icon names the
                                         * view a click switches TO           */
-    GtkToolItem  *ai_btn;              /* microchip AI toolbar button          */
+    GtkWidget    *ai_btn;              /* microchip AI toolbar button          */
     GtkWidget    *ai_pane;             /* output pane below the notes stack    */
     GtkWidget    *ai_text;             /* non-editable text view inside it     */
     guint         ai_throbber_id;       /* g_timeout_add id while AI running    */
@@ -247,11 +309,11 @@ typedef struct {
  * Fields:
  *   updated_at — the note's updated_at when the thumbnail was rendered;
  *                a mismatch means the cache entry is stale.
- *   pix        — the rendered thumbnail (owned reference).
+ *   texture    — the rendered thumbnail (owned reference).
  * ------------------------------------------------------------------------- */
 typedef struct {
-    gint64           updated_at;
-    cairo_surface_t *surface;
+    gint64      updated_at;
+    GdkTexture *texture;
 } ThumbEntry;
 
 /* thumb_entry_free() — GDestroyNotify for cache values.                     */
@@ -259,8 +321,7 @@ static void
 thumb_entry_free(gpointer data)
 {
     ThumbEntry *e = data;
-    if (e->surface != NULL)
-        cairo_surface_destroy(e->surface);
+    g_clear_object(&e->texture);
     g_free(e);
 }
 
@@ -273,7 +334,7 @@ thumb_entry_free(gpointer data)
  * once hung the window for ~40 s on a 1200-note database.
  *
  * Fields:
- *   row        — where to deliver the surface (owned; safely goes
+ *   row        — where to deliver the texture (owned; safely goes
  *                invalid if the model is rebuilt or the row removed).
  *   id         — the note to render.
  *   updated_at — its updated_at when the row was populated (cache key).
@@ -312,7 +373,6 @@ static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
-static guint   selected_note_count(OnLibrary *lw);
 static void    list_autofit_set(OnLibrary *lw, PangoLayout *lay,
                                 const gchar *key, gint content_w);
 static gboolean list_column_shown(OnLibrary *lw, const gchar *key);
@@ -809,45 +869,39 @@ refresh_sidebar(OnLibrary *lw)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * render_note_thumb() — draw a square THUMB_SIZE (logical) card for one
- * note: its first embedded image (if any) above the beginning of its body
- * text.  The card is rendered at the window's scale factor and returned
- * as a cairo surface with a matching device scale, so it is sharp on
- * HiDPI/Retina displays.  The title is NOT drawn here — the grid shows it
- * as a real text label under the card.
- *   lw — the library window (for the database and scale factor).
+ * render_note_thumb() — draw a square THUMB_SIZE card for one note: its
+ * first embedded image (if any) above the beginning of its body text,
+ * returned as a GdkTexture of exactly THUMB_SIZE pixels.  The size is
+ * deliberately the LOGICAL one: GtkCellRendererPixbuf lays a texture out
+ * at its pixel width (gdk_paintable_get_intrinsic_width), so a card
+ * rendered at scale-factor resolution would draw twice as large on a
+ * HiDPI display, not sharper.  The title is NOT drawn here — the grid
+ * shows it as a real text label under the card.
+ *   lw — the library window (for the database).
  *   id — the note to render.
- * Returns a new cairo surface reference.
+ * Returns a new texture reference.
  * ------------------------------------------------------------------------- */
-static cairo_surface_t *
+static GdkTexture *
 render_note_thumb(OnLibrary *lw, gint64 id)
 {
-    /* Load the note into an offscreen buffer, capping image decode at
-     * 512 px: the card preview is at most ~256 physical pixels wide, so a
-     * full-resolution decode (tens of MB per screenshot) is pure waste.
-     * This buffer is never saved, so the scaled pixbufs are fine.          */
-    GtkTextBuffer *buf = on_note_buffer_load(lw->app->db, id, 512);
-
-    /* First embedded image, if any (borrowed ref, kept alive by buf).      */
-    GdkPixbuf *img = NULL;           /* preview image for the card          */
-    GtkTextIter it;                  /* scan cursor                         */
-    gtk_text_buffer_get_start_iter(buf, &it);
-    do {
-        GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&it);
-        img = (anchor != NULL) ? on_anchor_get_image(anchor, NULL)
-                               : gtk_text_iter_get_pixbuf(&it);
-        if (img != NULL)
-            break;
-    } while (gtk_text_iter_forward_char(&it));
-
+    /* The note as a document: nothing decoded.  Its FIRST image, if any,
+     * is decoded here capped at 512 px — the card preview is at most ~256
+     * physical pixels wide, so a full-resolution decode (tens of MB per
+     * screenshot) would be pure waste.                                     */
+    OnDocument *doc = on_note_document_load(lw->app->db, id);
+    GdkPixbuf *img = NULL;           /* preview image for the card (owned)  */
+    GBytes *png = on_document_image_nth(doc, 0, NULL);
+    if (png != NULL) {
+        gsize n_png;
+        const guint8 *bytes = g_bytes_get_data(png, &n_png);
+        img = on_png_decode_capped(bytes, n_png, 512);
+    }
     /* Body text: everything after the TITLE line.  The title is the first
-     * non-empty line (matching on_buffer_first_line, which derives the
-     * name shown under the card) — skipping only the literal first line
-     * used to leave the title duplicated inside the thumbnail whenever a
-     * note began with blank lines.                                         */
-    GtkTextIter s, e;                /* full buffer bounds                  */
-    gtk_text_buffer_get_bounds(buf, &s, &e);
-    gchar *text = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+     * non-empty line (matching on_document_title, which derives the name
+     * shown under the card) — skipping only the literal first line used
+     * to leave the title duplicated inside the thumbnail whenever a note
+     * began with blank lines.                                              */
+    gchar *text = on_document_plain_text(doc);
     const gchar *body = text;        /* start of the post-title content     */
     while (*body == '\n')
         body++;                      /* skip leading blank lines            */
@@ -862,12 +916,11 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     while (*p && n < 300) { p = g_utf8_next_char(p); n++; }
     gchar *body_cut = g_strndup(body, (gsize)(p - body));
 
-    /* Render at the display's scale factor so the card is pixel-sharp.     */
-    gint sf = gtk_widget_get_scale_factor(lw->window);
-    const gint SZ = THUMB_SIZE;      /* logical square edge length          */
+    /* Draw with cairo at the card's pixel size (see the banner comment on
+     * why it is not the scale-factor size).                                */
+    const gint SZ = THUMB_SIZE;      /* square edge length in pixels        */
     cairo_surface_t *surface = cairo_image_surface_create(
-        CAIRO_FORMAT_ARGB32, SZ * sf, SZ * sf);
-    cairo_surface_set_device_scale(surface, sf, sf);
+        CAIRO_FORMAT_ARGB32, SZ, SZ);
     cairo_t *cr = cairo_create(surface);
 
     /* White background with a light border.                                */
@@ -881,8 +934,7 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     gdouble y = 6;                   /* current vertical drawing position   */
 
     if (img != NULL) {
-        /* Fit the image into the card's top area (logical units; cairo's
-         * device scale keeps the physical pixels dense).                   */
+        /* Fit the image into the card's top area.                          */
         gint iw = gdk_pixbuf_get_width(img);
         gint ih = gdk_pixbuf_get_height(img);
         gdouble scale = MIN((gdouble)(SZ - 12) / iw, 72.0 / ih);
@@ -921,10 +973,23 @@ render_note_thumb(OnLibrary *lw, gint64 id)
     g_object_unref(layout);
     cairo_destroy(cr);
 
+    /* Hand the pixels to a texture.  GDK_MEMORY_DEFAULT IS cairo's
+     * ARGB32 layout (premultiplied, native byte order), so the buffer is
+     * copied once and never converted.                                     */
+    cairo_surface_flush(surface);
+    gint stride = cairo_image_surface_get_stride(surface);
+    GBytes *pixels = g_bytes_new(cairo_image_surface_get_data(surface),
+                                 (gsize)stride * SZ);
+    GdkTexture *texture = gdk_memory_texture_new(SZ, SZ, GDK_MEMORY_DEFAULT,
+                                                 pixels, (gsize)stride);
+    g_bytes_unref(pixels);
+    cairo_surface_destroy(surface);
+
     g_free(body_cut);
     g_free(text);
-    g_object_unref(buf);
-    return surface;
+    g_clear_object(&img);
+    on_document_free(doc);
+    return texture;
 }
 
 /* ---------------------------------------------------------------------------
@@ -932,17 +997,17 @@ render_note_thumb(OnLibrary *lw, gint64 id)
  * when the note's updated_at changed since the cached render.
  * Returns a borrowed reference owned by the cache.
  * ------------------------------------------------------------------------- */
-static cairo_surface_t *
+static GdkTexture *
 get_note_thumb(OnLibrary *lw, gint64 id, gint64 updated_at)
 {
     ThumbEntry *e = g_hash_table_lookup(lw->thumb_cache, &id);
     if (e != NULL && e->updated_at == updated_at)
-        return e->surface;
+        return e->texture;
 
-    cairo_surface_t *thumb = render_note_thumb(lw, id);
+    GdkTexture *thumb = render_note_thumb(lw, id);
     e = g_new0(ThumbEntry, 1);
     e->updated_at = updated_at;
-    e->surface    = thumb;
+    e->texture    = thumb;
 
     gint64 *key = g_new(gint64, 1);
     *key = id;
@@ -972,7 +1037,7 @@ thumb_fill_idle(gpointer user_data)
             ? gtk_tree_row_reference_get_path(job->row)
             : NULL;
         if (path != NULL) {
-            cairo_surface_t *thumb =     /* borrowed from the cache         */
+            GdkTexture *thumb =          /* borrowed from the cache         */
                 get_note_thumb(lw, job->id, job->updated_at);
             GtkTreeIter iter;            /* the row to update               */
             if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store),
@@ -1235,12 +1300,12 @@ refresh_notes(OnLibrary *lw)
          * — a stale entry still shows (better than a blank card) while
          * thumb_fill_idle (queued below) renders the replacement.
          * Rendering every stale/missing thumbnail here froze the GUI.      */
-        cairo_surface_t *thumb = NULL;   /* borrowed from the cache         */
+        GdkTexture *thumb = NULL;        /* borrowed from the cache         */
         gboolean thumb_todo = FALSE;     /* queue a render for this row?    */
         if (want_thumbs) {
             ThumbEntry *e = g_hash_table_lookup(lw->thumb_cache, &m->id);
             if (e != NULL)
-                thumb = e->surface;
+                thumb = e->texture;
             thumb_todo = e == NULL || e->updated_at != m->updated_at;
         }
 
@@ -1357,52 +1422,6 @@ refresh_all(OnLibrary *lw)
 {
     refresh_sidebar(lw);
     refresh_notes(lw);
-}
-
-/* ---------------------------------------------------------------------------
- * persist_note_order() — write the notes model's current row order back
- * to the database.  Only meaningful when a folder (not a tag) is shown.
- * ------------------------------------------------------------------------- */
-static void
-persist_note_order(OnLibrary *lw)
-{
-    /* Only real folder views own an ordering; the tag, pinned, all-notes
-     * and trash views are assembled from elsewhere (persisting a drag in
-     * All Notes would scramble every folder's internal order).             */
-    if (lw->sel_kind == SB_KIND_TAG || lw->sel_kind == SB_KIND_PINNED ||
-        lw->sel_kind == SB_KIND_ALL || lw->sel_kind == SB_KIND_ACTIONS ||
-        in_trash_view(lw))
-        return;
-
-    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    GtkTreeIter iter;                /* row cursor                          */
-    gboolean valid = gtk_tree_model_get_iter_first(
-        GTK_TREE_MODEL(lw->notes_store), &iter);
-    while (valid) {
-        gint64 id;                   /* note id of this row                 */
-        gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
-                           NL_ID, &id, -1);
-        g_array_append_val(ids, id);
-        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(lw->notes_store),
-                                         &iter);
-    }
-    on_db_note_reorder(lw->app->db, (gint64 *)ids->data, ids->len);
-    g_array_free(ids, TRUE);
-}
-
-/* ---------------------------------------------------------------------------
- * on_notes_row_deleted() — fires at the end of a built-in drag-reorder
- * (GtkTreeView implements reordering as insert+delete).  Persist the new
- * order unless we are the ones rewriting the model.
- * ------------------------------------------------------------------------- */
-static void
-on_notes_row_deleted(GtkTreeModel *model, GtkTreePath *path,
-                     gpointer user_data)
-{
-    (void)model; (void)path;
-    OnLibrary *lw = user_data;       /* owning library window               */
-    if (lw->populating == 0)
-        persist_note_order(lw);
 }
 
 /* ===========================================================================
@@ -1537,58 +1556,54 @@ on_action_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 }
 
 /* ---------------------------------------------------------------------------
- * action_due_dialog() — modal calendar for one action item's due date.
- * Set rewrites the "due YYYY-MM-DD" suffix of the '!' line in the note
- * text (on_editor_action_set_due), Clear removes it; the store row
- * updates immediately, the durable action_items row follows from the
- * content rewrite.
+ * DueDialog — what the due-date dialog's response callback needs, carried
+ * as object data on the dialog.
+ *
+ * Fields:
+ *   lw       — the library window.
+ *   row      — the Action Items row the date is for (owned; goes invalid
+ *              if the model is rebuilt while the dialog is up).
+ *   note_id/
+ *   ord      — the item's address in the note.
+ *   cal      — the GtkCalendar in the dialog.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    OnLibrary           *lw;
+    GtkTreeRowReference *row;
+    gint64               note_id;
+    gint                 ord;
+    GtkWidget           *cal;
+} DueDialog;
+
+/* due_dialog_free() — GDestroyNotify for the DueDialog on the dialog.       */
+static void
+due_dialog_free(gpointer data)
+{
+    DueDialog *d = data;
+    gtk_tree_row_reference_free(d->row);
+    g_free(d);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_due_response() — the due-date dialog closed.  Set rewrites the
+ * "due YYYY-MM-DD" suffix of the '!' line in the note text
+ * (on_editor_action_set_due), Clear removes it; the store row updates
+ * immediately, the durable action_items row follows from the content
+ * rewrite.  A row that vanished meanwhile (the model was rebuilt under the
+ * dialog) is covered by a repopulate, which reads the rewritten mirror.
  * ------------------------------------------------------------------------- */
 static void
-action_due_dialog(OnLibrary *lw, GtkTreeIter *iter)
+on_due_response(GtkDialog *dlg, gint response, gpointer user_data)
 {
-    gint64 note_id, due;             /* the item's address + current due    */
-    gint   ord;
-    gtk_tree_model_get(GTK_TREE_MODEL(lw->actions_store), iter,
-                       AL_NOTE_ID, &note_id,
-                       AL_ORD,     &ord,
-                       AL_DUE_RAW, &due,
-                       -1);
-
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Notes - Due Date", GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
-        "_Clear",  1,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Set",    GTK_RESPONSE_OK,
-        NULL);
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
-
-    GtkWidget *cal = gtk_calendar_new();
-    if (due != 0) {                  /* open on the current due date        */
-        GDateTime *dt = g_date_time_new_from_unix_local(due);
-        gtk_calendar_select_month(GTK_CALENDAR(cal),
-                                  (guint)(g_date_time_get_month(dt) - 1),
-                                  (guint)g_date_time_get_year(dt));
-        gtk_calendar_select_day(GTK_CALENDAR(cal),
-                                (guint)g_date_time_get_day_of_month(dt));
-        g_date_time_unref(dt);
-    }
-    /* GtkCalendar is a plain widget, not a container: use margins.         */
-    gtk_widget_set_margin_start(cal, 8);
-    gtk_widget_set_margin_end(cal, 8);
-    gtk_widget_set_margin_top(cal, 8);
-    gtk_widget_set_margin_bottom(cal, 8);
-    gtk_box_pack_start(
-        GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
-        cal, TRUE, TRUE, 0);
-    gtk_widget_show_all(cal);
-
-    gint response = gtk_dialog_run(GTK_DIALOG(dlg));
+    DueDialog *d  = user_data;       /* the dialog's state                  */
+    OnLibrary *lw = d->lw;
     gint64 new_due = -1;             /* -1 = leave unchanged                */
     if (response == GTK_RESPONSE_OK) {
-        guint y, m, d;               /* calendar month is 0-based           */
-        gtk_calendar_get_date(GTK_CALENDAR(cal), &y, &m, &d);
-        GDateTime *dt = g_date_time_new_local((gint)y, (gint)m + 1,
-                                              (gint)d, 0, 0, 0);
+        GDateTime *picked = gtk_calendar_get_date(GTK_CALENDAR(d->cal));
+        GDateTime *dt = g_date_time_new_local(   /* local midnight          */
+            g_date_time_get_year(picked), g_date_time_get_month(picked),
+            g_date_time_get_day_of_month(picked), 0, 0, 0);
+        g_date_time_unref(picked);
         if (dt != NULL) {
             new_due = g_date_time_to_unix(dt);
             g_date_time_unref(dt);
@@ -1596,23 +1611,83 @@ action_due_dialog(OnLibrary *lw, GtkTreeIter *iter)
     } else if (response == 1) {
         new_due = 0;                 /* Clear                               */
     }
-    gtk_widget_destroy(dlg);
-    if (new_due < 0)
-        return;
 
-    if (on_editor_action_set_due(lw->app, note_id, ord, new_due)) {
-        gchar *when = NULL;          /* formatted for the Due Date cell     */
-        if (new_due != 0) {
-            GDateTime *dt = g_date_time_new_from_unix_local(new_due);
-            when = g_date_time_format(dt, "%b %e, %Y");
-            g_date_time_unref(dt);
+    if (new_due >= 0 &&
+        on_editor_action_set_due(lw->app, d->note_id, d->ord, new_due)) {
+        GtkTreePath *path = gtk_tree_row_reference_get_path(d->row);
+        GtkTreeIter  iter;           /* the row, if it still exists         */
+        if (path != NULL &&
+            gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->actions_store),
+                                    &iter, path)) {
+            gchar *when = NULL;      /* formatted for the Due Date cell     */
+            if (new_due != 0) {
+                GDateTime *dt = g_date_time_new_from_unix_local(new_due);
+                when = g_date_time_format(dt, "%b %e, %Y");
+                g_date_time_unref(dt);
+            }
+            gtk_list_store_set(lw->actions_store, &iter,
+                               AL_DUE,     when != NULL ? when : "",
+                               AL_DUE_RAW, new_due,
+                               -1);
+            g_free(when);
+        } else {
+            refresh_notes(lw);
         }
-        gtk_list_store_set(lw->actions_store, iter,
-                           AL_DUE,     when != NULL ? when : "",
-                           AL_DUE_RAW, new_due,
-                           -1);
-        g_free(when);
+        gtk_tree_path_free(path);
     }
+    gtk_window_destroy(GTK_WINDOW(dlg));
+}
+
+/* ---------------------------------------------------------------------------
+ * action_due_dialog() — modal calendar for one action item's due date;
+ * on_due_response applies the choice.
+ *   lw   — the library window.
+ *   path — the Action Items row (NOT owned).
+ * ------------------------------------------------------------------------- */
+static void
+action_due_dialog(OnLibrary *lw, GtkTreePath *path)
+{
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->actions_store);
+    GtkTreeIter iter;                /* the row                             */
+    if (!gtk_tree_model_get_iter(model, &iter, path))
+        return;
+    DueDialog *d = g_new0(DueDialog, 1);
+    d->lw  = lw;
+    d->row = gtk_tree_row_reference_new(model, path);
+    gint64 due;                      /* the item's current due date         */
+    gtk_tree_model_get(model, &iter,
+                       AL_NOTE_ID, &d->note_id,
+                       AL_ORD,     &d->ord,
+                       AL_DUE_RAW, &due,
+                       -1);
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        "Notes - Due Date", GTK_WINDOW(lw->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "_Clear",  1,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Set",    GTK_RESPONSE_OK,
+        NULL);
+    gtk_widget_add_css_class(dlg, "notes-dialog");   /* library_install_css */
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+
+    d->cal = gtk_calendar_new();
+    if (due != 0) {                  /* open on the current due date        */
+        GDateTime *dt = g_date_time_new_from_unix_local(due);
+        gtk_calendar_select_day(GTK_CALENDAR(d->cal), dt);
+        g_date_time_unref(dt);
+    }
+    gtk_widget_set_margin_start(d->cal, 8);
+    gtk_widget_set_margin_end(d->cal, 8);
+    gtk_widget_set_margin_top(d->cal, 8);
+    gtk_widget_set_margin_bottom(d->cal, 8);
+    gtk_widget_set_vexpand(d->cal, TRUE);
+    gtk_box_append(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
+                   d->cal);
+
+    g_object_set_data_full(G_OBJECT(dlg), "on-due", d, due_dialog_free);
+    g_signal_connect(dlg, "response", G_CALLBACK(on_due_response), d);
+    gtk_window_present(GTK_WINDOW(dlg));
 }
 
 /* on_action_row_activated() — double-click: the Due Date cell opens the
@@ -1631,7 +1706,7 @@ on_action_row_activated(GtkTreeView *view, GtkTreePath *path,
     if (column != NULL &&
         g_strcmp0(g_object_get_data(G_OBJECT(column), "on-colkey"),
                   "due") == 0) {
-        action_due_dialog(lw, &iter);
+        action_due_dialog(lw, path);
         return;
     }
 
@@ -1682,28 +1757,79 @@ folder_move_beside(OnLibrary *lw, gint64 folder_id, gint64 new_parent,
 }
 
 /* ---------------------------------------------------------------------------
- * sidebar_drop_target() — resolve and validate the drop target under the
- * pointer for the drag in `context`.  Which rows are legal depends on the
- * drag's SOURCE widget: from the sidebar itself only folder rows move
- * (onto folders, the root, or the Trash, never onto themselves or into
- * their own subtree — the dragged row is the sidebar's selected row,
- * since a button press always moves the single-mode selection before the
- * drag threshold is crossed); from the notes views any folder-ish row
- * accepts, and the position is coerced to INTO (a note drops *into* a
- * folder, never beside it).
- * Returns TRUE and fills `path_out` (caller frees) + `pos_out` when the
- * drop is legal.
+ * SbFindCtx — working state for sb_find_row()'s model walk.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint        kind;                /* SB_KIND_* wanted                    */
+    gint64      id;                  /* SB_ID wanted                        */
+    GtkTreeIter iter;                /* the hit, when found                 */
+    gboolean    found;
+} SbFindCtx;
+
+/* sb_find_cb() — gtk_tree_model_foreach() callback for sb_find_row().      */
+static gboolean
+sb_find_cb(GtkTreeModel *model, GtkTreePath *path, GtkTreeIter *iter,
+           gpointer data)
+{
+    (void)path;
+    SbFindCtx *ctx = data;
+    gint   kind;                     /* this row's identity                 */
+    gint64 id;
+    gtk_tree_model_get(model, iter, SB_KIND, &kind, SB_ID, &id, -1);
+    if (kind == ctx->kind && id == ctx->id) {
+        ctx->iter  = *iter;
+        ctx->found = TRUE;
+    }
+    return ctx->found;               /* TRUE stops the walk                 */
+}
+
+/* ---------------------------------------------------------------------------
+ * sb_find_row() — the sidebar row carrying (kind, id).  A drag names its
+ * folder by id (OnDragRows); the validation and the drop need its ROW, to
+ * refuse a drop onto itself or into its own subtree.
+ *   lw   — the library window.
+ *   kind — SB_KIND_FOLDER or SB_KIND_TRASH_FOLDER.
+ *   id   — the folder id.
+ *   iter — receives the row.
+ * Returns TRUE if the row exists.
  * ------------------------------------------------------------------------- */
 static gboolean
-sidebar_drop_target(OnLibrary *lw, GdkDragContext *context, gint x, gint y,
-                    GtkTreePath **path_out, GtkTreeViewDropPosition *pos_out)
+sb_find_row(OnLibrary *lw, gint kind, gint64 id, GtkTreeIter *iter)
+{
+    SbFindCtx ctx = { kind, id, { 0 }, FALSE };
+    gtk_tree_model_foreach(GTK_TREE_MODEL(lw->sidebar_store), sb_find_cb,
+                           &ctx);
+    if (ctx.found)
+        *iter = ctx.iter;
+    return ctx.found;
+}
+
+/* ---------------------------------------------------------------------------
+ * sidebar_drop_target() — resolve and validate the drop target under the
+ * pointer for a drag carrying `rows`.  Which rows are legal depends on
+ * what is being dragged: a folder (from the sidebar itself) goes onto
+ * folders, the root, or the Trash, never onto itself or into its own
+ * subtree — and a folder already in the Trash cannot be dropped on Trash
+ * again; notes (from either notes view) go onto any folder-ish row, with
+ * the position coerced to INTO (a note drops *into* a folder, never
+ * beside it).
+ *   lw       — the library window.
+ *   rows     — the drag content, or NULL (not loaded: refuse).
+ *   x, y     — pointer position in the sidebar's widget coordinates.
+ *   path_out — receives the target row (caller frees) when legal.
+ *   pos_out  — receives the drop position when legal.
+ *   src_iter — receives the dragged FOLDER's own row (folder drags only).
+ * Returns TRUE when the drop is legal.
+ * ------------------------------------------------------------------------- */
+static gboolean
+sidebar_drop_target(OnLibrary *lw, const OnDragRows *rows, gint x, gint y,
+                    GtkTreePath **path_out, GtkTreeViewDropPosition *pos_out,
+                    GtkTreeIter *src_iter)
 {
     *path_out = NULL;
     *pos_out  = GTK_TREE_VIEW_DROP_BEFORE;
-
-    if (gtk_drag_dest_find_target(GTK_WIDGET(lw->sidebar), context,
-                                  NULL) == GDK_NONE)
-        return FALSE;                /* not a GTK_TREE_MODEL_ROW drag       */
+    if (rows == NULL)
+        return FALSE;
 
     GtkTreePath *path = NULL;        /* row under the pointer               */
     GtkTreeViewDropPosition pos;     /* before/into/after                   */
@@ -1717,39 +1843,30 @@ sidebar_drop_target(OnLibrary *lw, GdkDragContext *context, gint x, gint y,
         gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
 
     gboolean ok = FALSE;             /* is this drop legal?                 */
-    if (gtk_drag_get_source_widget(context) == GTK_WIDGET(lw->sidebar)) {
-        /* --- folder drag ---------------------------------------------------*/
-        GtkTreeIter  src_iter;       /* dragged (= selected) row            */
-        GtkTreeModel *m;
-        gint  src_kind = -1;         /* its kind                            */
-        GtkTreePath *src_path = NULL;
-        if (gtk_tree_selection_get_selected(
-                gtk_tree_view_get_selection(lw->sidebar), &m, &src_iter)) {
-            gtk_tree_model_get(m, &src_iter, SB_KIND, &src_kind, -1);
-            src_path = gtk_tree_model_get_path(m, &src_iter);
-        }
-        if ((src_kind == SB_KIND_FOLDER ||
-             src_kind == SB_KIND_TRASH_FOLDER) &&
-            src_path != NULL &&
-            gtk_tree_path_compare(src_path, path) != 0 &&
-            !gtk_tree_path_is_descendant(path, src_path)) {
-            if (kind == SB_KIND_FOLDER) {
-                ok = TRUE;           /* nest INTO or reorder beside it      */
-            } else if (kind == SB_KIND_ROOT ||
-                       (kind == SB_KIND_TRASH &&
-                        src_kind == SB_KIND_FOLDER)) {
-                ok  = TRUE;
-                pos = GTK_TREE_VIEW_DROP_INTO_OR_BEFORE;
-            }
-        }
-        if (src_path != NULL)
-            gtk_tree_path_free(src_path);
-    } else {
-        /* --- note drag -----------------------------------------------------*/
+    if (rows->kind == ON_DRAG_NOTES) {
         if (kind == SB_KIND_FOLDER || kind == SB_KIND_ROOT ||
             kind == SB_KIND_TRASH) {
             ok  = TRUE;
             pos = GTK_TREE_VIEW_DROP_INTO_OR_BEFORE;
+        }
+    } else {
+        gint src_kind = (rows->kind == ON_DRAG_FOLDER)
+            ? SB_KIND_FOLDER : SB_KIND_TRASH_FOLDER;
+        if (sb_find_row(lw, src_kind, g_array_index(rows->ids, gint64, 0),
+                        src_iter)) {
+            GtkTreePath *src_path = gtk_tree_model_get_path(model, src_iter);
+            if (gtk_tree_path_compare(src_path, path) != 0 &&
+                !gtk_tree_path_is_descendant(path, src_path)) {
+                if (kind == SB_KIND_FOLDER) {
+                    ok = TRUE;       /* nest INTO or reorder beside it      */
+                } else if (kind == SB_KIND_ROOT ||
+                           (kind == SB_KIND_TRASH &&
+                            src_kind == SB_KIND_FOLDER)) {
+                    ok  = TRUE;
+                    pos = GTK_TREE_VIEW_DROP_INTO_OR_BEFORE;
+                }
+            }
+            gtk_tree_path_free(src_path);
         }
     }
 
@@ -1763,246 +1880,275 @@ sidebar_drop_target(OnLibrary *lw, GdkDragContext *context, gint x, gint y,
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_drag_motion() — answer every motion with gdk_drag_status()
- * and draw the drop indicator ourselves.  This REPLACES GtkTreeView's
- * default handler (returning TRUE stops the class closure), which for
- * GTK_TREE_MODEL_ROW targets requests the drag DATA on every motion to
- * validate the drop — those requests fire "drag-data-received" mid-drag,
- * and on quartz the reply arrives before the drop, so a received handler
- * that treats every delivery as a drop runs with stale coordinates and
- * gtk_drag_finish()es the drag while the button is still down (drops
- * landing only when the X11-style late reply happens to slip past the
- * release).  See quirk #13.
+ * on_sidebar_drop_motion() — GtkDropTarget "enter" AND "motion" (same
+ * signature, one handler): validate the row under the pointer against the
+ * drag's content and draw the indicator ourselves.  The content is
+ * readable here because the target PRELOADS it and every drag is local:
+ * for a local drag GtkDropTarget reads the value synchronously from the
+ * content provider when the drop starts, so it is never NULL by the first
+ * motion (gtkdroptarget.c, gtk_drop_target_load_local).
+ * Returns the action offered (MOVE), or 0 to refuse.
  * ------------------------------------------------------------------------- */
-static gboolean
-on_sidebar_drag_motion(GtkWidget *widget, GdkDragContext *context,
-                       gint x, gint y, guint time, gpointer user_data)
+static GdkDragAction
+on_sidebar_drop_motion(GtkDropTarget *target, gdouble x, gdouble y,
+                       gpointer user_data)
 {
     OnLibrary *lw = user_data;       /* owning library window               */
+    const GValue *value = gtk_drop_target_get_value(target);
+    const OnDragRows *rows =         /* the drag's content, once loaded     */
+        (value != NULL) ? g_value_get_boxed(value) : NULL;
     GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
     GtkTreeViewDropPosition pos;     /* indicator position                  */
-    gboolean ok = sidebar_drop_target(lw, context, x, y, &path, &pos);
+    GtkTreeIter src_iter;            /* unused here                         */
+    gboolean ok = sidebar_drop_target(lw, rows, (gint)x, (gint)y,
+                                      &path, &pos, &src_iter);
 
-    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget),
-                                    ok ? path : NULL, pos);
-    gdk_drag_status(context, ok ? GDK_ACTION_MOVE : 0, time);
+    gtk_tree_view_set_drag_dest_row(lw->sidebar, ok ? path : NULL, pos);
     if (path != NULL)
         gtk_tree_path_free(path);
-    return TRUE;
+    return ok ? GDK_ACTION_MOVE : 0;
 }
 
-/* on_sidebar_drag_leave() — clear the drop indicator (also fires right
- * before every drop; the class handler additionally kills its timers).     */
+/* on_sidebar_drop_leave() — clear the drop indicator.                       */
 static void
-on_sidebar_drag_leave(GtkWidget *widget, GdkDragContext *context,
-                      guint time, gpointer user_data)
+on_sidebar_drop_leave(GtkDropTarget *target, gpointer user_data)
 {
-    (void)context; (void)time; (void)user_data;
-    gtk_tree_view_set_drag_dest_row(GTK_TREE_VIEW(widget), NULL,
-                                    GTK_TREE_VIEW_DROP_BEFORE);
-}
-
-/* ---------------------------------------------------------------------------
- * on_sidebar_drag_drop() — the button was released on a legal target:
- * request the row data (the actual move runs in drag-data-received, the
- * only place the dragged row can be decoded).  Returning TRUE keeps the
- * default handler out; FALSE (no legal target) cancels the drop cleanly.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_sidebar_drag_drop(GtkWidget *widget, GdkDragContext *context,
-                     gint x, gint y, guint time, gpointer user_data)
-{
+    (void)target;
     OnLibrary *lw = user_data;       /* owning library window               */
-    GtkTreePath *path = NULL;        /* legal target row (or NULL)          */
-    GtkTreeViewDropPosition pos;     /* unused here                         */
-    gboolean ok = sidebar_drop_target(lw, context, x, y, &path, &pos);
-    if (path != NULL)
-        gtk_tree_path_free(path);
-    if (!ok)
-        return FALSE;
-    gtk_drag_get_data(widget, context,
-                      gdk_atom_intern_static_string("GTK_TREE_MODEL_ROW"),
-                      time);
-    return TRUE;
+    gtk_tree_view_set_drag_dest_row(lw->sidebar, NULL,
+                                    GTK_TREE_VIEW_DROP_BEFORE);
 }
 
 /* Logical pixel size of the custom drag-under-cursor icons.                 */
 #define DRAG_ICON_SIZE 32
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_drag_begin() — replace the drag-under-cursor icon of a
- * folder drag with the folder glyph (non-folder rows keep the default
- * row snapshot).  Connected AFTER the class handler, which would
- * otherwise override our icon with its own.
+ * drag_rows_content() — the shared tail of every "prepare" handler: pick
+ * the drag-under-cursor icon for `rows` (folder.png for a folder, file.png
+ * for one note, documents.png for several), hand GTK a copy of the rows as
+ * the drag's content, and release the caller's.  The icon is read by the
+ * drag source AFTER prepare returns, so setting it here is in time.
+ *   lw     — the library window.
+ *   source — the drag source the icon goes on.
+ *   rows   — what is being dragged (consumed).
+ * Returns the content provider the prepare handler returns.
  * ------------------------------------------------------------------------- */
-static void
-on_sidebar_drag_begin(GtkWidget *widget, GdkDragContext *context,
-                      gpointer user_data)
+static GdkContentProvider *
+drag_rows_content(OnLibrary *lw, GtkDragSource *source, OnDragRows *rows)
+{
+    const gchar *icon =              /* icon file basename                  */
+        rows->kind != ON_DRAG_NOTES ? "folder"
+                                    : (rows->ids->len > 1 ? "documents"
+                                                          : "file");
+    GdkPaintable *paintable =
+        on_app_icon_paintable(lw->app, icon, DRAG_ICON_SIZE);
+    if (paintable != NULL) {
+        gtk_drag_source_set_icon(source, paintable, 0, 0);
+        g_object_unref(paintable);
+    }
+    GdkContentProvider *content =    /* holds its own copy of the rows      */
+        gdk_content_provider_new_typed(ON_TYPE_DRAG_ROWS, rows);
+    on_drag_rows_free(rows);
+    return content;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_sidebar_drag_prepare() — GtkDragSource "prepare" on the sidebar: a
+ * folder row (in the tree or under Trash) starts a drag carrying its id;
+ * any other row refuses, since nothing accepts it.
+ *   x, y — the press, in the sidebar's widget coordinates.
+ * Returns the drag content, or NULL for no drag.
+ * ------------------------------------------------------------------------- */
+static GdkContentProvider *
+on_sidebar_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
+                        gpointer user_data)
 {
     OnLibrary *lw = user_data;       /* owning library window               */
+    gint bx, by;                     /* the press in bin-window coordinates */
+    gtk_tree_view_convert_widget_to_bin_window_coords(lw->sidebar,
+                                                      (gint)x, (gint)y,
+                                                      &bx, &by);
+    GtkTreePath *path = NULL;        /* row under the press                 */
+    if (!gtk_tree_view_get_path_at_pos(lw->sidebar, bx, by, &path,
+                                       NULL, NULL, NULL))
+        return NULL;
 
-    GtkTreeModel *m;                 /* the sidebar model                   */
-    GtkTreeIter iter;                /* dragged (= selected) row            */
-    gint kind = -1;                  /* its kind                            */
-    if (gtk_tree_selection_get_selected(
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(widget)), &m, &iter))
-        gtk_tree_model_get(m, &iter, SB_KIND, &kind, -1);
+    GtkTreeIter iter;                /* that row                            */
+    gint   kind = -1;                /* its kind                            */
+    gint64 id   = 0;                 /* its folder id                       */
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->sidebar_store), &iter,
+                                path))
+        gtk_tree_model_get(GTK_TREE_MODEL(lw->sidebar_store), &iter,
+                           SB_KIND, &kind, SB_ID, &id, -1);
+    gtk_tree_path_free(path);
     if (kind != SB_KIND_FOLDER && kind != SB_KIND_TRASH_FOLDER)
-        return;
+        return NULL;
 
-    cairo_surface_t *icon =
-        on_app_icon_surface(lw->app, "folder", DRAG_ICON_SIZE);
-    if (icon != NULL) {
-        gtk_drag_set_icon_surface(context, icon);
-        cairo_surface_destroy(icon);
-    }
+    OnDragRows *rows = on_drag_rows_new(kind == SB_KIND_FOLDER
+                                        ? ON_DRAG_FOLDER
+                                        : ON_DRAG_TRASHED_FOLDER);
+    g_array_append_val(rows->ids, id);
+    return drag_rows_content(lw, source, rows);
 }
 
 /* ---------------------------------------------------------------------------
- * on_notes_drag_begin() — drag-under-cursor icon for note drags (both
- * views): one file for a single note, a document stack for several.
- * The press that started the drag has already settled the selection, so
- * its count IS the drag count.  Connected AFTER the class handler, as
- * above.
+ * notes_drag_rows() — the content of a note drag that started on the row
+ * at `path` (owned — freed here): the whole selection when the pressed
+ * note is part of it (multi-select drags), else just that note.
+ * Returns a new OnDragRows.
  * ------------------------------------------------------------------------- */
-static void
-on_notes_drag_begin(GtkWidget *widget, GdkDragContext *context,
-                    gpointer user_data)
+static OnDragRows *
+notes_drag_rows(OnLibrary *lw, GtkTreePath *path)
 {
-    (void)widget;
-    OnLibrary *lw = user_data;       /* owning library window               */
+    GtkTreeIter iter;                /* the pressed row                     */
+    gint64 note_id = 0;              /* its note id                         */
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(lw->notes_store), &iter,
+                                path))
+        gtk_tree_model_get(GTK_TREE_MODEL(lw->notes_store), &iter,
+                           NL_ID, &note_id, -1);
+    gtk_tree_path_free(path);
 
-    /* A drag from a blocked press keeps the whole multi-selection: just
-     * lift the veto — the matching release lands in the DnD machinery,
-     * never as a button-release on the view.                               */
+    OnDragRows *rows = on_drag_rows_new(ON_DRAG_NOTES);
+    GArray *sel = selected_note_ids(lw);
+    gboolean in_selection = FALSE;   /* is the pressed note selected?       */
+    for (guint i = 0; i < sel->len; i++)
+        if (g_array_index(sel, gint64, i) == note_id)
+            in_selection = TRUE;
+    if (in_selection)
+        g_array_append_vals(rows->ids, sel->data, sel->len);
+    else
+        g_array_append_val(rows->ids, note_id);
+    g_array_free(sel, TRUE);
+    return rows;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_notes_list_drag_prepare() — GtkDragSource "prepare" on the notes
+ * list.  A drag from a vetoed press (quirk #15 / D7) keeps the whole
+ * multi-selection: the veto is lifted here, and the matching release
+ * lands in the DnD machinery, never as a click on the view.
+ * Returns the drag content, or NULL when the press missed every row.
+ * ------------------------------------------------------------------------- */
+static GdkContentProvider *
+on_notes_list_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
+                           gpointer user_data)
+{
+    OnLibrary *lw = user_data;       /* owning library window               */
+    gint bx, by;                     /* the press in bin-window coordinates */
+    gtk_tree_view_convert_widget_to_bin_window_coords(lw->notes_list,
+                                                      (gint)x, (gint)y,
+                                                      &bx, &by);
+    GtkTreePath *path = NULL;        /* row under the press                 */
+    if (!gtk_tree_view_get_path_at_pos(lw->notes_list, bx, by, &path,
+                                       NULL, NULL, NULL))
+        return NULL;
     notes_sel_unblock(lw, FALSE);
-
-    cairo_surface_t *icon = on_app_icon_surface(
-        lw->app, selected_note_count(lw) > 1 ? "documents" : "file",
-        DRAG_ICON_SIZE);
-    if (icon != NULL) {
-        gtk_drag_set_icon_surface(context, icon);
-        cairo_surface_destroy(icon);
-    }
+    return drag_rows_content(lw, source, notes_drag_rows(lw, path));
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_drag_received() — a row was dropped on the sidebar: either a
- * notes row (move the note — or the whole multi-selection — into the
- * target folder, or trash it) or one of the sidebar's own folder rows
- * (re-nest INTO a folder, reorder BEFORE/AFTER a sibling, trash, or
- * restore-by-drag out of the Trash).  Fires exactly once per drop — only
- * on_sidebar_drag_drop() requests the data (the default motion-time
- * requests never happen, see on_sidebar_drag_motion), so x/y are the real
- * drop coordinates.  The default GtkTreeView handler is suppressed
- * because it would try to splice the dragged row into the *sidebar*
- * model.
+ * grid_path_at() — the grid item under a point given in the icon view's
+ * WIDGET coordinates (what every controller hands over).  GTK4's
+ * gtk_icon_view_get_path_at_pos() works in the scrolled content's
+ * coordinates, so the adjustments are added first — GTK's own gesture does
+ * the same (gtkiconview.c, _gtk_icon_view_get_item_at_widget_coords).
+ * Returns the item's path (caller frees), or NULL.
  * ------------------------------------------------------------------------- */
-static void
-on_sidebar_drag_received(GtkWidget *widget, GdkDragContext *context,
-                         gint x, gint y, GtkSelectionData *seldata,
-                         guint info, guint time, gpointer user_data)
+static GtkTreePath *
+grid_path_at(OnLibrary *lw, gdouble x, gdouble y)
 {
-    (void)info;
+    GtkScrollable *s = GTK_SCROLLABLE(lw->notes_grid);
+    gdouble cx = x + gtk_adjustment_get_value(gtk_scrollable_get_hadjustment(s));
+    gdouble cy = y + gtk_adjustment_get_value(gtk_scrollable_get_vadjustment(s));
+    return gtk_icon_view_get_path_at_pos(lw->notes_grid, (gint)cx, (gint)cy);
+}
+
+/* on_notes_grid_drag_prepare() — GtkDragSource "prepare" on the grid: the
+ * same content as the list's, from the item under the press.               */
+static GdkContentProvider *
+on_notes_grid_drag_prepare(GtkDragSource *source, gdouble x, gdouble y,
+                           gpointer user_data)
+{
     OnLibrary *lw = user_data;       /* owning library window               */
-    g_signal_stop_emission_by_name(widget, "drag-data-received");
+    GtkTreePath *path = grid_path_at(lw, x, y);
+    if (path == NULL)
+        return NULL;
+    return drag_rows_content(lw, source, notes_drag_rows(lw, path));
+}
+
+/* ---------------------------------------------------------------------------
+ * on_sidebar_drop() — GtkDropTarget "drop": the button was released over
+ * the sidebar.  Fires exactly once per drag, with the release coordinates
+ * (D5).  Either note ids from a notes view (move the notes into the target
+ * folder, or trash them) or one of the sidebar's own folder rows (re-nest
+ * INTO a folder, reorder BEFORE/AFTER a sibling, trash, or restore-by-drag
+ * out of the Trash).  The row under the pointer is validated again: the
+ * release may land where motion had refused.
+ * Returns TRUE when something moved (GTK then finishes the drop as a MOVE).
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_sidebar_drop(GtkDropTarget *target, const GValue *value,
+                gdouble x, gdouble y, gpointer user_data)
+{
+    (void)target;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    const OnDragRows *rows = g_value_get_boxed(value);
+    gtk_tree_view_set_drag_dest_row(lw->sidebar, NULL,
+                                    GTK_TREE_VIEW_DROP_BEFORE);
+
+    GtkTreePath *dest_path = NULL;   /* the validated target row            */
+    GtkTreeViewDropPosition pos;
+    GtkTreeIter src_iter;            /* the dragged folder's row            */
+    if (!sidebar_drop_target(lw, rows, (gint)x, (gint)y, &dest_path, &pos,
+                             &src_iter))
+        return FALSE;
+
+    GtkTreeModel *sb_model = GTK_TREE_MODEL(lw->sidebar_store);
+    GtkTreeIter dest_iter;           /* target sidebar row                  */
+    gint   dest_kind = -1;           /* its kind                            */
+    gint64 dest_id   = 0;            /* its folder id                       */
+    gchar *dest_raw  = NULL;         /* its bare name                       */
+    gtk_tree_model_get_iter(sb_model, &dest_iter, dest_path);
+    gtk_tree_model_get(sb_model, &dest_iter,
+                       SB_KIND, &dest_kind, SB_ID, &dest_id,
+                       SB_RAW,  &dest_raw, -1);
+    gtk_tree_path_free(dest_path);
 
     gboolean success = FALSE;        /* whether anything moved              */
-
-    /* Decode the dragged row.                                              */
-    GtkTreeModel *src_model = NULL;  /* model the drag started in           */
-    GtkTreePath  *src_path  = NULL;  /* dragged row's path                  */
-    if (!gtk_tree_get_row_drag_data(seldata, &src_model, &src_path)) {
-        gtk_drag_finish(context, FALSE, FALSE, time);
-        return;
-    }
-
-    /* Resolve the drop target row (shared by both branches below).         */
-    GtkTreeModel *sb_model  = GTK_TREE_MODEL(lw->sidebar_store);
-    GtkTreePath  *dest_path = NULL;  /* row under the pointer               */
-    GtkTreeViewDropPosition pos = GTK_TREE_VIEW_DROP_BEFORE;
-    GtkTreeIter dest_iter;           /* target sidebar row                  */
-    gint   dest_kind = -1;           /* its kind (-1 = no target row)       */
-    gint64 dest_id   = 0;            /* its folder/tag id                   */
-    gchar *dest_raw  = NULL;         /* its bare name                       */
-    if (gtk_tree_view_get_dest_row_at_pos(GTK_TREE_VIEW(widget),
-                                          x, y, &dest_path, &pos) &&
-        gtk_tree_model_get_iter(sb_model, &dest_iter, dest_path))
-        gtk_tree_model_get(sb_model, &dest_iter,
-                           SB_KIND, &dest_kind, SB_ID, &dest_id,
-                           SB_RAW,  &dest_raw, -1);
-
-    if (src_model == GTK_TREE_MODEL(lw->notes_store) && dest_kind != -1) {
-        /* --- a note row from the notes pane -------------------------------*/
-        GtkTreeIter src_iter;        /* dragged note row                    */
-        gint64 note_id = 0;          /* dragged note id                     */
-        if (gtk_tree_model_get_iter(src_model, &src_iter, src_path))
-            gtk_tree_model_get(src_model, &src_iter, NL_ID, &note_id, -1);
-
-        if (note_id != 0 &&
-            (dest_kind == SB_KIND_FOLDER || dest_kind == SB_KIND_ROOT ||
-             dest_kind == SB_KIND_TRASH)) {
-            /* Multi-select support: when the dragged note is part of
-             * the current selection, the whole selection moves.            */
-            GArray *ids = selected_note_ids(lw);
-            gboolean drag_in_selection = FALSE;
-            for (guint i = 0; i < ids->len; i++)
-                if (g_array_index(ids, gint64, i) == note_id)
-                    drag_in_selection = TRUE;
-            if (!drag_in_selection) {
-                g_array_set_size(ids, 0);
-                g_array_append_val(ids, note_id);
-            }
-            if (dest_kind == SB_KIND_TRASH) {
-                /* Dropping on Trash IS the delete gesture.                 */
-                success = trash_notes_core(
-                    lw, (const gint64 *)ids->data, ids->len);
-            } else {
-                /* ONE transaction for the whole selection: per-note
-                 * moves fsync per call and froze the GUI on big drops.  */
-                success = on_db_notes_move(
-                    lw->app->db, (const gint64 *)ids->data, ids->len,
-                    dest_id);
-                if (success)
-                    on_app_status(lw->app,
-                                  "Moved %u note%s to "
-                                  "\xe2\x80\x9c%s\xe2\x80\x9d",
-                                  ids->len, ids->len == 1 ? "" : "s",
-                                  dest_raw);
-            }
-            g_array_free(ids, TRUE);
-        }
-    } else if (src_model == sb_model && dest_kind != -1) {
-        /* --- one of the sidebar's own folder rows --------------------------*/
-        GtkTreeIter src_iter;        /* dragged sidebar row                 */
-        gint   src_kind  = -1;       /* its kind                            */
-        gint64 folder_id = 0;        /* its folder id                       */
-        gchar *fname     = NULL;     /* its bare name                       */
-        if (gtk_tree_model_get_iter(src_model, &src_iter, src_path))
-            gtk_tree_model_get(src_model, &src_iter,
-                               SB_KIND, &src_kind, SB_ID, &folder_id,
-                               SB_RAW,  &fname, -1);
-
-        /* Only real folders move (trashed ones too — that's drag-restore);
-         * a drop onto the row itself or into its own subtree is refused
-         * (on_db_folder_move re-checks against the database).              */
-        gboolean movable =
-            (src_kind == SB_KIND_FOLDER ||
-             src_kind == SB_KIND_TRASH_FOLDER) &&
-            folder_id != 0 &&
-            gtk_tree_path_compare(src_path, dest_path) != 0 &&
-            !gtk_tree_path_is_descendant(dest_path, src_path);
-
-        if (movable && dest_kind == SB_KIND_TRASH &&
-            src_kind == SB_KIND_FOLDER) {
+    if (rows->kind == ON_DRAG_NOTES) {
+        /* --- note ids from the notes pane ---------------------------------*/
+        const gint64 *ids = (const gint64 *)rows->ids->data;
+        guint n = rows->ids->len;
+        if (dest_kind == SB_KIND_TRASH) {
             /* Dropping on Trash IS the delete gesture.                     */
+            success = trash_notes_core(lw, ids, n);
+        } else {
+            /* ONE transaction for the whole selection: per-note moves
+             * fsync per call and froze the GUI on big drops.              */
+            success = on_db_notes_move(lw->app->db, ids, n, dest_id);
+            if (success)
+                on_app_status(lw->app,
+                              "Moved %u note%s to \xe2\x80\x9c%s\xe2\x80\x9d",
+                              n, n == 1 ? "" : "s", dest_raw);
+        }
+    } else {
+        /* --- one of the sidebar's own folder rows --------------------------*/
+        gint   src_kind  = (rows->kind == ON_DRAG_FOLDER)
+                           ? SB_KIND_FOLDER : SB_KIND_TRASH_FOLDER;
+        gint64 folder_id = g_array_index(rows->ids, gint64, 0);
+        gchar *fname     = NULL;     /* its bare name                       */
+        gtk_tree_model_get(sb_model, &src_iter, SB_RAW, &fname, -1);
+
+        if (dest_kind == SB_KIND_TRASH) {
+            /* Dropping on Trash IS the delete gesture (validation already
+             * refused a folder that is in the Trash).                      */
             success = trash_folder(lw, folder_id, fname);
-        } else if (movable && (dest_kind == SB_KIND_FOLDER ||
-                               dest_kind == SB_KIND_ROOT)) {
+        } else {
             /* INTO a folder (or anywhere on the root) re-nests, appended
              * at the end; BEFORE/AFTER a folder row slots the dragged
              * folder beside that sibling (re-nesting when the sibling
-             * lives under a different parent).                             */
+             * lives under a different parent).  on_db_folder_move
+             * re-checks the subtree rule against the database.            */
             gchar *where = NULL;     /* name for the status message         */
             if (dest_kind == SB_KIND_ROOT ||
                 pos == GTK_TREE_VIEW_DROP_INTO_OR_BEFORE ||
@@ -2050,18 +2196,15 @@ on_sidebar_drag_received(GtkWidget *widget, GdkDragContext *context,
         }
         g_free(fname);
     }
-
     g_free(dest_raw);
-    if (dest_path != NULL)
-        gtk_tree_path_free(dest_path);
-    gtk_tree_path_free(src_path);
 
-    /* Finish the DnD handshake FIRST — the refreshes below rebuild both
-     * models, and running them before gtk_drag_finish() stalls the drop
-     * (the source sits waiting while we repaint).                          */
-    gtk_drag_finish(context, success, FALSE, time);
+    /* The models are rebuilt here, inside the drop handler: GTK finishes
+     * the drop only after this returns, so the drag icon lingers for the
+     * refresh (tens of ms).  There is no gtk_drag_finish() to call first
+     * any more — the return value IS the finish.                          */
     if (success)
         refresh_all(lw);             /* tree shape and counts changed       */
+    return success;
 }
 
 /* ===========================================================================
@@ -2080,68 +2223,81 @@ current_folder_id(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * FolderPromptFunc — what prompt_for_folder() calls with the result once
+ * the user pressed OK with a non-empty name.  Never called on Cancel.
+ *   lw      — the library window.
+ *   folder  — the id the prompt was opened for (see prompt_for_folder).
+ *   name    — the trimmed name (borrowed).
+ *   ai_mode — the chosen ON_AI_MODE_*.
+ *   emoji   — the trimmed emoji, possibly "" (borrowed).
+ * ------------------------------------------------------------------------- */
+typedef void (*FolderPromptFunc)(OnLibrary *lw, gint64 folder,
+                                 const gchar *name, gint ai_mode,
+                                 const gchar *emoji);
+
+/* ---------------------------------------------------------------------------
+ * FolderPrompt — the state of one folder dialog, carried as object data
+ * on the dialog for its response handler.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    OnLibrary        *lw;
+    gint64            folder;        /* handed back to `done` untouched     */
+    GtkWidget        *name_entry;
+    GtkWidget        *emoji_entry;
+    GtkWidget        *project_radio;
+    GtkWidget        *custom_radio;
+    FolderPromptFunc  done;
+} FolderPrompt;
+
+/* ---------------------------------------------------------------------------
+ * on_folder_prompt_response() — the folder dialog closed: read the fields
+ * and hand them to the continuation on OK (an empty name is a cancel).
+ * ------------------------------------------------------------------------- */
+static void
+on_folder_prompt_response(GtkDialog *dlg, gint response, gpointer user_data)
+{
+    FolderPrompt *p = user_data;     /* the dialog's state                  */
+    if (response == GTK_RESPONSE_OK) {
+        gchar *name = g_strstrip(g_strdup(
+            gtk_editable_get_text(GTK_EDITABLE(p->name_entry))));
+        if (*name != '\0') {
+            gint mode = ON_AI_MODE_NORMAL;   /* the radio that is down      */
+            if (gtk_check_button_get_active(
+                    GTK_CHECK_BUTTON(p->project_radio)))
+                mode = ON_AI_MODE_PROJECT;
+            else if (gtk_check_button_get_active(
+                         GTK_CHECK_BUTTON(p->custom_radio)))
+                mode = ON_AI_MODE_CUSTOM;
+            gchar *emoji = g_strstrip(g_strdup(
+                gtk_editable_get_text(GTK_EDITABLE(p->emoji_entry))));
+            p->done(p->lw, p->folder, name, mode, emoji);
+            g_free(emoji);
+        }
+        g_free(name);
+    }
+    gtk_window_destroy(GTK_WINDOW(dlg));
+}
+
+/* ---------------------------------------------------------------------------
  * prompt_for_folder() — modal dialog: name entry + Normal/Project/Custom
- * AI mode radios + emoji picker.
+ * AI mode radios + emoji entry.  ASYNCHRONOUS: returns as soon as the
+ * dialog is up; `done` runs from its response.  The dialog is destroyed
+ * with the library window, so `done` can never see a dead `lw`.
  *   lw            — the library window (dialog parent).
  *   title         — dialog window title.
+ *   folder        — the id `done` is about (the parent of a new folder,
+ *                   or the folder being edited), captured NOW: the
+ *                   selection can move while the dialog is up (an IPC
+ *                   command served meanwhile).
  *   initial_name  — pre-filled name, or NULL.
  *   initial_mode  — ON_AI_MODE_* to pre-select.
- *   ai_mode_out   — receives the chosen ON_AI_MODE_* (may be NULL).
  *   initial_emoji — pre-filled emoji string, or NULL / "".
- *   emoji_out     — receives the chosen emoji (owned; g_free() it; may be
- *                   NULL if caller doesn't need it).
- * Returns the entered name (g_free() it), or NULL if cancelled/empty.
+ *   done          — the continuation (see FolderPromptFunc).
  * ------------------------------------------------------------------------- */
-
-/* folder_emoji_chooser_closed() — resize the dialog back to natural size
- * after the GTK emoji chooser popover closes.                               */
 static void
-folder_emoji_chooser_closed(GtkWidget *chooser, gpointer data)
-{
-    (void)chooser;
-    gtk_window_resize(GTK_WINDOW(data), 1, 1);
-}
-
-/* folder_emoji_open_idle() — deferred: fire the GTK emoji picker on the
- * emoji entry and hook its closed signal.                                   */
-static gboolean
-folder_emoji_open_idle(gpointer data)
-{
-    GtkWidget *entry = data;
-    g_signal_emit_by_name(entry, "insert-emoji");
-    GtkWidget *chooser =
-        g_object_get_data(G_OBJECT(entry), "gtk-emoji-chooser");
-    if (chooser != NULL &&
-        !g_object_get_data(G_OBJECT(entry), "on-close-hooked")) {
-        GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "on-dialog");
-        g_signal_connect(chooser, "closed",
-                         G_CALLBACK(folder_emoji_chooser_closed), dlg);
-        g_object_set_data(G_OBJECT(entry), "on-close-hooked",
-                          GINT_TO_POINTER(1));
-    }
-    return G_SOURCE_REMOVE;
-}
-
-/* folder_emoji_pressed() — button-press on the emoji entry: clear it,
- * grow the dialog to give the popover room, open the picker next idle.      */
-static gboolean
-folder_emoji_pressed(GtkWidget *entry, GdkEventButton *ev, gpointer data)
-{
-    (void)ev;
-    GtkWidget *dlg = data;
-    gtk_entry_set_text(GTK_ENTRY(entry), "");
-    gint w, h;
-    gtk_window_get_size(GTK_WINDOW(dlg), &w, &h);
-    gtk_window_resize(GTK_WINDOW(dlg), MAX(w, 440), 470);
-    g_idle_add(folder_emoji_open_idle, entry);
-    return TRUE;
-}
-
-static gchar *
-prompt_for_folder(OnLibrary *lw, const gchar *title,
+prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
                   const gchar *initial_name, gint initial_mode,
-                  gint *ai_mode_out,
-                  const gchar *initial_emoji, gchar **emoji_out)
+                  const gchar *initial_emoji, FolderPromptFunc done)
 {
     GtkWidget *dialog = gtk_dialog_new_with_buttons(
         title, GTK_WINDOW(lw->window),
@@ -2149,9 +2305,14 @@ prompt_for_folder(OnLibrary *lw, const gchar *title,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_OK",     GTK_RESPONSE_OK,
         NULL);
+    gtk_widget_add_css_class(dialog, "notes-dialog"); /* library_install_css */
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    FolderPrompt *p = g_new0(FolderPrompt, 1);
+    p->lw     = lw;
+    p->folder = folder;
+    p->done   = done;
+    g_object_set_data_full(G_OBJECT(dialog), "on-prompt", p, g_free);
 
     /* ── Field grid: labelled emoji + name rows ─────────────────────────── */
     GtkWidget *field_grid = gtk_grid_new();
@@ -2162,44 +2323,43 @@ prompt_for_folder(OnLibrary *lw, const gchar *title,
     gtk_widget_set_margin_top(field_grid, 12);
     gtk_widget_set_margin_bottom(field_grid, 10);
 
-    /* Emoji row */
+    /* Emoji row.  The entry's OWN emoji chooser serves the picking: the
+     * input hint says what the field is for, and the emoji icon at its
+     * end is the click-to-pick the tooltip promises (GTK opens the
+     * chooser popover from it; Ctrl+. / the context menu work too).       */
     GtkWidget *emoji_lbl = gtk_label_new("Emoji (optional):");
     gtk_label_set_xalign(GTK_LABEL(emoji_lbl), 1.0);
     gtk_grid_attach(GTK_GRID(field_grid), emoji_lbl, 0, 0, 1, 1);
 
-    GtkWidget *emoji_entry = gtk_entry_new();
-    gtk_entry_set_max_length(GTK_ENTRY(emoji_entry), 4);
-    gtk_entry_set_width_chars(GTK_ENTRY(emoji_entry), 3);
-    gtk_entry_set_alignment(GTK_ENTRY(emoji_entry), 0.5);
-    gtk_widget_set_tooltip_text(emoji_entry,
+    p->emoji_entry = gtk_entry_new();
+    gtk_entry_set_max_length(GTK_ENTRY(p->emoji_entry), 4);
+    /* One emoji wide (plus its chooser icon): both width bounds, and the
+     * theme's entry min-width lifted, or the field spans the dialog.     */
+    gtk_editable_set_width_chars(GTK_EDITABLE(p->emoji_entry), 3);
+    gtk_editable_set_max_width_chars(GTK_EDITABLE(p->emoji_entry), 3);
+    gtk_entry_set_alignment(GTK_ENTRY(p->emoji_entry), 0.5);
+    gtk_entry_set_input_hints(GTK_ENTRY(p->emoji_entry),
+                              GTK_INPUT_HINT_EMOJI);
+    g_object_set(p->emoji_entry, "show-emoji-icon", TRUE, NULL);
+    on_app_set_tooltip(p->emoji_entry,
                                 "Optional emoji \xe2\x80\x94 click to pick");
-    GtkCssProvider *cprov = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(cprov,
-                                    "entry { font-size: 18px; }", -1, NULL);
-    gtk_style_context_add_provider(
-        gtk_widget_get_style_context(emoji_entry),
-        GTK_STYLE_PROVIDER(cprov),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    g_object_unref(cprov);
+    gtk_widget_add_css_class(p->emoji_entry, "notes-emoji-entry");
     if (initial_emoji != NULL && *initial_emoji != '\0')
-        gtk_entry_set_text(GTK_ENTRY(emoji_entry), initial_emoji);
-    gtk_widget_set_halign(emoji_entry, GTK_ALIGN_START);
-    g_object_set_data(G_OBJECT(emoji_entry), "on-dialog", dialog);
-    g_signal_connect(emoji_entry, "button-press-event",
-                     G_CALLBACK(folder_emoji_pressed), dialog);
-    gtk_grid_attach(GTK_GRID(field_grid), emoji_entry, 1, 0, 1, 1);
+        gtk_editable_set_text(GTK_EDITABLE(p->emoji_entry), initial_emoji);
+    gtk_widget_set_halign(p->emoji_entry, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(field_grid), p->emoji_entry, 1, 0, 1, 1);
 
     /* Folder Name row */
     GtkWidget *name_lbl = gtk_label_new("Folder Name:");
     gtk_label_set_xalign(GTK_LABEL(name_lbl), 1.0);
     gtk_grid_attach(GTK_GRID(field_grid), name_lbl, 0, 1, 1, 1);
 
-    GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    p->name_entry = gtk_entry_new();
+    gtk_entry_set_activates_default(GTK_ENTRY(p->name_entry), TRUE);
     if (initial_name != NULL)
-        gtk_entry_set_text(GTK_ENTRY(entry), initial_name);
-    gtk_widget_set_hexpand(entry, TRUE);
-    gtk_grid_attach(GTK_GRID(field_grid), entry, 1, 1, 1, 1);
+        gtk_editable_set_text(GTK_EDITABLE(p->name_entry), initial_name);
+    gtk_widget_set_hexpand(p->name_entry, TRUE);
+    gtk_grid_attach(GTK_GRID(field_grid), p->name_entry, 1, 1, 1, 1);
 
     /* AI summary mode row (row 2 of field_grid — aligns with labels above)   */
     GtkWidget *mode_lbl = gtk_label_new("AI summary mode:");
@@ -2207,114 +2367,94 @@ prompt_for_folder(OnLibrary *lw, const gchar *title,
     gtk_grid_attach(GTK_GRID(field_grid), mode_lbl, 0, 2, 1, 1);
 
     GtkWidget *radios_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    GtkWidget *normal_radio  = gtk_radio_button_new_with_label(NULL, "Normal");
-    GtkWidget *project_radio = gtk_radio_button_new_with_label_from_widget(
-        GTK_RADIO_BUTTON(normal_radio), "Project");
-    GtkWidget *custom_radio  = gtk_radio_button_new_with_label_from_widget(
-        GTK_RADIO_BUTTON(normal_radio), "Custom");
-
-    if (initial_mode == ON_AI_MODE_PROJECT)
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(project_radio), TRUE);
-    else if (initial_mode == ON_AI_MODE_CUSTOM)
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(custom_radio), TRUE);
-
-    gtk_box_pack_start(GTK_BOX(radios_box), normal_radio,  FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(radios_box), project_radio, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(radios_box), custom_radio,  FALSE, FALSE, 0);
+    GtkWidget *normal_radio = gtk_check_button_new_with_label("Normal");
+    p->project_radio = gtk_check_button_new_with_label("Project");
+    p->custom_radio  = gtk_check_button_new_with_label("Custom");
+    gtk_check_button_set_group(GTK_CHECK_BUTTON(p->project_radio),
+                               GTK_CHECK_BUTTON(normal_radio));
+    gtk_check_button_set_group(GTK_CHECK_BUTTON(p->custom_radio),
+                               GTK_CHECK_BUTTON(normal_radio));
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(initial_mode == ON_AI_MODE_PROJECT ? p->project_radio
+                       : initial_mode == ON_AI_MODE_CUSTOM  ? p->custom_radio
+                                                            : normal_radio),
+        TRUE);
+    gtk_box_append(GTK_BOX(radios_box), normal_radio);
+    gtk_box_append(GTK_BOX(radios_box), p->project_radio);
+    gtk_box_append(GTK_BOX(radios_box), p->custom_radio);
     gtk_grid_attach(GTK_GRID(field_grid), radios_box, 1, 2, 1, 1);
 
-    gtk_box_pack_start(GTK_BOX(box), field_grid, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),
+                   field_grid);
 
-    gtk_widget_show_all(dialog);
-
-    gchar *result = NULL;
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        gchar *text =
-            g_strstrip(g_strdup(gtk_entry_get_text(GTK_ENTRY(entry))));
-        if (*text != '\0') {
-            result = text;
-            if (ai_mode_out != NULL) {
-                if (gtk_toggle_button_get_active(
-                        GTK_TOGGLE_BUTTON(project_radio)))
-                    *ai_mode_out = ON_AI_MODE_PROJECT;
-                else if (gtk_toggle_button_get_active(
-                        GTK_TOGGLE_BUTTON(custom_radio)))
-                    *ai_mode_out = ON_AI_MODE_CUSTOM;
-                else
-                    *ai_mode_out = ON_AI_MODE_NORMAL;
-            }
-            if (emoji_out != NULL)
-                *emoji_out = g_strstrip(
-                    g_strdup(gtk_entry_get_text(GTK_ENTRY(emoji_entry))));
-        } else {
-            g_free(text);
-        }
-    }
-    gtk_widget_destroy(dialog);
-    return result;
+    g_signal_connect(dialog, "response",
+                     G_CALLBACK(on_folder_prompt_response), p);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
 /* ---------------------------------------------------------------------------
- * confirm() — modal yes/no warning dialog: a 32px warning icon above a
- * centered primary question and a centered secondary line.
+ * ConfirmFunc — the continuation of confirm(): runs once the user has
+ * answered, with the verdict.  Always called (so `data` can be released
+ * either way) — except when the library window is destroyed with the
+ * question still up, in which case the dialog dies with it (GtkAlertDialog
+ * sets destroy-with-parent) and the continuation never runs; the few
+ * bytes of `data` go with the window.
+ *   lw   — the library window.
+ *   yes  — TRUE if the user accepted.
+ *   data — the caller's state.
+ * ------------------------------------------------------------------------- */
+typedef void (*ConfirmFunc)(OnLibrary *lw, gboolean yes, gpointer data);
+
+/* ConfirmCtx — what confirm_finished() needs.                               */
+typedef struct {
+    OnLibrary   *lw;
+    ConfirmFunc  done;
+    gpointer     data;
+} ConfirmCtx;
+
+/* confirm_finished() — GAsyncReadyCallback of the confirm alert: button 1
+ * is Yes (see confirm), anything else — No, Escape, closed — is no.        */
+static void
+confirm_finished(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ConfirmCtx *ctx = user_data;
+    gint button = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source),
+                                                 result, NULL);
+    ctx->done(ctx->lw, button == 1, ctx->data);
+    g_free(ctx);
+}
+
+/* ---------------------------------------------------------------------------
+ * confirm() — modal yes/no question: a centered primary question over a
+ * secondary line, No/Yes buttons, No the default and the cancel.
+ * ASYNCHRONOUS: returns at once; the caller's tail is `done`.
  *   lw        — the library window (dialog parent).
  *   primary   — the question (e.g. "Delete this note?").
  *   secondary — supporting line (e.g. "This cannot be undone."); may be
  *               NULL.
- * Returns TRUE if the user accepted.
+ *   done      — the continuation (see ConfirmFunc).
+ *   data      — passed to `done`.
  * ------------------------------------------------------------------------- */
-static gboolean
-confirm(OnLibrary *lw, const gchar *primary, const gchar *secondary)
+static void
+confirm(OnLibrary *lw, const gchar *primary, const gchar *secondary,
+        ConfirmFunc done, gpointer data)
 {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons(
-        "Confirm", GTK_WINDOW(lw->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "_No",  GTK_RESPONSE_NO,
-        "_Yes", GTK_RESPONSE_YES,
-        NULL);
+    static const gchar *const buttons[] = { "_No", "_Yes", NULL };
+    GtkAlertDialog *dialog = gtk_alert_dialog_new("%s", primary);
+    if (secondary != NULL)           /* set_detail refuses NULL             */
+        gtk_alert_dialog_set_detail(dialog, secondary);
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 0);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
 
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
-
-    /* Warning icon on top (custom PNG; ⚠ as fallback).                     */
-    GtkWidget *icon = on_app_icon_image_sized(lw->app, "warning", 32);
-    if (icon == NULL)
-        icon = gtk_label_new("\xe2\x9a\xa0");
-    gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
-    gtk_box_pack_start(GTK_BOX(box), icon, FALSE, FALSE, 0);
-
-    GtkWidget *primary_label = gtk_label_new(primary);
-    gtk_label_set_justify(GTK_LABEL(primary_label), GTK_JUSTIFY_CENTER);
-    gtk_widget_set_halign(primary_label, GTK_ALIGN_CENTER);
-    gtk_box_pack_start(GTK_BOX(box), primary_label, FALSE, FALSE, 0);
-
-    if (secondary != NULL) {
-        GtkWidget *secondary_label = gtk_label_new(secondary);
-        gtk_label_set_justify(GTK_LABEL(secondary_label),
-                              GTK_JUSTIFY_CENTER);
-        gtk_widget_set_halign(secondary_label, GTK_ALIGN_CENTER);
-        gtk_box_pack_start(GTK_BOX(box), secondary_label, FALSE, FALSE, 0);
-    }
-
-    gtk_box_pack_start(
-        GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),
-        box, TRUE, TRUE, 0);
-
-    /* Center the No/Yes buttons under the text, 8px apart.  The action
-     * area accessor is deprecated but remains the only way to restyle
-     * the button row in GTK3.                                              */
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    GtkWidget *action_area = gtk_dialog_get_action_area(GTK_DIALOG(dialog));
-    G_GNUC_END_IGNORE_DEPRECATIONS
-    gtk_button_box_set_layout(GTK_BUTTON_BOX(action_area),
-                              GTK_BUTTONBOX_CENTER);
-    gtk_box_set_spacing(GTK_BOX(action_area), 8);
-
-    gtk_widget_show_all(dialog);
-
-    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    return response == GTK_RESPONSE_YES;
+    ConfirmCtx *ctx = g_new(ConfirmCtx, 1);
+    ctx->lw   = lw;
+    ctx->done = done;
+    ctx->data = data;
+    gtk_alert_dialog_choose(dialog, GTK_WINDOW(lw->window), NULL,
+                            confirm_finished, ctx);
+    g_object_unref(dialog);          /* the pending choose holds its own    */
 }
 
 /* on_new_note() — create a note in the current folder and open it.          */
@@ -2355,22 +2495,22 @@ on_quicknote(OnLibrary *lw)
     on_library_quicknote(lw->app);
 }
 
+/* new_folder_done() — the New Folder prompt's continuation: create the
+ * folder under `parent` (the selection when the prompt opened).            */
+static void
+new_folder_done(OnLibrary *lw, gint64 parent, const gchar *name,
+                gint ai_mode, const gchar *emoji)
+{
+    on_db_folder_create(lw->app->db, parent, name, ai_mode, emoji);
+    refresh_sidebar(lw);
+}
+
 /* on_new_folder() — prompt for a name and AI mode; create under current.    */
 static void
 on_new_folder(OnLibrary *lw)
 {
-    gint   mode  = ON_AI_MODE_NORMAL;
-    gchar *emoji = NULL;
-    gchar *name  = prompt_for_folder(lw, "New Folder", NULL,
-                                     ON_AI_MODE_NORMAL, &mode,
-                                     NULL, &emoji);
-    if (name != NULL) {
-        on_db_folder_create(lw->app->db, current_folder_id(lw), name,
-                            mode, emoji);
-        g_free(name);
-        refresh_sidebar(lw);
-    }
-    g_free(emoji);
+    prompt_for_folder(lw, "New Folder", current_folder_id(lw), NULL,
+                      ON_AI_MODE_NORMAL, NULL, new_folder_done);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2408,25 +2548,6 @@ selected_note_ids(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * selected_note_count() — how many notes are selected in the active view.
- * Cheaper than selected_note_ids() when only the count is wanted (the drag
- * icon just needs "one or several").
- * ------------------------------------------------------------------------- */
-static guint
-selected_note_count(OnLibrary *lw)
-{
-    if (g_strcmp0(gtk_stack_get_visible_child_name(GTK_STACK(lw->stack)),
-                  "grid") == 0) {
-        GList *paths = gtk_icon_view_get_selected_items(lw->notes_grid);
-        guint n = g_list_length(paths);
-        g_list_free_full(paths, (GDestroyNotify)gtk_tree_path_free);
-        return n;
-    }
-    return (guint)gtk_tree_selection_count_selected_rows(
-        gtk_tree_view_get_selection(lw->notes_list));
-}
-
-/* ---------------------------------------------------------------------------
  * close_editors_for_ids() — destroy any open editor window for the notes
  * in `ids`; their destroy handlers flush pending autosaves first.
  * ------------------------------------------------------------------------- */
@@ -2438,7 +2559,7 @@ close_editors_for_ids(OnLibrary *lw, const gint64 *ids, gsize n)
         GtkWidget *editor =
             g_hash_table_lookup(lw->app->editors, &note_id);
         if (editor != NULL)
-            gtk_widget_destroy(editor);
+            gtk_window_destroy(GTK_WINDOW(editor));
     }
 }
 
@@ -2503,31 +2624,46 @@ trash_folder(OnLibrary *lw, gint64 folder_id, const gchar *name)
 }
 
 /* ---------------------------------------------------------------------------
+ * delete_notes_confirmed() — delete_notes_permanently()'s continuation:
+ * on Yes, permanently delete the notes (closing any open editors first).
+ *   data — the GArray of note ids (owned: freed here).
+ * ------------------------------------------------------------------------- */
+static void
+delete_notes_confirmed(OnLibrary *lw, gboolean yes, gpointer data)
+{
+    GArray *ids = data;              /* the notes to delete                 */
+    if (yes) {
+        const gint64 *note_ids = (const gint64 *)ids->data;
+        close_editors_for_ids(lw, note_ids, ids->len);
+        on_db_notes_delete(lw->app->db, note_ids, ids->len);
+        /* Evict deleted entries from the thumbnail cache so their textures
+         * are freed now rather than held until the window closes.         */
+        for (gsize i = 0; i < ids->len; i++)
+            g_hash_table_remove(lw->thumb_cache, &note_ids[i]);
+        refresh_all(lw);             /* tag list/counts may have changed    */
+    }
+    g_array_free(ids, TRUE);
+}
+
+/* ---------------------------------------------------------------------------
  * delete_notes_permanently() — confirm once, then permanently delete every
- * note in `ids` (closing any open editors first).  This is the Trash-view
- * delete; normal views go through trash_notes().
+ * note in `ids`.  This is the Trash-view delete; normal views go through
+ * trash_notes().
+ *   ids — the note ids; OWNERSHIP IS TAKEN (the continuation frees them).
  * ------------------------------------------------------------------------- */
 static void
 delete_notes_permanently(OnLibrary *lw, GArray *ids)
 {
-    if (ids->len == 0)
+    if (ids->len == 0) {
+        g_array_free(ids, TRUE);
         return;
+    }
     gchar *question = (ids->len == 1)
         ? g_strdup("Permanently delete this note?")
         : g_strdup_printf("Permanently delete these %u notes?", ids->len);
-    gboolean ok = confirm(lw, question, "This cannot be undone.");
+    confirm(lw, question, "This cannot be undone.",
+            delete_notes_confirmed, ids);
     g_free(question);
-    if (!ok)
-        return;
-
-    const gint64 *note_ids = (const gint64 *)ids->data;
-    close_editors_for_ids(lw, note_ids, ids->len);
-    on_db_notes_delete(lw->app->db, note_ids, ids->len);
-    /* Evict deleted entries from the thumbnail cache so their surfaces
-     * are freed now rather than held until the window closes.             */
-    for (gsize i = 0; i < ids->len; i++)
-        g_hash_table_remove(lw->thumb_cache, &note_ids[i]);
-    refresh_all(lw);                 /* tag list/counts may have changed    */
 }
 
 /* on_delete_note() — action-bar Delete: trash every selected note, or
@@ -2536,11 +2672,35 @@ static void
 on_delete_note(OnLibrary *lw)
 {
     GArray *ids = selected_note_ids(lw);
-    if (in_trash_view(lw))
-        delete_notes_permanently(lw, ids);
-    else
+    if (in_trash_view(lw)) {
+        delete_notes_permanently(lw, ids);   /* takes the ids               */
+    } else {
         trash_notes(lw, ids);
+        g_array_free(ids, TRUE);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * delete_folder_confirmed() — on_delete_folder()'s continuation for a
+ * folder in the Trash: on Yes, permanently delete it and its subtree.
+ *   data — the folder id (a heap gint64, owned: freed here).
+ * ------------------------------------------------------------------------- */
+static void
+delete_folder_confirmed(OnLibrary *lw, gboolean yes, gpointer data)
+{
+    gint64 folder_id = *(gint64 *)data;
+    g_free(data);
+    if (!yes)
+        return;
+    GArray *ids = on_db_folder_note_ids(lw->app->db, folder_id);
+    close_editors_for_ids(lw, (const gint64 *)ids->data, ids->len);
     g_array_free(ids, TRUE);
+    on_db_folder_delete(lw->app->db, folder_id);
+    if (lw->sel_kind == SB_KIND_TRASH_FOLDER && lw->sel_id == folder_id) {
+        lw->sel_kind = SB_KIND_TRASH;
+        lw->sel_id   = 0;
+    }
+    refresh_all(lw);
 }
 
 /* on_delete_folder() — sidebar-toolbar Delete: move the selected folder
@@ -2553,18 +2713,12 @@ on_delete_folder(OnLibrary *lw)
         if (trash_folder(lw, lw->sel_id, lw->sel_name))
             refresh_all(lw);
     } else if (lw->sel_kind == SB_KIND_TRASH_FOLDER) {
-        if (confirm(lw,
-                    "Permanently delete this folder and everything "
-                    "inside it?",
-                    "This cannot be undone.")) {
-            GArray *ids = on_db_folder_note_ids(lw->app->db, lw->sel_id);
-            close_editors_for_ids(lw, (const gint64 *)ids->data, ids->len);
-            g_array_free(ids, TRUE);
-            on_db_folder_delete(lw->app->db, lw->sel_id);
-            lw->sel_kind = SB_KIND_TRASH;
-            lw->sel_id   = 0;
-            refresh_all(lw);
-        }
+        gint64 *folder_id = g_new(gint64, 1);   /* captured for the answer */
+        *folder_id = lw->sel_id;
+        confirm(lw,
+                "Permanently delete this folder and everything inside it?",
+                "This cannot be undone.",
+                delete_folder_confirmed, folder_id);
     }
 }
 
@@ -2585,18 +2739,18 @@ on_restore_folder(OnLibrary *lw)
     }
 }
 
-/* on_empty_trash() — Trash context menu: permanently delete everything in
- * the Trash after one confirmation.                                         */
+/* empty_trash_confirmed() — on_empty_trash()'s continuation: on Yes, purge
+ * the Trash.                                                                */
 static void
-on_empty_trash(OnLibrary *lw)
+empty_trash_confirmed(OnLibrary *lw, gboolean yes, gpointer data)
 {
-    if (!confirm(lw, "Permanently delete everything in the Trash?",
-                 "This cannot be undone."))
+    (void)data;
+    if (!yes)
         return;
 
     /* Close editors for every note the purge will take with it —
      * including notes inside trashed folder subtrees.  Evict from the
-     * thumbnail cache at the same time so the surfaces are freed now.     */
+     * thumbnail cache at the same time so the textures are freed now.     */
     GArray *ids = on_db_trash_note_ids(lw->app->db);
     const gint64 *note_ids = (const gint64 *)ids->data;
     close_editors_for_ids(lw, note_ids, ids->len);
@@ -2610,6 +2764,25 @@ on_empty_trash(OnLibrary *lw)
     }
 }
 
+/* on_empty_trash() — Trash context menu: permanently delete everything in
+ * the Trash after one confirmation.                                         */
+static void
+on_empty_trash(OnLibrary *lw)
+{
+    confirm(lw, "Permanently delete everything in the Trash?",
+            "This cannot be undone.", empty_trash_confirmed, NULL);
+}
+
+/* folder_info_done() — the Folder Info prompt's continuation: write the
+ * edited name, AI mode and emoji back to `folder`.                          */
+static void
+folder_info_done(OnLibrary *lw, gint64 folder, const gchar *name,
+                 gint ai_mode, const gchar *emoji)
+{
+    on_db_folder_update(lw->app->db, folder, name, ai_mode, emoji);
+    refresh_sidebar(lw);
+}
+
 /* on_rename_folder() — "Info…" menu: edit folder name and AI mode.          */
 static void
 on_rename_folder(OnLibrary *lw)
@@ -2620,18 +2793,9 @@ on_rename_folder(OnLibrary *lw)
         on_db_folder_get_ai_mode(lw->app->db, lw->sel_id);
     gchar *cur_emoji =               /* pre-fill emoji with current value    */
         on_db_folder_get_emoji(lw->app->db, lw->sel_id);
-    gint   mode  = cur_mode;
-    gchar *emoji = NULL;
-    gchar *name  = prompt_for_folder(lw, "Folder Info",
-                                     lw->sel_name, cur_mode, &mode,
-                                     cur_emoji, &emoji);
+    prompt_for_folder(lw, "Folder Info", lw->sel_id, lw->sel_name,
+                      cur_mode, cur_emoji, folder_info_done);
     g_free(cur_emoji);
-    if (name != NULL) {
-        on_db_folder_update(lw->app->db, lw->sel_id, name, mode, emoji);
-        g_free(name);
-        refresh_sidebar(lw);
-    }
-    g_free(emoji);
 }
 
 /* on_open_search() — sidebar-toolbar Search: open the search window (it
@@ -2677,10 +2841,10 @@ on_open_media(OnLibrary *lw)
  *   user_data — the owning library window.
  * ------------------------------------------------------------------------- */
 static void
-on_toolbar_search_activate(GtkEntry *entry, gpointer user_data)
+on_toolbar_search_activate(GtkSearchEntry *entry, gpointer user_data)
 {
     OnLibrary *lw = user_data;        /* owning library window               */
-    const gchar *query = gtk_entry_get_text(entry);
+    const gchar *query = gtk_editable_get_text(GTK_EDITABLE(entry));
     if (query == NULL || *query == '\0')
         return;                      /* nothing typed: no window            */
     on_search_window_open_query(lw->app, query);
@@ -2694,70 +2858,75 @@ on_open_settings(OnLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
- * on_open_db() — File → Open Database…: let the user pick any .db file and
- * open it, either as the new permanent default or for this session only.
+ * LwRef — a weak handle on the library for continuations that a native
+ * file chooser (on_app_pick_path) may deliver AFTER the library window is
+ * gone: the chooser is not destroyed with its parent, so its callback
+ * cannot hold a raw OnLibrary pointer.  The handle is a weak pointer to
+ * the window; lw_ref_take() resolves it to the live state or NULL.  The
+ * in-process dialogs (GtkDialog, GtkAlertDialog) need none of this: they
+ * are destroyed with the parent and their callbacks never run afterwards.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    GtkWidget *window;               /* weak: NULL once the library is gone */
+} LwRef;
+
+/* lw_ref_new() — take a weak handle on `lw`'s window.                       */
+static LwRef *
+lw_ref_new(OnLibrary *lw)
+{
+    LwRef *ref = g_new0(LwRef, 1);
+    ref->window = lw->window;
+    g_object_add_weak_pointer(G_OBJECT(lw->window), (gpointer *)&ref->window);
+    return ref;
+}
+
+/* lw_ref_take() — resolve and free a handle: the library, or NULL when its
+ * window has been destroyed since.                                         */
+static OnLibrary *
+lw_ref_take(LwRef *ref)
+{
+    OnLibrary *lw = NULL;            /* the live state, if any              */
+    if (ref->window != NULL) {
+        lw = g_object_get_data(G_OBJECT(ref->window), "on-library");
+        g_object_remove_weak_pointer(G_OBJECT(ref->window),
+                                     (gpointer *)&ref->window);
+    }
+    g_free(ref);
+    return lw;
+}
+
+/* OpenDb — the state of one File → Open Database… flow across its two
+ * dialogs.                                                                  */
+typedef struct {
+    LwRef *ref;                      /* the library (weak)                  */
+    gchar *path;                     /* the chosen file (owned)             */
+} OpenDb;
+
+/* ---------------------------------------------------------------------------
+ * open_db_switch() — the last step of File → Open Database…: switch to
+ * `path`, as the new default (persisted) or for this session only.
  * ------------------------------------------------------------------------- */
 static void
-on_open_db(OnLibrary *lw)
+open_db_switch(OnLibrary *lw, const gchar *path, gboolean set_default)
 {
     OnApp *app = lw->app;
-
-    /* Step 1: pick the file. */
-    gchar *file_path = on_app_pick_path(
-        GTK_WINDOW(lw->window), "Open Database",
-        GTK_FILE_CHOOSER_ACTION_OPEN, "_Open",
-        "SQLite Database (*.db)", "*.db");
-    if (file_path == NULL)
-        return;
-
-    /* Already open: nothing to do. */
-    if (g_strcmp0(file_path, app->db->path) == 0) {
-        g_free(file_path);
-        return;
-    }
-
-    /* Step 2: ask how to open it. */
-    gchar *display = g_path_get_basename(file_path);
-    GtkWidget *dlg = gtk_message_dialog_new(
-        GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
-        GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
-        "Open “%s” as your new default database, or for this "
-        "session only?", display);
-    g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Notes - Open Database");
-    gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-        "_Cancel",         GTK_RESPONSE_CANCEL,
-        "_Session Only",   1,
-        "Set as _Default", 2,
-        NULL);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-
-    if (resp == GTK_RESPONSE_CANCEL || resp == GTK_RESPONSE_DELETE_EVENT) {
-        g_free(file_path);
-        return;
-    }
-    gboolean set_default = (resp == 2);
-
-    /* Step 3: switch to the chosen database. */
     on_app_close_all_editors(app);
     gchar *old_path = g_strdup(app->db->path);
     on_db_close(app->db);
-    app->db = on_db_open(file_path);
+    app->db = on_db_open(path);
 
     if (app->db == NULL) {
-        on_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Notes - Database Error",
-                      "Could not open:\n%s", file_path);
+        on_app_notice(GTK_WINDOW(lw->window), "Notes - Database Error",
+                      "Could not open:\n%s", path);
         /* Revert to old database. */
         app->db = on_db_open(old_path);
         g_free(old_path);
-        g_free(file_path);
         return;
     }
+    g_free(old_path);
 
     if (set_default) {
-        gchar *new_dir = g_path_get_dirname(file_path);
+        gchar *new_dir = g_path_get_dirname(path);
         g_free(app->db_dir);
         app->db_dir = g_strdup(new_dir);
         app->db_transient = FALSE;
@@ -2766,9 +2935,6 @@ on_open_db(OnLibrary *lw)
     } else {
         app->db_transient = TRUE;   /* session only: don't persist anything */
     }
-
-    g_free(old_path);
-    g_free(file_path);
 
     /* The backup timer carries the db path, so it must be re-armed onto
      * the file that is now open (see backup.h).                           */
@@ -2779,38 +2945,84 @@ on_open_db(OnLibrary *lw)
     on_app_status(app, "DB at %s loaded", app->db->path);
 }
 
-/* find_gtk_image() — first GtkImage in a widget subtree (depth-first).
- * Used to reach GtkAboutDialog's internal logo image, which the public
- * API only feeds with a plain (blurry-on-Retina) GdkPixbuf.                 */
-static GtkWidget *
-find_gtk_image(GtkWidget *widget)
+/* open_db_chosen() — step 2 answered (0 Cancel, 1 Session Only, 2 Set as
+ * Default): switch, or drop the whole thing.                                */
+static void
+open_db_chosen(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    if (GTK_IS_IMAGE(widget))
-        return widget;
-    GtkWidget *hit = NULL;           /* first image found in the subtree    */
-    if (GTK_IS_CONTAINER(widget)) {
-        GList *kids = gtk_container_get_children(GTK_CONTAINER(widget));
-        for (GList *l = kids; l != NULL && hit == NULL; l = l->next)
-            hit = find_gtk_image(l->data);
-        g_list_free(kids);
+    OpenDb *od = user_data;
+    gint choice = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source),
+                                                 result, NULL);
+    OnLibrary *lw = lw_ref_take(od->ref);
+    if (lw != NULL && choice > 0)
+        open_db_switch(lw, od->path, choice == 2);
+    g_free(od->path);
+    g_free(od);
+}
+
+/* open_db_picked() — step 1 done: a file was chosen (or not).  A file that
+ * is already open needs nothing; otherwise ask how to open it.              */
+static void
+open_db_picked(gchar *path, gpointer user_data)
+{
+    OpenDb *od = user_data;
+    od->path = path;
+    OnLibrary *lw = od->ref->window != NULL   /* peek: the handle lives on */
+        ? g_object_get_data(G_OBJECT(od->ref->window), "on-library") : NULL;
+    if (lw == NULL || path == NULL ||
+        g_strcmp0(path, lw->app->db->path) == 0) {
+        lw_ref_take(od->ref);
+        g_free(od->path);
+        g_free(od);
+        return;
     }
-    return hit;
+
+    static const gchar *const buttons[] =
+        { "_Cancel", "_Session Only", "Set as _Default", NULL };
+    gchar *display = g_path_get_basename(path);
+    GtkAlertDialog *dlg = gtk_alert_dialog_new(
+        "Open \xe2\x80\x9c%s\xe2\x80\x9d as your new default database, or "
+        "for this session only?", display);
+    g_free(display);
+    gtk_alert_dialog_set_buttons(dlg, buttons);
+    gtk_alert_dialog_set_cancel_button(dlg, 0);
+    gtk_alert_dialog_set_default_button(dlg, 2);
+    gtk_alert_dialog_set_modal(dlg, TRUE);
+    gtk_alert_dialog_choose(dlg, GTK_WINDOW(lw->window), NULL,
+                            open_db_chosen, od);
+    g_object_unref(dlg);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_open_db() — File → Open Database…: let the user pick any .db file and
+ * open it, either as the new permanent default or for this session only.
+ * Two dialogs, both asynchronous: the chooser (open_db_picked), then the
+ * default-or-session question (open_db_chosen → open_db_switch).
+ * ------------------------------------------------------------------------- */
+static void
+on_open_db(OnLibrary *lw)
+{
+    OpenDb *od = g_new0(OpenDb, 1);
+    od->ref = lw_ref_new(lw);
+    on_app_pick_path(GTK_WINDOW(lw->window), "Open Database",
+                     ON_PICK_OPEN, "_Open", "SQLite Database (*.db)", "*.db",
+                     NULL, open_db_picked, od);
 }
 
 /* ---------------------------------------------------------------------------
  * on_about() — File → About: the standard about dialog with the app icon,
- * author, build date and a link to the BSD license.
+ * author, build date and a link to the BSD license.  Presented and left to
+ * its own close button (a GtkAboutDialog destroys itself on close).
  * ------------------------------------------------------------------------- */
 static void
 on_about(OnLibrary *lw)
 {
-    /* 128x128-logical logo from composition.png, decoded at the display's
-     * scale factor so it stays sharp on Retina (quirk #5).                 */
-    gint sf = gtk_widget_get_scale_factor(lw->window);
+    /* 128x128 logo from composition.png.  Decoded at that pixel size, not
+     * the scale-factor multiple: the dialog's image draws a paintable at
+     * its intrinsic size, so a 2x decode would show at 256 logical px.     */
     gchar *icon_path = g_build_filename(lw->app->icons_dir, "composition.png",
                                         NULL);
-    GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path,
-                                                       128 * sf, 128 * sf,
+    GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path, 128, 128,
                                                        NULL);
     g_free(icon_path);
 
@@ -2819,30 +3031,16 @@ on_about(OnLibrary *lw)
     GtkWidget *dialog = gtk_about_dialog_new();
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
+    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(dialog), TRUE);
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
                                       "Notes");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), ON_VERSION);
     if (logo != NULL) {
-        /* set_logo() first (it makes the internal image visible and
-         * sized), then swap that image's content for a cairo surface
-         * with the device scale — the pixbuf API renders 1 buffer px
-         * per logical px and looks soft on HiDPI.                          */
-        GdkPixbuf *at_128 = (sf > 1)
-            ? gdk_pixbuf_scale_simple(logo, 128, 128, GDK_INTERP_BILINEAR)
-            : g_object_ref(logo);
-        gtk_about_dialog_set_logo(GTK_ABOUT_DIALOG(dialog), at_128);
-        g_object_unref(at_128);
-
-        if (sf > 1) {
-            GtkWidget *img = find_gtk_image(
-                gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
-            if (img != NULL) {
-                cairo_surface_t *surface =
-                    gdk_cairo_surface_create_from_pixbuf(logo, sf, NULL);
-                gtk_image_set_from_surface(GTK_IMAGE(img), surface);
-                cairo_surface_destroy(surface);
-            }
-        }
+        GdkTexture *texture = on_app_texture_for_pixbuf(logo);
+        gtk_about_dialog_set_logo(GTK_ABOUT_DIALOG(dialog),
+                                  GDK_PAINTABLE(texture));
+        g_object_unref(texture);
         g_object_unref(logo);
     }
     gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
@@ -2872,8 +3070,7 @@ on_about(OnLibrary *lw)
     gtk_about_dialog_set_website_label(GTK_ABOUT_DIALOG(dialog),
                                        "BSD License");
 
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
 /* ---------------------------------------------------------------------------
@@ -2887,7 +3084,7 @@ on_quit(OnLibrary *lw)
     GList *windows =                 /* copy: destroying mutates the list   */
         g_list_copy(gtk_application_get_windows(lw->app->gtk_app));
     for (GList *l = windows; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
+        gtk_window_destroy(GTK_WINDOW(l->data));
     g_list_free(windows);
 }
 
@@ -2949,28 +3146,60 @@ menu_section_end(GMenu *menu, GMenu **section)
 }
 
 /* ---------------------------------------------------------------------------
- * on_sidebar_button_press() — right click in the folder/tag tree: select
- * the row under the pointer and show a context menu mirroring the sidebar
+ * capture_click_gesture() — a GtkGestureClick on `widget` in the CAPTURE
+ * phase, so its "pressed" runs BEFORE the widget's own bubble-phase click
+ * gesture.  That order is the whole point for the tree views: GTK4's
+ * GtkTreeView CLEAR_AND_SELECTs on the FIRST press of ANY button (measured
+ * in gtk/deprecated/gtktreeview.c, gtk_tree_view_click_gesture_pressed),
+ * so a right-click handler that wants to keep a multi-selection, and the
+ * quirk-15 veto (D7), both have to get there first.  A handler that wants
+ * the press for itself CLAIMs the sequence, which is what returning TRUE
+ * from a button-press-event used to do.
+ *   widget  — the widget to watch.
+ *   button  — GDK_BUTTON_* to watch, or 0 for any.
+ *   pressed — the "pressed" handler.
+ *   data    — its user data.
+ * Returns the gesture, for callers that connect more of its signals.
+ * ------------------------------------------------------------------------- */
+static GtkGesture *
+capture_click_gesture(GtkWidget *widget, guint button, GCallback pressed,
+                      gpointer data)
+{
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), button);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", pressed, data);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click));
+    return click;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_sidebar_pressed() — right click in the folder/tag tree: select the
+ * row under the pointer and show a context menu mirroring the sidebar
  * toolbar (folder actions + scoped search).  The items name actions, so
  * the row kind only decides which items appear; the handlers read the
- * selection this press just made.
+ * selection this press just made.  The press is claimed either way.
+ *   x, y — the press in the sidebar's widget coordinates.
  * ------------------------------------------------------------------------- */
-static gboolean
-on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
-                        gpointer user_data)
+static void
+on_sidebar_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                   gpointer user_data)
 {
+    (void)n_press;
     OnLibrary *lw = user_data;       /* owning library window               */
-    if (event->button != GDK_BUTTON_SECONDARY)
-        return FALSE;
-
+    gint bx, by;                     /* the press in bin-window coordinates */
+    gtk_tree_view_convert_widget_to_bin_window_coords(lw->sidebar,
+                                                      (gint)x, (gint)y,
+                                                      &bx, &by);
     GtkTreePath *path = NULL;        /* row under the pointer               */
-    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-                                       (gint)event->x, (gint)event->y,
-                                       &path, NULL, NULL, NULL))
-        return FALSE;
+    if (!gtk_tree_view_get_path_at_pos(lw->sidebar, bx, by, &path,
+                                       NULL, NULL, NULL))
+        return;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
 
-    gtk_tree_selection_select_path(
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(widget)), path);
+    gtk_tree_selection_select_path(gtk_tree_view_get_selection(lw->sidebar),
+                                   path);
 
     /* What kind of row was clicked decides which actions make sense.       */
     GtkTreeIter iter;                /* the clicked row                     */
@@ -2981,7 +3210,7 @@ on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
                            SB_KIND, &kind, -1);
     gtk_tree_path_free(path);
     if (kind == SB_KIND_TAGS_HEADER)
-        return TRUE;                 /* consumed, but no menu               */
+        return;                      /* consumed, but no menu               */
 
     GMenu *menu    = g_menu_new();
     GMenu *section = g_menu_new();
@@ -3014,8 +3243,7 @@ on_sidebar_button_press(GtkWidget *widget, GdkEventButton *event,
     menu_section_end(menu, &section);
     g_object_unref(section);
 
-    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
-    return TRUE;
+    on_app_menu_popup(GTK_WIDGET(lw->sidebar), G_MENU_MODEL(menu), x, y);
 }
 
 /* ===========================================================================
@@ -3180,9 +3408,12 @@ view_button_sync(OnLibrary *lw)
     on_app_tool_item_set_icon(lw->app, lw->view_btn,
                               grid ? "list" : "grid",
                               grid ? "\xe2\x98\xb0" : "\xe2\x8a\x9e");
-    gtk_tool_button_set_label(GTK_TOOL_BUTTON(lw->view_btn),
-                              grid ? "List" : "Grid");
-    gtk_tool_item_set_tooltip_text(lw->view_btn,
+    /* The accessible name is the button's "label" (on_app_tool_item_new
+     * sets it the same way); the tooltip is the visible one.              */
+    gtk_accessible_update_property(GTK_ACCESSIBLE(lw->view_btn),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                   grid ? "List" : "Grid", -1);
+    on_app_set_tooltip(lw->view_btn,
         grid ? "Switch to list view" : "Switch to grid view");
 }
 
@@ -3206,68 +3437,93 @@ on_toggle_view(OnLibrary *lw)
         on_view_grid(lw);
 }
 
-/* pick_export_dir() — run the "Choose Export Folder" chooser shared by
- * every export flow.  Returns the chosen directory (g_free), or NULL if
- * the user cancelled.                                                       */
-static gchar *
-pick_export_dir(OnLibrary *lw)
-{
-    return on_app_pick_path(GTK_WINDOW(lw->window), "Choose Export Folder",
-                            GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-                            "_Export", NULL, NULL);
-}
+/* ---------------------------------------------------------------------------
+ * ExportJob — one export flow across its folder chooser: what to export
+ * and where the result goes.
+ *
+ * Fields:
+ *   ref    — the library (weak: the chooser can outlive the window).
+ *   format — ON_EXPORT_HTML or ON_EXPORT_MARKDOWN.
+ *   ids    — the selected note ids (owned), or NULL for every note.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    LwRef          *ref;
+    OnExportFormat  format;
+    GArray         *ids;
+} ExportJob;
 
 /* ---------------------------------------------------------------------------
- * report_exported() — modal result dialog for an export run.
- *   lw  — the library window (dialog parent).
- *   n   — how many notes were written; negative means the run failed.
- *   dir — the destination directory (for the success message).
- *   err — exporter error message for a failed run, or NULL.
+ * export_dir_picked() — on_app_pick_path's continuation for every export
+ * flow: write the notes into the chosen directory and report the result
+ * (fire-and-forget notice: how many were written, or why the run failed).
+ *   dir       — the chosen directory (owned), or NULL when cancelled.
+ *   user_data — the ExportJob (owned: freed here).
  * ------------------------------------------------------------------------- */
 static void
-report_exported(OnLibrary *lw, gint n, const gchar *dir, const gchar *err)
+export_dir_picked(gchar *dir, gpointer user_data)
 {
-    if (n >= 0)
-        on_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_INFO, NULL,
-                      "Exported %d note%s to\n%s",
-                      n, n == 1 ? "" : "s", dir);
-    else
-        on_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR, NULL,
-                      "Export failed: %s",
-                      err != NULL ? err : "unknown error");
+    ExportJob *job = user_data;
+    OnLibrary *lw  = lw_ref_take(job->ref);
+    if (lw != NULL && dir != NULL) {
+        gchar *err = NULL;           /* exporter error message              */
+        gint   n;                    /* notes written; negative = failed    */
+        if (job->ids == NULL) {
+            n = on_export_all(lw->app, dir, job->format, &err);
+        } else {
+            n = 0;
+            for (guint i = 0; i < job->ids->len; i++)
+                if (on_export_note(lw->app,
+                                   g_array_index(job->ids, gint64, i),
+                                   dir, job->format))
+                    n++;
+        }
+        if (n >= 0)
+            on_app_notice(GTK_WINDOW(lw->window), NULL,
+                          "Exported %d note%s to\n%s",
+                          n, n == 1 ? "" : "s", dir);
+        else
+            on_app_notice(GTK_WINDOW(lw->window), NULL,
+                          "Export failed: %s",
+                          err != NULL ? err : "unknown error");
+        g_free(err);
+    }
+    if (job->ids != NULL)
+        g_array_free(job->ids, TRUE);
+    g_free(job);
+    g_free(dir);
 }
 
 /* ---------------------------------------------------------------------------
- * run_export() — pick a destination directory and export every note in
- * the requested format, then report the result.
+ * run_export() — pick a destination directory and export the notes in
+ * `ids` (or every note when NULL) in the requested format; the chooser is
+ * asynchronous and export_dir_picked does the rest.
  *   lw     — the library window.
  *   format — ON_EXPORT_HTML or ON_EXPORT_MARKDOWN.
+ *   ids    — the note ids (OWNERSHIP IS TAKEN), or NULL for all notes.
  * ------------------------------------------------------------------------- */
 static void
-run_export(OnLibrary *lw, OnExportFormat format)
+run_export(OnLibrary *lw, OnExportFormat format, GArray *ids)
 {
-    gchar *dir = pick_export_dir(lw);
-    if (dir == NULL)
-        return;
-
-    gchar *err = NULL;               /* exporter error message              */
-    gint   n   = on_export_all(lw->app, dir, format, &err);
-    report_exported(lw, n, dir, err);
-    g_free(err);
-    g_free(dir);
+    ExportJob *job = g_new0(ExportJob, 1);
+    job->ref    = lw_ref_new(lw);
+    job->format = format;
+    job->ids    = ids;
+    on_app_pick_path(GTK_WINDOW(lw->window), "Choose Export Folder",
+                     ON_PICK_FOLDER, "_Export", NULL, NULL, NULL,
+                     export_dir_picked, job);
 }
 
 /* on_export_html() / on_export_markdown() — File-menu export entries.       */
 static void
 on_export_html(OnLibrary *lw)
 {
-    run_export(lw, ON_EXPORT_HTML);
+    run_export(lw, ON_EXPORT_HTML, NULL);
 }
 
 static void
 on_export_markdown(OnLibrary *lw)
 {
-    run_export(lw, ON_EXPORT_MARKDOWN);
+    run_export(lw, ON_EXPORT_MARKDOWN, NULL);
 }
 
 /* ===========================================================================
@@ -3297,22 +3553,7 @@ ctx_export_selection(OnLibrary *lw, OnExportFormat format)
         g_array_free(ids, TRUE);
         return;
     }
-
-    gchar *dir = pick_export_dir(lw);
-    if (dir == NULL) {
-        g_array_free(ids, TRUE);
-        return;
-    }
-
-    gint exported = 0;               /* how many notes were written         */
-    for (guint i = 0; i < ids->len; i++)
-        if (on_export_note(lw->app, g_array_index(ids, gint64, i),
-                           dir, format))
-            exported++;
-
-    report_exported(lw, exported, dir, NULL);
-    g_free(dir);
-    g_array_free(ids, TRUE);
+    run_export(lw, format, ids);     /* takes the ids                       */
 }
 
 static void
@@ -3366,11 +3607,13 @@ on_note_pin(GSimpleAction *action, GVariant *param, gpointer user_data)
 /* ---------------------------------------------------------------------------
  * show_note_context_menu() — build and pop up the per-note menu.
  *   lw      — the library window.
+ *   attach  — the notes view the press landed in (the popover's parent).
  *   note_id — the note that was right-clicked.
- *   event   — the triggering button event (for popup placement).
+ *   x, y    — the press, in `attach`'s coordinates.
  * ------------------------------------------------------------------------- */
 static void
-show_note_context_menu(OnLibrary *lw, gint64 note_id, GdkEventButton *event)
+show_note_context_menu(OnLibrary *lw, GtkWidget *attach, gint64 note_id,
+                       gdouble x, gdouble y)
 {
     GMenu *menu    = g_menu_new();
     GMenu *section = g_menu_new();
@@ -3409,16 +3652,22 @@ show_note_context_menu(OnLibrary *lw, gint64 note_id, GdkEventButton *event)
     menu_section_end(menu, &section);
     g_object_unref(section);
 
-    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
+    on_app_menu_popup(attach, G_MENU_MODEL(menu), x, y);
 }
 
 /* ---------------------------------------------------------------------------
  * notes_ctx_popup() — shared right-click tail of both notes views: read
  * the note id at `path` (owned — freed here) and pop up the note context
- * menu for it.  Returns TRUE: the click is consumed either way.
+ * menu for it, then CLAIM the press so the view's own gesture never sees
+ * it (it would collapse the selection).
+ *   g      — the press gesture.
+ *   attach — the view the press landed in.
+ *   path   — the clicked row (consumed).
+ *   x, y   — the press, in `attach`'s coordinates.
  * ------------------------------------------------------------------------- */
-static gboolean
-notes_ctx_popup(OnLibrary *lw, GtkTreePath *path, GdkEventButton *event)
+static void
+notes_ctx_popup(OnLibrary *lw, GtkGestureClick *g, GtkWidget *attach,
+                GtkTreePath *path, gdouble x, gdouble y)
 {
     GtkTreeIter iter;                /* the clicked row                     */
     gint64 id = 0;                   /* its note id                         */
@@ -3429,13 +3678,12 @@ notes_ctx_popup(OnLibrary *lw, GtkTreePath *path, GdkEventButton *event)
     gtk_tree_path_free(path);
 
     if (id != 0)
-        show_note_context_menu(lw, id, event);
-    return TRUE;
+        show_note_context_menu(lw, attach, id, x, y);
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
-/* notes_sel_block_func() / notes_sel_allow_func() — temporary select
- * functions for the span of a press on an already-selected list row:
- * block vetoes EVERY selection change, allow puts normality back.          */
+/* notes_sel_block_func() — the temporary select function for the span of
+ * a press on an already-selected list row: vetoes EVERY selection change. */
 static gboolean
 notes_sel_block_func(GtkTreeSelection *sel, GtkTreeModel *model,
                      GtkTreePath *path, gboolean selected, gpointer data)
@@ -3444,25 +3692,16 @@ notes_sel_block_func(GtkTreeSelection *sel, GtkTreeModel *model,
     return FALSE;
 }
 
-static gboolean
-notes_sel_allow_func(GtkTreeSelection *sel, GtkTreeModel *model,
-                     GtkTreePath *path, gboolean selected, gpointer data)
-{
-    (void)sel; (void)model; (void)path; (void)selected; (void)data;
-    return TRUE;
-}
-
 /* notes_sel_unblock() — end a blocked press: selection changes work
- * again; the press path is optionally handed to the caller (transfer),
- * otherwise freed.                                                          */
+ * again (the select function goes back to none); the press path is
+ * optionally handed to the caller (transfer), otherwise freed.             */
 static GtkTreePath *
 notes_sel_unblock(OnLibrary *lw, gboolean want_path)
 {
     if (!lw->notes_sel_blocked)
         return NULL;
     gtk_tree_selection_set_select_function(
-        gtk_tree_view_get_selection(lw->notes_list),
-        notes_sel_allow_func, NULL, NULL);
+        gtk_tree_view_get_selection(lw->notes_list), NULL, NULL, NULL);
     lw->notes_sel_blocked = FALSE;
     GtkTreePath *path = lw->notes_press_path;
     lw->notes_press_path = NULL;
@@ -3474,110 +3713,118 @@ notes_sel_unblock(OnLibrary *lw, gboolean want_path)
 }
 
 /* ---------------------------------------------------------------------------
- * on_notes_list_button_press() — two jobs:
+ * on_notes_list_pressed() — CAPTURE-phase press on the notes list (see
+ * capture_click_gesture), two jobs:
  *
- * 1. Left press on an already-selected row of a multi-selection: GTK
- *    3.24's tree view CLEAR_AND_SELECTs on PRESS with no deferral for a
- *    possible drag (quirk #15), which collapsed the selection before a
- *    multi-note drag could start.  Install a selection veto for the span
- *    of the press; on_notes_drag_begin keeps the selection, a plain
- *    release applies the collapse GTK wanted.  The event itself is NOT
- *    consumed — the view's drag gesture must still see it.
+ * 1. Unmodified primary press on an already-selected row of a
+ *    multi-selection: the view's own gesture CLEAR_AND_SELECTs on press
+ *    with no deferral for a possible drag (quirk #15, re-measured on GTK4
+ *    as D7), which would collapse the selection before a multi-note drag
+ *    could start.  Install a selection veto for the span of the press;
+ *    on_notes_list_drag_prepare keeps the selection, a plain release
+ *    applies the collapse GTK wanted.  The press is NOT claimed — the
+ *    view's gesture and the drag source must still see it.
  *
- * 2. Right click: select the row under the pointer and show the note
- *    menu (an existing multi-selection is kept when clicked inside).
+ * 2. Right click: select the row under the pointer (an existing
+ *    multi-selection is kept when clicked inside) and show the note menu;
+ *    that press IS claimed.
  * ------------------------------------------------------------------------- */
-static gboolean
-on_notes_list_button_press(GtkWidget *widget, GdkEventButton *event,
-                           gpointer user_data)
+static void
+on_notes_list_pressed(GtkGestureClick *g, gint n_press, gdouble x,
+                      gdouble y, gpointer user_data)
 {
     OnLibrary *lw = user_data;       /* owning library window               */
-
-    if (event->button == GDK_BUTTON_PRIMARY &&
-        event->type == GDK_BUTTON_PRESS &&
-        !(event->state & gtk_accelerator_get_default_mod_mask())) {
-        GtkTreeSelection *sel =
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
-        GtkTreePath *path = NULL;    /* row under the pointer               */
-        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-                                          (gint)event->x, (gint)event->y,
-                                          &path, NULL, NULL, NULL)) {
-            if (gtk_tree_selection_path_is_selected(sel, path) &&
-                gtk_tree_selection_count_selected_rows(sel) > 1) {
-                gtk_tree_selection_set_select_function(
-                    sel, notes_sel_block_func, NULL, NULL);
-                lw->notes_sel_blocked = TRUE;
-                gtk_tree_path_free(lw->notes_press_path);
-                lw->notes_press_path = path;     /* ownership taken         */
-                return FALSE;
-            }
-            gtk_tree_path_free(path);
-        }
-        return FALSE;
-    }
-
-    if (event->button != GDK_BUTTON_SECONDARY)
-        return FALSE;
-
+    guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
+    GtkTreeView *view = lw->notes_list;
+    gint bx, by;                     /* the press in bin-window coordinates */
+    gtk_tree_view_convert_widget_to_bin_window_coords(view, (gint)x, (gint)y,
+                                                      &bx, &by);
     GtkTreePath *path = NULL;        /* row under the pointer               */
-    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-                                       (gint)event->x, (gint)event->y,
-                                       &path, NULL, NULL, NULL))
-        return FALSE;
+    if (!gtk_tree_view_get_path_at_pos(view, bx, by, &path,
+                                       NULL, NULL, NULL))
+        return;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(view);
+
+    if (button == GDK_BUTTON_PRIMARY) {
+        GdkModifierType state = gtk_event_controller_get_current_event_state(
+            GTK_EVENT_CONTROLLER(g));
+        if (n_press == 1 &&
+            !(state & gtk_accelerator_get_default_mod_mask()) &&
+            gtk_tree_selection_path_is_selected(sel, path) &&
+            gtk_tree_selection_count_selected_rows(sel) > 1) {
+            gtk_tree_selection_set_select_function(
+                sel, notes_sel_block_func, NULL, NULL);
+            lw->notes_sel_blocked = TRUE;
+            gtk_tree_path_free(lw->notes_press_path);
+            lw->notes_press_path = path;         /* ownership taken         */
+            return;
+        }
+        gtk_tree_path_free(path);
+        return;
+    }
+    if (button != GDK_BUTTON_SECONDARY) {
+        gtk_tree_path_free(path);
+        return;
+    }
 
     /* Right-clicking inside an existing multi-selection keeps it (so bulk
      * actions can target it); clicking elsewhere selects just that row.    */
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
     if (!gtk_tree_selection_path_is_selected(sel, path)) {
         gtk_tree_selection_unselect_all(sel);
         gtk_tree_selection_select_path(sel, path);
     }
-
-    return notes_ctx_popup(lw, path, event);
+    notes_ctx_popup(lw, g, GTK_WIDGET(view), path, x, y);
 }
 
-/* on_notes_list_button_release() — a blocked press ended WITHOUT a drag:
- * lift the veto and apply the collapse GTK wanted on press (a plain
- * click on a selected row means "select just this one").                    */
-static gboolean
-on_notes_list_button_release(GtkWidget *widget, GdkEventButton *event,
-                             gpointer user_data)
+/* on_notes_list_released() — a blocked press ended WITHOUT a drag: lift
+ * the veto and apply the collapse GTK wanted on press (a plain click on a
+ * selected row means "select just this one").                              */
+static void
+on_notes_list_released(GtkGestureClick *g, gint n_press, gdouble x,
+                       gdouble y, gpointer user_data)
 {
-    (void)event;
+    (void)g; (void)n_press; (void)x; (void)y;
     OnLibrary *lw = user_data;       /* owning library window               */
     GtkTreePath *path = notes_sel_unblock(lw, TRUE);
     if (path != NULL) {
-        gtk_tree_view_set_cursor(GTK_TREE_VIEW(widget), path, NULL, FALSE);
+        gtk_tree_view_set_cursor(lw->notes_list, path, NULL, FALSE);
         gtk_tree_path_free(path);
     }
-    return FALSE;
+}
+
+/* on_notes_list_cancel() — the press gesture was cancelled (the drag
+ * source claimed the sequence, or the press left the widget): drop the
+ * veto without collapsing.  The drag path lifts it in prepare as well;
+ * this covers the cancellations that never become a drag.                  */
+static void
+on_notes_list_cancel(GtkGesture *g, GdkEventSequence *seq,
+                     gpointer user_data)
+{
+    (void)g; (void)seq;
+    notes_sel_unblock(user_data, FALSE);
 }
 
 /* ---------------------------------------------------------------------------
- * on_notes_grid_button_press() — right click in grid mode: same as above
- * for the icon view.
+ * on_notes_grid_pressed() — right click in grid mode: same as the list's
+ * for the icon view (its own gesture only selects on the primary button,
+ * but the press is claimed for symmetry).
  * ------------------------------------------------------------------------- */
-static gboolean
-on_notes_grid_button_press(GtkWidget *widget, GdkEventButton *event,
-                           gpointer user_data)
+static void
+on_notes_grid_pressed(GtkGestureClick *g, gint n_press, gdouble x,
+                      gdouble y, gpointer user_data)
 {
+    (void)n_press;
     OnLibrary *lw = user_data;       /* owning library window               */
-    if (event->button != GDK_BUTTON_SECONDARY)
-        return FALSE;
-
-    GtkTreePath *path = gtk_icon_view_get_path_at_pos(
-        GTK_ICON_VIEW(widget), (gint)event->x, (gint)event->y);
+    GtkTreePath *path = grid_path_at(lw, x, y);
     if (path == NULL)
-        return FALSE;
+        return;
 
     /* Keep an existing multi-selection when right-clicking inside it.      */
-    if (!gtk_icon_view_path_is_selected(GTK_ICON_VIEW(widget), path)) {
-        gtk_icon_view_unselect_all(GTK_ICON_VIEW(widget));
-        gtk_icon_view_select_path(GTK_ICON_VIEW(widget), path);
+    if (!gtk_icon_view_path_is_selected(lw->notes_grid, path)) {
+        gtk_icon_view_unselect_all(lw->notes_grid);
+        gtk_icon_view_select_path(lw->notes_grid, path);
     }
-
-    return notes_ctx_popup(lw, path, event);
+    notes_ctx_popup(lw, g, GTK_WIDGET(lw->notes_grid), path, x, y);
 }
 
 /* ===========================================================================
@@ -3961,15 +4208,22 @@ on_ai_copy_clicked(GtkButton *btn, gpointer user_data)
     GtkTextIter start, end;
     gtk_text_buffer_get_bounds(buf, &start, &end);
     gchar *text = gtk_text_buffer_get_text(buf, &start, &end, FALSE);
-    GtkClipboard *clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gtk_clipboard_set_text(clip, text, -1);
+    gdk_clipboard_set_text(gtk_widget_get_clipboard(lw->ai_text), text);
     g_free(text);
+}
+
+/* on_ai_close_clicked() — the pane's ✕ button: hide the pane.               */
+static void
+on_ai_close_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    gtk_widget_set_visible(GTK_WIDGET(user_data), FALSE);
 }
 
 /* on_ai_button_clicked() — toolbar AI button: show the pane and (re)run the
  * summary; re-clicking while a run is in progress is a no-op.               */
 static void
-on_ai_button_clicked(GtkToolButton *btn, gpointer user_data)
+on_ai_button_clicked(GtkButton *btn, gpointer user_data)
 {
     (void)btn;
     OnLibrary *lw = user_data;         /* owning library window               */
@@ -3979,13 +4233,12 @@ on_ai_button_clicked(GtkToolButton *btn, gpointer user_data)
 
     /* Set a comfortable initial split the first time the pane opens.         */
     if (!gtk_widget_get_visible(lw->ai_pane)) {
-        gint total = gtk_widget_get_allocated_height(
-            GTK_WIDGET(lw->notes_paned));
+        gint total = gtk_widget_get_height(GTK_WIDGET(lw->notes_paned));
         if (total > 300)
             gtk_paned_set_position(GTK_PANED(lw->notes_paned),
                                    total - 220);
     }
-    gtk_widget_show(lw->ai_pane);
+    gtk_widget_set_visible(lw->ai_pane, TRUE);
 
     /* Clear text and start the status-bar throbber for immediate feedback.   */
     GtkTextBuffer *buf =
@@ -4000,16 +4253,15 @@ on_ai_button_clicked(GtkToolButton *btn, gpointer user_data)
 
 /* build_ai_pane() — construct the AI output pane (hidden by default): a
  * header row with a copy button and close button, then a scrolled
- * non-editable text view.  lw->ai_text is set here.
- * Uses no_show_all so gtk_widget_show_all on the window doesn't reveal it.  */
+ * non-editable text view.  lw->ai_text is set here.  The pane's
+ * visibility belongs to the AI button and its ✕ from here on.              */
 static GtkWidget *
 build_ai_pane(OnLibrary *lw)
 {
     GtkWidget *pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    gtk_box_pack_start(GTK_BOX(pane),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(pane),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 
     GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_set_margin_start(header, 6);
@@ -4020,31 +4272,28 @@ build_ai_pane(OnLibrary *lw)
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title), "<small><b>AI Summary</b></small>");
     gtk_label_set_xalign(GTK_LABEL(title), 0.0);
-    gtk_box_pack_start(GTK_BOX(header), title, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(title, TRUE);
+    gtk_box_append(GTK_BOX(header), title);
 
-    /* Compact CSS shared by both header buttons.                             */
-    const gchar *btn_css =
-        "button { padding: 0 4px; min-height: 0; font-size: 85%; }";
-
-    /* pack_end places items right-to-left, so close (✕) goes first to land  */
-    /* at the far right, then copy before it.                                 */
-    GtkWidget *close_btn = gtk_button_new_with_label("\xe2\x9c\x95");
-    gtk_button_set_relief(GTK_BUTTON(close_btn), GTK_RELIEF_NONE);
-    gtk_widget_set_tooltip_text(close_btn, "Close AI summary");
-    on_app_widget_add_css(close_btn, btn_css);
-    g_signal_connect_swapped(close_btn, "clicked",
-                             G_CALLBACK(gtk_widget_hide), pane);
-    gtk_box_pack_end(GTK_BOX(header), close_btn, FALSE, FALSE, 0);
-
+    /* The expanding title pushes both buttons to the right edge: Copy, then
+     * close (✕) at the far right.  Both compact (library_install_css).       */
     GtkWidget *copy_btn = gtk_button_new_with_label("Copy");
-    gtk_button_set_relief(GTK_BUTTON(copy_btn), GTK_RELIEF_NONE);
-    gtk_widget_set_tooltip_text(copy_btn, "Copy summary to clipboard");
-    on_app_widget_add_css(copy_btn, btn_css);
+    gtk_button_set_has_frame(GTK_BUTTON(copy_btn), FALSE);
+    on_app_set_tooltip(copy_btn, "Copy summary to clipboard");
+    gtk_widget_add_css_class(copy_btn, "notes-ai-button");
     g_signal_connect(copy_btn, "clicked",
                      G_CALLBACK(on_ai_copy_clicked), lw);
-    gtk_box_pack_end(GTK_BOX(header), copy_btn, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(header), copy_btn);
 
-    gtk_box_pack_start(GTK_BOX(pane), header, FALSE, FALSE, 0);
+    GtkWidget *close_btn = gtk_button_new_with_label("\xe2\x9c\x95");
+    gtk_button_set_has_frame(GTK_BUTTON(close_btn), FALSE);
+    on_app_set_tooltip(close_btn, "Close AI summary");
+    gtk_widget_add_css_class(close_btn, "notes-ai-button");
+    g_signal_connect(close_btn, "clicked",
+                     G_CALLBACK(on_ai_close_clicked), pane);
+    gtk_box_append(GTK_BOX(header), close_btn);
+
+    gtk_box_append(GTK_BOX(pane), header);
 
     lw->ai_text = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(lw->ai_text), FALSE);
@@ -4056,20 +4305,17 @@ build_ai_pane(OnLibrary *lw)
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(lw->ai_text), 4);
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(lw->ai_text), 4);
 
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(scroll), lw->ai_text);
-    gtk_box_pack_start(GTK_BOX(pane), scroll, TRUE, TRUE, 0);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), lw->ai_text);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_box_append(GTK_BOX(pane), scroll);
 
-    gtk_widget_show_all(pane);
-    /* no_show_all AFTER show_all so children are realized but the pane       */
-    /* itself is excluded from future show_all sweeps.                        */
-    gtk_widget_set_no_show_all(pane, TRUE);
-    gtk_widget_hide(pane);             /* starts hidden until AI is clicked   */
+    gtk_widget_set_visible(pane, FALSE); /* hidden until AI is clicked      */
     return pane;
 }
 
@@ -4081,13 +4327,9 @@ library_notify_ai_changed(OnApp *app)
     OnLibrary *lw = lw_from_app(app);
     if (lw == NULL || lw->ai_btn == NULL)
         return;
-    if (app->ai_enabled) {
-        gtk_widget_show(GTK_WIDGET(lw->ai_btn));
-    } else {
-        gtk_widget_hide(GTK_WIDGET(lw->ai_btn));
-        if (lw->ai_pane != NULL)
-            gtk_widget_hide(lw->ai_pane);
-    }
+    gtk_widget_set_visible(lw->ai_btn, app->ai_enabled);
+    if (!app->ai_enabled && lw->ai_pane != NULL)
+        gtk_widget_set_visible(lw->ai_pane, FALSE);
 }
 
 /* ===========================================================================
@@ -4217,7 +4459,7 @@ on_library_apply_native_menubar(OnApp *app, gboolean native)
      * macOS bar (and builds the app menu — About/Preferences/Quit — from
      * our "app." actions) whenever one is set.  So "native" = set it and
      * hide the in-window rendering; "not native" = unset it and show the
-     * in-window GtkMenuBar over the same model.                            */
+     * in-window GtkPopoverMenuBar over the same model.                     */
     gtk_application_set_menubar(app->gtk_app,
                                 native ? lw->menubar_model : NULL);
     gtk_widget_set_visible(lw->menubar, !native);
@@ -4642,23 +4884,27 @@ column_menu_action(OnLibrary *lw, const gchar *key, gboolean visible,
 }
 
 /* ---------------------------------------------------------------------------
- * on_column_header_press() — right click on a list-view column header:
+ * on_column_header_pressed() — right click on a list-view column header:
  * a menu of check items showing/hiding each column of the header's view
  * (the button carries its view as "on-view").  The only remaining
  * visible column's item is disabled so the view can't go empty; the
- * notes list's menu also offers the autofit toggle.
+ * notes list's menu also offers the autofit toggle.  The press is claimed
+ * so the header button does not also act on it.
+ *   x, y — the press, in the header button's coordinates.
  * ------------------------------------------------------------------------- */
-static gboolean
-on_column_header_press(GtkWidget *button, GdkEventButton *event,
-                       gpointer user_data)
+static void
+on_column_header_pressed(GtkGestureClick *g, gint n_press, gdouble x,
+                         gdouble y, gpointer user_data)
 {
+    (void)n_press;
     OnLibrary *lw = user_data;       /* owning library window               */
-    if (event->button != GDK_BUTTON_SECONDARY)
-        return FALSE;
+    GtkWidget *button =              /* the header button pressed           */
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
     GtkTreeView *view =              /* the view this header belongs to     */
         g_object_get_data(G_OBJECT(button), "on-view");
     if (view == NULL)
-        return FALSE;
+        return;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
     lw->column_menu_view = view;     /* what the column actions act on      */
 
     GMenu *menu    = g_menu_new();
@@ -4693,8 +4939,27 @@ on_column_header_press(GtkWidget *button, GdkEventButton *event,
     menu_section_end(menu, &section);
     g_object_unref(section);
 
-    on_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
-    return TRUE;
+    on_app_menu_popup(button, G_MENU_MODEL(menu), x, y);
+}
+
+/* ---------------------------------------------------------------------------
+ * column_header_menu_add() — wire one column's header for the layout
+ * machinery: reorderable by drag, and its header button right-clicks into
+ * on_column_header_pressed for `view`'s show/hide menu.  Shared by the
+ * notes list and the Action Items list.
+ *   lw   — the library window.
+ *   col  — the column.
+ *   view — the view it belongs to.
+ * ------------------------------------------------------------------------- */
+static void
+column_header_menu_add(OnLibrary *lw, GtkTreeViewColumn *col,
+                       GtkTreeView *view)
+{
+    gtk_tree_view_column_set_reorderable(col, TRUE);
+    GtkWidget *btn = gtk_tree_view_column_get_button(col);
+    g_object_set_data(G_OBJECT(btn), "on-view", view);
+    capture_click_gesture(btn, GDK_BUTTON_SECONDARY,
+                          G_CALLBACK(on_column_header_pressed), lw);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5157,9 +5422,9 @@ build_menubar(void)
 }
 
 /* ---------------------------------------------------------------------------
- * add_tool_button() — helper: append a tool button bound to an action.
+ * add_tool_button() — helper: append a toolbar button bound to an action.
  *   lw       — the library window.
- *   toolbar  — the GtkToolbar to append to.
+ *   toolbar  — the toolbar box to append to.
  *   icon     — local icon file basename, or NULL.
  *   fallback — markup shown as the icon when the file is missing.
  *   label    — button text label.
@@ -5168,20 +5433,21 @@ build_menubar(void)
  * Returns the button, for the callers that need to keep it (the List/Grid
  * toggle re-points its own icon); most ignore it.
  * ------------------------------------------------------------------------- */
-static GtkToolItem *
+static GtkWidget *
 add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
                 const gchar *fallback, const gchar *label,
                 const gchar *tooltip, const gchar *action)
 {
-    GtkToolItem *item = on_app_tool_item_new(lw->app, FALSE, icon,
+    GtkWidget *button = on_app_tool_item_new(lw->app, FALSE, icon,
                                              fallback, label, tooltip);
-    gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(item), action);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
-    return item;
+    gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(button), action);
+    gtk_box_append(GTK_BOX(toolbar), button);
+    return button;
 }
 
 /* ---------------------------------------------------------------------------
- * build_action_bar() — the single unified toolbar spanning the window:
+ * build_action_bar() — the single unified toolbar spanning the window: a
+ * GtkBox with the "toolbar" style class (GTK4 has no GtkToolbar) holding
  * a folder-actions area, a drawn separator, a note-actions area, another
  * separator, the window/app buttons (Sidebar, List/Grid, Search, Media,
  * Settings), a third separator, the AI Summary button (shown only while AI
@@ -5192,10 +5458,8 @@ add_tool_button(OnLibrary *lw, GtkWidget *toolbar, const gchar *icon,
 static GtkWidget *
 build_action_bar(OnLibrary *lw)
 {
-    GtkWidget *toolbar = gtk_toolbar_new();
-    gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
-                              GTK_ICON_SIZE_SMALL_TOOLBAR);
-    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
+    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(toolbar, "toolbar");
 
     /* --- folder area ---------------------------------------------------- */
     add_tool_button(lw, toolbar, "new-folder", "+\xf0\x9f\x93\x81",
@@ -5207,8 +5471,8 @@ build_action_bar(OnLibrary *lw)
                     "win.delete-folder");
     /* Rename lives in the folder's right-click menu only.                  */
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     /* --- notes area ------------------------------------------------------*/
     add_tool_button(lw, toolbar, "archive", "\xe2\x9a\xa1", "Quicknote",
@@ -5222,8 +5486,8 @@ build_action_bar(OnLibrary *lw)
                     "Move the selected notes to the Trash",
                     "win.delete-note");
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     /* --- app actions ------------------------------------------------------*/
     /* The two buttons that change what the WINDOW shows sit together, the
@@ -5248,44 +5512,38 @@ build_action_bar(OnLibrary *lw)
                     "Settings", "Open the settings window",
                     "app.preferences");
 
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
+    /* Visibility is controlled entirely by ai_enabled (see
+     * library_notify_ai_changed).                                          */
     lw->ai_btn = on_app_tool_item_new(lw->app, FALSE,
         "microchip", "\xf0\x9f\xa4\x96",
         "AI Summary", "Summarize notes with AI");
     g_signal_connect(lw->ai_btn, "clicked",
                      G_CALLBACK(on_ai_button_clicked), lw);
-    /* no_show_all: visibility is controlled entirely by ai_enabled; we don't
-     * want gtk_widget_show_all() on the window to unhide it.                */
-    gtk_widget_set_no_show_all(GTK_WIDGET(lw->ai_btn), TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), lw->ai_btn, -1);
-    if (lw->app->ai_enabled)
-        gtk_widget_show(GTK_WIDGET(lw->ai_btn));
+    gtk_widget_set_visible(lw->ai_btn, lw->app->ai_enabled);
+    gtk_box_append(GTK_BOX(toolbar), lw->ai_btn);
 
     /* --- right edge: the query entry -------------------------------------
      * An expanding blank spacer pushes the rest of the toolbar left, the
      * same recipe the editor uses for its find-in-note entry.  Enter in the
      * entry opens the search window on the query (All Notes, case
      * insensitive); the Search button opens it empty as before.            */
-    GtkToolItem *spacer = gtk_separator_tool_item_new();
-    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer), FALSE);
-    gtk_tool_item_set_expand(spacer, TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(toolbar), spacer);
 
     GtkWidget *entry = gtk_search_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Search all notes");
-    gtk_widget_set_tooltip_text(entry,
+    g_object_set(entry, "placeholder-text", "Search all notes", NULL);
+    on_app_set_tooltip(entry,
         "Search every note for this text (Enter)");
-    gtk_entry_set_width_chars(GTK_ENTRY(entry), 18);
+    gtk_editable_set_width_chars(GTK_EDITABLE(entry), 18);
     /* 5 px of air between the entry and the window edge.                    */
     gtk_widget_set_margin_end(entry, 5);
     g_signal_connect(entry, "activate",
                      G_CALLBACK(on_toolbar_search_activate), lw);
-
-    GtkToolItem *entry_item = gtk_tool_item_new();
-    gtk_container_add(GTK_CONTAINER(entry_item), entry);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), entry_item, -1);
+    gtk_box_append(GTK_BOX(toolbar), entry);
 
     return toolbar;
 }
@@ -5409,8 +5667,9 @@ sb_fit_measure(GtkTreeModel *model, GtkTreePath *path,
         gint tw, th;
         pango_layout_get_pixel_size(ctx->lay, &tw, &th);
 
-        /* 22 px per depth level covers the GTK3 expander column width +
-         * level-indentation; 10 px base for cell left/right padding.        */
+        /* 22 px per depth level covers the expander column width +
+         * level-indentation; 10 px base for cell left/right padding.
+         * Measured on GTK3; unverified against GTK4's Default theme.       */
         gint depth = gtk_tree_path_get_depth(path);
         gint row_w = tw + depth * 22 + 10;
         if (row_w > ctx->max_w)
@@ -5465,7 +5724,7 @@ sidebar_fit_apply(OnLibrary *lw)
                            sb_fit_measure, &ctx);
     g_object_unref(ctx.lay);
 
-    gint avail = gtk_widget_get_allocated_width(GTK_WIDGET(lw->sidebar));
+    gint avail = gtk_widget_get_width(GTK_WIDGET(lw->sidebar));
     if (avail <= 1)
         return;                      /* not realized yet                    */
 
@@ -5480,7 +5739,7 @@ sidebar_fit_apply(OnLibrary *lw)
     gint pos  = gtk_paned_get_position(GTK_PANED(lw->sidebar_paned));
     gint want = pos + (ctx.max_w - avail);
 
-    gint full = gtk_widget_get_allocated_width(lw->sidebar_paned);
+    gint full = gtk_widget_get_width(lw->sidebar_paned);
     if (full > 0) {
         gint cap = full * SB_FIT_MAX_PERCENT / 100;
         if (want > cap)
@@ -5575,42 +5834,9 @@ library_build_sidebar(OnLibrary *lw)
         gtk_tree_view_append_column(lw->sidebar, name_col);
     }
 
-    /* Sidebar palette: the backdrop (rows AND the empty area below them —
-     * the tree view paints the whole widget) is the theme's window/toolbar
-     * background taken down a step, so the pane sits just behind the
-     * toolbar above it and reads as distinct from the white notes list
-     * without pinning a grey of its own.  A tree view left alone would
-     * paint the white theme BASE colour instead.  Both CSS colour
-     * functions work from this widget-scoped provider (verified on GTK
-     * 3.24 / Adwaita: @theme_bg_color = rgb(246,245,244), exactly what the
-     * toolbar renders, and shade(…, 0.96) = rgb(238,236,234)); beware that
-     * an UNDEFINED colour name is NOT a parse error here — it silently
-     * renders transparent.  Then muted grey text and a blue selection bar
-     * (white text for contrast).                                           */
-    on_app_widget_add_css(GTK_WIDGET(lw->sidebar),
-        "treeview.view {"
-        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
-        "  color: rgb(65,65,65);"
-        "}"
-        "treeview.view:selected {"
-        "  background-color: rgb(86,131,224);"
-        "  color: white;"
-        "}"
-        /* Drop indicator (drawn as the border of the row under the
-         * pointer, state :drop(active) + a position class): a 2px
-         * line in the selection blue — top edge for BEFORE, bottom
-         * for AFTER, a full box for INTO.                                 */
-        "treeview.view:drop(active) {"
-        "  border-color: rgb(86,131,224);"
-        "  border-width: 2px;"
-        "  border-style: solid;"
-        "}"
-        "treeview.view:drop(active).before {"
-        "  border-style: solid none none none;"
-        "}"
-        "treeview.view:drop(active).after {"
-        "  border-style: none none solid none;"
-        "}");
+    /* Sidebar palette and drop indicator: the "notes-sidebar" rules in
+     * library_install_css (see its banner for the colours).                */
+    gtk_widget_add_css_class(GTK_WIDGET(lw->sidebar), "notes-sidebar");
 
     GtkTreeSelection *sb_sel = gtk_tree_view_get_selection(lw->sidebar);
     gtk_tree_selection_set_select_function(sb_sel, sidebar_select_func,
@@ -5618,40 +5844,55 @@ library_build_sidebar(OnLibrary *lw)
     g_signal_connect(sb_sel, "changed",
                      G_CALLBACK(on_sidebar_selection_changed), lw);
 
-    /* Accept dragged note rows to move notes between folders, and let
-     * folder rows be dragged to re-nest/reorder them.  The dest protocol
-     * is fully custom (motion answers the status itself; only the drop
-     * requests the row data) — see quirk #13.                              */
-    gtk_tree_view_enable_model_drag_dest(lw->sidebar, &ROW_TARGET, 1,
-                                         GDK_ACTION_MOVE);
-    gtk_tree_view_enable_model_drag_source(lw->sidebar, GDK_BUTTON1_MASK,
-                                           &ROW_TARGET, 1,
-                                           GDK_ACTION_MOVE);
-    g_signal_connect(lw->sidebar, "drag-motion",
-                     G_CALLBACK(on_sidebar_drag_motion), lw);
-    g_signal_connect(lw->sidebar, "drag-leave",
-                     G_CALLBACK(on_sidebar_drag_leave), NULL);
-    g_signal_connect(lw->sidebar, "drag-drop",
-                     G_CALLBACK(on_sidebar_drag_drop), lw);
-    g_signal_connect(lw->sidebar, "drag-data-received",
-                     G_CALLBACK(on_sidebar_drag_received), lw);
-    /* AFTER: the class handler sets a row-snapshot icon; ours overrides.   */
-    g_signal_connect_after(lw->sidebar, "drag-begin",
-                           G_CALLBACK(on_sidebar_drag_begin), lw);
-    g_signal_connect(lw->sidebar, "button-press-event",
-                     G_CALLBACK(on_sidebar_button_press), lw);
+    /* Drag and drop (see the DnD section): folder rows are a drag source,
+     * and the sidebar is THE drop target — for note rows from either notes
+     * view and for its own folder rows.  Everything is our own controllers;
+     * the deprecated model DnD is not used for content at all.            */
+    GtkDragSource *drag = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
+    g_signal_connect(drag, "prepare", G_CALLBACK(on_sidebar_drag_prepare),
+                     lw);
+    gtk_widget_add_controller(GTK_WIDGET(lw->sidebar),
+                              GTK_EVENT_CONTROLLER(drag));
+
+    /* D5 (measured on GTK 4.22.4): gtk_tree_view_set_drag_dest_row(), the
+     * only way to show the drop indicator, SEGFAULTS on the next paint
+     * unless enable_model_drag_dest has run — only that creates the
+     * "dndtarget" CSS node the indicator is drawn through.  Enabled with an
+     * EMPTY format set: the built-in GtkDropTargetAsync then matches
+     * nothing and never fires, while the node exists for our target.      */
+    GdkContentFormats *none = gdk_content_formats_new(NULL, 0);
+    gtk_tree_view_enable_model_drag_dest(lw->sidebar, none, 0);
+    gdk_content_formats_unref(none);
+
+    GtkDropTarget *drop = gtk_drop_target_new(ON_TYPE_DRAG_ROWS,
+                                              GDK_ACTION_MOVE);
+    /* Preload: the content is read when the drag enters, so every motion
+     * can validate against what is actually being dragged (a local drag
+     * loads synchronously — see on_sidebar_drop_motion).                  */
+    gtk_drop_target_set_preload(drop, TRUE);
+    g_signal_connect(drop, "enter",  G_CALLBACK(on_sidebar_drop_motion), lw);
+    g_signal_connect(drop, "motion", G_CALLBACK(on_sidebar_drop_motion), lw);
+    g_signal_connect(drop, "leave",  G_CALLBACK(on_sidebar_drop_leave),  lw);
+    g_signal_connect(drop, "drop",   G_CALLBACK(on_sidebar_drop),        lw);
+    gtk_widget_add_controller(GTK_WIDGET(lw->sidebar),
+                              GTK_EVENT_CONTROLLER(drop));
+
+    capture_click_gesture(GTK_WIDGET(lw->sidebar), GDK_BUTTON_SECONDARY,
+                          G_CALLBACK(on_sidebar_pressed), lw);
     g_signal_connect(lw->sidebar, "row-expanded",
                      G_CALLBACK(on_sidebar_row_toggled), lw);
     g_signal_connect(lw->sidebar, "row-collapsed",
                      G_CALLBACK(on_sidebar_row_toggled), lw);
 
-    GtkWidget *sidebar_scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *sidebar_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(sidebar_scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(sidebar_scroll),
-                      GTK_WIDGET(lw->sidebar));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll),
+                                  GTK_WIDGET(lw->sidebar));
+    gtk_widget_set_vexpand(sidebar_scroll, TRUE);
 
     /* Sidebar column: a fixed spacer, then the tree (all buttons live in
      * the unified toolbar above the paned).  Its minimum width is whatever
@@ -5663,24 +5904,21 @@ library_build_sidebar(OnLibrary *lw)
      * It is a SPACER WIDGET rather than CSS padding: GtkScrolledWindow
      * ignores padding when allocating its child, and a margin on the tree
      * view would scroll away with it.  Painted in the sidebar grey so the
-     * strip reads as part of the pane.  A GtkBox has no background of its
-     * own, so it repeats the tree view's backdrop expression verbatim —
-     * keep the two in step.                                                */
+     * strip reads as part of the pane: a GtkBox has no background of its
+     * own, so library_install_css gives it the tree view's backdrop from
+     * the ONE declaration both share.                                      */
     GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
-    on_app_widget_add_css(sidebar_pad,
-        "box { background-color: shade(@theme_bg_color, "
-        SB_BG_SHADE "); }");
-    gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_pad, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_scroll,
-                       TRUE, TRUE, 0);
+    gtk_widget_add_css_class(sidebar_pad, "notes-sidebar-pad");
+    gtk_box_append(GTK_BOX(sidebar_box), sidebar_pad);
+    gtk_box_append(GTK_BOX(sidebar_box), sidebar_scroll);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
 }
 
 /* ---------------------------------------------------------------------------
  * library_build_notes_list() — build lw->notes_list (GtkTreeView) with its
- * four columns, sort functions, column layout, and DnD; returns the scroll
- * container ready to be added to the notes stack.
+ * four columns, sort functions, column layout, gestures and drag source;
+ * returns the scroll container ready to be added to the notes stack.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 library_build_notes_list(OnLibrary *lw)
@@ -5689,22 +5927,7 @@ library_build_notes_list(OnLibrary *lw)
         gtk_tree_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
     /* No GTK type-ahead popup (auto-picked search column, see quirk 16).  */
     gtk_tree_view_set_enable_search(lw->notes_list, FALSE);
-
-    /* Same drop-indicator styling as the sidebar: a 2px line in the
-     * selection blue for the in-list reorder drag.  Notes are a flat
-     * list, so there is no real "into" — GTK still reports INTO_OR_*
-     * over the middle of a row, but a list-store drop there INSERTS
-     * BEFORE that row, so the .into indicator is drawn as the same
-     * between-rows line (top edge), never a box.                          */
-    on_app_widget_add_css(GTK_WIDGET(lw->notes_list),
-        "treeview.view:drop(active) {"
-        "  border-color: rgb(86,131,224);"
-        "  border-width: 2px;"
-        "  border-style: solid none none none;"
-        "}"
-        "treeview.view:drop(active).after {"
-        "  border-style: none none solid none;"
-        "}");
+    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_list), "notes-columns");
     {
         /* Title: no static attribute binding — the cell data function drives
          * both the row tint and the compact/comfortable rendering.          */
@@ -5788,9 +6011,10 @@ library_build_notes_list(OnLibrary *lw)
 
         /* Default sort: Modified with the most recent on top
          * (sort_by_time is deliberately inverted, so ASCENDING =
-         * newest first).  While any sort is active the list store
-         * refuses in-list row drops, so manual drag-reordering of notes
-         * is off in this mode — moves to folders are unaffected.          */
+         * newest first).  The headers only ever cycle ascending and
+         * descending, so the list is ALWAYS sorted; in-list drag
+         * reordering, which a sorted list store refuses, is therefore
+         * not offered at all — a note drag is a move to a folder.        */
         gtk_tree_sortable_set_sort_column_id(
             GTK_TREE_SORTABLE(lw->notes_store), NL_UPDATED,
             GTK_SORT_ASCENDING);
@@ -5809,11 +6033,7 @@ library_build_notes_list(OnLibrary *lw)
                               (gpointer)COLS[i].key);
             g_object_set_data(G_OBJECT(COLS[i].col), "on-cell",
                               COLS[i].cell);
-            gtk_tree_view_column_set_reorderable(COLS[i].col, TRUE);
-            GtkWidget *btn = gtk_tree_view_column_get_button(COLS[i].col);
-            g_object_set_data(G_OBJECT(btn), "on-view", lw->notes_list);
-            g_signal_connect(btn, "button-press-event",
-                             G_CALLBACK(on_column_header_press), lw);
+            column_header_menu_add(lw, COLS[i].col, lw->notes_list);
         }
     }
     g_object_set_data(G_OBJECT(lw->notes_list), "on-colcfg",
@@ -5840,47 +6060,56 @@ library_build_notes_list(OnLibrary *lw)
                      "changed",
                      G_CALLBACK(on_notes_selection_status), lw);
 
-    /* Built-in drag reordering; the new order is persisted from the
-     * model's row-deleted signal.                                          */
-    gtk_tree_view_set_reorderable(lw->notes_list, TRUE);
-    /* AFTER: the class handler sets a row-snapshot icon; ours overrides.   */
-    g_signal_connect_after(lw->notes_list, "drag-begin",
-                           G_CALLBACK(on_notes_drag_begin), lw);
     g_signal_connect(lw->notes_list, "row-activated",
                      G_CALLBACK(on_note_list_activated), lw);
-    g_signal_connect(lw->notes_list, "button-press-event",
-                     G_CALLBACK(on_notes_list_button_press), lw);
-    g_signal_connect(lw->notes_list, "button-release-event",
-                     G_CALLBACK(on_notes_list_button_release), lw);
 
-    GtkWidget *list_scroll = gtk_scrolled_window_new(NULL, NULL);
+    /* One capture-phase click gesture for ANY button: the quirk-15 veto on
+     * a primary press and the right-click menu (see on_notes_list_pressed);
+     * released / cancel end the veto.                                      */
+    GtkGesture *click = capture_click_gesture(
+        GTK_WIDGET(lw->notes_list), 0, G_CALLBACK(on_notes_list_pressed), lw);
+    g_signal_connect(click, "released",
+                     G_CALLBACK(on_notes_list_released), lw);
+    g_signal_connect(click, "cancel", G_CALLBACK(on_notes_list_cancel), lw);
+
+    /* Drag source: the selected notes, dropped on a sidebar folder.        */
+    GtkDragSource *drag = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
+    g_signal_connect(drag, "prepare",
+                     G_CALLBACK(on_notes_list_drag_prepare), lw);
+    gtk_widget_add_controller(GTK_WIDGET(lw->notes_list),
+                              GTK_EVENT_CONTROLLER(drag));
+
+    GtkWidget *list_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(list_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(list_scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(list_scroll),
-                      GTK_WIDGET(lw->notes_list));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(list_scroll),
+                                  GTK_WIDGET(lw->notes_list));
     return list_scroll;
 }
 
 /* ---------------------------------------------------------------------------
  * library_build_notes_grid() — build lw->notes_grid (GtkIconView) with its
- * HiDPI thumbnail + title cell layout and DnD; returns the scroll container.
+ * thumbnail + title cell layout, gesture and drag source; returns the
+ * scroll container.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 library_build_notes_grid(OnLibrary *lw)
 {
     lw->notes_grid = GTK_ICON_VIEW(
         gtk_icon_view_new_with_model(GTK_TREE_MODEL(lw->notes_store)));
+    gtk_widget_add_css_class(GTK_WIDGET(lw->notes_grid), "notes-grid");
     {
-        /* Custom cell layout: the HiDPI thumbnail surface with the note
-         * title as a real text label underneath.                           */
+        /* Custom cell layout: the thumbnail texture with the note title
+         * as a real text label underneath.                                 */
         GtkCellRenderer *pix = gtk_cell_renderer_pixbuf_new();
         gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(lw->notes_grid),
                                    pix, FALSE);
         gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(lw->notes_grid),
-                                       pix, "surface", NL_THUMB, NULL);
+                                       pix, "texture", NL_THUMB, NULL);
 
         GtkCellRenderer *txt = gtk_cell_renderer_text_new();
         g_object_set(txt,
@@ -5900,25 +6129,29 @@ library_build_notes_grid(OnLibrary *lw)
                                      GTK_SELECTION_MULTIPLE);
     g_signal_connect(lw->notes_grid, "selection-changed",
                      G_CALLBACK(on_notes_selection_status), lw);
-    gtk_icon_view_enable_model_drag_source(lw->notes_grid,
-                                           GDK_BUTTON1_MASK,
-                                           &ROW_TARGET, 1,
-                                           GDK_ACTION_MOVE);
-    g_signal_connect_after(lw->notes_grid, "drag-begin",
-                           G_CALLBACK(on_notes_drag_begin), lw);
     g_signal_connect(lw->notes_grid, "item-activated",
                      G_CALLBACK(on_note_grid_activated), lw);
-    g_signal_connect(lw->notes_grid, "button-press-event",
-                     G_CALLBACK(on_notes_grid_button_press), lw);
+    capture_click_gesture(GTK_WIDGET(lw->notes_grid), GDK_BUTTON_SECONDARY,
+                          G_CALLBACK(on_notes_grid_pressed), lw);
 
-    GtkWidget *grid_scroll = gtk_scrolled_window_new(NULL, NULL);
+    /* Drag source: the selected notes, dropped on a sidebar folder.  The
+     * icon view's own model drag source is NOT enabled, so its built-in
+     * drag handling stays out of the way (it only runs when it is).       */
+    GtkDragSource *drag = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag, GDK_ACTION_MOVE);
+    g_signal_connect(drag, "prepare",
+                     G_CALLBACK(on_notes_grid_drag_prepare), lw);
+    gtk_widget_add_controller(GTK_WIDGET(lw->notes_grid),
+                              GTK_EVENT_CONTROLLER(drag));
+
+    GtkWidget *grid_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(grid_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(grid_scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(grid_scroll),
-                      GTK_WIDGET(lw->notes_grid));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid_scroll),
+                                  GTK_WIDGET(lw->notes_grid));
     return grid_scroll;
 }
 
@@ -5940,6 +6173,7 @@ library_build_actions_view(OnLibrary *lw)
     lw->actions_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->actions_store)));
     gtk_tree_view_set_enable_search(lw->actions_view, FALSE); /* quirk 16   */
+    gtk_widget_add_css_class(GTK_WIDGET(lw->actions_view), "notes-columns");
     {
         /* Untitled checkbox column + the item text + the due date; done
          * rows also render struck through, matching the editor.            */
@@ -6000,12 +6234,7 @@ library_build_actions_view(OnLibrary *lw)
             if (ACOLS[i].label != NULL)
                 g_object_set_data(G_OBJECT(ACOLS[i].col), "on-collabel",
                                   (gpointer)ACOLS[i].label);
-            gtk_tree_view_column_set_reorderable(ACOLS[i].col, TRUE);
-            GtkWidget *btn =
-                gtk_tree_view_column_get_button(ACOLS[i].col);
-            g_object_set_data(G_OBJECT(btn), "on-view", lw->actions_view);
-            g_signal_connect(btn, "button-press-event",
-                             G_CALLBACK(on_column_header_press), lw);
+            column_header_menu_add(lw, ACOLS[i].col, lw->actions_view);
         }
     }
     g_object_set_data(G_OBJECT(lw->actions_view), "on-colcfg",
@@ -6020,14 +6249,14 @@ library_build_actions_view(OnLibrary *lw)
     g_signal_connect(lw->actions_view, "row-activated",
                      G_CALLBACK(on_action_row_activated), lw);
 
-    GtkWidget *actions_scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *actions_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(actions_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(actions_scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(actions_scroll),
-                      GTK_WIDGET(lw->actions_view));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(actions_scroll),
+                                  GTK_WIDGET(lw->actions_view));
     return actions_scroll;
 }
 
@@ -6071,8 +6300,8 @@ library_build_status_bar(OnLibrary *lw)
     gtk_label_set_xalign(GTK_LABEL(lw->status_event), 1.0);
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_event),
                             PANGO_ELLIPSIZE_MIDDLE);
-    gtk_style_context_add_class(
-        gtk_widget_get_style_context(lw->status_event), "dim-label");
+    /* Same colour as the path label on the left — no "dim-label": the
+     * message fades on its way OUT (the revealer), it does not start dim. */
 
     /* Event messages fade: the label sits in a crossfading revealer that
      * library_notify_status() opens and a timer closes.                     */
@@ -6081,23 +6310,138 @@ library_build_status_bar(OnLibrary *lw)
                                      GTK_REVEALER_TRANSITION_TYPE_CROSSFADE);
     gtk_revealer_set_transition_duration(GTK_REVEALER(lw->status_revealer),
                                          600);
-    gtk_container_add(GTK_CONTAINER(lw->status_revealer), lw->status_event);
+    gtk_revealer_set_child(GTK_REVEALER(lw->status_revealer),
+                           lw->status_event);
 
     GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_set_margin_start(status_bar, 8);
     gtk_widget_set_margin_end(status_bar, 8);
     gtk_widget_set_margin_top(status_bar, 3);
     gtk_widget_set_margin_bottom(status_bar, 3);
-    gtk_box_pack_start(GTK_BOX(status_bar), lw->status_path,
-                       TRUE, TRUE, 0);
-    gtk_box_pack_end(GTK_BOX(status_bar), lw->status_revealer,
-                     FALSE, FALSE, 0);
+    gtk_widget_set_hexpand(lw->status_path, TRUE);   /* pushes the event
+                                                        label to the right */
+    gtk_box_append(GTK_BOX(status_bar), lw->status_path);
+    gtk_box_append(GTK_BOX(status_bar), lw->status_revealer);
 
     /* Both labels a step smaller than the UI font.                          */
-    on_app_widget_add_css(lw->status_path,  "label { font-size: 85%; }");
-    on_app_widget_add_css(lw->status_event, "label { font-size: 85%; }");
+    gtk_widget_add_css_class(lw->status_path,  "notes-status-label");
+    gtk_widget_add_css_class(lw->status_event, "notes-status-label");
 
     return status_bar;
+}
+
+/* ---------------------------------------------------------------------------
+ * library_install_css() — the library's DISPLAY-level stylesheet, installed
+ * once per process at application priority (so every rule outranks the
+ * theme's in any widget state), scoped by the "notes-" classes the window
+ * puts on its widgets.
+ *
+ * 1. Grid thumbnails.  GtkCellRendererPixbuf hands a texture to GTK's icon
+ *    helper, which paints a paintable at MIN(cell width, -gtk-icon-size) —
+ *    and -gtk-icon-size is 16px unless CSS says otherwise (measured on
+ *    4.22 with a pixel probe: a 140 px texture painted 16 px square while
+ *    the cell reserved 140).  The renderer saves the icon view's style
+ *    context with the "image" class for that paint, so the rule targets
+ *    `iconview.notes-grid.image`.
+ * 2. Dialog buttons.  GtkDialog's action area has no padding of its own
+ *    in GTK4 (the old action-area border went with gtk_dialog_get_action_area),
+ *    so the buttons sat flush against the bottom-right corner.
+ * 3. Grid hover.  The icon view paints each item's background and frame
+ *    on its own node saved with the "cell" class and the :hover state for
+ *    the item under the pointer; GTK3's rendering gave that a visible
+ *    outline, GTK4's theme has no rule for it, so the outline is ours.
+ * 4. Sidebar palette.  The backdrop (rows AND the empty area below them —
+ *    the tree view paints the whole widget) is the theme's window/toolbar
+ *    background taken down a step (SB_BG_SHADE), so the pane sits just
+ *    behind the toolbar above it and reads as distinct from the white
+ *    notes list without pinning a grey of its own; a tree view left alone
+ *    paints the white theme BASE colour.  The spacer strip above the tree
+ *    (library_build_sidebar) shares the declaration.  Then muted grey text
+ *    and a blue selection bar with white text.  Verified on GTK 4.22's
+ *    compiled Default theme: it still defines @theme_bg_color (#f6f5f4
+ *    light) and still parses shade() — both DEPRECATED since 4.16 (they
+ *    warn only under GTK_DEBUG=css) but the theme exports no CSS variables
+ *    to replace them with.  Beware that an UNDEFINED colour name is NOT a
+ *    parse error — it silently renders transparent.
+ * 5. Sidebar drop indicator.  GTK4 draws it as a "dndtarget" sub-node of
+ *    the tree view carrying a position class (before / after / into) with
+ *    the :drop(active) state, framing the row under the pointer — a 2px
+ *    line in the selection blue: top edge for BEFORE, bottom for AFTER, a
+ *    full box for INTO.  The node exists only once
+ *    enable_model_drag_dest has run (D5).
+ * 6. The emoji entry of the folder dialog: one emoji wide — the theme's
+ *    entry min-width would otherwise span the dialog (D22).
+ * 7. The AI pane's two compact header buttons.
+ * 8. The sidebar/notes divider: a 6 px handle (wide-handle mode gives the
+ *    separator node a 5 px theme floor; min-WIDTH is the lever on a
+ *    horizontal paned).
+ * 9. The notes list / Action Items headers: no left border on the first
+ *    visible column, which would double the divider's edge line.
+ * ------------------------------------------------------------------------- */
+static void
+library_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    gchar *css = g_strdup_printf(
+        "iconview.notes-grid.image { -gtk-icon-size: %dpx; }"
+        "window.notes-dialog .dialog-action-area {"
+        "  padding: 0 12px 12px 12px;"
+        "}"
+        /* The outline on every hovered cell, selected or not; the tint
+         * only on an UNSELECTED one: this rule outranks the theme's
+         * iconview:selected (more specific), and a near-transparent tint
+         * under text the selected state has turned white was an invisible
+         * title until the mouse left the cell.                           */
+        "iconview.notes-grid.cell:hover {"
+        "  border: 1px solid alpha(black, 0.4);"   /* not currentColor: that is white on a selected cell */
+        "  border-radius: 4px;"
+        "}"
+        "iconview.notes-grid.cell:hover:not(:selected) {"
+        "  background-color: alpha(currentColor, 0.06);"
+        "}"
+        "treeview.notes-sidebar, box.notes-sidebar-pad {"
+        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
+        "}"
+        "treeview.notes-sidebar { color: rgb(65,65,65); }"
+        "treeview.notes-sidebar:selected {"
+        "  background-color: rgb(86,131,224);"
+        "  color: white;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active) {"
+        "  border-color: rgb(86,131,224);"
+        "  border-width: 2px;"
+        "  border-style: solid;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active).before {"
+        "  border-style: solid none none none;"
+        "}"
+        "treeview.notes-sidebar > dndtarget:drop(active).after {"
+        "  border-style: none none solid none;"
+        "}"
+        "entry.notes-emoji-entry { font-size: 18px; min-width: 0; }"
+        "button.notes-ai-button {"
+        "  padding: 0 4px; min-height: 0; font-size: 85%%;"
+        "}"
+        "paned.notes-split > separator { min-width: 6px; }"
+        /* The theme gives every column header a LEFT + bottom border
+         * (`border-style: none none solid solid`), so the first column's
+         * sat 4 px from the divider's own edge line as a second line.
+         * Hidden columns do not count for :first-child (invisible CSS
+         * nodes are skipped), so this is the first VISIBLE header.      */
+        "treeview.notes-columns > header > button:first-child {"
+        "  border-left-style: none;"
+        "}",
+        THUMB_SIZE);
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider, css);
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+    g_free(css);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6115,6 +6459,7 @@ on_library_window_create(OnApp *app)
     lw->sel_name = g_strdup("Notes");
     lw->thumb_cache = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                             g_free, thumb_entry_free);
+    library_install_css();
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------
      * A GtkApplicationWindow: that is what gives it the "win." action
@@ -6152,14 +6497,12 @@ on_library_window_create(OnApp *app)
         G_TYPE_INT64,                    /* NL_ID                          */
         G_TYPE_STRING,                   /* NL_TITLE                       */
         G_TYPE_STRING,                   /* NL_MODIFIED                    */
-        CAIRO_GOBJECT_TYPE_SURFACE,      /* NL_THUMB                       */
+        GDK_TYPE_TEXTURE,                /* NL_THUMB                       */
         G_TYPE_INT64,                    /* NL_UPDATED                     */
         G_TYPE_STRING,                   /* NL_PATH                        */
         G_TYPE_STRING,                   /* NL_CREATED                     */
         G_TYPE_INT64,                    /* NL_CREATED_RAW                 */
         G_TYPE_STRING);                  /* NL_PREVIEW                     */
-    g_signal_connect(lw->notes_store, "row-deleted",
-                     G_CALLBACK(on_notes_row_deleted), lw);
 
     /* --- panes + status bar -----------------------------------------------*/
     library_build_sidebar(lw);           /* sets lw->sidebar, lw->sidebar_box */
@@ -6173,19 +6516,29 @@ on_library_window_create(OnApp *app)
     /* A 6 px divider: wide-handle switches GtkPaned off its hairline style,
      * and the exact width comes from CSS on the handle's own `separator`
      * node (this paned is horizontal, so its separator is vertical and
-     * min-WIDTH is the lever).                                             */
+     * min-WIDTH is the lever) — the "notes-split" rule in
+     * library_install_css.                                                 */
     gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
-    on_app_widget_add_css(paned, "paned > separator { min-width: 6px; }");
-    gtk_paned_pack1(GTK_PANED(paned), lw->sidebar_box, FALSE, FALSE);
+    gtk_widget_add_css_class(paned, "notes-split");
+    gtk_paned_set_start_child(GTK_PANED(paned), lw->sidebar_box);
+    gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
+    gtk_paned_set_shrink_start_child(GTK_PANED(paned), FALSE);
     lw->ai_pane = build_ai_pane(lw);
     /* Vertical paned so the user can drag the divider between the notes list
      * and the AI summary pane.  GtkPaned collapses the divider automatically
-     * when child2 is hidden.                                                  */
+     * when the end child is hidden.                                           */
     GtkWidget *notes_paned = gtk_paned_new(GTK_ORIENTATION_VERTICAL);
     lw->notes_paned = GTK_PANED(notes_paned);
-    gtk_paned_pack1(GTK_PANED(notes_paned), lw->stack, TRUE, FALSE);
-    gtk_paned_pack2(GTK_PANED(notes_paned), lw->ai_pane, FALSE, FALSE);
-    gtk_paned_pack2(GTK_PANED(paned), notes_paned, TRUE, FALSE);
+    gtk_paned_set_start_child(GTK_PANED(notes_paned), lw->stack);
+    gtk_paned_set_resize_start_child(GTK_PANED(notes_paned), TRUE);
+    gtk_paned_set_shrink_start_child(GTK_PANED(notes_paned), FALSE);
+    gtk_paned_set_end_child(GTK_PANED(notes_paned), lw->ai_pane);
+    gtk_paned_set_resize_end_child(GTK_PANED(notes_paned), FALSE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(notes_paned), FALSE);
+    gtk_paned_set_end_child(GTK_PANED(paned), notes_paned);
+    gtk_paned_set_resize_end_child(GTK_PANED(paned), TRUE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(paned), FALSE);
+    gtk_widget_set_vexpand(paned, TRUE);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     /* The actions must exist before anything that names them is built —
@@ -6195,35 +6548,33 @@ on_library_window_create(OnApp *app)
 #ifdef __APPLE__
     /* The in-window rendering of the menubar, for the "native_menubar"
      * setting's OFF state; on_library_apply_native_menubar below decides
-     * which of the two shows.  Elsewhere the GtkApplicationWindow renders
-     * the application menubar itself, so nothing is packed.               */
-    lw->menubar = gtk_menu_bar_new_from_model(lw->menubar_model);
-    gtk_widget_set_no_show_all(lw->menubar, TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), lw->menubar, FALSE, FALSE, 0);
+     * which of the two shows (built hidden: that call owns its
+     * visibility).  Elsewhere the GtkApplicationWindow renders the
+     * application menubar itself, so nothing is packed.                   */
+    lw->menubar = gtk_popover_menu_bar_new_from_model(lw->menubar_model);
+    gtk_widget_set_visible(lw->menubar, FALSE);
+    gtk_box_append(GTK_BOX(vbox), lw->menubar);
 #endif
-    gtk_box_pack_start(GTK_BOX(vbox), build_action_bar(lw),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), paned, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(lw->window), vbox);
+    gtk_box_append(GTK_BOX(vbox), build_action_bar(lw));
+    gtk_box_append(GTK_BOX(vbox),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    gtk_box_append(GTK_BOX(vbox), paned);
+    gtk_box_append(GTK_BOX(vbox),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    gtk_box_append(GTK_BOX(vbox), status_bar);
+    gtk_window_set_child(GTK_WINDOW(lw->window), vbox);
 
     /* --- initial population -------------------------------------------------*/
     refresh_all(lw);
     on_app_status(app, "DB at %s loaded", app->db->path);
 
-    gtk_widget_show_all(lw->window);
+    gtk_window_present(GTK_WINDOW(lw->window));
     on_library_apply_native_menubar(
         app, on_app_config_get_bool("native_menubar", FALSE));
 
-    /* AFTER show_all: the View item's label is read from the pane's live
-     * visibility, and until show_all has run nothing in the window is
-     * visible yet.  The label it was built with is only a placeholder.      */
+    /* The View item's label is read from the pane's live visibility; the
+     * label it was built with is only a placeholder, and the actions it
+     * enables exist only since library_install_actions above.             */
     sidebar_menu_sync(lw);
     /* Likewise the List/Grid button: the toolbar is built after the stack,
      * so it missed the stack's construction-time child change.            */

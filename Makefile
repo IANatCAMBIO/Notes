@@ -1,15 +1,17 @@
 # =============================================================================
 # Notes — Makefile
 #
-# Builds the Notes application (a GTK3 + SQLite notes app written in
-# plain C).  Requires GTK3 and SQLite3, discovered via pkg-config.
+# Builds the Notes application (a GTK4 + SQLite notes app written in
+# plain C).  Requires GTK4 and SQLite3, discovered via pkg-config.
 #
 # On macOS with MacPorts:
-#     sudo port install pkgconf gtk3 +quartz
+#     sudo port install pkgconf gtk4 +quartz
 #
 # Targets:
 #     make          — build the `notes` binary
 #     make clean    — remove build artifacts (including dist/)
+#     make test     — headless tests of the block model (GLib only)
+#     make bnbf-scan — build/bnbf-scan, the blob round-trip scan
 #     make run      — build and launch the app
 #     make app      — macOS .app bundle → dist/Notes.app
 #                     (needs the macOS sips/iconutil tools; the bundle
@@ -43,13 +45,19 @@ PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg
 #   -std=c11        — use the C11 language standard
 #   -Wall -Wextra   — enable a broad set of warnings
 #   -g              — include debug symbols
-#   plus the include paths for GTK3 and SQLite3 from pkg-config.
+#   plus the include paths for GTK4 and SQLite3 from pkg-config.
+#   Deprecated-but-present GTK4 API (the GtkTreeView family, GtkIconView,
+#   GtkDialog, …) is used on purpose: those call sites are wrapped in
+#   G_GNUC_BEGIN/END_IGNORE_DEPRECATIONS, or a file that lives on them
+#   (library_window.c) defines G*_DISABLE_DEPRECATION_WARNINGS at its top,
+#   so the build stays warning-clean and the sites stay greppable for the
+#   GTK5 migration.  No global -Wno-deprecated-declarations.
 CFLAGS   := -std=c11 -Wall -Wextra -g \
             -DON_VERSION='"$(VERSION)"' \
-            $(shell $(PKGCONF) --cflags gtk+-3.0 sqlite3)
+            $(shell $(PKGCONF) --cflags gtk4 sqlite3)
 
-# Linker flags: the GTK3 and SQLite3 libraries from pkg-config, plus libm.
-LDFLAGS  := $(shell $(PKGCONF) --libs gtk+-3.0 sqlite3) -lm
+# Linker flags: the GTK4 and SQLite3 libraries from pkg-config, plus libm.
+LDFLAGS  := $(shell $(PKGCONF) --libs gtk4 sqlite3) -lm
 
 # All C source files that make up the application.
 SRCS     := src/main.c \
@@ -57,7 +65,11 @@ SRCS     := src/main.c \
             src/cli.c \
             src/db.c \
             src/ipc.c \
+            src/bnbf.c \
+            src/document.c \
             src/serialize.c \
+            src/doc_layout.c \
+            src/note_view.c \
             src/editor_window.c \
             src/image_viewer.c \
             src/library_window.c \
@@ -124,7 +136,10 @@ dev-check: $(DEV_DIR)/notes.ini
 	  echo "$(DEV_DIR)/notes.ini does not point at $(DEV_DIR)/db — refusing" \
 	       "(rm $(DEV_DIR)/notes.ini to regenerate it)"; exit 1; }
 
-$(DEV_DB): dev-check | $(BIN)
+# Both prerequisites are ORDER-ONLY: dev-check is phony, and a phony
+# prerequisite on the left of the bar counts as always newer, so the seed
+# re-ran (and appended its notes again) on every run-dev.
+$(DEV_DB): | dev-check $(BIN)
 	cd $(DEV_DIR) && ./$(BIN) folder add Work && ./$(BIN) folder add Home/Kitchen \
 	  && printf 'Meeting notes\n\n! Send the agenda due 2026-10-01\n! Book the room\n#work' | ./$(BIN) note new --folder Work - \
 	  && printf 'Project plan\n\nA plan with a #work tag and some **body** text.' | ./$(BIN) note new --folder Work - \
@@ -139,6 +154,53 @@ run-dev: $(BIN) $(DEV_DB) dev-check
 
 clean-dev:
 	rm -rf $(DEV_DIR)
+
+# ---------------------------------------------------------------------------
+# Headless tests and the blob scan.  Both build against GLib and SQLite
+# ONLY — no GTK on the line — which is what proves the block model
+# (document.[ch], bnbf.[ch]) needs none.
+#   make test              — the unit tests (GLib's g_test harness)
+#   make bnbf-scan         — build/bnbf-scan: round-trips every note blob
+#                            in a database COPY and reports what the
+#                            loader normalized (see tools/bnbf-scan.c)
+# ---------------------------------------------------------------------------
+MODEL_SRCS   := src/document.c src/bnbf.c
+MODEL_CFLAGS := -std=c11 -Wall -Wextra -g -Isrc \
+                $(shell $(PKGCONF) --cflags glib-2.0)
+MODEL_LIBS   := $(shell $(PKGCONF) --libs glib-2.0)
+
+build/test_document: tests/test_document.c $(MODEL_SRCS) src/document.h src/bnbf.h Makefile
+	@mkdir -p build
+	$(CC) $(MODEL_CFLAGS) -o $@ tests/test_document.c $(MODEL_SRCS) $(MODEL_LIBS)
+
+test: build/test_document
+	./build/test_document
+
+build/bnbf-scan: tools/bnbf-scan.c $(MODEL_SRCS) src/document.h src/bnbf.h Makefile
+	@mkdir -p build
+	$(CC) $(MODEL_CFLAGS) $(shell $(PKGCONF) --cflags sqlite3) -o $@ \
+	  tools/bnbf-scan.c $(MODEL_SRCS) $(MODEL_LIBS) $(shell $(PKGCONF) --libs sqlite3)
+
+bnbf-scan: build/bnbf-scan
+
+# The UI probe: a note view driven from a script, rendered to a PNG
+# (tests/ui_probe.c).  Links the app's objects minus main.o.
+PROBE_OBJS := $(filter-out build/main.o,$(OBJS))
+build/ui-probe: tests/ui_probe.c $(PROBE_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/ui_probe.c $(PROBE_OBJS) $(LDFLAGS)
+
+ui-probe: build/ui-probe
+
+# ui-test: every script in tests/ui/ through the probe, on a copy of the
+# sandbox database (the #tag choices come from it).  Needs a display.
+ui-test: build/ui-probe $(DEV_DB)
+	@cp $(DEV_DB) build/ui-test.db
+	@rc=0; for s in tests/ui/*.txt; do \
+	  n=$$(basename $$s .txt); \
+	  if (cd tests/ui && ../../build/ui-probe ../../build/ui-test.db $$n.txt ../../build/ui-$$n.png >/dev/null 2>../../build/ui-$$n.err); then \
+	    echo "ok   $$s"; \
+	  else echo "FAIL $$s"; grep -v "poll(2)" build/ui-$$n.err; rc=1; fi; \
+	done; exit $$rc
 
 # Remove all build artifacts.
 clean:
@@ -266,10 +328,10 @@ deb: pkgroot
 	  'Section: editors' \
 	  'Priority: optional' \
 	  'Architecture: $(DEB_ARCH)' \
-	  'Depends: libgtk-3-0 | libgtk-3-0t64, libsqlite3-0' \
+	  'Depends: libgtk-4-1, libsqlite3-0' \
 	  'Maintainer: Ian Campbell <ian@camb.io>' \
 	  'Description: Notes app with folders, tags and rich text' \
-	  ' Apple Notes-style desktop notes application (GTK3 + SQLite).' \
+	  ' Apple Notes-style desktop notes application (GTK4 + SQLite).' \
 	  > $(DEB_ROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEB_ROOT) \
 	  $(DIST)/notes_$(VERSION)_$(DEB_ARCH).deb
@@ -290,7 +352,7 @@ rpm: pkgroot
 	  'Summary: Notes app with folders, tags and rich text' \
 	  'License: BSD-3-Clause' \
 	  '%description' \
-	  'Apple Notes-style desktop notes application (GTK3 + SQLite).' \
+	  'Apple Notes-style desktop notes application (GTK4 + SQLite).' \
 	  '%install' \
 	  'cp -a $(abspath $(PKGROOT))/. %{buildroot}/' \
 	  '%files' \
@@ -303,4 +365,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run run-dev dev-check clean clean-dev app pkgroot deb rpm
+.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan ui-probe ui-test app pkgroot deb rpm

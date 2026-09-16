@@ -416,12 +416,6 @@ GList *on_db_note_list_pinned(OnDatabase *db);
 /* Number of pinned notes.                                                   */
 gint on_db_note_count_pinned(OnDatabase *db);
 
-/* Persist an explicit ordering of notes within one folder.
- *   note_ids — array of note ids in the desired display order.
- *   n        — number of ids in the array.
- * Returns TRUE on success.                                                  */
-gboolean on_db_note_reorder(OnDatabase *db, const gint64 *note_ids, gsize n);
-
 /* Free one OnNoteMeta and its strings.                                      */
 void on_db_note_meta_free(OnNoteMeta *meta);
 

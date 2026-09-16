@@ -1,8 +1,9 @@
 [Icon Theme]
 Name=Hicolor
-Comment=Orange Notes bundled scalable icons (elementary pan arrows for
- crisp tree expanders on HiDPI displays)
-Directories=scalable/actions
+Comment=Notes bundled icons: elementary pan arrows (scalable, for crisp
+ tree expanders on HiDPI displays) and the app logo as apps/notes, the
+ GTK4 default window icon
+Directories=scalable/actions,512x512/apps
 
 [scalable/actions]
 Context=Actions
@@ -10,3 +11,8 @@ Size=16
 MinSize=8
 MaxSize=512
 Type=Scalable
+
+[512x512/apps]
+Context=Applications
+Size=512
+Type=Threshold

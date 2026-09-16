@@ -35,11 +35,10 @@
  * =========================================================================== */
 
 #include "media_window.h"
+#include "app.h"                     /* on_app_set_tooltip                  */
 #include "editor_window.h"
 #include "image_viewer.h"
 #include "serialize.h"
-
-#include <cairo-gobject.h>
 
 /* Logical pixel box a thumbnail is fitted into (aspect kept, no upscaling). */
 #define MEDIA_THUMB_BOX 144
@@ -85,9 +84,10 @@ typedef struct {
  *              are only ever APPENDED (the scan never removes one), so this
  *              is fixed for the cell's life.
  *   title    — the note's title (owned).
- *   thumb    — the thumbnail surface (owned).
  * Widgets are deliberately absent: a cell never has to touch its own after
- * construction, so nothing here can outlive the window's widget tree.
+ * construction, so nothing here can outlive the window's widget tree.  The
+ * thumbnail's pixels are not here either — the cell's GtkImage holds the one
+ * reference to its texture, and drops it with the widget tree.
  * ------------------------------------------------------------------------- */
 typedef struct {
     OnMedia         *mw;
@@ -96,7 +96,6 @@ typedef struct {
     gint             n_img;
     gint             idx;
     gchar           *title;
-    cairo_surface_t *thumb;
 } MediaCell;
 
 /* ---------------------------------------------------------------------------
@@ -126,8 +125,11 @@ typedef struct {
  *   scan_idle   — the idle source doing the scanning, 0 when finished.
  *   n_notes     — how many notes contributed at least one image.
  *   truncated   — TRUE once MEDIA_MAX_IMAGES cut the scan short.
- *   win_w/win_h — the window's live size, persisted on close so the next
- *                 media window opens at the size this one was left at.
+ *   win_w/win_h — the window's live size, tracked through its
+ *                 default-width/default-height notifies (GTK4 writes every
+ *                 user resize back into those) and persisted on close so
+ *                 the next media window opens at the size this one was
+ *                 left at.
  * ------------------------------------------------------------------------- */
 struct OnMedia {
     OnApp      *app;
@@ -172,14 +174,12 @@ static void
 media_cell_free(gpointer data)
 {
     MediaCell *c = data;
-    if (c->thumb != NULL)
-        cairo_surface_destroy(c->thumb);
     g_free(c->title);
     g_free(c);
 }
 
 /* ---------------------------------------------------------------------------
- * media_css_install() — install the thumbnails' hover tint once per screen.
+ * media_css_install() — install the thumbnails' hover tint once per display.
  * Scoped to MEDIA_CSS_CELL, so nothing else on screen is affected (the
  * viewer panel's backdrop is image_viewer.c's own business).
  * ------------------------------------------------------------------------- */
@@ -192,7 +192,7 @@ media_css_install(GtkWidget *window)
     done = TRUE;
 
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css,
+    gtk_css_provider_load_from_string(css,
         "." MEDIA_CSS_CELL " {"
         "  border: 2px solid transparent;"
         "  border-radius: 4px;"
@@ -200,21 +200,24 @@ media_css_install(GtkWidget *window)
         "}"
         "." MEDIA_CSS_CELL ":hover {"
         "  background-color: alpha(currentColor, 0.07);"
-        "}", -1, NULL);
-    gtk_style_context_add_provider_for_screen(
-        gtk_widget_get_screen(window), GTK_STYLE_PROVIDER(css),
+        "}");
+    gtk_style_context_add_provider_for_display(
+        gtk_widget_get_display(window), GTK_STYLE_PROVIDER(css),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
 }
 
 /* ---------------------------------------------------------------------------
- * media_render() — one image of one note, decoded and fitted to a logical
- * box.  `blob`/`len` may be bytes the caller already holds (the scan) or
- * NULL to read the note fresh (the viewer).  Only the ONE image is decoded,
- * and only as large as the box needs.
- * Returns a surface, or NULL when the image is gone or will not decode.
+ * media_render() — one image of one note, decoded no larger than a logical
+ * box needs.  `blob`/`len` may be bytes the caller already holds (the scan)
+ * or NULL to read the note fresh (the viewer).  Only the ONE image is
+ * decoded, capped on its longest side at the box's longer side times the
+ * display's scale factor, so the texture carries enough pixels to be sharp
+ * on HiDPI; the widget that shows it does the fitting (a GtkImage with a
+ * pixel size for the thumbnails, the viewer's SCALE_DOWN GtkPicture).
+ * Returns a new texture, or NULL when the image is gone or will not decode.
  * ------------------------------------------------------------------------- */
-static cairo_surface_t *
+static GdkTexture *
 media_render(OnMedia *mw, gint64 note_id, gint ord, gint box_w, gint box_h,
              const guint8 *blob, gsize len)
 {
@@ -223,20 +226,20 @@ media_render(OnMedia *mw, gint64 note_id, gint ord, gint box_w, gint box_h,
         own = on_db_note_load(mw->app->db, note_id, &len);
         blob = own;
     }
-    cairo_surface_t *surface = NULL;  /* the result                          */
+    GdkTexture *texture = NULL;      /* the result                          */
     if (blob != NULL) {
         gint sf  = gtk_widget_get_scale_factor(mw->window);
         gint cap = MAX(box_w, box_h) * sf;
                                      /* the decode cap is on the LONGEST
-                                        side; the fit does the rest        */
+                                        side; the widget does the fit      */
         GdkPixbuf *pix = on_note_image_nth(blob, len, ord, cap);
         if (pix != NULL) {
-            surface = on_image_viewer_fit(mw->window, pix, box_w, box_h);
+            texture = on_app_texture_for_pixbuf(pix);
             g_object_unref(pix);
         }
     }
     g_free(own);
-    return surface;
+    return texture;
 }
 
 /* ===========================================================================
@@ -259,16 +262,18 @@ media_viewer_count(gpointer host)
  * media_viewer_render() — the panel's image, decoded from the note fresh at
  * panel size (NULL blob) rather than scaled up from the thumbnail, and
  * dropped again when the panel closes: the window's memory stays the
- * thumbnails plus at most one big picture.
+ * thumbnails plus at most one big picture.  The panel takes the texture.
  * ------------------------------------------------------------------------- */
-static cairo_surface_t *
+static GdkPaintable *
 media_viewer_render(gpointer host, gint idx, gint box_w, gint box_h)
 {
     OnMedia *mw = host;              /* owning media window                 */
     if (idx < 0 || idx >= (gint)mw->cells->len)
         return NULL;
     MediaCell *c = g_ptr_array_index(mw->cells, idx);
-    return media_render(mw, c->note_id, c->ord, box_w, box_h, NULL, 0);
+    /* The cast passes a NULL (image gone / will not decode) through as-is. */
+    return GDK_PAINTABLE(media_render(mw, c->note_id, c->ord,
+                                      box_w, box_h, NULL, 0));
 }
 
 /* media_viewer_caption() — "<note title> — image N of M"; the panel adds its
@@ -312,21 +317,24 @@ static const OnImageViewerOps media_viewer_ops = {
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * media_cell_press() — a click on one thumbnail puts its picture in the
- * viewer panel.  The thumbnail itself never changes size, so the grid never
- * reflows under the pointer.
+ * media_cell_press() — a primary-button press on one thumbnail puts its
+ * picture in the viewer panel.  The thumbnail itself never changes size, so
+ * the grid never reflows under the pointer.  The gesture is claimed so the
+ * flow box's own click gesture (child activation) never sees the press.
+ *   gesture — the cell's GtkGestureClick (primary button only).
+ *   n_press — press count within a multi-click run (unused: every physical
+ *             press opens, as it always did; the second press of a double
+ *             click lands on the panel the first one opened, not here).
+ *   x, y    — press position (unused).
  * ------------------------------------------------------------------------- */
-static gboolean
-media_cell_press(GtkWidget *widget, GdkEventButton *event,
-                 gpointer user_data)
+static void
+media_cell_press(GtkGestureClick *gesture, gint n_press, gdouble x,
+                 gdouble y, gpointer user_data)
 {
-    (void)widget;
+    (void)n_press; (void)x; (void)y;
     MediaCell *c = user_data;        /* the clicked cell                    */
-    if (event->button != GDK_BUTTON_PRIMARY ||
-        event->type   != GDK_BUTTON_PRESS)
-        return FALSE;
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
     on_image_viewer_open(c->mw->viewer, c->idx);
-    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -341,8 +349,8 @@ static gboolean
 media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
                const guint8 *blob, gsize len)
 {
-    cairo_surface_t *thumb = media_render(mw, note->id, ord, MEDIA_THUMB_BOX,
-                                          MEDIA_THUMB_BOX, blob, len);
+    GdkTexture *thumb = media_render(mw, note->id, ord, MEDIA_THUMB_BOX,
+                                     MEDIA_THUMB_BOX, blob, len);
     if (thumb == NULL)
         return FALSE;
 
@@ -353,12 +361,14 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
     c->n_img   = n_img;
     c->idx     = (gint)mw->cells->len;  /* appended below; grid order        */
     c->title   = g_strdup(note->title);
-    c->thumb   = thumb;
 
-    GtkWidget *image = gtk_image_new_from_surface(thumb);
     /* Boxed to a square so the grid stays a grid whatever shape the
-     * pictures are; the picture itself is centred inside it.               */
-    gtk_widget_set_size_request(image, MEDIA_THUMB_BOX, MEDIA_THUMB_BOX);
+     * pictures are: a GtkImage with a pixel size measures as that square
+     * and draws its paintable fitted inside it, aspect kept and centred.
+     * The image holds the texture's one reference from here on.           */
+    GtkWidget *image = gtk_image_new_from_paintable(GDK_PAINTABLE(thumb));
+    g_object_unref(thumb);
+    gtk_image_set_pixel_size(GTK_IMAGE(image), MEDIA_THUMB_BOX);
 
     /* Caption: the owning note's title, ellipsized so a long one cannot
      * widen the cell.                                                      */
@@ -366,8 +376,7 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
     gtk_label_set_ellipsize(GTK_LABEL(caption), PANGO_ELLIPSIZE_END);
     gtk_label_set_max_width_chars(GTK_LABEL(caption), 18);
     gtk_widget_set_size_request(caption, MEDIA_THUMB_BOX, -1);
-    gtk_style_context_add_class(gtk_widget_get_style_context(caption),
-                                "dim-label");
+    gtk_widget_add_css_class(caption, "dim-label");
     {
         PangoAttrList *attrs = pango_attr_list_new();
         pango_attr_list_insert(attrs,
@@ -376,24 +385,25 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
         pango_attr_list_unref(attrs);
     }
 
+    /* The cell box is what takes the clicks (and carries the hover tint);
+     * the flow-box child itself has no handler, and the claimed gesture
+     * keeps the flow box's own activation machinery out of the way.       */
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_box_pack_start(GTK_BOX(box), image,   FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), caption, FALSE, FALSE, 0);
-
-    /* The event box is what takes the clicks; the flow-box child itself
-     * has no handler, so its own selection machinery stays out of the way. */
-    GtkWidget *frame = gtk_event_box_new();
-    gtk_event_box_set_visible_window(GTK_EVENT_BOX(frame), TRUE);
-    gtk_container_add(GTK_CONTAINER(frame), box);
-    gtk_style_context_add_class(gtk_widget_get_style_context(frame),
-                                MEDIA_CSS_CELL);
-    g_signal_connect(frame, "button-press-event",
-                     G_CALLBACK(media_cell_press), c);
+    gtk_box_append(GTK_BOX(box), image);
+    gtk_box_append(GTK_BOX(box), caption);
+    gtk_widget_add_css_class(box, MEDIA_CSS_CELL);
+    {
+        GtkGesture *click = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                      GDK_BUTTON_PRIMARY);
+        g_signal_connect(click, "pressed", G_CALLBACK(media_cell_press), c);
+        gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(click));
+    }
     {
         gchar *tip = g_strdup_printf(
             "%s\nImage %d of %d \xe2\x80\x94 click to view",
             note->title, ord + 1, n_img);
-        gtk_widget_set_tooltip_text(frame, tip);
+        on_app_set_tooltip(box, tip);
         g_free(tip);
     }
 
@@ -403,9 +413,8 @@ media_add_cell(OnMedia *mw, const MediaNote *note, gint ord, gint n_img,
      * scrolled window chase the newest cell, so a filling grid scrolls
      * itself to the bottom instead of staying at the top.                  */
     gtk_widget_set_can_focus(child, FALSE);
-    gtk_container_add(GTK_CONTAINER(child), frame);
+    gtk_flow_box_child_set_child(GTK_FLOW_BOX_CHILD(child), box);
     gtk_flow_box_insert(GTK_FLOW_BOX(mw->flow), child, -1);
-    gtk_widget_show_all(child);
 
     g_ptr_array_add(mw->cells, c);
     /* A picture landing directly after the one on show turns that panel's
@@ -467,7 +476,7 @@ media_scan_finish(OnMedia *mw)
     media_scan_close_note(mw);
     mw->scan_idle = 0;
     gtk_spinner_stop(GTK_SPINNER(mw->spinner));
-    gtk_widget_hide(mw->spinner);
+    gtk_widget_set_visible(mw->spinner, FALSE);
     media_status_update(mw);
 }
 
@@ -526,33 +535,36 @@ media_scan_idle(gpointer user_data)
  * window
  * =========================================================================== */
 
-/* on_media_key_press() — offer every key to the viewer panel first (Escape
- * closes it, the arrows walk the grid), then swallow the rest while it is
- * open: the panel is modal and the focus stays behind it, so a key it does
- * not want must not reach the grid either.  It takes nothing while closed,
- * so the grid keeps all of its own.                                         */
+/* on_media_key_press() — the window's CAPTURE-phase key controller, so it
+ * runs before the focus widget sees the key: offer every key to the viewer
+ * panel first (Escape closes it, the arrows walk the grid), then swallow the
+ * rest while it is open — the panel is modal and the focus stays behind it,
+ * so a key it does not want must not reach the grid either.  It takes
+ * nothing while closed, so the grid keeps all of its own.
+ *   keyval/state — the key and its modifiers, passed on to the panel.
+ * Returns TRUE to stop the key here.                                        */
 static gboolean
-on_media_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+on_media_key_press(GtkEventControllerKey *controller, guint keyval,
+                   guint keycode, GdkModifierType state, gpointer user_data)
 {
-    (void)widget;
+    (void)controller; (void)keycode;
     OnMedia *mw = user_data;         /* owning media window                 */
-    if (on_image_viewer_key_press(mw->viewer, event))
+    if (on_image_viewer_key_press(mw->viewer, keyval, state))
         return TRUE;
     return on_image_viewer_is_open(mw->viewer);
 }
 
-/* on_media_configure() — track the live size, which is persisted at close so
- * the next media window opens at the size this one was left at.  Re-fitting
- * an open viewer is NOT wired here: the panel watches its own overlay.       */
-static gboolean
-on_media_configure(GtkWidget *widget, GdkEventConfigure *event,
-                   gpointer user_data)
+/* on_media_size_changed() — notify::default-width / notify::default-height
+ * handler: GTK4 writes every user resize of an unmaximized window back into
+ * those two properties, so reading them here tracks the live size for the
+ * persist at close.  Re-fitting an open viewer is NOT wired here: the panel
+ * fits its own picture.                                                     */
+static void
+on_media_size_changed(GObject *window, GParamSpec *pspec, gpointer user_data)
 {
-    (void)widget;
+    (void)pspec;
     OnMedia *mw = user_data;         /* owning media window                 */
-    mw->win_w = event->width;
-    mw->win_h = event->height;
-    return FALSE;                    /* never consume: default handling     */
+    gtk_window_get_default_size(GTK_WINDOW(window), &mw->win_w, &mw->win_h);
 }
 
 /* on_media_destroy() — stop the scan, remember the window size for the next
@@ -605,7 +617,7 @@ on_media_window_open(OnApp *app, const gchar *scope_label, GList *notes)
     }
 
     /* --- window (standard titlebar, no HeaderBar) ------------------------ */
-    mw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    mw->window = gtk_window_new();
     /* An application window, so the "app." accelerators (Quit,
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(mw->window));
@@ -620,17 +632,29 @@ on_media_window_open(OnApp *app, const gchar *scope_label, GList *notes)
     gtk_window_set_default_size(GTK_WINDOW(mw->window), win_w, win_h);
     gtk_window_set_transient_for(GTK_WINDOW(mw->window),
                                  GTK_WINDOW(app->library_window));
-    g_signal_connect(mw->window, "configure-event",
-                     G_CALLBACK(on_media_configure), mw);
-    g_signal_connect(mw->window, "key-press-event",
-                     G_CALLBACK(on_media_key_press), mw);
+    g_signal_connect(mw->window, "notify::default-width",
+                     G_CALLBACK(on_media_size_changed), mw);
+    g_signal_connect(mw->window, "notify::default-height",
+                     G_CALLBACK(on_media_size_changed), mw);
+    {
+        /* Capture phase: the viewer panel never takes the focus (see
+         * image_viewer.h), so its keys are claimed off whatever has it.   */
+        GtkEventController *keys = gtk_event_controller_key_new();
+        gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+        g_signal_connect(keys, "key-pressed",
+                         G_CALLBACK(on_media_key_press), mw);
+        gtk_widget_add_controller(mw->window, keys);
+    }
     g_signal_connect(mw->window, "destroy",
                      G_CALLBACK(on_media_destroy), mw);
     media_css_install(mw->window);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
-    gtk_container_add(GTK_CONTAINER(mw->window), vbox);
+    gtk_widget_set_margin_start(vbox, 8);
+    gtk_widget_set_margin_end(vbox, 8);
+    gtk_widget_set_margin_top(vbox, 8);
+    gtk_widget_set_margin_bottom(vbox, 8);
+    gtk_window_set_child(GTK_WINDOW(mw->window), vbox);
 
     /* --- the grid --------------------------------------------------------- */
     mw->flow = gtk_flow_box_new();
@@ -645,39 +669,43 @@ on_media_window_open(OnApp *app, const gchar *scope_label, GList *notes)
     gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(mw->flow), 6);
     gtk_widget_set_valign(mw->flow, GTK_ALIGN_START);
 
-    mw->scroll = gtk_scrolled_window_new(NULL, NULL);
+    mw->scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(mw->scroll),
                                    GTK_POLICY_NEVER,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(mw->scroll), FALSE);
-    gtk_container_add(GTK_CONTAINER(mw->scroll), mw->flow);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(mw->scroll), mw->flow);
 
     /* --- grid + viewer panel, stacked ------------------------------------- */
     mw->overlay = gtk_overlay_new();
-    gtk_container_add(GTK_CONTAINER(mw->overlay), mw->scroll);
-    gtk_box_pack_start(GTK_BOX(vbox), mw->overlay, TRUE, TRUE, 0);
+    gtk_overlay_set_child(GTK_OVERLAY(mw->overlay), mw->scroll);
+    gtk_widget_set_vexpand(mw->overlay, TRUE);
+    gtk_box_append(GTK_BOX(vbox), mw->overlay);
     mw->viewer = on_image_viewer_new(
         mw->overlay, &media_viewer_ops, mw, "Show in source note",
         "Open the note this image is in, scrolled to the image");
 
     /* --- status line ------------------------------------------------------ */
     GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    /* The scan owns the spinner's visibility: shown below once it starts,
+     * hidden by media_scan_finish.                                         */
     mw->spinner = gtk_spinner_new();
-    gtk_widget_set_no_show_all(mw->spinner, TRUE);
-    gtk_box_pack_start(GTK_BOX(status_row), mw->spinner, FALSE, FALSE, 0);
+    gtk_widget_set_visible(mw->spinner, FALSE);
+    gtk_box_append(GTK_BOX(status_row), mw->spinner);
     mw->status = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(mw->status), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(mw->status), PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start(GTK_BOX(status_row), mw->status, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), status_row, FALSE, FALSE, 0);
+    gtk_widget_set_hexpand(mw->status, TRUE);
+    gtk_box_append(GTK_BOX(status_row), mw->status);
+    gtk_box_append(GTK_BOX(vbox), status_row);
 
-    gtk_widget_show_all(mw->window);
+    gtk_window_present(GTK_WINDOW(mw->window));
 
-    /* Scanning starts only now: media_surface_fit reads the window's scale
-     * factor and GdkWindow, both of which need it realized.                */
+    /* Scanning starts only now: media_render reads the window's scale
+     * factor for its decode cap, which is only known once it is realized. */
     mw->scan_idle = g_idle_add(media_scan_idle, mw);
-    gtk_widget_show(mw->spinner);
+    gtk_widget_set_visible(mw->spinner, TRUE);
     gtk_spinner_start(GTK_SPINNER(mw->spinner));
     media_status_update(mw);
 }

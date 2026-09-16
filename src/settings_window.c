@@ -46,7 +46,11 @@ static void
 on_density_combo_changed(GtkComboBox *combo, gpointer user_data)
 {
     OnApp *app = user_data;            /* application context                 */
+    /* GtkComboBoxText is deprecated since 4.10 (for GtkDropDown) but
+     * present; allowed by GTK4_MIGRATION.md's recipe, wrapped per call.  */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     app->comfortable_list = (gtk_combo_box_get_active(combo) == 1);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     on_app_config_set("list_density_comfortable",
                       app->comfortable_list ? "1" : "0");
     if (app->notify_notes_changed != NULL)
@@ -142,12 +146,12 @@ static const BoolSetting BOOL_SETTINGS[] = {
 
 /* on_bool_toggled() — shared handler: flip the field, persist, apply.       */
 static void
-on_bool_toggled(GtkToggleButton *check, gpointer user_data)
+on_bool_toggled(GtkCheckButton *check, gpointer user_data)
 {
     OnApp *app = user_data;          /* application context                 */
     const BoolSetting *bs = g_object_get_data(G_OBJECT(check), "on-spec");
     gboolean *field = (gboolean *)((gchar *)app + bs->field_off);
-    *field = gtk_toggle_button_get_active(check);
+    *field = gtk_check_button_get_active(check);
     on_app_config_set(bs->key, *field ? "1" : "0");
     if (bs->apply != NULL)
         bs->apply(app);
@@ -160,8 +164,8 @@ bool_check_new(OnApp *app, BoolSettingId id)
     const BoolSetting *bs = &BOOL_SETTINGS[id];
     GtkWidget *check = gtk_check_button_new_with_label(bs->label);
     gtk_widget_set_margin_start(check, 12);
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(check),
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(check),
         *(gboolean *)((gchar *)app + bs->field_off));
     g_object_set_data(G_OBJECT(check), "on-spec", (gpointer)bs);
     g_signal_connect(check, "toggled", G_CALLBACK(on_bool_toggled), app);
@@ -172,10 +176,10 @@ bool_check_new(OnApp *app, BoolSettingId id)
 /* on_native_menubar_toggled() — move the library menu into (or out of)
  * the native macOS menu bar, live.                                          */
 static void
-on_native_menubar_toggled(GtkToggleButton *check, gpointer user_data)
+on_native_menubar_toggled(GtkCheckButton *check, gpointer user_data)
 {
     OnApp *app = user_data;          /* application context                 */
-    gboolean native = gtk_toggle_button_get_active(check);
+    gboolean native = gtk_check_button_get_active(check);
     on_app_config_set("native_menubar", native ? "1" : "0");
     on_library_apply_native_menubar(app, native);
 }
@@ -394,7 +398,7 @@ db_health_refresh(DbSection *s)
     g_free(markup);
     /* The detail is sqlite's own words and can run to many lines, so it
      * lives on the tooltip: the row says WHAT, hovering says which.       */
-    gtk_widget_set_tooltip_text(s->health_label,
+    on_app_set_tooltip(s->health_label,
         h != NULL && h->detail != NULL ? h->detail
       : h != NULL ? "PRAGMA integrity_check and PRAGMA foreign_key_check "
                     "both passed against this file."
@@ -414,7 +418,7 @@ db_health_refresh(DbSection *s)
 static void
 db_sha_refresh(DbSection *s)
 {
-    GtkWidget *lbl = gtk_bin_get_child(GTK_BIN(s->sha_btn));
+    GtkWidget *lbl = gtk_button_get_child(GTK_BUTTON(s->sha_btn));
     gchar     *sha = on_db_file_sha256(s->app->db->path);
 
     if (sha != NULL && strlen(sha) > SHA_HEAD + SHA_TAIL) {
@@ -428,7 +432,7 @@ db_sha_refresh(DbSection *s)
         gchar *tip = g_strdup_printf(
             "%s\n\nThe file as it stands.  A database in use changes with "
             "the next edit, so this moves.\n\nClick to copy.", sha);
-        gtk_widget_set_tooltip_text(s->sha_btn, tip);
+        on_app_set_tooltip(s->sha_btn, tip);
         g_free(tip);
         gtk_widget_set_sensitive(s->sha_btn, TRUE);
         /* The full digest rides the button, so the click that copies it
@@ -436,7 +440,7 @@ db_sha_refresh(DbSection *s)
         g_object_set_data_full(G_OBJECT(s->sha_btn), "on-sha", sha, g_free);
     } else {
         gtk_label_set_markup(GTK_LABEL(lbl), "<small>\xe2\x80\x94</small>");
-        gtk_widget_set_tooltip_text(s->sha_btn,
+        on_app_set_tooltip(s->sha_btn,
                                     "The database file could not be read.");
         gtk_widget_set_sensitive(s->sha_btn, FALSE);
         g_object_set_data(G_OBJECT(s->sha_btn), "on-sha", NULL);
@@ -514,9 +518,7 @@ on_db_sha_clicked(GtkButton *btn, gpointer user_data)
     const gchar *sha = g_object_get_data(G_OBJECT(btn), "on-sha");
     if (sha == NULL)
         return;
-    gtk_clipboard_set_text(
-        gtk_clipboard_get_for_display(gtk_widget_get_display(GTK_WIDGET(btn)),
-                                      GDK_SELECTION_CLIPBOARD), sha, -1);
+    gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(btn)), sha);
     on_app_status(s->app, "SHA-256 copied to the clipboard");
 }
 
@@ -525,62 +527,56 @@ on_db_sha_clicked(GtkButton *btn, gpointer user_data)
  * switching this on always does something.  Choosing a folder is an
  * improvement, not a prerequisite.                                         */
 static void
-on_bk_toggled(GtkToggleButton *check, gpointer user_data)
+on_bk_toggled(GtkCheckButton *check, gpointer user_data)
 {
     DbSection *s = user_data;        /* the database section                */
     on_app_config_set("backup_enabled",
-                      gtk_toggle_button_get_active(check) ? "1" : "0");
+                      gtk_check_button_get_active(check) ? "1" : "0");
     on_backup_auto_start(s->app, s->app->db->path);
     bk_section_refresh(s);
 }
 
 /* ---------------------------------------------------------------------------
- * bk_pick_folder() — folder chooser for the BACKUP destination, started at
- * the current choice when there is one.  Its own dialog rather than
- * on_app_pick_path(), which has no start-folder parameter: re-picking a
- * destination from wherever the chooser last happened to be is how a user
- * ends up with backups in two places.
+ * on_bk_folder_picked() — on_app_pick_path()'s continuation for the backup
+ * destination: persist the new folder, re-arm the timer against it and
+ * re-render the block.
  *
  * Inputs:
- *   s — the database section, for the transient parent.
+ *   dir       — the chosen folder (owned here, freed), or NULL if the
+ *               chooser was cancelled — nothing changes then.
+ *   user_data — the DbSection.  The chooser is modal over the settings
+ *               window, which is what keeps the section alive until this
+ *               runs.
  *
  * Output:
- *   the chosen folder (g_free), or NULL if cancelled.
+ *   none.
  * ------------------------------------------------------------------------- */
-static gchar *
-bk_pick_folder(DbSection *s)
+static void
+on_bk_folder_picked(gchar *dir, gpointer user_data)
 {
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Choose Backup Folder",
-        GTK_WINDOW(gtk_widget_get_toplevel(s->bk_check)),
-        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Select", GTK_RESPONSE_ACCEPT,
-        NULL);
-    gchar *cur = on_app_config_get("backup_dir");
-    if (cur != NULL && *cur != '\0')
-        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), cur);
-    g_free(cur);
-    gchar *dir = NULL;               /* the picked folder, if any           */
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
-        dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_widget_destroy(chooser);
-    return dir;
+    DbSection *s = user_data;        /* the database section                */
+    if (dir == NULL)
+        return;
+    on_app_config_set("backup_dir", dir);
+    g_free(dir);
+    on_backup_auto_start(s->app, s->app->db->path);
+    bk_section_refresh(s);
 }
 
-/* on_bk_choose_clicked() — re-pick the destination folder.                 */
+/* on_bk_choose_clicked() — re-pick the destination folder.  Asynchronous:
+ * on_bk_folder_picked does the rest once the chooser closes.               */
 static void
 on_bk_choose_clicked(GtkButton *btn, gpointer user_data)
 {
     (void)btn;
     DbSection *s = user_data;        /* the database section                */
-    gchar *dir = bk_pick_folder(s);
-    if (dir != NULL) {
-        on_app_config_set("backup_dir", dir);
-        g_free(dir);
-        on_backup_auto_start(s->app, s->app->db->path);
-        bk_section_refresh(s);
-    }
+    /* Start where backups go NOW: re-picking from wherever the chooser
+     * last was is how backups end up in two places.                      */
+    gchar *current = on_backup_dir();
+    on_app_pick_path(GTK_WINDOW(gtk_widget_get_root(s->bk_check)),
+                     "Choose Backup Folder", ON_PICK_FOLDER, "_Select",
+                     NULL, NULL, current, on_bk_folder_picked, s);
+    g_free(current);
 }
 
 /* on_bk_interval_changed() — persist the cadence and re-arm the timer.     */
@@ -623,27 +619,35 @@ static void
 on_viewer_entry_changed(GtkEditable *editable, gpointer user_data)
 {
     (void)user_data;
-    const gchar *text = gtk_entry_get_text(GTK_ENTRY(editable));
+    const gchar *text = gtk_editable_get_text(editable);
     if (text != NULL && *text != '\0')
         on_app_config_set("image_viewer", text);
     else
         on_app_config_set("image_viewer", NULL);
 }
 
+/* on_viewer_picked() — on_app_pick_path()'s continuation for the viewer
+ * program: put the path in the entry, whose "changed" handler does the
+ * persisting.  `file` is owned here (freed); NULL = cancelled, no change.  */
+static void
+on_viewer_picked(gchar *file, gpointer user_data)
+{
+    GtkWidget *entry = user_data;    /* the viewer-path entry               */
+    if (file == NULL)
+        return;
+    gtk_editable_set_text(GTK_EDITABLE(entry), file);
+    g_free(file);
+}
+
 /* on_viewer_browse_clicked() — pick the viewer program with a file
- * chooser; the entry's "changed" handler does the persisting.               */
+ * chooser.  Asynchronous: on_viewer_picked finishes the job.               */
 static void
 on_viewer_browse_clicked(GtkButton *btn, gpointer user_data)
 {
     GtkWidget *entry = user_data;    /* the viewer-path entry               */
-    gchar *file = on_app_pick_path(
-        GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(btn))),
-        "Choose Image Viewer", GTK_FILE_CHOOSER_ACTION_OPEN, "_Select",
-        NULL, NULL);
-    if (file != NULL) {
-        gtk_entry_set_text(GTK_ENTRY(entry), file);
-        g_free(file);
-    }
+    on_app_pick_path(GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn))),
+                     "Choose Image Viewer", ON_PICK_OPEN, "_Select",
+                     NULL, NULL, NULL, on_viewer_picked, entry);
 }
 
 /* on_touch_assist_toggled() — the checkbox DISABLES the touch aids, so
@@ -651,11 +655,11 @@ on_viewer_browse_clicked(GtkButton *btn, gpointer user_data)
  * live; the tap-popup half is the GDK_CORE_DEVICE_EVENTS env var in
  * main(), which only takes effect on the next start.                        */
 static void
-on_touch_assist_toggled(GtkToggleButton *check, gpointer user_data)
+on_touch_assist_toggled(GtkCheckButton *check, gpointer user_data)
 {
     OnApp *app = user_data;          /* application context                 */
     on_app_config_set("touch_assist",
-                      gtk_toggle_button_get_active(check) ? "0" : "1");
+                      gtk_check_button_get_active(check) ? "0" : "1");
     on_app_apply_touch_assist(app);
     on_app_status(app, "Touch assistance fully applies after a restart");
 }
@@ -673,16 +677,14 @@ on_touch_assist_toggled(GtkToggleButton *check, gpointer user_data)
  * is the text above it.  Shrunk by padding and font size rather than by a
  * shorter label: the words are what say what the button does.
  *
- * min-height/min-width are named because Adwaita floors both, so trimming
- * the padding alone moves nothing.
+ * min-height/min-width are named (settings_install_css) because the theme
+ * floors both, so trimming the padding alone moves nothing.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_button(const gchar *label)
 {
     GtkWidget *btn = gtk_button_new_with_label(label);
-    on_app_widget_add_css(btn,
-        "button { padding: 1px 8px; min-height: 0; min-width: 0; }"
-        "button label { font-size: 85%; }");
+    gtk_widget_add_css_class(btn, "notes-small-button");
     gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
     return btn;
 }
@@ -693,23 +695,21 @@ small_button(const gchar *label)
  *   chars        — digits to size the entry for.
  *
  * A default GtkSpinButton is enormous for a three-digit number, and the
- * lever is NOT the obvious one: gtk_entry_set_width_chars alone moves almost
- * nothing, because Adwaita floors `min-width` on the entry and on both
- * stepper buttons, and a floor beats a request.  Both levers are kept
- * because they do different jobs: the CSS removes the floor, and `chars` is
- * what then decides the width — sized to the RANGE, so the widest value a
- * user can reach still fits without the entry scrolling under them.
+ * lever is NOT the obvious one: width_chars alone moves almost
+ * nothing, because the theme floors the spin button's size and pads it
+ * 8 px a side, and a floor beats a request.  Both levers are kept because
+ * they do different jobs: the CSS (settings_install_css) removes the
+ * floor, and `chars` is what then decides the width — sized to the RANGE,
+ * so the widest value a user can reach still fits without the entry
+ * scrolling under them.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
 {
     GtkWidget *spin = gtk_spin_button_new_with_range(lo, hi, step);
-    gtk_entry_set_width_chars(GTK_ENTRY(spin), chars);
-    gtk_entry_set_max_width_chars(GTK_ENTRY(spin), chars);
-    on_app_widget_add_css(spin,
-        "spinbutton { min-width: 0; min-height: 0; }"
-        "spinbutton entry { min-width: 0; min-height: 0; padding: 1px 2px; }"
-        "spinbutton button { min-width: 0; min-height: 0; padding: 0 2px; }");
+    gtk_editable_set_width_chars(GTK_EDITABLE(spin), chars);
+    gtk_editable_set_max_width_chars(GTK_EDITABLE(spin), chars);
+    gtk_widget_add_css_class(spin, "notes-small-spin");
     return spin;
 }
 
@@ -748,7 +748,7 @@ info_row(GtkWidget *grid, gint row, const gchar *name)
     gtk_label_set_xalign(GTK_LABEL(value), 0.0);
     /* The path is the long one and the reason for both calls; on a short
      * value they cost nothing.                                            */
-    gtk_label_set_line_wrap(GTK_LABEL(value), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(value), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(value), 44);
     gtk_label_set_selectable(GTK_LABEL(value), TRUE);
     /* Selectable labels come up with the whole text selected, which reads
@@ -756,6 +756,23 @@ info_row(GtkWidget *grid, gint row, const gchar *name)
     gtk_label_select_region(GTK_LABEL(value), 0, 0);
     info_row_attach(grid, row, name, value);
     return value;
+}
+
+/* ---------------------------------------------------------------------------
+ * section_rule() — the horizontal rule between two settings sections, with
+ * the 4 px of breathing room above and below that the box's own spacing
+ * does not give it.
+ *
+ * Output:
+ *   a new GtkSeparator, unparented.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+section_rule(void)
+{
+    GtkWidget *rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(rule, 4);
+    gtk_widget_set_margin_bottom(rule, 4);
+    return rule;
 }
 
 /* ---------------------------------------------------------------------------
@@ -774,10 +791,10 @@ section_label(const gchar *text)
 
 /* on_ai_enabled_toggled() — master AI kill switch.                          */
 static void
-on_ai_enabled_toggled(GtkToggleButton *check, gpointer user_data)
+on_ai_enabled_toggled(GtkCheckButton *check, gpointer user_data)
 {
     OnApp *app = user_data;
-    app->ai_enabled = gtk_toggle_button_get_active(check);
+    app->ai_enabled = gtk_check_button_get_active(check);
     on_app_config_set("ai_enabled", app->ai_enabled ? "1" : "0");
     GtkWidget *sub = g_object_get_data(G_OBJECT(check), "on-ai-sub");
     if (sub != NULL)
@@ -805,7 +822,7 @@ static void
 on_ai_command_changed(GtkEditable *editable, gpointer user_data)
 {
     OnApp *app = user_data;
-    const gchar *text = gtk_entry_get_text(GTK_ENTRY(editable));
+    const gchar *text = gtk_editable_get_text(editable);
     g_free(app->ai_command);
     app->ai_command = (text != NULL && *text != '\0')
         ? g_strdup(text) : NULL;
@@ -813,11 +830,71 @@ on_ai_command_changed(GtkEditable *editable, gpointer user_data)
                       app->ai_command != NULL ? app->ai_command : NULL);
 }
 
+/* ---------------------------------------------------------------------------
+ * settings_install_css() — the Settings window's DISPLAY-level stylesheet,
+ * installed once per process (application priority, so every rule outranks
+ * the theme's in any widget state).  One rule per "notes-" class the
+ * window puts on its widgets:
+ *
+ * 1. small_button: a compact button — the theme floors min-height and
+ *    min-width, so both are named or trimming the padding moves nothing.
+ * 2. small_spin: a spin button no wider than its digits.  GTK4 keeps the
+ *    floor and the 8 px side padding on the `spinbutton` node itself
+ *    (Default theme: `spinbutton:not(.vertical), entry { min-height: 32px;
+ *    padding-left: 8px; padding-right: 8px }`), with a `text` child for the
+ *    digits and `button` children for the steppers — GTK3 had them on an
+ *    `entry` child, which no longer exists.
+ * 3. The Database health plate: a bordered frame in the theme's base
+ *    colour (see the plate comment in on_settings_window_open for why
+ *    named colours).  Verified on GTK 4.22's compiled Default theme:
+ *    @theme_base_color and @borders are both still defined (deprecated
+ *    since 4.16, warning only under GTK_DEBUG=css; the theme exports no
+ *    CSS variables to use instead).
+ * 4. The SHA-256 button: a relief-less label that happens to be clickable,
+ *    stripped of its box so the digest sits on the grid's value column.
+ * ------------------------------------------------------------------------- */
+static void
+settings_install_css(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "button.notes-small-button {"
+        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "}"
+        "button.notes-small-button > label { font-size: 85%; }"
+        "spinbutton.notes-small-spin {"
+        "  min-width: 0; min-height: 0; padding: 1px 2px;"
+        "}"
+        "spinbutton.notes-small-spin > text { min-width: 0; min-height: 0; }"
+        "spinbutton.notes-small-spin > button {"
+        "  min-width: 0; min-height: 0; padding: 0 2px;"
+        "}"
+        "frame.notes-plate {"
+        "  background-color: @theme_base_color;"
+        "  border: 1px solid @borders;"
+        "  border-radius: 6px;"
+        "  padding: 8px 10px;"
+        "}"
+        "button.notes-sha-button {"
+        "  padding: 0; margin: 0; border: none; min-height: 0; min-width: 0;"
+        "}"
+        "button.notes-sha-button > label { font-family: monospace; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+}
 
 void
 on_settings_window_open(OnApp *app)
 {
-    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    settings_install_css();
+
+    GtkWidget *window = gtk_window_new();
     /* An application window, so the "app." accelerators (Quit,
      * Preferences) work while it has the focus.                            */
     gtk_application_add_window(app->gtk_app, GTK_WINDOW(window));
@@ -828,12 +905,15 @@ on_settings_window_open(OnApp *app)
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
+    gtk_widget_set_margin_start(vbox, 14);
+    gtk_widget_set_margin_end(vbox, 14);
+    gtk_widget_set_margin_top(vbox, 14);
+    gtk_widget_set_margin_bottom(vbox, 14);
 
     /* Wrap in a scrolled window so the settings are reachable on low-res
      * screens.  propagate_natural_height + max_content_height lets the
      * window size to content when content fits, and scroll when it doesn't. */
-    GtkWidget *outer_scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *outer_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(outer_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
@@ -842,12 +922,11 @@ on_settings_window_open(OnApp *app)
         GTK_SCROLLED_WINDOW(outer_scroll), TRUE);
     gtk_scrolled_window_set_max_content_height(
         GTK_SCROLLED_WINDOW(outer_scroll), 600);
-    gtk_container_add(GTK_CONTAINER(outer_scroll), vbox);
-    gtk_container_add(GTK_CONTAINER(window), outer_scroll);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(outer_scroll), vbox);
+    gtk_window_set_child(GTK_WINDOW(window), outer_scroll);
 
     /* --- appearance ----------------------------------------------------------*/
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("Appearance"));
 
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
@@ -857,6 +936,8 @@ on_settings_window_open(OnApp *app)
     GtkWidget *density_label = gtk_label_new("List density:");
     gtk_label_set_xalign(GTK_LABEL(density_label), 0.0);
     gtk_grid_attach(GTK_GRID(grid), density_label, 0, 0, 1, 1);
+    /* Deprecated since 4.10 but present — see on_density_combo_changed.  */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     GtkWidget *density_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(density_combo),
                                    "Compact");
@@ -864,27 +945,18 @@ on_settings_window_open(OnApp *app)
                                    "Comfortable");
     gtk_combo_box_set_active(GTK_COMBO_BOX(density_combo),
                              app->comfortable_list ? 1 : 0);
+    G_GNUC_END_IGNORE_DEPRECATIONS
     g_signal_connect(density_combo, "changed",
                      G_CALLBACK(on_density_combo_changed), app);
     gtk_grid_attach(GTK_GRID(grid), density_combo, 1, 0, 1, 1);
 
-    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), grid);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_SIDEBAR_COUNTS),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_SIDEBAR_FIT),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_BOLD_LIST_TITLES),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_SHOW_DONE_ACTIONS),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       bool_check_new(app, BS_STATUSBAR_DB_PATH),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), bool_check_new(app, BS_SIDEBAR_COUNTS));
+    gtk_box_append(GTK_BOX(vbox), bool_check_new(app, BS_SIDEBAR_FIT));
+    gtk_box_append(GTK_BOX(vbox), bool_check_new(app, BS_BOLD_LIST_TITLES));
+    gtk_box_append(GTK_BOX(vbox), bool_check_new(app, BS_SHOW_DONE_ACTIONS));
+    gtk_box_append(GTK_BOX(vbox), bool_check_new(app, BS_STATUSBAR_DB_PATH));
 
 #ifdef __APPLE__
     /* Native macOS menu bar belongs with the other appearance choices.
@@ -894,12 +966,12 @@ on_settings_window_open(OnApp *app)
     GtkWidget *mac_check = gtk_check_button_new_with_label(
         "Use the native macOS menu bar (hide the in-window menu)");
     gtk_widget_set_margin_start(mac_check, 12);
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(mac_check),
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(mac_check),
         on_app_config_get_bool("native_menubar", FALSE));
     g_signal_connect(mac_check, "toggled",
                      G_CALLBACK(on_native_menubar_toggled), app);
-    gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), mac_check);
 #endif /* __APPLE__ */
 
     /* The bundled symbolic tree arrows are still SVG: mention the loader
@@ -912,19 +984,18 @@ on_settings_window_open(OnApp *app)
             "with the librsvg loader:\nsudo port install librsvg "
             "(then restart Notes)</i></small>");
         gtk_label_set_xalign(GTK_LABEL(warn), 0.0);
-        gtk_label_set_line_wrap(GTK_LABEL(warn), TRUE);
+        gtk_label_set_wrap(GTK_LABEL(warn), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(warn), 40);
         gtk_widget_set_margin_start(warn, 12);
-        gtk_box_pack_start(GTK_BOX(vbox), warn, FALSE, FALSE, 2);
+        gtk_widget_set_margin_top(warn, 2);
+        gtk_widget_set_margin_bottom(warn, 2);
+        gtk_box_append(GTK_BOX(vbox), warn);
     }
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 4);
+    gtk_box_append(GTK_BOX(vbox), section_rule());
 
     /* --- editor options ------------------------------------------------------*/
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Editor"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("Editor"));
 
     /* The five table-driven editor checkboxes, in display order.           */
     static const BoolSettingId EDITOR_CHECKS[] = {
@@ -932,29 +1003,27 @@ on_settings_window_open(OnApp *app)
         BS_STATUSBAR_NOTE_ID,
     };
     for (gsize i = 0; i < G_N_ELEMENTS(EDITOR_CHECKS); i++)
-        gtk_box_pack_start(GTK_BOX(vbox),
-                           bool_check_new(app, EDITOR_CHECKS[i]),
-                           FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(vbox), bool_check_new(app, EDITOR_CHECKS[i]));
 
     GtkWidget *touch_check = gtk_check_button_new_with_label(
         "Disable touch assistance (selection handles, magnifier, "
         "tap popup)");
-    gtk_widget_set_tooltip_text(touch_check,
+    on_app_set_tooltip(touch_check,
         "Hides the touch aids GTK pops up under text selections.\n"
         "The tap cut/copy/paste popup needs a restart to change.");
     gtk_widget_set_margin_start(touch_check, 12);
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(touch_check),
+    gtk_check_button_set_active(
+        GTK_CHECK_BUTTON(touch_check),
         on_app_config_get_bool("touch_assist", FALSE));
     g_signal_connect(touch_check, "toggled",
                      G_CALLBACK(on_touch_assist_toggled), app);
-    gtk_box_pack_start(GTK_BOX(vbox), touch_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), touch_check);
 
     /* Program used by an image's "Open" action; empty = system default.   */
     GtkWidget *viewer_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(viewer_row, 12);
     GtkWidget *viewer_label = gtk_label_new("Image viewer:");
-    gtk_box_pack_start(GTK_BOX(viewer_row), viewer_label, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(viewer_row), viewer_label);
 
     GtkWidget *viewer_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(viewer_entry),
@@ -962,28 +1031,26 @@ on_settings_window_open(OnApp *app)
     {
         gchar *viewer = on_app_config_get("image_viewer");
         if (viewer != NULL) {
-            gtk_entry_set_text(GTK_ENTRY(viewer_entry), viewer);
+            gtk_editable_set_text(GTK_EDITABLE(viewer_entry), viewer);
             g_free(viewer);
         }
     }
     g_signal_connect(viewer_entry, "changed",
                      G_CALLBACK(on_viewer_entry_changed), app);
-    gtk_box_pack_start(GTK_BOX(viewer_row), viewer_entry, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(viewer_entry, TRUE);
+    gtk_box_append(GTK_BOX(viewer_row), viewer_entry);
 
     GtkWidget *viewer_btn = gtk_button_new_with_label(
         "Browse\xe2\x80\xa6");
     g_signal_connect(viewer_btn, "clicked",
                      G_CALLBACK(on_viewer_browse_clicked), viewer_entry);
-    gtk_box_pack_start(GTK_BOX(viewer_row), viewer_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), viewer_row, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(viewer_row), viewer_btn);
+    gtk_box_append(GTK_BOX(vbox), viewer_row);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 4);
+    gtk_box_append(GTK_BOX(vbox), section_rule());
 
     /* --- Database ------------------------------------------------------------*/
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Database"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("Database"));
 
     DbSection *dbs = g_new0(DbSection, 1);
     dbs->app = app;
@@ -1003,14 +1070,13 @@ on_settings_window_open(OnApp *app)
      * is visibly a different kind of thing from the controls below that
      * CHANGE it.
      *
-     * A GtkFrame, and it matters that it is one: a frame is a NO-WINDOW
-     * widget, so CSS padding and border sit on it properly — where a
-     * visible-window GtkEventBox would ignore both for its own size and
-     * come out exactly as big as the grid, with the text hard against the
-     * border it had just drawn.  Its own shadow is turned OFF so the
-     * theme's frame edge does not double up with the CSS one.
+     * A GtkFrame: CSS padding and border sit on it properly, so the text
+     * is not hard against the border.  The CSS border REPLACES the
+     * theme's frame edge rather than doubling it up, since the snippet
+     * restates the whole `border` property.
      *
-     * The colours are NAMED theme colours, never literals.
+     * The colours are NAMED theme colours, never literals (the rule is in
+     * settings_install_css).
      * @theme_base_color is the white a light theme paints its entries and
      * lists with, and it follows the theme into dark instead of leaving a
      * white slab there.  Named colours also mean GTK re-resolves them
@@ -1018,13 +1084,8 @@ on_settings_window_open(OnApp *app)
      * the declarations and leaves the plate flat, which is a plain look
      * rather than an unreadable one.                                      */
     GtkWidget *plate = gtk_frame_new(NULL);
-    gtk_frame_set_shadow_type(GTK_FRAME(plate), GTK_SHADOW_NONE);
-    on_app_widget_add_css(plate,
-        "frame { background-color: @theme_base_color;"
-        "        border: 1px solid @borders;"
-        "        border-radius: 6px;"
-        "        padding: 8px 10px; }");
-    gtk_container_add(GTK_CONTAINER(plate), info);
+    gtk_widget_add_css_class(plate, "notes-plate");
+    gtk_frame_set_child(GTK_FRAME(plate), info);
 
     /* Plate and button in a box of their own, and the SECTION MARGINS GO
      * ON THE BOX rather than on the plate: that is what makes the two
@@ -1036,17 +1097,17 @@ on_settings_window_open(OnApp *app)
     gtk_widget_set_margin_start(plate_box, 12);
     gtk_widget_set_margin_end(plate_box, 12);
     gtk_widget_set_margin_bottom(plate_box, 8);
-    gtk_box_pack_start(GTK_BOX(plate_box), plate, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(plate_box), plate);
 
     dbs->update_btn = small_button("Update");
-    gtk_widget_set_tooltip_text(dbs->update_btn,
+    on_app_set_tooltip(dbs->update_btn,
         "Re-read every line above: run PRAGMA integrity_check and PRAGMA "
         "foreign_key_check against this database, then re-count its notes "
         "and folders and re-read its size and SHA-256.");
     /* Right edge against the plate's, which is what the shared margins
      * above are for.                                                      */
     gtk_widget_set_halign(dbs->update_btn, GTK_ALIGN_END);
-    gtk_box_pack_start(GTK_BOX(plate_box), dbs->update_btn, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(plate_box), dbs->update_btn);
 
     /* Ordered by what someone is actually asking.  Health leads: it is the
      * one line that can be BAD NEWS, and a block whose verdict is fourth
@@ -1063,12 +1124,11 @@ on_settings_window_open(OnApp *app)
      * rather than beside the one line it used to refresh.                 */
     GtkWidget *health_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     dbs->led_label = gtk_label_new(LED_UNKNOWN);
-    on_app_widget_add_css(dbs->led_label, "label { font-size: 70%; }");
-    gtk_box_pack_start(GTK_BOX(health_row), dbs->led_label, FALSE, FALSE, 0);
+    gtk_widget_add_css_class(dbs->led_label, "notes-dot-label");
+    gtk_box_append(GTK_BOX(health_row), dbs->led_label);
     dbs->health_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(dbs->health_label), 0.0);
-    gtk_box_pack_start(GTK_BOX(health_row), dbs->health_label,
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(health_row), dbs->health_label);
     info_row_attach(info, 0, "Health:", health_row);
 
     dbs->path_label = info_row(info, 1, "Current database:");
@@ -1076,20 +1136,18 @@ on_settings_window_open(OnApp *app)
     dbs->size_label = info_row(info, 3, "Size on disk:");
 
     dbs->sha_btn = gtk_button_new_with_label("\xe2\x80\x94");
-    gtk_button_set_relief(GTK_BUTTON(dbs->sha_btn), GTK_RELIEF_NONE);
-    /* Every trace of the button's own box: padding, border and margin all
-     * offset the label, and the digest has to start at the same x as the
-     * four values above it or the column the grid exists to make is broken
-     * by the one row that is not a plain label.                           */
-    on_app_widget_add_css(dbs->sha_btn,
-        "button { padding: 0; margin: 0; border: none; min-height: 0;"
-        "         min-width: 0; }"
-        "button label { font-family: monospace; }");
+    gtk_button_set_has_frame(GTK_BUTTON(dbs->sha_btn), FALSE);
+    /* Every trace of the button's own box goes (settings_install_css):
+     * padding, border and margin all offset the label, and the digest has
+     * to start at the same x as the four values above it or the column the
+     * grid exists to make is broken by the one row that is not a plain
+     * label.                                                              */
+    gtk_widget_add_css_class(dbs->sha_btn, "notes-sha-button");
     /* Attached straight to the grid: this row is one widget, and a box
      * holding a single child is a box that says nothing.                  */
     info_row_attach(info, 4, "SHA-256:", dbs->sha_btn);
 
-    gtk_box_pack_start(GTK_BOX(vbox), plate_box, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), plate_box);
 
     g_signal_connect(dbs->sha_btn, "clicked",
                      G_CALLBACK(on_db_sha_clicked), dbs);
@@ -1110,14 +1168,14 @@ on_settings_window_open(OnApp *app)
         "Back up the database automatically");
     gtk_widget_set_margin_start(dbs->bk_check, 12);
     gtk_widget_set_margin_top(dbs->bk_check, 6);
-    gtk_widget_set_tooltip_text(dbs->bk_check,
+    on_app_set_tooltip(dbs->bk_check,
         "Writes a verified copy of the database into a folder of your "
         "choice on a timer, keeping only the most recent few.  Worth "
         "pointing at a disk INDEPENDENT of wherever the database itself "
         "lives, so one mishap cannot take both.");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dbs->bk_check),
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(dbs->bk_check),
         on_app_config_get_bool("backup_enabled", FALSE));
-    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), dbs->bk_check);
 
     /* Interval and retention, DIRECTLY under the switch: they are the
      * schedule that switch turns on, where the destination and the two
@@ -1126,10 +1184,9 @@ on_settings_window_open(OnApp *app)
      * floor of 1 — a rotation that keeps nothing is not a rotation.       */
     GtkWidget *bk_opts = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(bk_opts, 12);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("Every"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("Every"));
     dbs->bk_interval_spin = small_spin(0, 10080, 15, 5);
-    gtk_widget_set_tooltip_text(dbs->bk_interval_spin,
+    on_app_set_tooltip(dbs->bk_interval_spin,
         "Minutes between backups.  0 backs up only when you press "
         "Back Up Now.  A pass whose database has not changed since the "
         "last backup writes nothing.");
@@ -1137,34 +1194,31 @@ on_settings_window_open(OnApp *app)
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_interval_spin),
         bkiv != NULL ? atoi(bkiv) : ON_BACKUP_INTERVAL_DEFAULT);
     g_free(bkiv);
-    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_interval_spin,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), dbs->bk_interval_spin);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"));
     dbs->bk_keep_spin = small_spin(1, 500, 1, 3);
-    gtk_widget_set_tooltip_text(dbs->bk_keep_spin,
+    on_app_set_tooltip(dbs->bk_keep_spin,
         "How many backup files to retain.  The oldest are removed once a "
         "NEW backup has been verified, never before.");
     gchar *bkkeep = on_app_config_get("backup_keep");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_keep_spin),
         bkkeep != NULL ? atoi(bkkeep) : ON_BACKUP_KEEP_DEFAULT);
     g_free(bkkeep);
-    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_keep_spin, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("files"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bk_opts, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), dbs->bk_keep_spin);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("files"));
+    gtk_box_append(GTK_BOX(vbox), bk_opts);
 
     /* Where they land, said once at the foot of the block — and the two
      * buttons that change it directly under, so the line and the control
      * that answers it read together.                                      */
     dbs->bk_path_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(dbs->bk_path_label), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(dbs->bk_path_label), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(dbs->bk_path_label), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(dbs->bk_path_label), 40);
     gtk_widget_set_margin_start(dbs->bk_path_label, 12);
     gtk_widget_set_margin_end(dbs->bk_path_label, 12);
     gtk_widget_set_margin_top(dbs->bk_path_label, 6);
-    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_path_label, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), dbs->bk_path_label);
 
     /* RIGHT-ALIGNED, and the right edge is the UPDATE button's: both rows
      * carry margin_end 12 and hug the right, so the section has one right
@@ -1179,10 +1233,10 @@ on_settings_window_open(OnApp *app)
     gtk_widget_set_margin_end(bk_btns, 12);
     gtk_widget_set_halign(bk_btns, GTK_ALIGN_END);
     dbs->bk_choose_btn = small_button("Change Folder\xe2\x80\xa6");
-    gtk_box_pack_start(GTK_BOX(bk_btns), dbs->bk_choose_btn, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_btns), dbs->bk_choose_btn);
     dbs->bk_now_btn = small_button("Back Up Now");
-    gtk_box_pack_start(GTK_BOX(bk_btns), dbs->bk_now_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bk_btns, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_btns), dbs->bk_now_btn);
+    gtk_box_append(GTK_BOX(vbox), bk_btns);
 
     bk_section_refresh(dbs);
     g_signal_connect(dbs->bk_check, "toggled",
@@ -1201,13 +1255,10 @@ on_settings_window_open(OnApp *app)
      * switch can only ever report silence that means "not looked", which
      * is the one answer it must never give.                               */
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 4);
+    gtk_box_append(GTK_BOX(vbox), section_rule());
 
     /* --- AI features ---------------------------------------------------------*/
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("AI Features"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("AI Features"));
 
     GtkWidget *ai_desc = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(ai_desc),
@@ -1217,36 +1268,38 @@ on_settings_window_open(OnApp *app)
         "dialog. This switch is a master kill switch: disabling it hides the "
         "button and prevents all AI commands from running.</small>");
     gtk_label_set_xalign(GTK_LABEL(ai_desc), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(ai_desc), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(ai_desc), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(ai_desc), 40);
     gtk_widget_set_margin_start(ai_desc, 12);
-    gtk_box_pack_start(GTK_BOX(vbox), ai_desc, FALSE, FALSE, 2);
+    gtk_widget_set_margin_top(ai_desc, 2);
+    gtk_widget_set_margin_bottom(ai_desc, 2);
+    gtk_box_append(GTK_BOX(vbox), ai_desc);
 
     GtkWidget *ai_check = gtk_check_button_new_with_label(
         "Enable AI features");
     gtk_widget_set_margin_start(ai_check, 12);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ai_check),
-                                 app->ai_enabled);
-    gtk_box_pack_start(GTK_BOX(vbox), ai_check, FALSE, FALSE, 0);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ai_check), app->ai_enabled);
+    gtk_box_append(GTK_BOX(vbox), ai_check);
 
     /* Sub-group (command), sensitive only when AI is enabled.                */
     GtkWidget *ai_sub = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_set_margin_start(ai_sub, 24);
     gtk_widget_set_sensitive(ai_sub, app->ai_enabled);
-    gtk_box_pack_start(GTK_BOX(vbox), ai_sub, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), ai_sub);
 
     GtkWidget *cmd_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *cmd_label = gtk_label_new("AI command:");
     gtk_label_set_xalign(GTK_LABEL(cmd_label), 0.0);
-    gtk_box_pack_start(GTK_BOX(cmd_row), cmd_label, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(cmd_row), cmd_label);
 
     GtkWidget *cmd_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(cmd_entry),
                                    "e.g. /usr/local/bin/claude");
     if (app->ai_command != NULL)
-        gtk_entry_set_text(GTK_ENTRY(cmd_entry), app->ai_command);
-    gtk_box_pack_start(GTK_BOX(cmd_row), cmd_entry, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(ai_sub), cmd_row, FALSE, FALSE, 0);
+        gtk_editable_set_text(GTK_EDITABLE(cmd_entry), app->ai_command);
+    gtk_widget_set_hexpand(cmd_entry, TRUE);
+    gtk_box_append(GTK_BOX(cmd_row), cmd_entry);
+    gtk_box_append(GTK_BOX(ai_sub), cmd_row);
 
     GtkWidget *cmd_hint = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(cmd_hint),
@@ -1254,14 +1307,14 @@ on_settings_window_open(OnApp *app)
         "Claude Code command path. The command must read the prompt from "
         "stdin and write the response to stdout.</i></small>");
     gtk_label_set_xalign(GTK_LABEL(cmd_hint), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(cmd_hint), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(cmd_hint), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(cmd_hint), 40);
-    gtk_box_pack_start(GTK_BOX(ai_sub), cmd_hint, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(ai_sub), cmd_hint);
 
     GtkWidget *custom_lbl = gtk_label_new("Custom prompt:");
     gtk_label_set_xalign(GTK_LABEL(custom_lbl), 0.0);
     gtk_widget_set_margin_top(custom_lbl, 4);
-    gtk_box_pack_start(GTK_BOX(ai_sub), custom_lbl, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(ai_sub), custom_lbl);
 
     GtkWidget *custom_view = gtk_text_view_new();
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(custom_view), GTK_WRAP_WORD_CHAR);
@@ -1273,15 +1326,16 @@ on_settings_window_open(OnApp *app)
         gtk_text_view_get_buffer(GTK_TEXT_VIEW(custom_view));
     if (app->ai_custom_prompt != NULL)
         gtk_text_buffer_set_text(custom_buf, app->ai_custom_prompt, -1);
-    GtkWidget *custom_scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *custom_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(custom_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_overlay_scrolling(
         GTK_SCROLLED_WINDOW(custom_scroll), FALSE);
     gtk_widget_set_size_request(custom_scroll, -1, 72);
-    gtk_container_add(GTK_CONTAINER(custom_scroll), custom_view);
-    gtk_box_pack_start(GTK_BOX(ai_sub), custom_scroll, FALSE, FALSE, 0);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(custom_scroll),
+                                  custom_view);
+    gtk_box_append(GTK_BOX(ai_sub), custom_scroll);
 
     GtkWidget *custom_hint = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(custom_hint),
@@ -1289,9 +1343,9 @@ on_settings_window_open(OnApp *app)
         "Custom. Notes and action items are appended after this prompt."
         "</i></small>");
     gtk_label_set_xalign(GTK_LABEL(custom_hint), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(custom_hint), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(custom_hint), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(custom_hint), 40);
-    gtk_box_pack_start(GTK_BOX(ai_sub), custom_hint, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(ai_sub), custom_hint);
 
     g_signal_connect(ai_check, "toggled",
                      G_CALLBACK(on_ai_enabled_toggled), app);
@@ -1301,5 +1355,5 @@ on_settings_window_open(OnApp *app)
     g_signal_connect(custom_buf, "changed",
                      G_CALLBACK(on_ai_custom_prompt_changed), app);
 
-    gtk_widget_show_all(window);
+    gtk_window_present(GTK_WINDOW(window));
 }

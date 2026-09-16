@@ -1,0 +1,41 @@
+# Typing, Enter, lists, selection and inline styles.
+text Hello typed world.
+key Return
+text second line
+key Return
+key Return
+para bullet
+text item one
+key Return
+text item two
+key Return
+key Return
+text after list
+check 0 para Hello typed world.
+check 1 para second line
+check 2 para 
+check 3 bullet item one
+check 4 bullet item two
+check 5 para after list
+caret 5 10
+# Shift+Left four times selects "list"; bold applies to it and arms bold.
+key Left shift
+key Left shift
+key Left shift
+key Left shift
+inline bold
+text  #wo
+text r
+text k
+text  done
+check 5 para after  #work done
+# A tag ends at the space; the '.' ends one too.
+key Return
+text tag #work here #ho
+text m
+text e
+text .
+check 6 para tag #work here #home.
+# Undo steps: the last typing burst, then the tag capture's styling …
+undo
+print

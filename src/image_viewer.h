@@ -15,12 +15,14 @@
  *   |          Previous | Next          |
  *   +-----------------------------------+
  *
- * The panel is a GtkOverlay child: a dark event box covering the whole
- * overlay, so it swallows every click meant for the widget behind it and only
- * one picture is ever on show.  The image is fitted to the overlay less
- * ON_IMAGE_VIEWER_INSET on each side and the two label rows under it, and
- * re-fitted on a debounce when the host window is resized.  Nothing is held
- * across a close but the host's own data: the one big surface is dropped.
+ * The panel is a GtkOverlay child: a dark box covering the whole overlay
+ * whose click gesture swallows every press meant for the widget behind it,
+ * so only one picture is ever on show.  The image is a GtkPicture fitted
+ * (scaled DOWN only, aspect kept) to the overlay less ON_IMAGE_VIEWER_INSET
+ * on each side and the two label rows under it; a tick callback that runs
+ * only while the panel is open notices the overlay changing size and asks
+ * the host to render again after a short settle.  Nothing is held across a
+ * close but the host's own data: the texture is dropped.
  *
  * The panel knows nothing about where its pictures come from.  A host fills
  * in OnImageViewerOps and addresses its images by INDEX — for the media
@@ -49,11 +51,15 @@ typedef struct OnImageViewer OnImageViewer;
  *
  *   count()   — how many images the panel may walk, right now.  0 or 1 turns
  *               the Previous | Next row off.
- *   render()  — the image at `idx`, decoded and fitted into box_w × box_h
- *               LOGICAL pixels (see on_image_viewer_fit, which does exactly
- *               that from a GdkPixbuf).  Returns a new surface the panel
- *               takes over, or NULL when the image is gone or will not
- *               decode — the panel then closes itself.
+ *   render()  — the image at `idx` as a paintable the panel takes over
+ *               (g_object_unref'd by it): normally the full-resolution
+ *               GdkTexture, since the panel's GtkPicture scales DOWN to fit
+ *               (GTK_CONTENT_FIT_SCALE_DOWN — never up, aspect kept, sharp
+ *               on HiDPI because the texture keeps every pixel).  box_w ×
+ *               box_h are the LOGICAL pixels on offer, a hint for a host
+ *               that decodes on demand and wants to cap a huge decode.
+ *               Returns NULL when the image is gone or will not decode —
+ *               the panel then closes itself.
  *   caption() — a newly-allocated one-line description of image `idx` (the
  *               panel appends its own key hint and frees the string).
  *   action()  — run the action link for image `idx`.  The panel has ALREADY
@@ -63,7 +69,7 @@ typedef struct OnImageViewer OnImageViewer;
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint             (*count)(gpointer host);
-    cairo_surface_t *(*render)(gpointer host, gint idx,
+    GdkPaintable    *(*render)(gpointer host, gint idx,
                               gint box_w, gint box_h);
     gchar           *(*caption)(gpointer host, gint idx);
     void             (*action)(gpointer host, gint idx);
@@ -92,9 +98,12 @@ OnImageViewer *on_image_viewer_new(GtkWidget *overlay,
                                    const gchar *action_tip);
 
 /* on_image_viewer_free() — drop the panel's own state.  Call it from the
- * host's "destroy" handler: it cancels the pending re-render and unhooks
- * from the overlay, so a size-allocate on the dying widget tree cannot
- * reach freed memory.  The widgets themselves belong to the overlay.        */
+ * host's "destroy" handler: it stops the tick and the settle timer, takes
+ * the panel out of the overlay if it is still in one, and releases the
+ * panel's own reference.  GTK4 emits a window's "destroy" AFTER its dispose
+ * has torn the child tree down (the reverse of GTK3), so the overlay may
+ * already be gone by then — the panel holds its own reference to its widget
+ * precisely so this works in either order, and never touches the overlay. */
 void on_image_viewer_free(OnImageViewer *v);
 
 /* on_image_viewer_open() — show image `idx`, replacing whatever was on show.
@@ -117,13 +126,14 @@ gint on_image_viewer_index(const OnImageViewer *v);
  * it, Left/Right step through the host's images.  Returns TRUE when the
  * panel took the key.
  *
- * Call this FIRST from a "key-press-event" handler on the host WINDOW — not
- * on the widget behind the panel, which KEEPS the keyboard focus the whole
- * time the panel is up (see the focus rule at the top of image_viewer.c; the
- * panel is never focusable, because a GtkTextView rendered unfocused stays
- * grey on quartz long after the panel is gone).  A plain g_signal_connect on
- * the window runs before GtkWindow forwards the key to the focus widget,
- * which is what lets the panel claim keys off it.
+ * Call this FIRST from a GtkEventControllerKey in the CAPTURE phase on the
+ * host WINDOW — not on the widget behind the panel, which KEEPS the
+ * keyboard focus the whole time the panel is up (see the focus rule at the
+ * top of image_viewer.c; the panel is never focusable, because a
+ * GtkTextView rendered unfocused stays grey on quartz long after the panel
+ * is gone).  The capture phase runs before the focus widget sees the key,
+ * which is what lets the panel claim keys off it.  keyval/state are the
+ * controller's "key-pressed" arguments.
  *
  * BECAUSE the focus stays behind the panel, a host MUST swallow every OTHER
  * key while the panel is open — return on_image_viewer_is_open() when this
@@ -131,26 +141,12 @@ gint on_image_viewer_index(const OnImageViewer *v);
  * at either end is taken here too, so it cannot leak through and scroll or
  * move the caret behind the panel.
  * ------------------------------------------------------------------------- */
-gboolean on_image_viewer_key_press(OnImageViewer *v, GdkEventKey *event);
+gboolean on_image_viewer_key_press(OnImageViewer *v, guint keyval,
+                                   GdkModifierType state);
 
 /* on_image_viewer_nav_sync() — re-read count() and redraw the
  * Previous | Next row.  Only a host whose image set can GROW while the panel
  * is open needs to call this; everything else keeps the row in step itself.  */
 void on_image_viewer_nav_sync(OnImageViewer *v);
-
-/* ---------------------------------------------------------------------------
- * on_image_viewer_fit() — wrap a pixbuf in a cairo surface carrying the
- * display's device scale, scaled to fit box_w × box_h LOGICAL pixels with its
- * aspect kept and never upscaled.  The device scale is what keeps the picture
- * pixel-sharp on Retina instead of letting the compositor stretch it
- * (quirk #5).  Both hosts' render() ops end here.
- *   ref   — any REALIZED widget in the target window (for its scale factor
- *           and GdkWindow).
- *   pix   — the decoded image.
- *   box_w/box_h — the logical box to fit inside.
- * Returns a new surface; cairo_surface_destroy() it.
- * ------------------------------------------------------------------------- */
-cairo_surface_t *on_image_viewer_fit(GtkWidget *ref, GdkPixbuf *pix,
-                                     gint box_w, gint box_h);
 
 #endif /* BLUE_IMAGE_VIEWER_H */

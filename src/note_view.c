@@ -29,8 +29,6 @@
 #define UNDO_GROUP_MS      1000
 #define UNDO_MAX_SENTENCES 5
 
-/* Caret blink half-period.                                                 */
-#define BLINK_MS 530
 
 /* Maximum number of suggestions shown in the tag popup.                    */
 #define TAG_POPUP_MAX 8
@@ -52,7 +50,8 @@
  *   typing_timer  — closes it after UNDO_GROUP_MS of quiet.
  *   sentences     — sentence enders typed into the open group.
  *   im            — the input method; preedit_* mirror its state.
- *   blink_timer, caret_on — the caret's blink.
+ *   blink_timer, caret_on, blink_since — the caret's blink, paced by
+ *                        the gtk-cursor-blink* settings (see blink_restart).
  *   drag_*        — a selection drag in progress (from the drag gesture).
  *   tag_capturing, tag_start, tag_popup, tag_listbox, tag_choices — the
  *                   '#' capture (see the tag section).
@@ -89,6 +88,8 @@ struct _OnNoteView {
 
     guint               blink_timer;
     gboolean            caret_on;
+    gboolean            blinking;    /* focused: the caret should blink     */
+    gint64              blink_since; /* monotonic µs of the last activity   */
 
     gboolean            dragging;
     OnPos               drag_anchor;
@@ -142,6 +143,8 @@ static void typing_end(OnNoteView *v);
 static void after_edit(OnNoteView *v);
 static void scroll_to_caret(OnNoteView *v);
 static void im_sync_location(OnNoteView *v);
+static void blink_restart(OnNoteView *v);
+static void im_reset(OnNoteView *v);
 
 /* ===========================================================================
  * small helpers
@@ -221,7 +224,7 @@ set_caret(OnNoteView *v, OnPos p, gboolean extend)
     v->caret = clamp_pos(v, p);
     if (!extend)
         v->anchor = v->caret;
-    v->caret_on = TRUE;
+    blink_restart(v);
     gtk_widget_queue_draw(GTK_WIDGET(v));
     scroll_to_caret(v);
     im_sync_location(v);
@@ -241,6 +244,24 @@ static OnBlock *
 caret_block(OnNoteView *v)
 {
     return on_document_block(v->doc, v->caret.block);
+}
+
+/* caret_ensure_text() — make the caret sit in TEXT: when it is beside an
+ * object (an image or a table as a whole — NOT inside a cell, which is
+ * text: on_document_text_at answers for the cell), open a new paragraph
+ * after (or before) the object and move the caret into it.  THE one
+ * place typing and pasting share; testing the caret's BLOCK for text
+ * instead sent a paste aimed at a cell into a paragraph outside the
+ * table.                                                                 */
+static void
+caret_ensure_text(OnNoteView *v)
+{
+    if (caret_text(v) != NULL)
+        return;
+    guint at = v->caret.block + (v->caret.offset > 0 ? 1 : 0);
+    on_document_insert_block(v->doc, at, on_block_new_text(ON_BLOCK_PARA));
+    OnPos p = { at, -1, 0 };
+    v->caret = v->anchor = p;
 }
 
 /* style_from_app() — the layout style the settings ask for.                 */
@@ -338,7 +359,7 @@ after_edit(OnNoteView *v)
 {
     v->caret = clamp_pos(v, v->caret);
     v->anchor = clamp_pos(v, v->anchor);
-    v->caret_on = TRUE;
+    blink_restart(v);
     gtk_widget_queue_resize(GTK_WIDGET(v));
     v->scroll_pending = TRUE;        /* after the new size is known         */
     im_sync_location(v);
@@ -566,25 +587,74 @@ note_view_snapshot(GtkWidget *widget, GtkSnapshot *snap)
  * caret blink and focus
  * ======================================================================== */
 
+/* The blink follows the desktop's own settings, as GtkTextView's does:
+ * "gtk-cursor-blink" (off = a steady caret), "gtk-cursor-blink-time" (one
+ * full cycle, the caret on for two thirds of it) and
+ * "gtk-cursor-blink-timeout" (seconds of no activity after which the caret
+ * stays on and the timer STOPS — on an idle window there is nothing left
+ * that redraws the widget twice a second).  Every caret move and edit is
+ * activity: it restarts the cycle with the caret on, so a caret never
+ * vanishes under a keystroke.                                             */
+#define BLINK_ON_DIV 3               /* on for 2/3, off for 1/3 of a cycle  */
+
+static gboolean on_blink(gpointer data);
+
+/* blink_arm() — schedule the next toggle, on-phase or off-phase length.   */
+static void
+blink_arm(OnNoteView *v)
+{
+    gint time_ms = 1200;             /* the settings' documented defaults   */
+    g_object_get(gtk_widget_get_settings(GTK_WIDGET(v)),
+                 "gtk-cursor-blink-time", &time_ms, NULL);
+    gint phase = v->caret_on ? time_ms * 2 / BLINK_ON_DIV
+                             : time_ms / BLINK_ON_DIV;
+    v->blink_timer = g_timeout_add(MAX(phase, 1), on_blink, v);
+}
+
 static gboolean
 on_blink(gpointer data)
 {
     OnNoteView *v = data;
+    gint timeout_s = 10;             /* gtk-cursor-blink-timeout default    */
+    g_object_get(gtk_widget_get_settings(GTK_WIDGET(v)),
+                 "gtk-cursor-blink-timeout", &timeout_s, NULL);
+    if (g_get_monotonic_time() - v->blink_since >
+        (gint64)timeout_s * G_USEC_PER_SEC) {
+        v->caret_on = TRUE;          /* idle: steady caret, no more timer   */
+        v->blink_timer = 0;
+        gtk_widget_queue_draw(GTK_WIDGET(v));
+        return G_SOURCE_REMOVE;
+    }
     v->caret_on = !v->caret_on;
     gtk_widget_queue_draw(GTK_WIDGET(v));
-    return G_SOURCE_CONTINUE;
+    blink_arm(v);
+    return G_SOURCE_REMOVE;
 }
 
+/* blink_restart() — activity: the caret on, the cycle started afresh (when
+ * the view is focused and the setting allows blinking at all).            */
 static void
-blink_set(OnNoteView *v, gboolean on)
+blink_restart(OnNoteView *v)
 {
-    if (on && v->blink_timer == 0)
-        v->blink_timer = g_timeout_add(BLINK_MS, on_blink, v);
-    else if (!on && v->blink_timer != 0) {
+    if (v->blink_timer != 0) {
         g_source_remove(v->blink_timer);
         v->blink_timer = 0;
     }
     v->caret_on = TRUE;
+    v->blink_since = g_get_monotonic_time();
+    gboolean blink = TRUE;           /* gtk-cursor-blink                    */
+    g_object_get(gtk_widget_get_settings(GTK_WIDGET(v)),
+                 "gtk-cursor-blink", &blink, NULL);
+    if (v->blinking && blink)
+        blink_arm(v);
+}
+
+/* blink_set() — focus in (TRUE) starts the cycle; focus out stops it.      */
+static void
+blink_set(OnNoteView *v, gboolean on)
+{
+    v->blinking = on;
+    blink_restart(v);
 }
 
 static void
@@ -605,6 +675,7 @@ on_focus_leave(GtkEventControllerFocus *c, gpointer data)
     OnNoteView *v = data;
     blink_set(v, FALSE);
     if (v->im_focused) {
+        im_reset(v);
         gtk_im_context_focus_out(v->im);
         v->im_focused = FALSE;
     }
@@ -628,14 +699,7 @@ insert_typed(OnNoteView *v, const gchar *text, gsize n)
         return;
     typing_begin(v);
     delete_selection(v);
-    if (caret_text(v) == NULL) {
-        /* The caret sits beside an object: type into a new paragraph
-         * after (or before) it.                                            */
-        guint at = v->caret.block + (v->caret.offset > 0 ? 1 : 0);
-        on_document_insert_block(v->doc, at, on_block_new_text(ON_BLOCK_PARA));
-        OnPos p = { at, -1, 0 };
-        v->caret = v->anchor = p;
-    }
+    caret_ensure_text(v);
     OnPos p = v->caret;
     guint32 flags = v->inline_flags;
     /* Typing inside a #tag span extends the tag.                           */
@@ -1078,18 +1142,11 @@ static void
 paste_fragment(OnNoteView *v, OnDocument *frag, gboolean plain)
 {
     typing_end(v);
+    im_reset(v);
     on_document_begin_group(v->doc);
     delete_selection(v);
-    OnBlock *host = caret_block(v);
-    if (host->text == NULL) {
-        /* Beside an object: paste into a new paragraph after it.           */
-        guint at = v->caret.block + (v->caret.offset > 0 ? 1 : 0);
-        on_document_insert_block(v->doc, at, on_block_new_text(ON_BLOCK_PARA));
-        OnPos np = { at, -1, 0 };
-        v->caret = v->anchor = np;
-        host = caret_block(v);
-    }
-    if (plain && host->kind == ON_BLOCK_CODE)
+    caret_ensure_text(v);
+    if (plain && caret_block(v)->kind == ON_BLOCK_CODE)
         for (guint i = 0; i < on_document_n_blocks(frag); i++)
             on_document_set_kind(frag, i, ON_BLOCK_CODE);
     OnPos out;
@@ -1519,6 +1576,20 @@ on_im_delete_surrounding(GtkIMContext *im, gint offset, gint n_chars,
     return TRUE;
 }
 
+/* im_reset() — abandon a preedit in progress (a dead key's accent, a
+ * half-composed CJK syllable) before the caret moves for another reason:
+ * a click, a navigation key, a paste, a load.  GtkTextView does the same
+ * at every one of those points; without it the preedit stayed painted at
+ * its old position after the caret left, and a later cut could shorten
+ * the block past that position.  The reset comes back through
+ * "preedit-changed" with an empty string, which clears the layout.       */
+static void
+im_reset(OnNoteView *v)
+{
+    if (v->preedit != NULL)
+        gtk_im_context_reset(v->im);
+}
+
 /* im_sync_location() — tell the input method where the caret is.          */
 static void
 im_sync_location(OnNoteView *v)
@@ -1638,6 +1709,11 @@ on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
         tag_capture_end(v, FALSE);
         return TRUE;
     }
+
+    /* A key the input method let through while a preedit is up ends the
+     * composition (the IM keeps its own keys — the arrows inside a CJK
+     * candidate list never reach here).                                    */
+    im_reset(v);
 
     switch (keyval) {
     case GDK_KEY_Left:
@@ -1794,6 +1870,7 @@ press_at(OnNoteView *v, gdouble x, gdouble y, gint n_press,
          GdkModifierType state, guint button, gboolean context)
 {
     gtk_widget_grab_focus(GTK_WIDGET(v));
+    im_reset(v);
     OnDocHitResult hit;
     hit_at(v, x, y, &hit);
 
@@ -2634,6 +2711,7 @@ on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len)
     if (v->tag_capturing)
         tag_capture_end(v, FALSE);
     typing_end(v);
+    im_reset(v);
     OnDocument *doc = on_document_from_bnbf(blob, len, NULL);
     on_document_set_observer(v->doc, NULL, NULL);
     on_document_free(v->doc);

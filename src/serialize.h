@@ -1,9 +1,9 @@
 /* ===========================================================================
  * serialize.h — the blob side of a note
  *
- * What reads or writes a note's BNBF blob WITHOUT building an OnDocument:
- * the record walks behind the body_text cache and the action_items mirror
- * (on_note_extract*), the image ordinals the media browser and the CLI
+ * The blob-level helpers around a note: the body_text cache and the
+ * action_items mirror (on_note_extract*, derived through the model so the
+ * contract has one definition), the image ordinals the media browser and the CLI
  * address (on_note_count_images / on_note_image_nth*), THE one PNG decoder
  * (on_png_decode_capped) and encoder (on_image_png_bytes), and
  * on_note_document_load — the preamble of every consumer that does want
@@ -20,11 +20,10 @@
 #include "db.h"                      /* OnDatabase, OnActionItem            */
 
 /* ---------------------------------------------------------------------------
- * on_note_extract_text() — pull the searchable plain text out of a BNBF
- * blob WITHOUT building a document or decoding any images: TEXT
- * runs are concatenated, table cells are appended (space-separated), and
- * image/checkbox payloads are skipped.  Orders of magnitude cheaper than
- * a full deserialize; used to (back)fill the notes.body_text column.
+ * on_note_extract_text() — the searchable plain text of a BNBF blob
+ * (on_document_plain_text: one line per block, list prefixes rendered,
+ * table cells space-separated).  No image is decoded — the model carries
+ * PNG bytes verbatim.  Used to (back)fill the notes.body_text column.
  * Returns a newly allocated string; g_free() it.
  * ------------------------------------------------------------------------- */
 gchar *on_note_extract_text(const guint8 *data, gsize len);
@@ -52,24 +51,26 @@ gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
- * on_note_extract_actions() — pull the ACTION ITEMS out of a BNBF blob
- * without building a document (same cheap record walk as
- * on_note_extract_text).  An action item is a line whose first character
- * is '!' outside a code block (an embedded image/table/checkbox occupies
- * the first slot like any character, so such lines never qualify): its
- * text is the rest of the line, trimmed, and it is "done" when every
- * non-space character of that rest carries ON_FMT_STRIKE.  Lines with
- * nothing after the '!' are ignored.
+ * on_note_extract_actions() — the ACTION ITEMS of a BNBF blob, as the
+ * model defines them (on_block_is_action / on_document_block_action in
+ * document.h: a PARA/H1/H2 line starting with '!' whose rest is more
+ * than whitespace and a due date; text = the rest trimmed, less any
+ * trailing "due <date>"; done = every non-space character after the
+ * '!' struck).  ONE definition, shared with every rewrite the model does,
+ * so ord n here is the line ord n addresses.
  * Returns a GList of OnActionItem (db.h; ord = list position, note_id
  * left 0); free with on_db_action_list_free().
  * ------------------------------------------------------------------------- */
 GList *on_note_extract_actions(const guint8 *data, gsize len);
 
 /* ---------------------------------------------------------------------------
- * on_note_extract() — the ONE record walk behind on_note_extract_text() and
- * on_note_extract_actions(), able to produce both in a single pass.  Every
- * save needs both (body_text cache + action mirror), and walking the blob
- * twice for them was pure duplication of a walk over the whole note.
+ * on_note_extract() — the ONE parse behind on_note_extract_text() and
+ * on_note_extract_actions(), producing both from a single OnDocument.
+ * Every save needs both (body_text cache + action mirror).  Until
+ * 2026-09-16 this was a second, hand-rolled BNBF walker with its own
+ * byte-level idea of an action line, which disagreed with the model's
+ * (list lines) — the ords in the table then named different lines than
+ * the model rewrote.  There is no second reader now.
  *   out_text    — receives the plain text (g_free), or NULL to skip it.
  *   out_actions — receives the action items (on_db_action_list_free), or
  *                 NULL to skip them.

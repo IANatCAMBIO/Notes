@@ -65,8 +65,6 @@ typedef struct {
     GArray      *col_w;              /* TABLE: gint per column              */
     GArray      *row_h;              /* TABLE: gint per row                 */
     GPtrArray   *cells;              /* TABLE: PangoLayout* per cell        */
-    gint         code_first;         /* CODE: first block of the run        */
-    gint         code_len;           /* CODE: blocks in the run             */
 } BL;
 
 struct OnDocLayout {
@@ -199,8 +197,47 @@ on_doc_layout_set_document(OnDocLayout *L, OnDocument *doc)
     L->geometry_valid = FALSE;
 }
 
-/* A CODE block's run neighbours change when a CODE block appears or goes:
- * invalidate the blocks on either side too, so their run info is fresh.  */
+/* ---------------------------------------------------------------------------
+ * CODE RUNS — consecutive CODE blocks are one visual code block: the first
+ * and last get CODE_PAD, the first carries the "copy" word, and the lines
+ * are numbered from the first.  The run's bounds are READ OFF THE DOCUMENT
+ * every time, never cached on the BL: a cache was invalidated only ±1
+ * block around an edit, so the run's first block — usually further away —
+ * kept a stale length, the copy word copied the wrong lines and, once an
+ * image abutted the shortened run, walked into it (NULL text).  A walk
+ * over the run's kinds is a handful of pointer reads.
+ * ------------------------------------------------------------------------- */
+
+/* code_run_first() — for a CODE block, the index of its run's first block. */
+static guint
+code_run_first(const OnDocLayout *L, guint i)
+{
+    while (i > 0 && on_document_block(L->doc, i - 1)->kind == ON_BLOCK_CODE)
+        i--;
+    return i;
+}
+
+/* code_run_last() — for a CODE block, the index of its run's last block.   */
+static guint
+code_run_last(const OnDocLayout *L, guint i)
+{
+    guint n = on_document_n_blocks(L->doc);
+    while (i + 1 < n && on_document_block(L->doc, i + 1)->kind == ON_BLOCK_CODE)
+        i++;
+    return i;
+}
+
+/* code_run_starts() — is block i the first block of a code run?           */
+static gboolean
+code_run_starts(const OnDocLayout *L, guint i)
+{
+    return on_document_block(L->doc, i)->kind == ON_BLOCK_CODE &&
+           (i == 0 ||
+            on_document_block(L->doc, i - 1)->kind != ON_BLOCK_CODE);
+}
+
+/* A block's padding depends on whether its NEIGHBOUR is CODE (a run's
+ * first and last get CODE_PAD): invalidate the blocks on either side too. */
 static void
 invalidate_around(OnDocLayout *L, guint i)
 {
@@ -498,7 +535,9 @@ text_layout_new(OnDocLayout *L, const OnText *t, OnBlockKind kind,
     /* The text, with the preedit spliced in.                               */
     gboolean pre = L->pre_on && L->pre_pos.block == block &&
                    L->pre_pos.cell == cell;
-    gsize pre_off = pre ? L->pre_pos.offset : 0;
+    /* Clamped: the view resets the input method before the text under a
+     * preedit can change, but the splice must never read past the end.  */
+    gsize pre_off = pre ? MIN(L->pre_pos.offset, t->text->len) : 0;
     gsize pre_len = pre ? strlen(L->pre_text) : 0;
     if (pre) {
         GString *s = g_string_new_len(t->text->str, (gssize)pre_off);
@@ -632,8 +671,6 @@ layout_block(OnDocLayout *L, guint i)
     bl_clear(b);
     const OnBlock *blk = on_document_block(L->doc, i);
     gint cw = content_width(L);
-    b->code_first = -1;
-    b->code_len   = 0;
 
     if (blk->kind == ON_BLOCK_IMAGE) {
         gint w = 24, h = 24, iw, ih;
@@ -718,20 +755,9 @@ layout_block(OnDocLayout *L, guint i)
         pango_layout_get_pixel_size(b->layout, &pw, &ph);
         b->h = ph + BLOCK_GAP;
         if (blk->kind == ON_BLOCK_CODE) {
-            /* The run this block belongs to, for numbering and the word.   */
-            guint first = i;
-            while (first > 0 &&
-                   on_document_block(L->doc, first - 1)->kind == ON_BLOCK_CODE)
-                first--;
-            guint last = i;
-            while (last + 1 < on_document_n_blocks(L->doc) &&
-                   on_document_block(L->doc, last + 1)->kind == ON_BLOCK_CODE)
-                last++;
-            b->code_first = (gint)first;
-            b->code_len   = (gint)(last - first + 1);
-            if (i == first)
+            if (code_run_starts(L, i))
                 b->h += CODE_PAD;
-            if (i == last)
+            if (code_run_last(L, i) == i)
                 b->h += CODE_PAD;
         }
     }
@@ -784,7 +810,7 @@ static gint
 text_top(OnDocLayout *L, guint i)
 {
     const BL *b = &g_array_index(L->bl, BL, i);
-    return b->y + ((b->code_first == (gint)i) ? CODE_PAD : 0);
+    return b->y + (code_run_starts(L, i) ? CODE_PAD : 0);
 }
 
 gint
@@ -795,26 +821,17 @@ on_doc_layout_height(OnDocLayout *L)
 }
 
 void
-on_doc_layout_block_rect(OnDocLayout *L, guint i, graphene_rect_t *out)
-{
-    validate(L);
-    if (i >= L->bl->len) {
-        *out = GRAPHENE_RECT_INIT(0, 0, 0, 0);
-        return;
-    }
-    const BL *b = &g_array_index(L->bl, BL, i);
-    *out = GRAPHENE_RECT_INIT(LEFT_MARGIN, b->y, content_width(L),
-                              b->h - BLOCK_GAP);
-}
-
-void
 on_doc_layout_code_run(OnDocLayout *L, guint block, guint *first,
                        guint *count)
 {
     validate(L);
-    const BL *b = &g_array_index(L->bl, BL, block);
-    *first = (b->code_first >= 0) ? (guint)b->code_first : block;
-    *count = (b->code_len > 0) ? (guint)b->code_len : 1;
+    if (on_document_block(L->doc, block)->kind != ON_BLOCK_CODE) {
+        *first = block;
+        *count = 1;
+        return;
+    }
+    *first = code_run_first(L, block);
+    *count = code_run_last(L, block) - *first + 1;
 }
 
 GdkTexture *
@@ -1033,7 +1050,7 @@ on_doc_layout_hit(OnDocLayout *L, gdouble x, gdouble y, OnDocHitResult *out)
 
     /* Text block.                                                          */
     graphene_rect_t r;
-    if (b->code_first == (gint)i && copy_word_rect(L, i, &r) &&
+    if (code_run_starts(L, i) && copy_word_rect(L, i, &r) &&
         graphene_rect_contains_point(&r, &GRAPHENE_POINT_INIT(x, y))) {
         out->kind = ON_HIT_COPY;
         out->pos.offset = 0;
@@ -1483,6 +1500,7 @@ on_doc_layout_snapshot(OnDocLayout *L, GtkSnapshot *snap, const OnDocPaint *p)
         return;
     const GdkRGBA *selc = p->focused ? &C_SEL : &C_SEL_DIM;
     gint number_run = 0;             /* consecutive NUMBER blocks           */
+    gint code_run   = 0;             /* consecutive CODE blocks             */
     guint first = block_at_y(L, p->clip.origin.y);
     /* Numbering needs the run's start, which may be above the clip.       */
     for (guint i = first; i > 0; i--) {
@@ -1490,6 +1508,7 @@ on_doc_layout_snapshot(OnDocLayout *L, GtkSnapshot *snap, const OnDocPaint *p)
             break;
         number_run++;
     }
+    code_run = (gint)(first - code_run_first(L, first));
 
     for (guint i = first; i < n; i++) {
         const BL *b = &g_array_index(L->bl, BL, i);
@@ -1497,6 +1516,7 @@ on_doc_layout_snapshot(OnDocLayout *L, GtkSnapshot *snap, const OnDocPaint *p)
             break;
         const OnBlock *blk = on_document_block(L->doc, i);
         number_run = (blk->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+        code_run   = (blk->kind == ON_BLOCK_CODE)   ? code_run + 1   : 0;
         gboolean whole;
         gsize s, e;
 
@@ -1555,12 +1575,10 @@ on_doc_layout_snapshot(OnDocLayout *L, GtkSnapshot *snap, const OnDocPaint *p)
         gint ty = text_top(L, i);
         if (blk->kind == ON_BLOCK_CODE) {
             fill(snap, &C_CODE_BG, LEFT_MARGIN, b->y, content_width(L),
-                 b->h - ((b->code_first + b->code_len - 1 == (gint)i)
-                         ? BLOCK_GAP : 0));
+                 b->h - ((code_run_last(L, i) == i) ? BLOCK_GAP : 0));
             if (L->style.code_numbers) {
                 gchar num[16];
-                g_snprintf(num, sizeof num, "%d",
-                           (gint)i - b->code_first + 1);
+                g_snprintf(num, sizeof num, "%d", code_run);
                 PangoLayout *nl = pango_layout_new(L->ctx);
                 PangoFontDescription *fd = font_for(L, 0.8, TRUE);
                 pango_layout_set_font_description(nl, fd);
@@ -1639,7 +1657,7 @@ on_doc_layout_snapshot(OnDocLayout *L, GtkSnapshot *snap, const OnDocPaint *p)
 
         /* The "copy" word on the first block of a code run.               */
         graphene_rect_t cr;
-        if (b->code_first == (gint)i && copy_word_rect(L, i, &cr))
+        if (code_run_starts(L, i) && copy_word_rect(L, i, &cr))
             draw_layout(snap, L->copy_word, cr.origin.x + 2, cr.origin.y,
                         &C_ACTION);
     }

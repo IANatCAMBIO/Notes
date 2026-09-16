@@ -1195,7 +1195,14 @@ runs_carry(const GArray *runs, guint32 bit)
 gboolean
 on_block_is_action(const OnBlock *b)
 {
-    return b->text != NULL && b->kind != ON_BLOCK_CODE &&
+    /* Only the kinds with NO line prefix: in a bullet, numbered or task
+     * line the first character is the prefix, so a '!' after it is text;
+     * a code line is never an item.  THE definition — the action_items
+     * mirror is extracted through this very test (serialize.c), so the
+     * ord the table names is the ord the model rewrites.               */
+    return b->text != NULL &&
+           (b->kind == ON_BLOCK_PARA || b->kind == ON_BLOCK_H1 ||
+            b->kind == ON_BLOCK_H2) &&
            b->text->text->len > 0 && b->text->text->str[0] == '!';
 }
 
@@ -1828,6 +1835,16 @@ pos_valid(const OnDocument *d, OnPos p)
     return pos_text_ok(d, p);
 }
 
+/* pos_before_table() — does a range END here reach no further than a
+ * table's leading edge?  Beside the table at offset 0, or at the very
+ * start of its first cell (where Down from the line above lands): the
+ * table is not part of such a range.  Anywhere else in a cell is inside. */
+static gboolean
+pos_before_table(OnPos p)
+{
+    return p.offset == 0 && (p.cell < 0 || p.cell == 0);
+}
+
 OnDocument *
 on_document_copy_range(const OnDocument *d, OnPos a, OnPos b)
 {
@@ -1872,9 +1889,12 @@ on_document_copy_range(const OnDocument *d, OnPos a, OnPos b)
             on_text_free(part);
         } else {
             /* An object block on the range's edge is taken only when the
-             * range reaches across it.                                     */
-            if ((i == a.block && a.offset == 1) ||
-                (i == b.block && b.offset == 0))
+             * range reaches across it — for a table, past its leading
+             * edge (pos_before_table): the same rule
+             * on_document_delete_range applies, so a Cut across a table
+             * edge puts on the clipboard exactly what it removes.          */
+            if ((i == a.block && a.cell < 0 && a.offset == 1) ||
+                (i == b.block && pos_before_table(b)))
                 continue;
             c = on_block_copy(src);
             c->action_uid = 0;
@@ -1947,9 +1967,11 @@ on_document_delete_range(OnDocument *d, OnPos a, OnPos b, OnPos *out)
     if (last_text && b.offset > 0) {
         OnPos p = { b.block, -1, 0 };
         on_document_delete_text(d, p, b.offset);
-    } else if (last->kind == ON_BLOCK_TABLE && b.cell >= 0) {
+    } else if (last->kind == ON_BLOCK_TABLE && !pos_before_table(b)) {
         drop_last = TRUE;            /* a range ending inside a table takes
-                                        the table                            */
+                                        the table (pos_before_table is the
+                                        one reading of "inside", shared
+                                        with on_document_copy_range)       */
     }
     for (guint i = b.block - 1; i > a.block; i--)
         on_document_remove_block(d, i);
@@ -2351,11 +2373,23 @@ on_document_collect_tags(const OnDocument *d)
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         if (b->text == NULL)
             continue;
+        /* A tag is the SPAN of consecutive TAG-carrying runs, not one run:
+         * runs also split on bold/italic/…, so a style applied inside
+         * "#hello" makes three runs of one tag — per run they would have
+         * become "h", "el", "lo" and the real tag gone on the next save.  */
         gsize at = 0;                /* start of run k                      */
-        for (guint k = 0; k < b->text->runs->len; k++) {
-            const OnRun *r = &g_array_index(b->text->runs, OnRun, k);
-            if (r->flags & ON_FMT_TAG) {
-                gchar *name = g_strndup(b->text->text->str + at, r->len);
+        gsize span = 0;              /* start of the open tag span          */
+        gboolean in_tag = FALSE;
+        for (guint k = 0; k <= b->text->runs->len; k++) {
+            const OnRun *r = (k < b->text->runs->len)
+                ? &g_array_index(b->text->runs, OnRun, k) : NULL;
+            gboolean tagged = r != NULL && (r->flags & ON_FMT_TAG) != 0;
+            if (tagged && !in_tag) {
+                span = at;
+                in_tag = TRUE;
+            } else if (!tagged && in_tag) {
+                gchar *name = g_strndup(b->text->text->str + span,
+                                        at - span);
                 g_strstrip(name);
                 const gchar *bare = (*name == '#') ? name + 1 : name;
                 if (*bare != '\0' &&
@@ -2363,8 +2397,10 @@ on_document_collect_tags(const OnDocument *d)
                                        (GCompareFunc)g_strcmp0) == NULL)
                     names = g_list_prepend(names, g_strdup(bare));
                 g_free(name);
+                in_tag = FALSE;
             }
-            at += r->len;
+            if (r != NULL)
+                at += r->len;
         }
     }
     return g_list_reverse(names);
@@ -2442,6 +2478,43 @@ action_text_span(const OnText *t, gsize *start, gsize *end)
     const gchar *last = g_utf8_prev_char(t->text->str + *end);
     return (on_text_flags_at(t, (gsize)(last - t->text->str)) &
             ON_FMT_STRIKE) != 0;
+}
+
+gboolean
+on_document_block_action(const OnDocument *d, guint block, gchar **text,
+                         gint64 *due, gboolean *done)
+{
+    const OnBlock *b = on_document_block(d, block);
+    if (b == NULL || !on_block_is_action(b) ||
+        !action_rest_real(b->text->text->str + 1))
+        return FALSE;
+    const OnText *t = b->text;
+    gsize start, end;                /* the item text's byte span           */
+    action_text_span(t, &start, &end);
+    if (text != NULL)
+        *text = g_strndup(t->text->str + start, end - start);
+    if (due != NULL) {
+        gsize due_start;
+        if (!on_action_split_due(t->text->str + 1, &due_start, due))
+            *due = 0;
+    }
+    if (done != NULL) {
+        /* Done = every non-space character after the '!' struck, the due
+         * date included — an un-struck due suffix is an open item.      */
+        gboolean struck = TRUE;
+        for (const gchar *p = t->text->str + 1; *p != '\0';
+             p = g_utf8_next_char(p)) {
+            if (g_ascii_isspace((guchar)*p))
+                continue;
+            gsize o = (gsize)(p - t->text->str);
+            if ((on_text_flags_at(t, o) & ON_FMT_STRIKE) == 0) {
+                struck = FALSE;
+                break;
+            }
+        }
+        *done = struck;
+    }
+    return TRUE;
 }
 
 gboolean

@@ -1369,12 +1369,18 @@ test_collect_tags(void)
     blob_text(&b, ON_FMT_TAG | ON_FMT_BOLD, "#work");
     blob_text(&b, 0, " ");
     blob_text(&b, ON_FMT_TAG, "#");
+    /* One tag split over three runs by a style change inside it.         */
+    blob_text(&b, 0, " ");
+    blob_text(&b, ON_FMT_TAG, "#he");
+    blob_text(&b, ON_FMT_TAG | ON_FMT_ITALIC, "ll");
+    blob_text(&b, ON_FMT_TAG, "o");
     GBytes *blob = blob_end(&b);
     OnDocument *d = load_clean(blob);
     GList *tags = on_document_collect_tags(d);
-    g_assert_cmpuint(g_list_length(tags), ==, 2);
+    g_assert_cmpuint(g_list_length(tags), ==, 3);
     g_assert_cmpstr(tags->data, ==, "work");
     g_assert_cmpstr(tags->next->data, ==, "home");
+    g_assert_cmpstr(tags->next->next->data, ==, "hello");
     g_list_free_full(tags, g_free);
     on_document_free(d);
     g_bytes_unref(blob);
@@ -1488,6 +1494,22 @@ test_ranges(void)
     on_document_free(c);
     c = on_document_copy_range(d, cell_at(3, 1, 0), cell_at(3, 1, 1));
     g_assert_cmpstr(block_text(c, 0), ==, "c");
+    on_document_free(c);
+    /* A range ending INSIDE a cell takes the table — what delete_range
+     * removes for the same range, so a Cut across the edge round-trips;
+     * one ending at the very start of the first cell stops before it.    */
+    c = on_document_copy_range(d, at(2, 1), cell_at(3, 0, 1));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 1);
+    g_assert_cmpint(on_document_block(c, 0)->kind, ==, ON_BLOCK_TABLE);
+    on_document_free(c);
+    c = on_document_copy_range(d, at(1, 0), cell_at(3, 0, 0));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 2);
+    g_assert_cmpint(on_document_block(c, 1)->kind, ==, ON_BLOCK_IMAGE);
+    on_document_free(c);
+    c = on_document_copy_range(d, cell_at(3, 1, 1), at(4, 1));
+    g_assert_cmpuint(on_document_n_blocks(c), ==, 2);
+    g_assert_cmpint(on_document_block(c, 0)->kind, ==, ON_BLOCK_TABLE);
+    g_assert_cmpstr(block_text(c, 1), ==, "l");
     on_document_free(c);
 
     /* Delete inside one block; undo restores it.                           */

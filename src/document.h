@@ -434,8 +434,10 @@ gboolean on_document_take_actions_modified(OnDocument *d);
  * DERIVED READS — computed from the blocks, nothing stored.
  * ------------------------------------------------------------------------- */
 
-/* on_block_is_action() — a text block (not CODE) whose text starts with
- * '!' — the format contract on_note_extract_actions defines.             */
+/* on_block_is_action() — a PARA/H1/H2 block whose text starts with '!'.
+ * THE action-line contract: list and task lines start with their prefix,
+ * code lines never count.  on_note_extract (serialize.c) derives the
+ * action_items mirror through this same test.                            */
 gboolean on_block_is_action(const OnBlock *b);
 
 /* Titles derived from a note's first line are cut to this many characters
@@ -480,6 +482,17 @@ GList *on_document_collect_tags(const OnDocument *d);
 /* on_document_action_blocks() — block indices of the real action lines,
  * ord order.  Returns a new GArray of guint; g_array_unref() it.         */
 GArray *on_document_action_blocks(const OnDocument *d);
+
+/* on_document_block_action() — the fields of the real action item in
+ * block `block`: `text` (new string — after the '!' and its leading
+ * whitespace, before any "due <date>", trailing whitespace trimmed),
+ * `due` (local-midnight UNIX time, 0 = none) and `done` (every non-space
+ * character after the '!' carries STRIKE).  Any output may be NULL.
+ * FALSE — nothing written — when the block is not a real action line.
+ * on_document_action_blocks() + this is how the action_items mirror is
+ * extracted, so what it reports IS what ord n in the table means.       */
+gboolean on_document_block_action(const OnDocument *d, guint block,
+                                  gchar **text, gint64 *due, gboolean *done);
 
 /* on_document_action_strike() — strike (done) or un-strike everything
  * after the '!'.                                                          */

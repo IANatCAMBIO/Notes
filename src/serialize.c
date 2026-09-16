@@ -222,46 +222,6 @@ on_note_document_load(OnDatabase *db, gint64 id)
     return doc;
 }
 
-/* ---------------------------------------------------------------------------
- * action_finish_line() — helper for on_note_extract_actions(): if the
- * line just ended was an action line with real text, append it to *items
- * (text trimmed, any trailing "due <date>" split off into `due`,
- * ord = list position); either way reset the line state.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gboolean at_start;               /* cursor sits at a line start         */
-    gboolean is_action;              /* current line began with '!'         */
-    gboolean struck;                 /* every rest non-space char struck?   */
-    gboolean have_rest;              /* any non-space char after the '!'?   */
-    GString *text;                   /* rest-of-line accumulator            */
-} ActionScan;
-
-static void
-action_finish_line(ActionScan *s, GList **items, gint *ord)
-{
-    if (s->is_action && s->have_rest) {
-        gchar *text = g_strdup(s->text->str);
-        gsize  due_start;            /* where the text part ends            */
-        gint64 due = 0;              /* parsed due date, 0 = none           */
-        if (on_action_split_due(text, &due_start, &due))
-            text[due_start] = '\0';
-        g_strstrip(text);
-        if (*text != '\0') {         /* a bare "! due 7/7/26" is no item    */
-            OnActionItem *it = g_new0(OnActionItem, 1);
-            it->text = text;
-            it->done = s->struck;
-            it->due  = due;
-            it->ord  = (*ord)++;
-            *items = g_list_prepend(*items, it);
-        } else {
-            g_free(text);
-        }
-    }
-    g_string_truncate(s->text, 0);
-    s->at_start  = TRUE;
-    s->is_action = FALSE;
-}
-
 GList *
 on_note_extract_actions(const guint8 *data, gsize len)
 {
@@ -274,68 +234,26 @@ void
 on_note_extract(const guint8 *data, gsize len, gchar **out_text,
                 GList **out_actions)
 {
-    GString *text = (out_text != NULL) ? g_string_new(NULL) : NULL;
-    GList   *items = NULL;           /* collected OnActionItem*, reversed   */
-    gint     ord   = 0;              /* next item's position index          */
-    ActionScan s = { TRUE, FALSE, TRUE, FALSE, g_string_new(NULL) };
-    gboolean want_actions = out_actions != NULL;
-
-    OnBnbfReader r;                  /* the same walker the loader uses     */
-    OnBnbfRecord rec;
-    if (on_bnbf_open(&r, data, len)) {
-        while (on_bnbf_next(&r, &rec)) {
-            if (rec.type == ON_REC_TEXT) {
-                if (text != NULL)
-                    g_string_append_len(text, rec.text, rec.n_text);
-                for (guint32 i = 0; want_actions && i < rec.n_text; i++) {
-                    gchar c = rec.text[i];
-                                     /* one BYTE — '\n'/'!' are ASCII, and
-                                        UTF-8 tail bytes are all >= 0x80    */
-                    if (c == '\n') {
-                        action_finish_line(&s, &items, &ord);
-                    } else if (s.at_start) {
-                        s.at_start  = FALSE;
-                        s.is_action = c == '!' &&
-                                      (rec.flags & ON_FMT_CODEBLOCK) == 0;
-                        if (s.is_action) {  /* the '!' is not item text     */
-                            s.struck    = TRUE;
-                            s.have_rest = FALSE;
-                        }
-                    } else if (s.is_action) {
-                        g_string_append_c(s.text, c);
-                        if (!g_ascii_isspace((guchar)c)) {
-                            s.have_rest = TRUE;
-                            if ((rec.flags & ON_FMT_STRIKE) == 0)
-                                s.struck = FALSE;
-                        }
-                    }
-                }
-            } else {
-                /* Images, tables and checkboxes all occupy the line's first
-                 * slot like any character, so such a line is never an
-                 * action line.  Table cells additionally join the text,
-                 * space-separated.                                         */
-                if (rec.type == ON_REC_TABLE) {
-                    if (text != NULL)
-                        for (gint cell = 0;
-                             cell < rec.table->rows * rec.table->cols;
-                             cell++) {
-                            g_string_append(text,
-                                g_ptr_array_index(rec.table->cells, cell));
-                            g_string_append_c(text, ' ');
-                        }
-                    on_table_free(rec.table);
-                }
-                s.at_start = FALSE;
-            }
-        }
-    }
-    if (want_actions)
-        action_finish_line(&s, &items, &ord);   /* line without trailing \n */
-
-    g_string_free(s.text, TRUE);
+    /* Through the model, so there is ONE definition of a line's text and
+     * of an action item (on_block_is_action, on_document_block_action):
+     * the ord this hands the action_items table is the ord the model's
+     * rewrites address.  Parsing decodes no image — the PNG bytes are
+     * carried verbatim — so it costs what the old record walk did.     */
+    OnDocument *doc = on_document_from_bnbf(data, len, NULL);
     if (out_text != NULL)
-        *out_text = g_string_free(text, FALSE);
-    if (out_actions != NULL)
+        *out_text = on_document_plain_text(doc);
+    if (out_actions != NULL) {
+        GList  *items  = NULL;       /* collected OnActionItem*, reversed   */
+        GArray *blocks = on_document_action_blocks(doc);
+        for (guint i = 0; i < blocks->len; i++) {
+            OnActionItem *it = g_new0(OnActionItem, 1);
+            on_document_block_action(doc, g_array_index(blocks, guint, i),
+                                     &it->text, &it->due, &it->done);
+            it->ord = (gint)i;
+            items = g_list_prepend(items, it);
+        }
+        g_array_unref(blocks);
         *out_actions = g_list_reverse(items);
+    }
+    on_document_free(doc);
 }

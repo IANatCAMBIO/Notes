@@ -129,15 +129,11 @@ void on_table_free(OnTable *table);
 const gchar *on_table_get(OnTable *table, gint r, gint c);
 void on_table_set(OnTable *table, gint r, gint c, const gchar *text);
 
-/* on_table_resize() — grow/shrink to rows×cols, preserving overlapping
- * cells (new cells become empty; dimensions clamp to at least 1×1).       */
-void on_table_resize(OnTable *table, gint rows, gint cols);
-
 /* ---------------------------------------------------------------------------
  * READER — one cursor over a blob's records, so the header validation, the
  * per-record-type framing and every truncation check exist ONCE.  Every
- * consumer drives it: the document loader, the GtkTextBuffer deserializer
- * and the extractors (plain text, action items, image ordinals).
+ * consumer drives it: the document loader and the image-ordinal walks
+ * (serialize.c).
  *
  * The reader never warns; it records why it stopped in `error` and lets
  * the caller decide (the deserializer reports, the extractor stops quietly).

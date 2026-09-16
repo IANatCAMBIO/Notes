@@ -85,9 +85,6 @@ void on_doc_layout_set_hits(OnDocLayout *L, const GArray *hits);
 /* on_doc_layout_height() — the content height, margins included.          */
 gint on_doc_layout_height(OnDocLayout *L);
 
-/* on_doc_layout_block_rect() — a block's box (spacing excluded).           */
-void on_doc_layout_block_rect(OnDocLayout *L, guint i, graphene_rect_t *out);
-
 /* on_doc_layout_caret_rect() — the caret at `pos`: a 1 px wide box.  For
  * an object block offset 0 is its left edge, 1 its right.                 */
 void on_doc_layout_caret_rect(OnDocLayout *L, OnPos pos,

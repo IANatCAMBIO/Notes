@@ -167,25 +167,6 @@ on_table_set(OnTable *table, gint r, gint c, const gchar *text)
         g_strdup(text != NULL ? text : "");
 }
 
-void
-on_table_resize(OnTable *table, gint rows, gint cols)
-{
-    rows = MAX(1, rows);
-    cols = MAX(1, cols);
-
-    /* Build the new cell array, carrying over overlapping content.         */
-    GPtrArray *cells = g_ptr_array_new_with_free_func(g_free);
-    for (gint r = 0; r < rows; r++)
-        for (gint c = 0; c < cols; c++)
-            g_ptr_array_add(cells,
-                            g_strdup((r < table->rows && c < table->cols)
-                                     ? on_table_get(table, r, c) : ""));
-    g_ptr_array_free(table->cells, TRUE);
-    table->cells = cells;
-    table->rows  = rows;
-    table->cols  = cols;
-}
-
 /* ===========================================================================
  * READER
  * ======================================================================== */

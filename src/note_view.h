@@ -138,6 +138,10 @@ GBytes     *on_note_view_image_png(OnNoteView *v, gint ord);     /* borrowed */
  * into view.  FALSE when there is no such image.                         */
 gboolean on_note_view_image_reveal(OnNoteView *v, gint ord);
 
+/* on_note_view_action_reveal() — caret to the `ord`-th action item (the
+ * action_items ordinal), scrolled into view.  FALSE when there is none. */
+gboolean on_note_view_action_reveal(OnNoteView *v, gint ord);
+
 /* on_note_image_open_external() — write an image's stored bytes to a
  * temporary PNG and hand it to the configured viewer (Settings
  * "image_viewer") or the platform opener.  NULL is a no-op.             */

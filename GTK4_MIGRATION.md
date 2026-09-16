@@ -822,7 +822,17 @@ add a second idiom.
   things measured on the way: a column's factory cannot reach the row
   widget, so row-wide controllers go on every cell; and a list view
   measures only realized rows, so the startup fit is queued from `map`
-  (an idle from the constructor saw a 27 px placeholder).  GtkDialog
+  (an idle from the constructor saw a 27 px placeholder) — and, since
+  the list view creates and collects row widgets in its size_allocate,
+  every fit waits for the frame clock's after-paint (an idle after a
+  collapse still measured the old rows); the item manager reuses the
+  widget of an item re-added by items-changed WITHOUT rebinding it
+  (gtklistfactorywidget.c: `item != old_item`), so an in-place change
+  also emits the row's "changed" signal, which the factories from
+  `on_row_factory_new` rebind on; and a drop handler must not rebuild
+  the models it is dropping onto — GTK reports a drop whose target
+  widget vanished as cancelled (the icon floated back), so refresh_all
+  is deferred to an idle.  GtkDialog
   (two uses) became the `dialog_new` scaffold over a plain GtkWindow, the
   density GtkComboBoxText a GtkDropDown, and the thumbnail card's
   `gdk_cairo_set_source_pixbuf` a `gdk_texture_download` into a cairo

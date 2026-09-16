@@ -69,6 +69,21 @@ GtkWidget *on_editor_window_open_image(OnApp *app, gint64 note_id,
                                        gint image_ord);
 
 /* ---------------------------------------------------------------------------
+ * on_editor_window_open_action() — like on_editor_window_open(), but also
+ * scrolls the note to one of its action items and puts the caret on it.
+ * Used by the library's Action Items view, where double-clicking an item
+ * opens the note it lives in at that line.
+ *
+ *   app        — global application context.
+ *   note_id    — id of the note to edit.
+ *   action_ord — the item's action_items ordinal (0-based); a negative
+ *                value behaves exactly like on_editor_window_open().
+ * Returns the editor's GtkWindow, or NULL if the note does not exist.
+ * ------------------------------------------------------------------------- */
+GtkWidget *on_editor_window_open_action(OnApp *app, gint64 note_id,
+                                        gint action_ord);
+
+/* ---------------------------------------------------------------------------
  * on_editor_rebuild_code_buttons_all() — re-evaluate the code-block copy
  * buttons in every open editor window.  Called by the settings window
  * when the "show copy button" preference changes.

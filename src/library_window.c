@@ -238,10 +238,13 @@ typedef struct {
     GMenuModel   *menubar_model;         /* File/View menus (owned ref)     */
     GtkWidget    *menubar;               /* in-window bar (macOS only)      */
     GtkWidget    *sidebar_paned;         /* horizontal paned holding the sidebar */
-    guint         sb_fit_idle;           /* pending sidebar_fit_grow(), or 0;
-                                            coalesces the row-expanded burst
-                                            a model rebuild's re-expansion
-                                            walk fires                      */
+    gulong        sb_fit_idle;           /* the frame clock's after-paint
+                                            handler of a pending sidebar
+                                            fit, or 0 (sidebar_fit_queue)  */
+    GdkFrameClock *sb_fit_clock;         /* the clock it is connected to
+                                            (an owned ref while pending)   */
+    gboolean      sb_fit_force;          /* the pending fit is the startup
+                                            one: runs whatever the setting */
     GtkWidget    *status_path;
     GtkWidget    *status_event;
     GtkWidget    *status_revealer;
@@ -330,9 +333,10 @@ thumb_pending_clear(OnLibrary *lw)
 /* Forward declarations.                                                     */
 static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
+static void    refresh_all(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
-static void    sidebar_fit_queue(OnLibrary *lw);
+static void    sidebar_fit_queue(OnLibrary *lw, gboolean force);
 static void    close_editors_for_ids(OnLibrary *lw, const gint64 *ids,
                                      gsize n);
 static gboolean trash_notes_core(OnLibrary *lw, const gint64 *ids,
@@ -807,7 +811,7 @@ refresh_sidebar(OnLibrary *lw)
 
     if (scroll_pos > 0)
         scroll_keep_queue(vadj, scroll_pos);
-    sidebar_fit_queue(lw);           /* rows came and went                  */
+    sidebar_fit_queue(lw, FALSE);    /* rows came and went                  */
 }
 
 /* ===========================================================================
@@ -997,8 +1001,7 @@ thumb_fill_idle(gpointer user_data)
             GdkTexture *thumb =      /* borrowed from the cache             */
                 get_note_thumb(lw, job->row->id, job->updated_at);
             g_set_object(&job->row->thumb, thumb);
-            g_list_model_items_changed(G_LIST_MODEL(lw->notes_store),
-                                       pos, 1, 1);
+            on_row_touch(lw->notes_store, job->row);
         }
         thumb_job_free(job);
 
@@ -1290,6 +1293,14 @@ refresh_notes(OnLibrary *lw)
         scroll_keep_queue(vadj, scroll_pos);
 
     status_path_update(lw);
+}
+
+/* refresh_all_idle() — refresh_all from an idle (see on_sidebar_drop).    */
+static gboolean
+refresh_all_idle(gpointer user_data)
+{
+    refresh_all(user_data);
+    return G_SOURCE_REMOVE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1623,8 +1634,8 @@ action_due_dialog(OnLibrary *lw, OnActionRow *row)
 }
 
 /* on_action_row_activated() — double-click/Enter on an Action Items row
- * opens the item's note (the Due Date CELL has its own double-click, see
- * on_due_cell_pressed).                                                     */
+ * opens the item's note AT that line (the Due Date CELL has its own
+ * double-click, see on_due_cell_pressed).                                   */
 static void
 on_action_row_activated(GtkColumnView *view, guint position,
                         gpointer user_data)
@@ -1635,9 +1646,7 @@ on_action_row_activated(GtkColumnView *view, guint position,
         g_list_model_get_item(G_LIST_MODEL(lw->actions_sorted), position);
     if (row == NULL)
         return;
-    GtkWidget *win = on_editor_window_open(lw->app, row->note_id);
-    if (win != NULL)
-        gtk_window_present(GTK_WINDOW(win));
+    on_editor_window_open_action(lw->app, row->note_id, row->ord);
     g_object_unref(row);
 }
 
@@ -2060,11 +2069,14 @@ on_sidebar_drop(GtkDropTarget *target, const GValue *value,
         g_free(fname);
     }
 
-    /* The models are rebuilt here, inside the drop handler: GTK finishes
-     * the drop only after this returns, so the drag icon lingers for the
-     * refresh (tens of ms).  The return value IS the finish.              */
+    /* The rebuild is DEFERRED past this handler: rebuilding here replaced
+     * the very row widget this drop target sits on (and the notes row the
+     * drag source sits on) before GTK had finished the drop, and a drop
+     * whose target vanished is reported as cancelled — the drag icon
+     * floated back to where the drag started.  The return value is the
+     * finish; the idle runs right after it.                              */
     if (success)
-        refresh_all(lw);             /* tree shape and counts changed       */
+        g_idle_add(refresh_all_idle, lw);   /* tree shape and counts       */
     return success;
 }
 
@@ -2109,6 +2121,20 @@ typedef struct {
     GtkWidget        *custom_radio;
     FolderPromptFunc  done;
 } FolderPrompt;
+
+/* on_emoji_entry_changed() — the emoji entry's caret is hidden while the
+ * field holds text (CSS class "notes-emoji-full"): Apple Color Emoji inks
+ * past its advance, so a caret after it stood inside the glyph.          */
+static void
+on_emoji_entry_changed(GtkEditable *entry, gpointer user_data)
+{
+    (void)user_data;
+    const gchar *text = gtk_editable_get_text(entry);
+    if (text != NULL && *text != '\0')
+        gtk_widget_add_css_class(GTK_WIDGET(entry), "notes-emoji-full");
+    else
+        gtk_widget_remove_css_class(GTK_WIDGET(entry), "notes-emoji-full");
+}
 
 /* ---------------------------------------------------------------------------
  * on_folder_prompt_response() — the folder dialog closed: read the fields
@@ -2195,6 +2221,8 @@ prompt_for_folder(OnLibrary *lw, const gchar *title, gint64 folder,
     on_app_set_tooltip(p->emoji_entry,
                                 "Optional emoji \xe2\x80\x94 click to pick");
     gtk_widget_add_css_class(p->emoji_entry, "notes-emoji-entry");
+    g_signal_connect(p->emoji_entry, "changed",
+                     G_CALLBACK(on_emoji_entry_changed), NULL);
     if (initial_emoji != NULL && *initial_emoji != '\0')
         gtk_editable_set_text(GTK_EDITABLE(p->emoji_entry), initial_emoji);
     gtk_widget_set_halign(p->emoji_entry, GTK_ALIGN_START);
@@ -4856,16 +4884,6 @@ on_sidebar_bind(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
     g_free(esc);
 }
 
-/* factory_new() — a signal factory with setup and bind.                    */
-static GtkListItemFactory *
-factory_new(GCallback setup, GCallback bind, gpointer user_data)
-{
-    GtkListItemFactory *f = gtk_signal_list_item_factory_new();
-    g_signal_connect(f, "setup", setup, user_data);
-    g_signal_connect(f, "bind",  bind,  user_data);
-    return f;
-}
-
 /* ===========================================================================
  * actions
  *
@@ -5225,8 +5243,10 @@ library_free(gpointer data)
     OnLibrary *lw = data;
     if (lw->status_timeout != 0)
         g_source_remove(lw->status_timeout);
-    if (lw->sb_fit_idle != 0)
-        g_source_remove(lw->sb_fit_idle);
+    if (lw->sb_fit_idle != 0) {
+        g_signal_handler_disconnect(lw->sb_fit_clock, lw->sb_fit_idle);
+        g_object_unref(lw->sb_fit_clock);
+    }
     /* Cancel any in-flight AI subprocess before freeing lw.  The
      * GCancellable keeps the callback safe after the pointer is gone.    */
     ai_throbber_stop(lw);
@@ -5308,27 +5328,44 @@ sidebar_fit_apply(OnLibrary *lw, gboolean force)
         gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), want);
 }
 
-/* sidebar_fit_idle() — idle body of sidebar_fit_queue().                    */
-static gboolean
-sidebar_fit_idle(gpointer user_data)
+/* sidebar_fit_after_paint() — the frame that laid the change out has been
+ * painted: fit now, and stop listening.                                    */
+static void
+sidebar_fit_after_paint(GdkFrameClock *clock, gpointer user_data)
 {
     OnLibrary *lw = user_data;
+    g_signal_handler_disconnect(clock, lw->sb_fit_idle);
     lw->sb_fit_idle = 0;
-    sidebar_fit_apply(lw, FALSE);
-    return G_SOURCE_REMOVE;
+    g_clear_object(&lw->sb_fit_clock);
+    sidebar_fit_apply(lw, lw->sb_fit_force);
+    lw->sb_fit_force = FALSE;
 }
 
 /* sidebar_fit_queue() — run sidebar_fit_apply() once the expand, collapse
- * or rebuild has been laid out.  Deferred because the model changes before
- * the list view has re-measured, and coalesced because a rebuild's
- * expansion restore changes the model once per restored row.
+ * or rebuild has been LAID OUT: the list view's width request counts the
+ * row widgets it has, and it creates and garbage-collects those in its
+ * size_allocate, which the frame clock runs on the next frame — an idle
+ * ran before that frame and measured the OLD rows (a collapse never
+ * narrowed the pane).  So the fit waits for the frame clock's after-paint,
+ * once; a rebuild's expansion restore, which changes the model once per
+ * restored row, coalesces onto that one frame.
  *   lw — library window state.                                             */
 static void
-sidebar_fit_queue(OnLibrary *lw)
+sidebar_fit_queue(OnLibrary *lw, gboolean force)
 {
-    if (!lw->app->sidebar_fit_content || lw->sb_fit_idle != 0)
+    if (!force && !lw->app->sidebar_fit_content)
         return;
-    lw->sb_fit_idle = g_idle_add(sidebar_fit_idle, lw);
+    lw->sb_fit_force |= force;
+    if (lw->sb_fit_idle != 0)
+        return;                      /* already waiting for the frame       */
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(GTK_WIDGET(lw->sidebar));
+    if (clock == NULL)
+        return;                      /* not mapped: the startup fit covers  */
+    lw->sb_fit_clock = g_object_ref(clock);
+    lw->sb_fit_idle = g_signal_connect(clock, "after-paint",
+                                       G_CALLBACK(sidebar_fit_after_paint),
+                                       lw);
+    gdk_frame_clock_request_phase(clock, GDK_FRAME_CLOCK_PHASE_PAINT);
 }
 
 /* on_sidebar_rows_changed() — the flattened sidebar model changed (a row
@@ -5339,26 +5376,16 @@ on_sidebar_rows_changed(GListModel *model, guint position, guint removed,
                         guint added, gpointer user_data)
 {
     (void)model; (void)position; (void)removed; (void)added;
-    sidebar_fit_queue(user_data);
+    sidebar_fit_queue(user_data, FALSE);
 }
 
-/* on_sidebar_first_fit() — idle: the one-shot startup fit, once the list
- * has had its first layout (queued from its "map").                       */
-static gboolean
-on_sidebar_first_fit(gpointer user_data)
-{
-    sidebar_fit_apply(user_data, TRUE);
-    return G_SOURCE_REMOVE;
-}
-
-/* on_sidebar_mapped() — the list is on screen: fit once its rows have
- * been laid out, which the next idle is after (the frame clock's layout
- * runs at redraw priority, above a default idle).                          */
+/* on_sidebar_mapped() — the list is on screen: the one-shot startup fit,
+ * once its rows have been laid out and painted (whatever the setting).   */
 static void
 on_sidebar_mapped(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
-    g_idle_add(on_sidebar_first_fit, user_data);
+    sidebar_fit_queue(user_data, TRUE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5372,7 +5399,7 @@ on_library_sidebar_fit(OnApp *app)
 {
     OnLibrary *lw = lw_from_app(app);
     if (lw != NULL)
-        sidebar_fit_queue(lw);
+        sidebar_fit_queue(lw, FALSE);
 }
 
 /* sb_create_children() — GtkTreeListModel's child model for a row: its
@@ -5421,11 +5448,15 @@ library_build_sidebar(OnLibrary *lw)
 
     lw->sidebar = GTK_LIST_VIEW(gtk_list_view_new(
         GTK_SELECTION_MODEL(lw->sb_sel),
-        factory_new(G_CALLBACK(on_sidebar_setup),
+        on_row_factory_new(G_CALLBACK(on_sidebar_setup),
                     G_CALLBACK(on_sidebar_bind), lw)));
     /* Sidebar palette and drop indicator: the "notes-sidebar" rules in
      * library_install_css (see its banner for the colours).                */
     gtk_widget_add_css_class(GTK_WIDGET(lw->sidebar), "notes-sidebar");
+    /* Fit the pane to its content on first show — from the list's "map",
+     * the first moment its rows exist to be measured; connected here,
+     * before anything can map it.                                         */
+    g_signal_connect(lw->sidebar, "map", G_CALLBACK(on_sidebar_mapped), lw);
 
     GtkWidget *sidebar_scroll = scrolled(GTK_WIDGET(lw->sidebar),
                                          GTK_POLICY_NEVER);
@@ -5497,7 +5528,7 @@ library_build_notes_list(OnLibrary *lw)
 
     GtkListItemFactory *f;
     GtkColumnViewColumn *c_mod = NULL;
-    f = factory_new(G_CALLBACK(on_title_setup), G_CALLBACK(on_title_bind),
+    f = on_row_factory_new(G_CALLBACK(on_title_setup), G_CALLBACK(on_title_bind),
                     lw);
     column_new(lw->notes_list, "Title", f, cmp_title, "title", TRUE);
     /* The three plain text columns share one factory pair, told apart by
@@ -5509,12 +5540,10 @@ library_build_notes_list(OnLibrary *lw)
         { "Created",  NF_CREATED,  cmp_created, "created"  },
     };
     for (gsize i = 0; i < G_N_ELEMENTS(TEXT_COLS); i++) {
-        f = gtk_signal_list_item_factory_new();
+        f = on_row_factory_new(G_CALLBACK(on_note_text_setup),
+                               G_CALLBACK(on_note_text_bind),
+                               GINT_TO_POINTER(TEXT_COLS[i].field));
         g_object_set_data(G_OBJECT(f), "on-lw", lw);
-        g_signal_connect(f, "setup", G_CALLBACK(on_note_text_setup),
-                         GINT_TO_POINTER(TEXT_COLS[i].field));
-        g_signal_connect(f, "bind", G_CALLBACK(on_note_text_bind),
-                         GINT_TO_POINTER(TEXT_COLS[i].field));
         GtkColumnViewColumn *c = column_new(lw->notes_list, TEXT_COLS[i].title,
                                             f, TEXT_COLS[i].cmp,
                                             TEXT_COLS[i].key, FALSE);
@@ -5553,7 +5582,7 @@ library_build_notes_grid(OnLibrary *lw)
 {
     lw->notes_grid = GTK_GRID_VIEW(gtk_grid_view_new(
         GTK_SELECTION_MODEL(g_object_ref(lw->notes_sel)),
-        factory_new(G_CALLBACK(on_grid_setup), G_CALLBACK(on_grid_bind),
+        on_row_factory_new(G_CALLBACK(on_grid_setup), G_CALLBACK(on_grid_bind),
                     lw)));
     gtk_widget_add_css_class(GTK_WIDGET(lw->notes_grid), "notes-grid");
     gtk_grid_view_set_max_columns(lw->notes_grid, 20);
@@ -5588,16 +5617,16 @@ library_build_actions_view(OnLibrary *lw)
      * also render struck through, matching the editor.                    */
     GtkColumnViewColumn *cd = column_new(
         lw->actions_view, "",
-        factory_new(G_CALLBACK(on_action_done_setup),
+        on_row_factory_new(G_CALLBACK(on_action_done_setup),
                     G_CALLBACK(on_action_done_bind), lw),
         cmp_action_done, "done", FALSE);
     g_object_set_data(G_OBJECT(cd), "on-collabel", (gpointer)"Done");
     column_new(lw->actions_view, "Action",
-               factory_new(G_CALLBACK(on_action_text_setup),
+               on_row_factory_new(G_CALLBACK(on_action_text_setup),
                            G_CALLBACK(on_action_text_bind), lw),
                cmp_action_text, "action", TRUE);
     column_new(lw->actions_view, "Due Date",
-               factory_new(G_CALLBACK(on_action_due_setup),
+               on_row_factory_new(G_CALLBACK(on_action_due_setup),
                            G_CALLBACK(on_action_due_bind), lw),
                cmp_action_due, "due", FALSE);
 
@@ -5721,6 +5750,10 @@ library_build_status_bar(OnLibrary *lw)
  * 8. The sidebar/notes divider: a 6 px handle (wide-handle mode gives the
  *    separator node a 5 px theme floor; min-WIDTH is the lever on a
  *    horizontal paned).
+ * 9. The notes list / Action Items headers: only the bottom rule — the
+ *    theme's per-button left border doubled the divider's edge line.
+ * 10. The folder dialog's emoji entry hides its caret while it holds an
+ *    emoji (class "notes-emoji-full", toggled by on_emoji_entry_changed).
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -5784,7 +5817,17 @@ library_install_css(void)
         "button.notes-ai-button {"
         "  padding: 0 4px; min-height: 0; font-size: 85%%;"
         "}"
-        "paned.notes-split > separator { min-width: 6px; }",
+        "paned.notes-split > separator { min-width: 6px; }"
+        /* Column headers: the bottom rule only.  The theme draws a left
+         * border on each header button, which sat against the paned
+         * divider as a second line.                                     */
+        "columnview.notes-columns > header > button {"
+        "  border-left-style: none; border-right-style: none;"
+        "}"
+        /* The emoji entry: no caret while it holds an emoji — Apple Color
+         * Emoji inks past its advance and the caret stood inside it (the
+         * editor pads the glyph; an entry cannot).                       */
+        "entry.notes-emoji-entry.notes-emoji-full text { caret-color: transparent; }",
         ROW_TINT);
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);
@@ -5915,9 +5958,6 @@ on_library_window_create(OnApp *app)
      * so it missed the stack's construction-time child change.            */
     view_button_sync(lw);
 
-    /* Fit the sidebar pane to its content width on first show — from the
-     * list's "map", the first moment its rows can be measured.            */
-    g_signal_connect(lw->sidebar, "map", G_CALLBACK(on_sidebar_mapped), lw);
 
     return lw->window;
 }

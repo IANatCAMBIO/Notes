@@ -2364,6 +2364,21 @@ on_note_view_image_png(OnNoteView *v, gint ord)
     return on_document_image_nth(v->doc, ord, NULL);
 }
 
+/* reveal_pos() — the caret to `p`, scrolled a third of the way down the
+ * window (like the old view); THE one placement both reveals share.      */
+static void
+reveal_pos(OnNoteView *v, OnPos p)
+{
+    set_caret(v, p, FALSE);
+    if (v->vadj != NULL) {
+        graphene_rect_t r;
+        on_doc_layout_caret_rect(v->layout, p, &r);
+        gtk_adjustment_set_value(
+            v->vadj, MAX(0, r.origin.y -
+                            gtk_adjustment_get_page_size(v->vadj) * 0.3));
+    }
+}
+
 gboolean
 on_note_view_image_reveal(OnNoteView *v, gint ord)
 {
@@ -2375,16 +2390,21 @@ on_note_view_image_reveal(OnNoteView *v, gint ord)
     if (k >= 0)
         p.offset = g_array_index(on_document_block(v->doc, block)->text->images,
                                  OnInlineImage, k).offset;
-    set_caret(v, p, FALSE);
-    /* A third of the way down the window, like the old view.              */
-    if (v->vadj != NULL) {
-        graphene_rect_t r;
-        on_doc_layout_caret_rect(v->layout, p, &r);
-        gtk_adjustment_set_value(
-            v->vadj, MAX(0, r.origin.y -
-                            gtk_adjustment_get_page_size(v->vadj) * 0.3));
-    }
+    reveal_pos(v, p);
     return TRUE;
+}
+
+gboolean
+on_note_view_action_reveal(OnNoteView *v, gint ord)
+{
+    GArray *blocks = on_document_action_blocks(v->doc);
+    gboolean ok = ord >= 0 && (guint)ord < blocks->len;
+    if (ok) {
+        OnPos p = { g_array_index(blocks, guint, ord), -1, 1 };
+        reveal_pos(v, p);            /* after the '!'                       */
+    }
+    g_array_unref(blocks);
+    return ok;
 }
 
 void

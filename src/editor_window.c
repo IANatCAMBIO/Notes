@@ -39,6 +39,10 @@
 #define EDITOR_WIN_DEFAULT_W 640
 #define EDITOR_WIN_DEFAULT_H 509
 
+/* What an editor opened "at" something scrolls to once it is allocated
+ * (editor_window_open_full's reveal): nothing, an image, an action item. */
+typedef enum { ON_REVEAL_NONE, ON_REVEAL_IMAGE, ON_REVEAL_ACTION } OnReveal;
+
 /* ---------------------------------------------------------------------------
  * OnEditor — all state for one open editor window.  Everything about the
  * TEXT — styles, anchors, tags, undo, the derived looks — is the view's
@@ -64,10 +68,11 @@
  *   search_entry    — the in-note find entry at the toolbar's right edge.
  *   pending_search  — initial in-note query, applied once.
  *   initial_search_idle — idle source id of that deferred application.
- *   pending_image   — image ordinal to reveal once the fresh window is
- *                     allocated, -1 = no image was asked for (see the
- *                     media window's double-click).
- *   initial_image_idle — idle source id of that deferred reveal.
+ *   pending_reveal  — what to scroll to once the fresh window is
+ *                     allocated (an image, from the media window's
+ *                     double-click; an action item, from the library's
+ *                     Action Items), with its ordinal in pending_ord.
+ *   initial_reveal_idle — idle source id of that deferred reveal.
  *   dirty           — TRUE while the note has edits the database hasn't
  *                     seen (set whenever an autosave is queued, cleared
  *                     by editor_save); closing a window with no unsaved
@@ -111,8 +116,9 @@ typedef struct {
     GtkWidget      *search_entry;
     gchar          *pending_search;
     guint           initial_search_idle;
-    gint            pending_image;
-    guint           initial_image_idle;
+    OnReveal        pending_reveal;
+    gint            pending_ord;
+    guint           initial_reveal_idle;
     gboolean        dirty;
     GtkWidget      *status_path;
     GtkWidget      *status_note_id;
@@ -741,16 +747,28 @@ on_initial_search_idle(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
-/* on_initial_image_idle() — reveal ed->pending_image once the freshly opened
+/* editor_reveal() — scroll the view to `what` number `ord` (an image or an
+ * action item); THE dispatch both the deferred open and the already-open
+ * re-open go through.                                                       */
+static void
+editor_reveal(OnEditor *ed, OnReveal what, gint ord)
+{
+    if (what == ON_REVEAL_IMAGE)
+        on_note_view_image_reveal(ed->view, ord);
+    else if (what == ON_REVEAL_ACTION)
+        on_note_view_action_reveal(ed->view, ord);
+}
+
+/* on_initial_reveal_idle() — run the pending reveal once the freshly opened
  * window is realized and allocated, so the scroll lands (same deferral as
  * on_initial_search_idle).                                                   */
 static gboolean
-on_initial_image_idle(gpointer user_data)
+on_initial_reveal_idle(gpointer user_data)
 {
     OnEditor *ed = user_data;        /* owning editor                       */
-    ed->initial_image_idle = 0;
-    on_note_view_image_reveal(ed->view, ed->pending_image);
-    ed->pending_image = -1;
+    ed->initial_reveal_idle = 0;
+    editor_reveal(ed, ed->pending_reveal, ed->pending_ord);
+    ed->pending_reveal = ON_REVEAL_NONE;
     return G_SOURCE_REMOVE;
 }
 
@@ -906,9 +924,9 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
         g_source_remove(ed->initial_search_idle);
         ed->initial_search_idle = 0;
     }
-    if (ed->initial_image_idle != 0) {
-        g_source_remove(ed->initial_image_idle);
-        ed->initial_image_idle = 0;
+    if (ed->initial_reveal_idle != 0) {
+        g_source_remove(ed->initial_reveal_idle);
+        ed->initial_reveal_idle = 0;
     }
     on_image_viewer_free(ed->img_viewer);
     ed->img_viewer = NULL;
@@ -1567,18 +1585,20 @@ editor_connect_signals(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_window_open_full() — shared implementation behind the three public
+ * editor_window_open_full() — shared implementation behind the four public
  * open functions.  Both extras are optional and mutually independent:
  *   search_term — pre-populates the in-note search box and jumps to the
  *                 first match, so a note opened from the library search
  *                 window lands with its hit highlighted (NULL for none).
- *   image_ord   — scrolls to that image of the note, so a note opened from
- *                 the media window lands on the thumbnail that was
- *                 double-clicked (-1 for none).
+ *   reveal/ord  — scrolls to the `ord`-th image or action item of the
+ *                 note, so a note opened from the media window lands on
+ *                 the thumbnail that was double-clicked and one opened
+ *                 from Action Items on that line (ON_REVEAL_NONE for
+ *                 neither).
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
-                        gint image_ord)
+                        OnReveal reveal, gint ord)
 {
     /* Already open?  Just raise the existing window (and re-run the search
      * or the scroll if one was requested — the note may already be up from a
@@ -1589,8 +1609,7 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
         gtk_window_present(GTK_WINDOW(existing->window));
         if (search_term != NULL && *search_term != '\0')
             editor_apply_search_term(existing, search_term);
-        if (image_ord >= 0)
-            on_note_view_image_reveal(existing->view, image_ord);
+        editor_reveal(existing, reveal, ord);
         return existing->window;
     }
 
@@ -1604,7 +1623,6 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     OnEditor *ed = g_new0(OnEditor, 1);
     ed->app     = app;
     ed->note_id = note_id;
-    ed->pending_image = -1;          /* no image reveal unless asked for    */
 
     /* --- window: a plain GtkWindow, standard titlebar (no HeaderBar) ---- */
     /* A GtkApplicationWindow, for the "win." action group the toolbar,
@@ -1648,11 +1666,12 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
         ed->initial_search_idle = g_idle_add(on_initial_search_idle, ed);
     }
 
-    /* Opened from the media window: same deferral, so the scroll to the
-     * image lands on an allocated view.                                    */
-    if (image_ord >= 0) {
-        ed->pending_image = image_ord;
-        ed->initial_image_idle = g_idle_add(on_initial_image_idle, ed);
+    /* Opened AT an image or an action item: same deferral, so the scroll
+     * lands on an allocated view.                                          */
+    if (reveal != ON_REVEAL_NONE) {
+        ed->pending_reveal = reveal;
+        ed->pending_ord    = ord;
+        ed->initial_reveal_idle = g_idle_add(on_initial_reveal_idle, ed);
     }
 
     on_db_note_meta_free(meta);
@@ -1664,18 +1683,31 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
 GtkWidget *
 on_editor_window_open(OnApp *app, gint64 note_id)
 {
-    return editor_window_open_full(app, note_id, NULL, -1);
+    return editor_window_open_full(app, note_id, NULL, ON_REVEAL_NONE, -1);
 }
 
 GtkWidget *
 on_editor_window_open_search(OnApp *app, gint64 note_id,
                              const gchar *search_term)
 {
-    return editor_window_open_full(app, note_id, search_term, -1);
+    return editor_window_open_full(app, note_id, search_term,
+                                   ON_REVEAL_NONE, -1);
 }
 
 GtkWidget *
 on_editor_window_open_image(OnApp *app, gint64 note_id, gint image_ord)
 {
-    return editor_window_open_full(app, note_id, NULL, image_ord);
+    return editor_window_open_full(app, note_id, NULL,
+                                   image_ord >= 0 ? ON_REVEAL_IMAGE
+                                                  : ON_REVEAL_NONE,
+                                   image_ord);
+}
+
+GtkWidget *
+on_editor_window_open_action(OnApp *app, gint64 note_id, gint action_ord)
+{
+    return editor_window_open_full(app, note_id, NULL,
+                                   action_ord >= 0 ? ON_REVEAL_ACTION
+                                                   : ON_REVEAL_NONE,
+                                   action_ord);
 }

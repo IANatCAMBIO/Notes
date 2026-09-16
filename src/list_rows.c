@@ -8,9 +8,30 @@
 #include "list_rows.h"
 
 /* ---------------------------------------------------------------------------
+ * OnRow — the base class: the "changed" signal.
+ * ------------------------------------------------------------------------- */
+G_DEFINE_ABSTRACT_TYPE(OnRow, on_row, G_TYPE_OBJECT)
+
+static guint row_changed_signal;     /* OnRow::changed                      */
+
+static void
+on_row_class_init(OnRowClass *klass)
+{
+    row_changed_signal = g_signal_new("changed", G_TYPE_FROM_CLASS(klass),
+                                      G_SIGNAL_RUN_LAST, 0, NULL, NULL,
+                                      NULL, G_TYPE_NONE, 0);
+}
+
+static void
+on_row_init(OnRow *r)
+{
+    (void)r;
+}
+
+/* ---------------------------------------------------------------------------
  * OnSbRow
  * ------------------------------------------------------------------------- */
-G_DEFINE_TYPE(OnSbRow, on_sb_row, G_TYPE_OBJECT)
+G_DEFINE_TYPE(OnSbRow, on_sb_row, ON_TYPE_ROW)
 
 static void
 on_sb_row_finalize(GObject *object)
@@ -51,7 +72,7 @@ on_sb_row_new(gint kind, gint64 id, const gchar *name, const gchar *raw,
 /* ---------------------------------------------------------------------------
  * OnNoteRow
  * ------------------------------------------------------------------------- */
-G_DEFINE_TYPE(OnNoteRow, on_note_row, G_TYPE_OBJECT)
+G_DEFINE_TYPE(OnNoteRow, on_note_row, ON_TYPE_ROW)
 
 static void
 on_note_row_finalize(GObject *object)
@@ -87,7 +108,7 @@ on_note_row_new(void)
 /* ---------------------------------------------------------------------------
  * OnActionRow
  * ------------------------------------------------------------------------- */
-G_DEFINE_TYPE(OnActionRow, on_action_row, G_TYPE_OBJECT)
+G_DEFINE_TYPE(OnActionRow, on_action_row, ON_TYPE_ROW)
 
 static void
 on_action_row_finalize(GObject *object)
@@ -122,9 +143,77 @@ on_action_row_new(void)
 gboolean
 on_row_touch(GListStore *store, gpointer row)
 {
+    g_signal_emit(row, row_changed_signal, 0);
     guint pos;                       /* the row's position in the store     */
     if (!g_list_store_find(store, row, &pos))
         return FALSE;
     g_list_model_items_changed(G_LIST_MODEL(store), pos, 1, 1);
     return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_row_factory_new() and its trampolines.  The factory carries the
+ * caller's bind and data; each list item carries the handler id of its
+ * "changed" connection while bound.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    GCallback bind;                  /* the caller's bind handler           */
+    gpointer  user_data;
+} RowFactory;
+
+static void row_factory_bind_again(GtkListItem *item);
+
+/* row_factory_bind() — the caller's bind, then listen for "changed".       */
+static void
+row_factory_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    RowFactory *rf = data;
+    ((void (*)(GtkListItemFactory *, GtkListItem *, gpointer))rf->bind)(
+        f, item, rf->user_data);
+    gpointer row = gtk_list_item_get_item(item);
+    if (ON_IS_ROW(row)) {
+        gulong id = g_signal_connect_swapped(row, "changed",
+                                             G_CALLBACK(row_factory_bind_again),
+                                             item);
+        g_object_set_data(G_OBJECT(item), "on-changed-id",
+                          GSIZE_TO_POINTER(id));
+        g_object_set_data(G_OBJECT(item), "on-factory", f);
+    }
+}
+
+/* row_factory_bind_again() — the bound row changed: bind again.            */
+static void
+row_factory_bind_again(GtkListItem *item)
+{
+    GtkListItemFactory *f = g_object_get_data(G_OBJECT(item), "on-factory");
+    RowFactory *rf = g_object_get_data(G_OBJECT(f), "on-row-factory");
+    ((void (*)(GtkListItemFactory *, GtkListItem *, gpointer))rf->bind)(
+        f, item, rf->user_data);
+}
+
+/* row_factory_unbind() — stop listening; the item is about to change.    */
+static void
+row_factory_unbind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    gulong id = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(item),
+                                                    "on-changed-id"));
+    if (id != 0) {
+        g_signal_handler_disconnect(gtk_list_item_get_item(item), id);
+        g_object_set_data(G_OBJECT(item), "on-changed-id", NULL);
+    }
+}
+
+GtkListItemFactory *
+on_row_factory_new(GCallback setup, GCallback bind, gpointer user_data)
+{
+    GtkListItemFactory *f = gtk_signal_list_item_factory_new();
+    RowFactory *rf = g_new0(RowFactory, 1);
+    rf->bind      = bind;
+    rf->user_data = user_data;
+    g_object_set_data_full(G_OBJECT(f), "on-row-factory", rf, g_free);
+    g_signal_connect(f, "setup",  setup, user_data);
+    g_signal_connect(f, "bind",   G_CALLBACK(row_factory_bind),   rf);
+    g_signal_connect(f, "unbind", G_CALLBACK(row_factory_unbind), rf);
+    return f;
 }

@@ -573,10 +573,9 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
         RCOLS[] = { { "Path", RF_PATH, TRUE }, { "Modified", RF_MODIFIED,
                                                  FALSE } };
     for (gsize i = 0; i < G_N_ELEMENTS(RCOLS); i++) {
-        GtkListItemFactory *f = gtk_signal_list_item_factory_new();
-        g_signal_connect(f, "setup", G_CALLBACK(on_result_setup), NULL);
-        g_signal_connect(f, "bind", G_CALLBACK(on_result_bind),
-                         GINT_TO_POINTER(RCOLS[i].field));
+        GtkListItemFactory *f = on_row_factory_new(
+            G_CALLBACK(on_result_setup), G_CALLBACK(on_result_bind),
+            GINT_TO_POINTER(RCOLS[i].field));
         GtkColumnViewColumn *col = gtk_column_view_column_new(RCOLS[i].title,
                                                               f);
         gtk_column_view_column_set_expand(col, RCOLS[i].expand);

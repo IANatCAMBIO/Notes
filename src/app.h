@@ -425,6 +425,33 @@ void on_app_menu_popup(GtkWidget *attach, GMenuModel *model,
                        gdouble x, gdouble y);
 
 /* ---------------------------------------------------------------------------
+ * on_app_double_click_watch() — call `cb` when `widget` is double-clicked
+ * with the primary button, counted by THIS app from the time and distance
+ * between two presses (the gtk-double-click-time / -distance settings),
+ * not by GtkGestureClick's n_press.  Measured on the macOS backend (D34):
+ * GDK's fill_motion_event takes a motion event's BUTTON STATE from
+ * [NSEvent pressedMouseButtons] when the event is TRANSLATED, not from the
+ * event, so a drag motion of the first click that GTK gets to after the
+ * button is already up carries no BUTTON1 — and GtkGestureSingle resets
+ * an active gesture on a motion with no button (gtkgesturesingle.c,
+ * `button == 0`).  Every GtkGestureClick in the window is reset that way,
+ * GTK's own row gesture included, so its count restarts and the second
+ * press arrives as a first one; a double-click then took a third or
+ * fourth click, depending on whether the pointer moved a pixel under the
+ * finger and on whether the main loop was busy at that moment.  The count
+ * kept here lives OUTSIDE the gesture, so a reset cannot touch it.  A
+ * capture-phase gesture on `widget`; on the second press it CLAIMS the
+ * sequence, so GTK's own activation cannot fire a second time when its
+ * count did survive.
+ *   widget — the widget to watch (a list row or cell).
+ *   cb     — called as cb(widget, data) on the double-click.
+ *   data   — its user data.
+ * ------------------------------------------------------------------------- */
+typedef void (*OnDoubleClickFunc)(GtkWidget *widget, gpointer data);
+void on_app_double_click_watch(GtkWidget *widget, OnDoubleClickFunc cb,
+                               gpointer data);
+
+/* ---------------------------------------------------------------------------
  * on_app_install_accels() — THE keyboard-shortcut table, bound once at
  * startup with gtk_application_set_accels_for_action.  Every shortcut is a
  * "win." action, so the same key can mean different things in different

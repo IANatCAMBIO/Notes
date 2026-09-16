@@ -842,10 +842,39 @@ add a second idiom.
   time, so it rolls over at midnight on the next refresh rather than on
   the next paint.
 
+- **D34 · 2026-09-16 — Double-clicks are counted by the app, not by
+  GtkGestureClick's n_press** (`on_app_double_click_watch`, app.h).
+  Reported as "sometimes a double-click opens the note, sometimes it
+  takes three or four".  Root cause, in GDK's macOS backend
+  (gdkmacosdisplay-translate.c, `fill_motion_event`): a motion event's
+  button state is read from `[NSEvent pressedMouseButtons]` when the
+  event is TRANSLATED, not taken from the NSEvent — so the small drag a
+  finger makes during the first click, if GTK gets to it after the
+  button is already up (the release already queued behind it), arrives
+  as a motion with NO button held.  GtkGestureSingle resets an active
+  gesture on exactly that (`button == 0` → `gtk_event_controller_reset`),
+  which zeroes GtkGestureClick's count; the second press is then a first
+  press.  Reproduced in a bare GtkDrawingArea (press n=1, motion 2 px,
+  STOPPED, CANCEL, then n=1 again) with a synthetic down → 2 px drag → up
+  posted back-to-back, and in the app (GTK counted n=1 on the second
+  press while the watcher paired it at 122 ms / 2 px and opened the
+  note).  So the count lives outside any gesture: a capture-phase click
+  gesture per row/cell remembers the last press's time and position as
+  its own data, pairs the next press by the gtk-double-click-time and
+  -distance settings, and CLAIMS the sequence so GTK's own activation
+  cannot open the note a second time when its count did survive.  Wired
+  on the notes list cells, the grid cards, the Action Items text and due
+  cells (due → calendar, text → open at the item) and the search results;
+  the views' "activate" signals stay for Enter.  A drag beyond the DnD
+  threshold still starts a drag and never double-clicks — that is a
+  drag.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
+- 2026-09-16 — D34: double-clicks counted by the app; the GDK macOS
+  backend's buttonless drag motion resets every GtkGestureClick.
 - 2026-09-14 — plan written; survey numbers above.
 - 2026-09-15 — BLOCK_MODEL.md written: the OnDocument + drawn-view design
   that retires the anchored-widget family; no code yet.

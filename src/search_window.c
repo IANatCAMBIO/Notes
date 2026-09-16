@@ -400,12 +400,28 @@ on_result_activated(GtkColumnView *view, guint position, gpointer user_data)
 /* The two result columns show one OnNoteRow string each.                   */
 enum { RF_PATH, RF_MODIFIED };
 
+/* on_result_double_clicked() — a double-click on a result cell opens the
+ * note, counted by the app (on_app_double_click_watch, D34); "activate"
+ * still serves Enter.  The window rides on the factory as "on-window".  */
+static void
+on_result_double_clicked(GtkWidget *cell, gpointer user_data)
+{
+    OnSearch *sw = user_data;        /* owning search window                */
+    GtkListItem *item = g_object_get_data(G_OBJECT(cell), "on-item");
+    OnNoteRow *row = item != NULL ? gtk_list_item_get_item(item) : NULL;
+    if (row != NULL)
+        on_editor_window_open_search(sw->app, row->id, sw->highlight);
+}
+
 /* on_result_setup() / on_result_bind() — a label per cell.                  */
 static void
 on_result_setup(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
 {
-    (void)f; (void)user_data;
+    (void)user_data;
     GtkWidget *label = gtk_label_new(NULL);
+    g_object_set_data(G_OBJECT(label), "on-item", item);
+    on_app_double_click_watch(label, on_result_double_clicked,
+                              g_object_get_data(G_OBJECT(f), "on-window"));
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_margin_start(label, 6);
@@ -576,6 +592,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
         GtkListItemFactory *f = on_row_factory_new(
             G_CALLBACK(on_result_setup), G_CALLBACK(on_result_bind),
             GINT_TO_POINTER(RCOLS[i].field));
+        g_object_set_data(G_OBJECT(f), "on-window", sw);
         GtkColumnViewColumn *col = gtk_column_view_column_new(RCOLS[i].title,
                                                               f);
         gtk_column_view_column_set_expand(col, RCOLS[i].expand);

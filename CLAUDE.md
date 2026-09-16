@@ -872,6 +872,14 @@ GtkTextView exists in the app.**
   (`note_cell_controllers`); the effect is the same.  The sidebar's
   GtkListView hands the factory the whole row, so its controllers are one
   per row.
+- **A double-click is counted by the app, never by `n_press`** (D34):
+  the macOS backend stamps a motion event with the buttons held WHEN IT
+  IS TRANSLATED, so the tiny drag inside a quick first click can reach
+  GTK as a motion with no button down, and GtkGestureSingle RESETS every
+  active click gesture on that — the count restarts and the second press
+  is a first one.  `on_app_double_click_watch` (app.h) keeps the last
+  press outside the gesture and pairs the next by the double-click
+  settings; every row/cell that opens on double-click uses it.
 - **A GtkListView measures only its REALIZED rows** (D33): the sidebar
   fit reads the list's natural width, which is exactly the on-screen
   rows, but it is meaningless before the list is mapped and laid out —

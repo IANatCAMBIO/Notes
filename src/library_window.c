@@ -1647,9 +1647,10 @@ action_due_dialog(OnLibrary *lw, OnActionRow *row)
                G_N_ELEMENTS(BUTTONS), on_due_response, d);
 }
 
-/* on_action_row_activated() — double-click/Enter on an Action Items row
- * opens the item's note AT that line (the Due Date CELL has its own
- * double-click, see on_due_cell_pressed).                                   */
+/* on_action_row_activated() — Enter on an Action Items row (and GTK's own
+ * double-click, when its count survives — D34) opens the item's note AT
+ * that line.  The cells count double-clicks themselves: the Due Date cell
+ * opens the calendar, the text cell the note.                             */
 static void
 on_action_row_activated(GtkColumnView *view, guint position,
                         gpointer user_data)
@@ -1664,25 +1665,41 @@ on_action_row_activated(GtkColumnView *view, guint position,
     g_object_unref(row);
 }
 
-/* on_due_cell_pressed() — double-click on a Due Date cell: the calendar.
- * The press is claimed so the row's own gesture does not also open the
- * note (a plain double-click elsewhere on the row still does).            */
+/* on_due_cell_double_clicked() — double-click on a Due Date cell: the
+ * calendar (on_app_double_click_watch; the claim it makes keeps the row's
+ * own activation from also opening the note).                              */
 static void
-on_due_cell_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
-                    gpointer user_data)
+on_due_cell_double_clicked(GtkWidget *label, gpointer user_data)
 {
-    (void)x; (void)y;
     OnLibrary *lw = user_data;       /* owning library window               */
-    if (n_press != 2)
-        return;
-    GtkWidget *label =
-        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
     GtkListItem *item = g_object_get_data(G_OBJECT(label), "on-item");
     OnActionRow *row = item != NULL ? gtk_list_item_get_item(item) : NULL;
-    if (row == NULL)
-        return;
-    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
-    action_due_dialog(lw, row);
+    if (row != NULL)
+        action_due_dialog(lw, row);
+}
+
+/* on_action_cell_double_clicked() — double-click on any other Action Items
+ * cell: the note, at the item (on_app_double_click_watch).               */
+static void
+on_action_cell_double_clicked(GtkWidget *cell, gpointer user_data)
+{
+    OnLibrary *lw = user_data;       /* owning library window               */
+    GtkListItem *item = g_object_get_data(G_OBJECT(cell), "on-item");
+    OnActionRow *row = item != NULL ? gtk_list_item_get_item(item) : NULL;
+    if (row != NULL)
+        on_editor_window_open_action(lw->app, row->note_id, row->ord);
+}
+
+/* on_note_double_clicked() — double-click on a note row/cell/card: open
+ * the note (on_app_double_click_watch).                                    */
+static void
+on_note_double_clicked(GtkWidget *cell, gpointer user_data)
+{
+    OnLibrary *lw = user_data;       /* owning library window               */
+    GtkListItem *item = g_object_get_data(G_OBJECT(cell), "on-item");
+    OnNoteRow *row = item != NULL ? gtk_list_item_get_item(item) : NULL;
+    if (row != NULL)
+        on_editor_window_open(lw->app, row->id);
 }
 
 /* ===========================================================================
@@ -4636,6 +4653,10 @@ note_cell_controllers(OnLibrary *lw, GtkWidget *widget, GtkListItem *item)
     g_signal_connect(drag, "prepare", G_CALLBACK(on_note_drag_prepare), lw);
     gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(drag));
     row_click_gesture(widget, item, G_CALLBACK(on_note_pressed), lw);
+    /* Double-click opens the note — counted here (on_app_double_click_watch,
+     * D34); the view's own "activate" still serves Enter.                 */
+    g_object_set_data(G_OBJECT(widget), "on-item", item);
+    on_app_double_click_watch(widget, on_note_double_clicked, lw);
 }
 
 /* cell_label_new() — a left-aligned cell label with the column's padding. */
@@ -4820,8 +4841,12 @@ static void
 on_action_text_setup(GtkListItemFactory *f, GtkListItem *item,
                      gpointer user_data)
 {
-    (void)f; (void)user_data;
-    gtk_list_item_set_child(item, cell_label_new(TRUE));
+    (void)f;
+    GtkWidget *label = cell_label_new(TRUE);
+    g_object_set_data(G_OBJECT(label), "on-item", item);
+    on_app_double_click_watch(label, on_action_cell_double_clicked,
+                              user_data);
+    gtk_list_item_set_child(item, label);
 }
 
 /* strike_attrs() — a strikethrough attribute list, or NULL for none.       */
@@ -4865,14 +4890,7 @@ on_action_due_setup(GtkListItemFactory *f, GtkListItem *item,
     (void)f;
     GtkWidget *label = cell_label_new(FALSE);
     g_object_set_data(G_OBJECT(label), "on-item", item);
-    GtkGesture *click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
-                                  GDK_BUTTON_PRIMARY);
-    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
-                                               GTK_PHASE_CAPTURE);
-    g_signal_connect(click, "pressed", G_CALLBACK(on_due_cell_pressed),
-                     user_data);
-    gtk_widget_add_controller(label, GTK_EVENT_CONTROLLER(click));
+    on_app_double_click_watch(label, on_due_cell_double_clicked, user_data);
     gtk_list_item_set_child(item, label);
 }
 

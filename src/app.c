@@ -335,6 +335,63 @@ menu_popup_parent_unrealize(GtkWidget *parent, gpointer user_data)
     menu_popup_drop(user_data);
 }
 
+/* DoubleClick — the last primary press on a watched widget: time and
+ * position, and the callback.  Kept as the gesture's data, NOT as gesture
+ * state — a reset of the gesture (see on_app_double_click_watch, app.h)
+ * must not lose the first press.                                           */
+typedef struct {
+    OnDoubleClickFunc cb;
+    gpointer          data;
+    guint32           last_time;     /* ms, 0 = none                        */
+    gdouble           last_x, last_y;
+} DoubleClick;
+
+/* on_double_click_pressed() — every primary press: a second one within the
+ * settings' time and distance of the first is the double-click.  n_press
+ * is deliberately unused: it is what the reset zeroes.                    */
+static void
+on_double_click_pressed(GtkGestureClick *g, gint n_press, gdouble x,
+                        gdouble y, gpointer user_data)
+{
+    (void)n_press;
+    DoubleClick *dc = user_data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    GdkEvent *event = gtk_gesture_get_last_event(GTK_GESTURE(g), NULL);
+    guint32 now = event != NULL ? gdk_event_get_time(event) : 0;
+    gint time_ms = 400, dist = 5;    /* the settings' documented defaults   */
+    g_object_get(gtk_widget_get_settings(widget),
+                 "gtk-double-click-time", &time_ms,
+                 "gtk-double-click-distance", &dist, NULL);
+    gboolean second = dc->last_time != 0 &&
+                      now - dc->last_time <= (guint32)time_ms &&
+                      ABS(x - dc->last_x) <= dist && ABS(y - dc->last_y) <= dist;
+    if (second) {
+        dc->last_time = 0;           /* a third press starts over           */
+        gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
+        dc->cb(widget, dc->data);
+    } else {
+        dc->last_time = now;
+        dc->last_x    = x;
+        dc->last_y    = y;
+    }
+}
+
+void
+on_app_double_click_watch(GtkWidget *widget, OnDoubleClickFunc cb,
+                          gpointer data)
+{
+    DoubleClick *dc = g_new0(DoubleClick, 1);
+    dc->cb   = cb;
+    dc->data = data;
+    GtkGesture *g = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(g), GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(g),
+                                               GTK_PHASE_CAPTURE);
+    g_object_set_data_full(G_OBJECT(g), "on-double-click", dc, g_free);
+    g_signal_connect(g, "pressed", G_CALLBACK(on_double_click_pressed), dc);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(g));
+}
+
 void
 on_app_menu_popup(GtkWidget *attach, GMenuModel *model, gdouble x, gdouble y)
 {

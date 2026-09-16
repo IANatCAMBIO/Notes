@@ -110,6 +110,37 @@ on_app_location_text(OnApp *app, const gchar *location)
                            location);
 }
 
+/* db_health_done() — the async pass landed: report it.                     */
+static void
+db_health_done(OnDatabase *db, gpointer data)
+{
+    OnApp *app = data;
+    const OnDbHealth *h = on_db_health(db);
+    if (h != NULL && h->ok) {
+        on_app_status(app, "DB at %s loaded, integrity check passed",
+                      db->path);
+    } else {
+        on_app_notice(NULL, "Notes - Database Integrity Check",
+                      "%s\n\n%s",
+                      h != NULL && h->ran
+                          ? "The database integrity check found issues:"
+                          : "The database integrity check could not be "
+                            "completed:",
+                      h != NULL && h->detail != NULL ? h->detail
+                                                     : "no detail reported");
+    }
+    if (app->notify_db_health != NULL)
+        app->notify_db_health(app);
+}
+
+void
+on_app_db_health_start(OnApp *app)
+{
+    on_db_health_check_async(app->db, db_health_done, app);
+    if (app->notify_db_health != NULL)
+        app->notify_db_health(app);  /* the plate shows "checking"          */
+}
+
 void
 on_app_notice(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 {

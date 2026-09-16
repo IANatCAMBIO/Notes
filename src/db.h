@@ -71,6 +71,7 @@ typedef struct {
     gboolean  ran;                   /* both checks actually executed       */
     gint64    when;                  /* unix time of the pass, 0 = never    */
     gchar    *detail;                /* what went wrong, or NULL (owned)    */
+    gboolean  pending;               /* an async pass is running now        */
 } OnDbHealth;
 
 /* ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ typedef struct {
      * of the connection and deliberately never written down — see
      * on_db_health_check().                                                */
     OnDbHealth  health;
+    gpointer    health_job;   /* the async pass in flight, or NULL (db.c) */
 } OnDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -222,9 +224,30 @@ gboolean on_db_verify_file(const gchar *path, gchar **detail);
  * ------------------------------------------------------------------------- */
 gboolean on_db_health_check(OnDatabase *db);
 
-/* on_db_health() — the stored result, or NULL when no pass has been made on
- * this connection.  Borrowed, owned by the connection: do not free it, and
- * do not keep it across an on_db_health_check().                            */
+/* ---------------------------------------------------------------------------
+ * on_db_health_check_async() — the same pass, on a worker thread with its
+ * own READ-ONLY connection to the file (a connection must not cross
+ * threads), so the launch does not wait for it: PRAGMA integrity_check
+ * walks every page and every index entry, ~2 s per 600 MB on a warm local
+ * disk and longer from a cold iCloud Drive file.  on_db_health() reports
+ * `pending` until the verdict lands, when it is recorded on the connection
+ * exactly as the synchronous pass records it and `done` is called on the
+ * main thread.  Closing the database while the pass runs abandons it —
+ * `done` is never called for a connection that is gone.  One pass per
+ * connection at a time: a second call while one is pending is ignored.
+ *   db   — the open database.
+ *   done — called on the main thread with the verdict recorded; may be
+ *          NULL.
+ *   data — its user data.
+ * ------------------------------------------------------------------------- */
+typedef void (*OnDbHealthFunc)(OnDatabase *db, gpointer data);
+void on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done,
+                              gpointer data);
+
+/* on_db_health() — the stored result, or NULL when no pass has been made or
+ * started on this connection.  Borrowed, owned by the connection: do not
+ * free it, and do not keep it across an on_db_health_check().  While
+ * `pending` is set the other fields are the PREVIOUS pass's (or zero).    */
 const OnDbHealth *on_db_health(OnDatabase *db);
 
 /* ---------------------------------------------------------------------------

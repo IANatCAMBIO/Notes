@@ -2819,6 +2819,7 @@ open_db_switch(OnLibrary *lw, const gchar *path, gboolean set_default)
     if (app->notify_notes_changed != NULL)
         app->notify_notes_changed(app);
     on_app_status(app, "DB at %s loaded", app->db->path);
+    on_app_db_health_start(app);     /* every opened database is checked    */
 }
 
 /* open_db_chosen() — step 2 answered (0 Cancel, 1 Session Only, 2 Set as

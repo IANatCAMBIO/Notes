@@ -477,7 +477,16 @@ handlers that duplicate a menu item.
   FILE.db` and by the rotating backups (`backup.[ch]`); the File menu
   backup/restore items were removed.
 - **The startup integrity check runs EVERY launch and has no off switch**
-  (`startup_integrity_check()` in main.c, over `on_db_health_check()`).
+  (`on_app_db_health_start()`, called by `startup_finish` in main.c AND by
+  File → Open Database File…, over `on_db_health_check_async()`: a worker
+  thread with its own read-only connection, so the library window is up
+  while `PRAGMA integrity_check` walks the file — 1.7 s per 600 MB on a
+  warm local disk, longer from a cold iCloud Drive file, and it used to be
+  all of that before the window appeared.  The verdict lands on the main
+  thread through an idle: a status line, the warning dialog if anything is
+  wrong, and `app->notify_db_health` for the Settings plate, which shows
+  "Checking…" with a white LED meanwhile.  Closing the connection abandons
+  a running pass — the job outlives it and frees itself).
   The `db_integrity_check` ini key that once gated it was REMOVED 2026-09
   along with the Settings checkbox: a health check that can be switched
   off can only ever report silence that means "not looked", which is the

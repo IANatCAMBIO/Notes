@@ -11,6 +11,10 @@
 #include <string.h>
 #include <glib/gstdio.h>
 
+/* The async health pass in flight on a connection (health section).    */
+typedef struct HealthJob HealthJob;
+static void on_db_health_abandon(OnDatabase *db);
+
 /* ---------------------------------------------------------------------------
  * SCHEMA_SQL — DDL executed every time the database is opened.
  * Every statement uses IF NOT EXISTS so re-running is harmless.
@@ -394,6 +398,10 @@ on_db_close(OnDatabase *db)
     }
     if (db->handle != NULL)
         sqlite3_close(db->handle);
+    /* An async health pass still running must not report to a connection
+     * that is gone: the job outlives us and frees itself.                */
+    if (db->health_job != NULL)
+        on_db_health_abandon(db);
     g_free(db->health.detail);
     g_free(db->path);
     g_free(db);
@@ -553,9 +561,17 @@ db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
     return ok;
 }
 
-gboolean
-on_db_verify_file(const gchar *path, gchar **detail)
+/* db_check_file() — the two PRAGMAs over a fresh READ-ONLY connection to
+ * `path`: the one implementation behind on_db_verify_file (a copy) and the
+ * async pass over the live file (a worker thread's own connection).
+ *   ran, detail — as db_check_pragmas; a file that cannot be opened is
+ *                 "did not run", with the open error as the detail.
+ * Returns TRUE only when both checks RAN and both came back clean.       */
+static gboolean
+db_check_file(const gchar *path, gboolean *ran, gchar **detail)
 {
+    if (ran != NULL)
+        *ran = FALSE;
     if (detail != NULL)
         *detail = NULL;
     gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
@@ -571,9 +587,27 @@ on_db_verify_file(const gchar *path, gchar **detail)
     }
     g_free(uri);
 
-    gboolean ok = db_check_pragmas(sq, NULL, detail);
+    gboolean ok = db_check_pragmas(sq, ran, detail);
     sqlite3_close(sq);
     return ok;
+}
+
+gboolean
+on_db_verify_file(const gchar *path, gchar **detail)
+{
+    return db_check_file(path, NULL, detail);
+}
+
+/* health_record() — write one pass's verdict onto the connection.          */
+static void
+health_record(OnDatabase *db, gboolean ok, gboolean ran, gchar *detail)
+{
+    g_free(db->health.detail);
+    db->health.ok      = ok;
+    db->health.ran     = ran;
+    db->health.detail  = detail;     /* handed over                         */
+    db->health.when    = g_get_real_time() / G_USEC_PER_SEC;
+    db->health.pending = FALSE;
 }
 
 gboolean
@@ -582,19 +616,84 @@ on_db_health_check(OnDatabase *db)
     gboolean  ran    = FALSE;        /* did both PRAGMAs execute?           */
     gchar    *detail = NULL;         /* sqlite's words on failure           */
     gboolean  ok = db_check_pragmas(db->handle, &ran, &detail);
-
-    g_free(db->health.detail);
-    db->health.ok     = ok;
-    db->health.ran    = ran;
-    db->health.detail = detail;      /* handed over                         */
-    db->health.when   = g_get_real_time() / G_USEC_PER_SEC;
+    health_record(db, ok, ran, detail);
     return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * HealthJob — one async pass: the file path (copied, since the worker may
+ * outlive a closed connection), the verdict it brings back, and the
+ * callback.  The worker owns nothing else; `cancelled` is set by
+ * on_db_close and read on the main thread only.
+ * ------------------------------------------------------------------------- */
+struct HealthJob {
+    OnDatabase     *db;
+    gchar          *path;
+    OnDbHealthFunc  done;
+    gpointer        data;
+    gboolean        ok, ran;
+    gchar          *detail;
+    gboolean        cancelled;
+};
+
+/* on_db_health_abandon() — the connection is closing: the running pass
+ * must not report to it.  The job outlives the connection and frees
+ * itself from its own idle.                                              */
+static void
+on_db_health_abandon(OnDatabase *db)
+{
+    ((HealthJob *)db->health_job)->cancelled = TRUE;
+    db->health_job = NULL;
+}
+
+/* health_job_done() — main-thread idle: record the verdict (unless the
+ * connection was closed meanwhile) and tell the caller; free the job.     */
+static gboolean
+health_job_done(gpointer user_data)
+{
+    HealthJob *job = user_data;
+    if (!job->cancelled) {
+        health_record(job->db, job->ok, job->ran, job->detail);
+        job->detail = NULL;          /* handed over                         */
+        job->db->health_job = NULL;
+        if (job->done != NULL)
+            job->done(job->db, job->data);
+    }
+    g_free(job->detail);
+    g_free(job->path);
+    g_free(job);
+    return G_SOURCE_REMOVE;
+}
+
+/* health_worker() — the thread: the pass over its own connection.        */
+static gpointer
+health_worker(gpointer user_data)
+{
+    HealthJob *job = user_data;
+    job->ok = db_check_file(job->path, &job->ran, &job->detail);
+    g_idle_add(health_job_done, job);
+    return NULL;
+}
+
+void
+on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done, gpointer data)
+{
+    if (db->health_job != NULL)
+        return;                      /* one pass at a time                  */
+    HealthJob *job = g_new0(HealthJob, 1);
+    job->db   = db;
+    job->path = g_strdup(db->path);
+    job->done = done;
+    job->data = data;
+    db->health_job     = job;
+    db->health.pending = TRUE;
+    g_thread_unref(g_thread_new("on-db-health", health_worker, job));
 }
 
 const OnDbHealth *
 on_db_health(OnDatabase *db)
 {
-    return db->health.when != 0 ? &db->health : NULL;
+    return (db->health.when != 0 || db->health.pending) ? &db->health : NULL;
 }
 
 /* Bytes per read when hashing.  The file is read in fixed-size chunks
@@ -2325,3 +2424,4 @@ on_db_folder_path(OnDatabase *db, gint64 folder_id)
         g_string_truncate(path, path->len - 1);
     return g_string_free(path, FALSE);
 }
+

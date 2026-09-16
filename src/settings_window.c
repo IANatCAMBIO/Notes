@@ -370,6 +370,12 @@ db_health_refresh(DbSection *s)
     if (h == NULL) {
         led  = LED_UNKNOWN;
         text = g_strdup("Not checked");
+    } else if (h->pending) {
+        /* The launch's pass is still walking the file (it runs behind the
+         * window — see on_app_db_health_start).  White, like "not
+         * checked": nothing has finished looking yet.                    */
+        led  = LED_UNKNOWN;
+        text = g_strdup("Checking\xe2\x80\xa6");
     } else {
         gchar *when = health_stamp(h->when);
         if (h->ok) {
@@ -397,7 +403,9 @@ db_health_refresh(DbSection *s)
     /* The detail is sqlite's own words and can run to many lines, so it
      * lives on the tooltip: the row says WHAT, hovering says which.       */
     on_app_set_tooltip(s->health_label,
-        h != NULL && h->detail != NULL ? h->detail
+        h != NULL && h->pending ? "PRAGMA integrity_check is running on a "
+                                  "worker thread; the verdict lands here."
+      : h != NULL && h->detail != NULL ? h->detail
       : h != NULL ? "PRAGMA integrity_check and PRAGMA foreign_key_check "
                     "both passed against this file."
                   : "Nothing has verified this database yet.  Press Update.");
@@ -478,6 +486,25 @@ db_section_refresh(DbSection *s)
 
     db_health_refresh(s);
     db_sha_refresh(s);
+}
+
+/* settings_notify_db_health() — app->notify_db_health while the window is
+ * open: the async pass changed state, repaint the plate.                 */
+static void
+settings_notify_db_health(OnApp *app)
+{
+    if (app->settings_db_section != NULL)
+        db_section_refresh(app->settings_db_section);
+}
+
+/* on_settings_destroy() — the window is going: unhook the plate.          */
+static void
+on_settings_destroy(GtkWidget *window, gpointer user_data)
+{
+    (void)window;
+    OnApp *app = user_data;
+    app->notify_db_health    = NULL;
+    app->settings_db_section = NULL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1047,6 +1074,11 @@ on_settings_window_open(OnApp *app)
     dbs->app = app;
     /* Freed with the window.                                               */
     g_object_set_data_full(G_OBJECT(window), "on-db-section", dbs, g_free);
+    /* The async health pass repaints the plate through this hook while the
+     * window is up; the window's destroy takes it down again.            */
+    app->settings_db_section = dbs;
+    app->notify_db_health    = settings_notify_db_health;
+    g_signal_connect(window, "destroy", G_CALLBACK(on_settings_destroy), app);
 
     /* --- What this database IS, before anything that changes it ----------
      * A GtkGrid rather than a stack of lines with a size group: the values

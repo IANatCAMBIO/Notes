@@ -104,6 +104,9 @@
  *                    set via File → Settings → AI Features (owned string).
  *   notify_ai_changed — callback that shows or hides the AI toolbar button
  *                    when ai_enabled changes.
+ *   notify_db_health — hook installed by the Settings window while it is
+ *                    open: the async health pass landed its verdict, so
+ *                    the Database plate repaints.  NULL otherwise.
  *   db_transient   — TRUE when the database that is currently open was
  *                    chosen interactively at launch (not the configured
  *                    default); used to decide whether to persist the path.
@@ -142,6 +145,10 @@ typedef struct OnApp {
     gchar           *ai_command;       /* command path to invoke AI            */
     gchar           *ai_custom_prompt; /* prompt text for Custom folder mode   */
     void           (*notify_ai_changed)(struct OnApp *app); /* show/hide btn   */
+    void           (*notify_db_health)(struct OnApp *app);  /* verdict landed  */
+    gpointer         settings_db_section; /* the open Settings window's
+                                           * Database plate (settings_window.c),
+                                           * NULL while none is open       */
     gboolean         db_transient;     /* TRUE when the current DB was opened
                                         * for this session only (not default) */
     GtkCssProvider  *touch_css;        /* screen CSS hiding the touch aids
@@ -234,6 +241,19 @@ gint on_emoji_pad(PangoContext *ctx);
  * Returns newly allocated markup; free with g_free().
  * ------------------------------------------------------------------------- */
 gchar *on_markup_escape_emoji(const gchar *text, gint pad);
+
+/* ---------------------------------------------------------------------------
+ * on_app_db_health_start() — THE integrity check of a freshly opened
+ * database: launch (main.c) and File → Open Database File… both run it,
+ * every time, with no switch — a check that can be skipped can only ever
+ * report a silence that means "not looked".  It runs on a worker thread
+ * (on_db_health_check_async) so the window is up while PRAGMA
+ * integrity_check walks the file; when the verdict lands it posts a
+ * status line, shows the warning dialog if anything is wrong, and calls
+ * app->notify_db_health for the Settings plate.
+ *   app — the application context, its database open.
+ * ------------------------------------------------------------------------- */
+void on_app_db_health_start(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_app_notice() — show a modal OK message (a GtkAlertDialog) over

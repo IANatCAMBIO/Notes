@@ -89,40 +89,6 @@ quartz_log_filter(const gchar   *domain,
 }
 #endif /* __APPLE__ */
 
-/* ---------------------------------------------------------------------------
- * startup_integrity_check() — verify the database at launch and show a
- * warning dialog when the checks find (or cannot reach) the truth.
- *
- * It runs EVERY launch and has no off switch, deliberately: a health check
- * that can be switched off can only ever report silence that means "not
- * looked", which is the one answer it must never give.  The verdict is
- * recorded on the connection, so Settings → Database can say when it was
- * reached without checking again.
- *
- * Inputs:
- *   app — the application context, its database already open.
- *
- * Output:
- *   TRUE when both checks ran and both passed.
- * ------------------------------------------------------------------------- */
-static gboolean
-startup_integrity_check(OnApp *app)
-{
-    if (on_db_health_check(app->db))
-        return TRUE;
-
-    const OnDbHealth *h = on_db_health(app->db);
-    on_app_notice(NULL, "Notes - Database Integrity Check",
-                  "%s\n\n%s",
-                  h != NULL && h->ran
-                      ? "The database integrity check found issues:"
-                      : "The database integrity check could not be "
-                        "completed:",
-                  h != NULL && h->detail != NULL ? h->detail
-                                                 : "no detail reported");
-    return FALSE;
-}
-
 /* Exit status main() returns when startup fails INSIDE the main loop —
  * the database open that runs after the Welcome dialog.  The synchronous
  * open in main() returns its own 1; this covers the deferred path.        */
@@ -176,23 +142,21 @@ startup_open_db(OnApp *app)
 
 /* ---------------------------------------------------------------------------
  * startup_finish() — everything activation does once the database is
- * open: the integrity check, the library window, the backup timer and the
- * IPC server.  Reached directly when the database was already there, or
+ * open: the library window, the integrity check behind it, the backup
+ * timer and the IPC server.  Reached directly when the database was already there, or
  * at the end of the Welcome dialog chain.
  *   app — the application context, its database open.
  * ------------------------------------------------------------------------- */
 static void
 startup_finish(OnApp *app)
 {
-    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.
-     * Every launch, with no switch — see startup_integrity_check().        */
-    gboolean db_ok = startup_integrity_check(app);
-
     on_library_window_create(app);
+    on_app_status(app, "DB at %s loaded", app->db->path);
 
-    if (db_ok)
-        on_app_status(app, "DB at %s loaded, integrity check passed",
-                      app->db->path);
+    /* DB integrity check: PRAGMA integrity_check + foreign_key_check, on a
+     * worker thread so the window above is on screen while it runs.
+     * Every launch, with no switch — see on_app_db_health_start().         */
+    on_app_db_health_start(app);
 
     /* Arm the rotating backup timer (a no-op while backups are off).  It
      * carries the db path, so it must be re-armed after File → Open

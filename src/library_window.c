@@ -1163,6 +1163,9 @@ refresh_notes(OnLibrary *lw)
     /* Whatever happens below, the rows any queued thumbnail jobs point
      * at are stale (or about to be replaced): drop them.                   */
     thumb_pending_clear(lw);
+    done_button_sync(lw);            /* the setting may have changed — and
+                                        the Action Items view, which the
+                                        setting is ABOUT, returns early   */
 
     /* The Action Items selection swaps in its own view and model.          */
     if (lw->sel_kind == SB_KIND_ACTIONS) {
@@ -1175,8 +1178,6 @@ refresh_notes(OnLibrary *lw)
                   "actions") == 0)
         gtk_stack_set_visible_child_name(GTK_STACK(lw->stack),
                                          lw->grid_pref ? "grid" : "list");
-
-    done_button_sync(lw);            /* the setting may have changed        */
 
     /* The list's density class, for the row-height CSS.                   */
     if (lw->app->comfortable_list)

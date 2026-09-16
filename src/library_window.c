@@ -337,6 +337,7 @@ static void    refresh_sidebar(OnLibrary *lw);
 static void    refresh_notes(OnLibrary *lw);
 static void    refresh_all(OnLibrary *lw);
 static void    done_button_sync(OnLibrary *lw);
+static void    done_menu_sync(OnLibrary *lw);
 static void    status_path_update(OnLibrary *lw);
 static GArray *selected_note_ids(OnLibrary *lw);
 static void    sidebar_fit_queue(OnLibrary *lw, gboolean force);
@@ -3311,18 +3312,57 @@ done_button_sync(OnLibrary *lw)
     on_app_set_tooltip(lw->done_btn,
         show ? "Hide completed action items"
              : "Show completed action items");
+    done_menu_sync(lw);
 }
 
-/* on_toggle_done() — "win.toggle-done": flip the show_done_actions setting
- * (the one Settings' "Show completed action items" box sets) and rebuild;
- * refresh_notes re-points the button.                                      */
+/* done_menu_sync() — offer the View menu's completed-items entry that fits
+ * the live setting: "Hide Completed" while they are listed, "Show
+ * Completed" while they are not, by enabling one of "app.done-hide" /
+ * "app.done-show" and disabling the other (the sidebar item's device, see
+ * sidebar_menu_sync).  NULL-safe during construction.                     */
+static void
+done_menu_sync(OnLibrary *lw)
+{
+    GActionMap *map = G_ACTION_MAP(lw->app->gtk_app);
+    GAction *hide = g_action_map_lookup_action(map, "done-hide");
+    GAction *show = g_action_map_lookup_action(map, "done-show");
+    if (hide == NULL || show == NULL)
+        return;
+    gboolean shown = lw->app->show_done_actions;
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(hide), shown);
+    g_simple_action_set_enabled(G_SIMPLE_ACTION(show), !shown);
+}
+
+/* done_set_shown() — THE one place the show_done_actions setting changes
+ * from this window (the toolbar toggle, the two menu items): persist and
+ * rebuild; refresh_notes re-points the button and the menu.  Settings'
+ * "Show completed action items" box writes the same key and notifies.   */
+static void
+done_set_shown(OnLibrary *lw, gboolean shown)
+{
+    lw->app->show_done_actions = shown;
+    on_app_config_set("show_done_actions", shown ? "1" : "0");
+    refresh_all(lw);
+}
+
+/* on_toggle_done() — "win.toggle-done", the toolbar button.                 */
 static void
 on_toggle_done(OnLibrary *lw)
 {
-    lw->app->show_done_actions = !lw->app->show_done_actions;
-    on_app_config_set("show_done_actions",
-                      lw->app->show_done_actions ? "1" : "0");
-    refresh_all(lw);
+    done_set_shown(lw, !lw->app->show_done_actions);
+}
+
+/* on_done_hide() / on_done_show() — the View menu's two items.              */
+static void
+on_done_hide(OnLibrary *lw)
+{
+    done_set_shown(lw, FALSE);
+}
+
+static void
+on_done_show(OnLibrary *lw)
+{
+    done_set_shown(lw, TRUE);
 }
 
 /* on_view_stack_changed() — the stack switched children: re-point the
@@ -4979,6 +5019,8 @@ static const LibCommand APP_COMMANDS[] = {
     { "toggle-sidebar", on_toggle_sidebar  },
     { "sidebar-hide",   on_sidebar_hide    },
     { "sidebar-show",   on_sidebar_show    },
+    { "done-hide",      on_done_hide       },
+    { "done-show",      on_done_show       },
     { "media",          on_open_media      },
     { "search",         on_open_search     },
 };
@@ -5152,6 +5194,17 @@ build_menubar(void)
     g_menu_append_item(section, item);
     g_object_unref(item);
     item = g_menu_item_new(SIDEBAR_LABEL_TO_SHOW, "app.sidebar-show");
+    g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item(section, item);
+    g_object_unref(item);
+    /* The completed-items twin of the toolbar toggle, the same two-item
+     * device: done_menu_sync() enables the one that names what a click
+     * will do.                                                            */
+    item = g_menu_item_new("Hide _Completed", "app.done-hide");
+    g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item(section, item);
+    g_object_unref(item);
+    item = g_menu_item_new("Show _Completed", "app.done-show");
     g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
     g_menu_append_item(section, item);
     g_object_unref(item);

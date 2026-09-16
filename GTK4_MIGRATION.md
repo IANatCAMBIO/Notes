@@ -758,22 +758,27 @@ add a second idiom.
   windows (they doubled every other character in a GtkEntry too — an
   automation artefact, not a widget bug); accessibility CLICKS do not.
 
-- **D32 · 2026-09-15 — Tooltips go through `on_app_set_tooltip`, never
-  `gtk_widget_set_tooltip_text`.**  On macOS a tooltip shown after one of
-  a different size came out CUT OFF: the box ended mid-text inside a popup
-  surface of the right width (CGWindowList: the surface 311 wide, the
-  drawing 231 — the previous tooltip's).  Mechanism, from the 4.22.4
-  sources: GtkTooltipWindow is ONE popup surface reused for every tooltip;
-  `gtk_tooltip_position` → `relayout` re-presents it at the new size AFTER
-  showing it, the macOS backend then resizes the NSWindow but requests no
-  layout for a popup (`GdkMacosWindow.c windowDidResize` requests one for
-  toplevels only), and nothing has queued a resize on the widget tree, so
-  `gtk_tooltip_window_native_layout` takes its "ensure_allocate" branch
-  and the box stays allocated at the old width.  The helper shows the text
-  as a custom label and, when that label maps, queues a resize on the
-  tooltip window from a high-priority idle — after the re-present, before
-  the frame — so the allocation follows the surface.  Every tooltip site
-  uses it (24 of them), so no window is exempt.  Upstream-worthy.
+- **D32 · 2026-09-15 — Tooltips are all one width (`on_app_set_tooltip`),
+  because the macOS backend does not follow a resize of the hidden
+  tooltip popup.**  Sweeping along a toolbar, the second tooltip came out
+  CUT OFF: the popup NSWindow had the new width (CGWindowList: 311) but
+  the drawing was the previous tooltip's width (140), and GTK's own
+  numbers were all right — logged from a custom tooltip widget after it
+  mapped: surface 311, window allocation 311, label allocation 289.  So
+  GTK drew 311 px and the screen showed 140: the view's tile layer was
+  never re-laid out.  `GdkMacosView` marks its layer dirty only in its
+  own `setFrame:` override; a hidden window's content view is resized by
+  AppKit through autoresizing, which bypasses it, and the layer keeps the
+  old tiling until something else re-lays it out (about a second later —
+  a tooltip shown ≥ 1 s after the previous one hid was fine, one shown
+  within GTK's browse-mode window was not).  No GTK-side call helps:
+  queue_draw / queue_resize / gdk_surface_queue_render at 50–400 ms after
+  map left it cut; hide+show corrupts the surface (Gdk-CRITICAL).  A
+  tooltip whose surface never changes size cannot hit it, so every
+  tooltip is a custom label `TOOLTIP_WIDTH` (320) wide, text centred;
+  measured with tests/tiptest: A→B→C in browse mode all complete.  All
+  24 tooltip sites use the helper.  Upstream: GdkMacosView should mark
+  the layer dirty from `setFrameSize:` too.
 
 ## Session log
 

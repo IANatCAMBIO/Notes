@@ -481,30 +481,15 @@ tool_icon_widget(OnApp *app, const gchar *icon_name,
  * tooltips (see on_app_set_tooltip in app.h for why this exists)
  * ------------------------------------------------------------------------- */
 
-/* Object-data keys: the tooltip text, and the label that shows it (built
- * once per widget, reused so GTK sees the same custom widget every query). */
-#define TOOLTIP_TEXT_KEY  "on-tooltip-text"
+/* Every tooltip is this wide, so the one tooltip surface GTK reuses is
+ * never RESIZED between two showings — the macOS backend does not follow
+ * a resize of the hidden popup (D32).  Wide enough for the longest
+ * toolbar text; longer texts (Settings) wrap.                              */
+#define TOOLTIP_WIDTH 320
+
+/* Object-data key: the label that shows the widget's tooltip, built once
+ * per widget and reused, so GTK sees the same custom widget every query. */
 #define TOOLTIP_LABEL_KEY "on-tooltip-label"
-
-/* tooltip_nudge() — the idle after the label mapped: queue a resize on the
- * tooltip window so it is allocated at the size it was just presented at. */
-static gboolean
-tooltip_nudge(gpointer data)
-{
-    GtkWidget *label = data;
-    GtkNative *native = gtk_widget_get_native(label);
-    if (native != NULL)
-        gtk_widget_queue_resize(GTK_WIDGET(native));
-    g_object_unref(label);
-    return G_SOURCE_REMOVE;
-}
-
-static void
-on_tooltip_label_map(GtkWidget *label, gpointer data)
-{
-    (void)data;
-    g_idle_add_full(G_PRIORITY_HIGH, tooltip_nudge, g_object_ref(label), NULL);
-}
 
 /* on_query_tooltip() — hand GTK the widget's label as the tooltip.         */
 static gboolean
@@ -531,9 +516,9 @@ on_app_set_tooltip(GtkWidget *widget, const gchar *text)
     if (label == NULL) {
         label = gtk_label_new(text);
         gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(label), 70);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-        g_signal_connect(label, "map", G_CALLBACK(on_tooltip_label_map), NULL);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.5);
+        gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
+        gtk_widget_set_size_request(label, TOOLTIP_WIDTH, -1);
         g_object_set_data_full(G_OBJECT(widget), TOOLTIP_LABEL_KEY,
                                g_object_ref_sink(label), g_object_unref);
         g_signal_connect(widget, "query-tooltip",

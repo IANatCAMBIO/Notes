@@ -23,6 +23,10 @@
 #include <gdk/gdkkeysyms.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <objc/runtime.h>             /* the pasteboard behind GDK's cache  */
+#include <objc/message.h>
+#endif
 
 /* Undo grouping: typing that pauses this long is one step, and so is a
  * burst of this many sentence enders.                                      */
@@ -1120,6 +1124,90 @@ on_note_view_redo(OnNoteView *v)
  * the clipboard
  * ======================================================================== */
 
+/* ---- the macOS pasteboard, read behind GDK's back -----------------------
+ * GDK's macOS clipboard is a CACHE of the pasteboard.  It re-reads the
+ * pasteboard's types — and whether the content is still its own — only
+ * when a window's key or main state changes or a popup opens: the
+ * changeCount comparison (_gdk_macos_clipboard_check_externally_modified)
+ * sits inside _gdk_macos_display_get_surfaces, which runs once the
+ * sorted surface list has been cleared, and nothing public clears it.  A
+ * screenshot taken to the clipboard or a Universal Clipboard copy changes
+ * the pasteboard with no window change, so until the next one GDK still
+ * answers for the OLD contents, two ways: gdk_clipboard_get_formats()
+ * lists the old types, and if Notes was the last writer the clipboard is
+ * "local" and every read serves its own old content without touching the
+ * pasteboard.  Measured (4.22.4): an image put on the pasteboard while an
+ * editor was frontmost was invisible to Cmd-V until a right-click opened
+ * a popover.  The first is sidestepped by READING instead of asking —
+ * paste() names every format it takes and the backend's read looks at the
+ * live types.  The second cannot be: the view remembers the changeCount
+ * its own claims left and, when a local read would serve a pasteboard
+ * that has since moved on, reads the pasteboard itself through the
+ * Objective-C runtime.  Elsewhere the guard compiles to nothing.         */
+
+#ifdef __APPLE__
+typedef id (*msg_id)(id, SEL);
+typedef id (*msg_id_ptr)(id, SEL, const void *);
+
+/* pb_general() — [NSPasteboard generalPasteboard].                          */
+static id
+pb_general(void)
+{
+    return ((msg_id)objc_msgSend)((id)objc_getClass("NSPasteboard"),
+                                  sel_registerName("generalPasteboard"));
+}
+
+/* pb_change_count() — the pasteboard's changeCount, which every write
+ * from any process bumps.                                                   */
+static long
+pb_change_count(void)
+{
+    return ((long (*)(id, SEL))objc_msgSend)(pb_general(),
+                                             sel_registerName("changeCount"));
+}
+
+/* pb_data() — the pasteboard's data for one UTI, copied; NULL when it
+ * holds none.                                                               */
+static GBytes *
+pb_data(const gchar *uti)
+{
+    id pool = ((msg_id)objc_msgSend)(                /* dataForType: returns  */
+        ((msg_id)objc_msgSend)((id)objc_getClass("NSAutoreleasePool"),
+                               sel_registerName("alloc")),
+        sel_registerName("init"));                     /* an autoreleased copy */
+    id type = ((msg_id_ptr)objc_msgSend)((id)objc_getClass("NSString"),
+                                         sel_registerName("stringWithUTF8String:"),
+                                         uti);
+    id data = ((msg_id_ptr)objc_msgSend)(pb_general(),
+                                         sel_registerName("dataForType:"), type);
+    GBytes *bytes = NULL;
+    if (data != NULL) {
+        const void *p = ((const void *(*)(id, SEL))objc_msgSend)(
+            data, sel_registerName("bytes"));
+        gsize n = ((unsigned long (*)(id, SEL))objc_msgSend)(
+            data, sel_registerName("length"));
+        bytes = g_bytes_new(p, n);
+    }
+    ((msg_id)objc_msgSend)(pool, sel_registerName("drain"));
+    return bytes;
+}
+
+/* The changeCount the view's last write left, i.e. the one GDK holds for
+ * its local content; -1 until the first write.  A write by another GTK
+ * widget (an entry's Cmd-C) leaves it behind, which only sends a paste
+ * the pasteboard way — where that text also is.                           */
+static long clip_claim_count = -1;
+#endif
+
+/* clip_claimed() — record that the view has just written the clipboard.   */
+static void
+clip_claimed(void)
+{
+#ifdef __APPLE__
+    clip_claim_count = pb_change_count();
+#endif
+}
+
 /* copy_selection() — the selection to the clipboard as plain text AND a
  * BNBF fragment.                                                            */
 static void
@@ -1142,6 +1230,7 @@ copy_selection(OnNoteView *v)
     };
     GdkContentProvider *all = gdk_content_provider_new_union(providers, 2);
     gdk_clipboard_set_content(gtk_widget_get_clipboard(GTK_WIDGET(v)), all);
+    clip_claimed();
     g_object_unref(all);
     g_bytes_unref(bytes);
     g_free(text);
@@ -1167,8 +1256,39 @@ paste_fragment(OnNoteView *v, OnDocument *frag, gboolean plain)
     after_edit(v);
 }
 
-/* The three clipboard reads land on later main-loop turns; each holds a
- * weak reference so a view that closed meanwhile just drops the paste.   */
+/* The three shapes a paste arrives in, whichever way it was read.         */
+
+/* paste_bnbf() — a note fragment's blob.                                    */
+static void
+paste_bnbf(OnNoteView *v, GBytes *blob)
+{
+    gsize n;
+    const guint8 *d = g_bytes_get_data(blob, &n);
+    OnDocument *frag = on_document_from_bnbf(d, n, NULL);
+    paste_fragment(v, frag, FALSE);
+    on_document_free(frag);
+}
+
+/* paste_png() — one image block holding these PNG bytes verbatim.          */
+static void
+paste_png(OnNoteView *v, GBytes *png)
+{
+    OnDocument *frag = on_document_new_from_block(on_block_new_image(png, 0));
+    paste_fragment(v, frag, FALSE);
+    on_document_free(frag);
+}
+
+/* paste_text() — plain text, one block per line.                            */
+static void
+paste_text(OnNoteView *v, const gchar *text)
+{
+    OnDocument *frag = on_document_from_text(text);
+    paste_fragment(v, frag, TRUE);
+    on_document_free(frag);
+}
+
+/* The clipboard reads land on later main-loop turns; each holds a weak
+ * reference so a view that closed meanwhile just drops the paste.          */
 static GWeakRef *
 weak_new(OnNoteView *v)
 {
@@ -1199,21 +1319,42 @@ on_paste_spliced(GObject *source, GAsyncResult *res, gpointer data)
                                                 NULL) >= 0;
     if (ok && v != NULL) {
         GBytes *bytes = g_memory_output_stream_steal_as_bytes(mem);
-        gsize n;
-        const guint8 *d = g_bytes_get_data(bytes, &n);
-        OnDocument *frag = on_document_from_bnbf(d, n, NULL);
-        paste_fragment(v, frag, FALSE);
-        on_document_free(frag);
+        paste_bnbf(v, bytes);
         g_bytes_unref(bytes);
     }
     g_object_unref(mem);
     g_clear_object(&v);
 }
 
+/* on_paste_value() — an image or text has been deserialized from the
+ * stream the read handed over.                                              */
 static void
-on_paste_bytes(GObject *source, GAsyncResult *res, gpointer data)
+on_paste_value(GObject *source, GAsyncResult *res, gpointer data)
 {
-    GWeakRef *ref = data;            /* handed on to the splice             */
+    (void)source;
+    OnNoteView *v = weak_take(data);
+    GValue val = G_VALUE_INIT;
+    if (gdk_content_deserialize_finish(res, &val, NULL) && v != NULL) {
+        if (G_VALUE_HOLDS(&val, GDK_TYPE_TEXTURE)) {
+            GBytes *png = gdk_texture_save_to_png_bytes(g_value_get_object(&val));
+            paste_png(v, png);
+            g_bytes_unref(png);
+        } else if (G_VALUE_HOLDS_STRING(&val) && g_value_get_string(&val)) {
+            paste_text(v, g_value_get_string(&val));
+        }
+    }
+    g_value_unset(&val);
+    g_clear_object(&v);
+}
+
+/* on_paste_read() — the clipboard has chosen a format and opened a
+ * stream on it: a fragment is spliced whole, anything else goes through
+ * GDK's deserializers (an image to a texture, text to a string, with the
+ * charset conversion the mime type calls for).                            */
+static void
+on_paste_read(GObject *source, GAsyncResult *res, gpointer data)
+{
+    GWeakRef *ref = data;            /* handed on to the next step          */
     const gchar *mime = NULL;
     GInputStream *in = gdk_clipboard_read_finish(GDK_CLIPBOARD(source), res,
                                                  &mime, NULL);
@@ -1221,68 +1362,86 @@ on_paste_bytes(GObject *source, GAsyncResult *res, gpointer data)
         g_clear_object(&(OnNoteView *){ weak_take(ref) });
         return;
     }
-    GOutputStream *mem = g_memory_output_stream_new_resizable();
-    g_output_stream_splice_async(mem, in,
-                                 G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
-                                 G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
-                                 G_PRIORITY_DEFAULT, NULL, on_paste_spliced,
-                                 ref);
-    g_object_unref(in);              /* the splice holds its own ref        */
-}
-
-static void
-on_paste_texture(GObject *source, GAsyncResult *res, gpointer data)
-{
-    OnNoteView *v = weak_take(data);
-    GdkTexture *tex = gdk_clipboard_read_texture_finish(GDK_CLIPBOARD(source),
-                                                        res, NULL);
-    if (tex != NULL && v != NULL) {
-        GBytes *png = gdk_texture_save_to_png_bytes(tex);
-        OnDocument *frag = on_document_new_from_block(on_block_new_image(png, 0));
-        g_bytes_unref(png);
-        paste_fragment(v, frag, FALSE);
-        on_document_free(frag);
+    if (g_strcmp0(mime, ON_NOTE_MIME) == 0) {
+        GOutputStream *mem = g_memory_output_stream_new_resizable();
+        g_output_stream_splice_async(mem, in,
+                                     G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
+                                     G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+                                     G_PRIORITY_DEFAULT, NULL,
+                                     on_paste_spliced, ref);
+    } else {
+        GType type = g_str_has_prefix(mime, "text/") ? G_TYPE_STRING
+                                                      : GDK_TYPE_TEXTURE;
+        gdk_content_deserialize_async(in, mime, type, G_PRIORITY_DEFAULT,
+                                      NULL, on_paste_value, ref);
     }
-    g_clear_object(&tex);
-    g_clear_object(&v);
+    g_object_unref(in);              /* the next step holds its own ref     */
 }
 
-static void
-on_paste_text(GObject *source, GAsyncResult *res, gpointer data)
+/* paste_mime_types() — every mime type a paste takes, best first: the
+ * note fragment, then whatever GDK can deserialize into a texture, then
+ * text.  Built once; the deserializer table is fixed for the process.    */
+static const gchar **
+paste_mime_types(void)
 {
-    OnNoteView *v = weak_take(data);
-    gchar *text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), res,
-                                                 NULL);
-    if (text != NULL && v != NULL) {
-        OnDocument *frag = on_document_from_text(text);
-        paste_fragment(v, frag, TRUE);
-        on_document_free(frag);
+    static const gchar **mimes;
+    if (mimes == NULL) {
+        GdkContentFormats *f = gdk_content_formats_union_deserialize_mime_types(
+            gdk_content_formats_new_for_gtype(GDK_TYPE_TEXTURE));
+        gsize n_img;
+        const gchar *const *img = gdk_content_formats_get_mime_types(f, &n_img);
+        GPtrArray *a = g_ptr_array_new();
+        g_ptr_array_add(a, (gpointer)ON_NOTE_MIME);
+        for (gsize i = 0; i < n_img; i++)
+            g_ptr_array_add(a, (gpointer)img[i]);  /* interned: live forever */
+        g_ptr_array_add(a, (gpointer)"text/plain;charset=utf-8");
+        g_ptr_array_add(a, (gpointer)"text/plain");
+        g_ptr_array_add(a, NULL);
+        mimes = (const gchar **)g_ptr_array_free(a, FALSE);
+        gdk_content_formats_unref(f);
     }
-    g_free(text);
-    g_clear_object(&v);
+    return mimes;
 }
 
-/* paste() — a note fragment, else an image, else text.                     */
+/* paste() — ONE read over every format the view takes, in preference
+ * order; the clipboard picks the best it has and on_paste_read sorts the
+ * result.  Deciding from gdk_clipboard_get_formats() first is what the
+ * macOS note above forbids: the read consults the live pasteboard, the
+ * formats are what GDK last noticed.  On macOS a clipboard GDK still
+ * thinks is Notes' own, over a pasteboard that has moved on, is read
+ * directly instead: a PNG (the screenshot format) as it is, another
+ * image through a texture, else UTF-8 text.                                */
 static void
 paste(OnNoteView *v)
 {
     GdkClipboard *cb = gtk_widget_get_clipboard(GTK_WIDGET(v));
-    GdkContentFormats *formats = gdk_clipboard_get_formats(cb);
-    if (gdk_content_formats_contain_mime_type(formats, ON_NOTE_MIME)) {
-        const gchar *mimes[] = { ON_NOTE_MIME, NULL };
-        gdk_clipboard_read_async(cb, mimes, G_PRIORITY_DEFAULT, NULL,
-                                 on_paste_bytes, weak_new(v));
+#ifdef __APPLE__
+    if (gdk_clipboard_is_local(cb) && pb_change_count() != clip_claim_count) {
+        GBytes *b;
+        if ((b = pb_data("public.png")) != NULL) {
+            paste_png(v, b);
+        } else if ((b = pb_data("public.tiff")) != NULL) {
+            GdkTexture *tex = gdk_texture_new_from_bytes(b, NULL);
+            if (tex != NULL) {
+                GBytes *png = gdk_texture_save_to_png_bytes(tex);
+                paste_png(v, png);
+                g_bytes_unref(png);
+                g_object_unref(tex);
+            }
+        } else if ((b = pb_data("public.utf8-plain-text")) != NULL) {
+            gsize n;
+            const gchar *d = g_bytes_get_data(b, &n);
+            gchar *text = g_strndup(d, n);
+            paste_text(v, text);
+            g_free(text);
+        }
+        if (b != NULL)
+            g_bytes_unref(b);
         return;
     }
-    GdkContentFormats *all = gdk_content_formats_union_deserialize_gtypes(
-        gdk_content_formats_ref(formats));
-    gboolean image = gdk_content_formats_contain_gtype(all, GDK_TYPE_TEXTURE);
-    gdk_content_formats_unref(all);
-    if (image)
-        gdk_clipboard_read_texture_async(cb, NULL, on_paste_texture,
-                                         weak_new(v));
-    else
-        gdk_clipboard_read_text_async(cb, NULL, on_paste_text, weak_new(v));
+#endif
+    gdk_clipboard_read_async(cb, paste_mime_types(), G_PRIORITY_DEFAULT, NULL,
+                             on_paste_read, weak_new(v));
 }
 
 /* select_all()                                                              */
@@ -1945,6 +2104,7 @@ press_at(OnNoteView *v, gdouble x, gdouble y, gint n_press,
             }
             gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(v)),
                                    s->str);
+            clip_claimed();
             g_string_free(s, TRUE);
             on_app_status(v->app, "Code copied");
             return TRUE;
@@ -2060,9 +2220,11 @@ on_img_copy(GSimpleAction *a, GVariant *p, gpointer data)
     (void)a; (void)p;
     OnNoteView *v = data;
     GdkTexture *tex = on_note_view_image_texture(v, v->ctx.image_ord);
-    if (tex != NULL)
+    if (tex != NULL) {
         gdk_clipboard_set_texture(gtk_widget_get_clipboard(GTK_WIDGET(v)),
                                   tex);
+        clip_claimed();
+    }
 }
 
 static void

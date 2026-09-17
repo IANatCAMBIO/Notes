@@ -24,7 +24,10 @@ rest.
 | librsvg (optional) | any | renders the bundled symbolic SVG tree arrows; without it they fall back to GTK's own | `librsvg` | `librsvg2-common` |
 
 The `+quartz` variant is the native macOS backend.  The native macOS
-menubar comes from GTK itself; no other library is involved.  GTK 4
+menubar comes from GTK itself; no other library is involved.  On macOS
+the link also takes `-lobjc` (the system's Objective-C runtime, part of
+the OS): `note_view.c` reads the pasteboard behind GDK's clipboard cache
+through it — no framework to install.  GTK 4
 renders through OpenGL or Vulkan; where only software GL exists (some
 VMs), run with `GSK_RENDERER=cairo`.
 

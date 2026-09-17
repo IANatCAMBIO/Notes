@@ -57,7 +57,13 @@ CFLAGS   := -std=c11 -Wall -Wextra -g \
             $(shell $(PKGCONF) --cflags gtk4 sqlite3)
 
 # Linker flags: the GTK4 and SQLite3 libraries from pkg-config, plus libm.
+# On macOS also the Objective-C runtime: note_view.c reads the pasteboard
+# behind GDK's clipboard cache through objc_msgSend (see "the macOS
+# pasteboard" there).  AppKit itself is already loaded by GTK's backend.
 LDFLAGS  := $(shell $(PKGCONF) --libs gtk4 sqlite3) -lm
+ifeq ($(shell uname -s),Darwin)
+LDFLAGS  += -lobjc
+endif
 
 # All C source files that make up the application.
 SRCS     := src/main.c \

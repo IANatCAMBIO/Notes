@@ -882,6 +882,15 @@ GtkTextView exists in the app.**
 - **An input method's client widget is set at REALIZE** (D31): the macOS
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.
+- **The macOS clipboard is a cache GDK refreshes only on a window change**
+  (D38): a screenshot copied while an editor is frontmost is invisible to
+  `gdk_clipboard_get_formats()` until a popup opens or a window changes
+  key.  Never decide a paste from the formats — `paste` (note_view.c)
+  reads over an ordered mime list and the backend's read looks at the
+  live pasteboard — and when GDK still thinks the clipboard is Notes' own
+  (`gdk_clipboard_is_local`) over a pasteboard whose changeCount has
+  moved on, the view reads the pasteboard itself through the Objective-C
+  runtime (`pb_data`; `-lobjc` on Darwin, the only ObjC in the app).
 
 - **GtkColumnView's row widget is not reachable from a column's factory**
   (D33): a controller that should cover the whole row (the note drag

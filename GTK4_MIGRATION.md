@@ -938,7 +938,41 @@ add a second idiom.
   a dark rim along the top of the pressed row once they select on the
   press — off, library CSS #12.
 
+- **D38 · 2026-09-17 — The macOS clipboard is a CACHE GDK refreshes only
+  on a window change** (`paste`, note_view.c).  gdkmacosclipboard.c has
+  no pasteboard change notification: `_gdk_macos_clipboard_check_externally_modified`
+  compares the pasteboard's changeCount, and it is called from exactly
+  one place — `_gdk_macos_display_get_surfaces`, when the sorted surface
+  list has been cleared by a window becoming key or main, a popup
+  attaching, or a toplevel showing.  An image put on the pasteboard while
+  an editor was frontmost (a screenshot to the clipboard, a copy by
+  another process, Universal Clipboard) was therefore invisible to Cmd-V
+  — `gdk_clipboard_get_formats()` still listed the previous text — until
+  a right-click opened a popover, which is why the mouse paste "fixed"
+  it.  Measured with osascript setting the pasteboard under a running
+  editor.  Two consequences.  (1) Never decide a paste from the formats:
+  `paste` issues ONE `gdk_clipboard_read_async` over every mime type the
+  view takes, best first (the note fragment, whatever deserializes to a
+  texture, text), and the macOS backend's read consults the pasteboard's
+  LIVE types (`_gdk_macos_pasteboard_read_async` calls
+  `load_offer_formats` itself).  (2) That read still never reaches the
+  pasteboard while GDK believes the clipboard is Notes' own
+  (`gdk_clipboard_is_local`: a copy in Notes followed by an external
+  change with no window activity served the OLD copy).  Nothing public
+  makes GDK look again, so the view records the changeCount each of its
+  own writes leaves (`clip_claimed`) and, when a local read would serve
+  a pasteboard whose count has moved on, reads the pasteboard itself
+  through the Objective-C runtime (`pb_data`: public.png as it is,
+  public.tiff via a texture, else public.utf8-plain-text) — the only
+  Objective-C in the app, `-lobjc` on Darwin.  Verified: both stale
+  cases paste the image, a Notes-internal fragment still comes through
+  GDK's local provider (count and claim agree), text pastes unchanged.
+
 ## Session log
+
+- 2026-09-17 — D38: the macOS clipboard cache — Cmd-V image paste failed
+  until a popover opened; paste reads instead of asking, and reads the
+  pasteboard itself when GDK's local claim is stale.
 
 One line per session: date, phase, item, outcome.
 

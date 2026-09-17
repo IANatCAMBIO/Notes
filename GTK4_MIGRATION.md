@@ -93,10 +93,12 @@ Survives undeprecated: `GtkTextView` + tags + child anchors, `GtkOverlay`,
 
 ## Lost permanently
 
-1. **Editor windows opening bottom-right** (CLAUDE.md quirk #21,
-   `editor_place_bottom_right`, `editor_window.c:~5490–5545`).  GTK4 has no
-   window positioning on any backend.  Delete the code and the quirk; the
-   compositor places the window.
+1. ~~**Editor windows opening bottom-right**~~ — **back on macOS, struck
+   2026-09-17 (D39).**  GTK4 has no window positioning API, but the macOS
+   backend's NSWindow is public (`gdk_macos_surface_get_native_window`,
+   4.8+) and `setFrameOrigin:` is what GDK itself moves windows with;
+   `editor_place_bottom_right` does it from the window's `map`.  On Linux
+   the compositor still places the window.
 2. ~~Native macOS menubar~~ — **WRONG, struck 2026-09-14.**  GTK's own
    quartz backend (`gtkapplication-quartz.c`, present in 3.24 AND 4.22)
    exports `gtk_application_set_menubar()` to the native bar and builds
@@ -968,8 +970,29 @@ add a second idiom.
   cases paste the image, a Notes-internal fragment still comes through
   GDK's local provider (count and claim agree), text pastes unchanged.
 
+- **D39 · 2026-09-17 — New editors open bottom-right again, on macOS**
+  (`editor_place_bottom_right`, editor_window.c).  GTK4 dropped
+  `gtk_window_move`, and "Lost permanently #1" wrote the placement off.
+  The macOS backend's window is reachable though: the public
+  `gdk_macos_surface_get_native_window()` (4.8+) returns the NSWindow, and
+  `setFrameOrigin:` is the very call GDK's own `_gdk_macos_surface_move_resize`
+  ends in (`setFrame:display:`), so GDK's `windowDidMove:` keeps its
+  surface coordinates in step and popovers still land where they should.
+  The moment is the GtkWindow's `map`: GDK's first present has centred
+  the window (`did_initial_present`) but `show_on_next_swap` holds it off
+  screen until the first frame, so the move is invisible.  Corner =
+  the library window's screen (the new window's own without one),
+  `visibleFrame` (menu bar and Dock excluded, Cocoa y up), 12 px clear,
+  clamped so the titlebar stays on screen.  Called through
+  `objc_msgSend` from plain C like the pasteboard read (D38); the NSRect
+  returns go through `objc_msgSend_stret` on x86_64 only.  Measured via
+  System Events on the 2560×1440-point display: frame right edge 2548,
+  bottom 1428 — 12 px each way.
+
 ## Session log
 
+- 2026-09-17 — D39: new editors bottom-right again on macOS, through the
+  public NSWindow accessor.
 - 2026-09-17 — D38: the macOS clipboard cache — Cmd-V image paste failed
   until a popover opened; paste reads instead of asking, and reads the
   pasteboard itself when GDK's local claim is stale.

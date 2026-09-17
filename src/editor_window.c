@@ -30,9 +30,17 @@
 #include "image_viewer.h"
 #include "note_view.h"
 #include "serialize.h"
+#ifdef __APPLE__
+#include <gdk/macos/gdkmacos.h>       /* gdk_macos_surface_get_native_window */
+#include <objc/runtime.h>
+#include <objc/message.h>
+#endif
 
 /* Milliseconds of idle time after the last edit before autosaving.         */
 #define AUTOSAVE_DELAY_MS 1200
+
+/* Gap left between a new editor window's frame and the work area's edges.  */
+#define EDITOR_SCREEN_MARGIN 12
 
 /* Default size of a new editor window (client area, excluding the
  * titlebar), used when the ini carries no editor_win_w/editor_win_h.       */
@@ -1585,6 +1593,78 @@ editor_connect_signals(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
+ * editor_place_bottom_right() — one-shot "map" handler: move a new editor
+ * to the BOTTOM-RIGHT corner of the library's screen (its own when there
+ * is no library), EDITOR_SCREEN_MARGIN clear of the work area's edges.
+ *
+ * GTK4 has no window positioning, so this is the backend's: on macOS the
+ * public gdk_macos_surface_get_native_window() hands over the NSWindow,
+ * and its setFrameOrigin: is what GDK itself moves windows with
+ * (_gdk_macos_surface_move_resize ends in setFrame:), so GDK's
+ * windowDidMove: keeps its own coordinates in step.  "map" is the moment:
+ * GDK has centred the window in its first present (gdkmacostoplevelsurface.c,
+ * did_initial_present) but shows it only on the next swap, so the move is
+ * done before anything is on screen.  Cocoa's y axis points UP from the
+ * primary screen's bottom-left, and visibleFrame is the work area (menu
+ * bar and Dock excluded).  Clamped so a window taller or wider than the
+ * work area keeps its titlebar on screen.  Elsewhere the compositor places
+ * the window and this handler is not connected.
+ * ------------------------------------------------------------------------- */
+#ifdef __APPLE__
+typedef struct { double x, y, w, h; } ns_rect;   /* NSRect, by layout   */
+typedef struct { double x, y; } ns_point;        /* NSPoint             */
+
+/* ns_window() — the NSWindow behind a realized GtkWindow, or NULL.         */
+static id
+ns_window(GtkWidget *window)
+{
+    GdkSurface *s = window != NULL ? gtk_native_get_surface(GTK_NATIVE(window))
+                                   : NULL;
+    return s != NULL && GDK_IS_MACOS_SURFACE(s)
+         ? gdk_macos_surface_get_native_window(GDK_MACOS_SURFACE(s)) : NULL;
+}
+
+/* ns_rect_of() — an NSRect-returning message.  x86_64 returns a 32-byte
+ * struct through memory, which is objc_msgSend_stret's calling
+ * convention; arm64 has one objc_msgSend for every return.                */
+static ns_rect
+ns_rect_of(id obj, const char *sel)
+{
+#if defined(__x86_64__)
+    return ((ns_rect (*)(id, SEL))objc_msgSend_stret)(obj, sel_registerName(sel));
+#else
+    return ((ns_rect (*)(id, SEL))objc_msgSend)(obj, sel_registerName(sel));
+#endif
+}
+
+static void
+editor_place_bottom_right(GtkWidget *window, gpointer data)
+{
+    OnEditor *ed = data;
+    id win = ns_window(window);
+    if (win == NULL)
+        return;
+    id screen = NULL;
+    id lib = ns_window(ed->app->library_window);
+    if (lib != NULL)
+        screen = ((id (*)(id, SEL))objc_msgSend)(lib, sel_registerName("screen"));
+    if (screen == NULL)
+        screen = ((id (*)(id, SEL))objc_msgSend)(win, sel_registerName("screen"));
+    if (screen == NULL)
+        return;                      /* off every display: leave it be      */
+    ns_rect area  = ns_rect_of(screen, "visibleFrame");
+    ns_rect frame = ns_rect_of(win, "frame");
+    ns_point origin = {
+        MAX(area.x + area.w - EDITOR_SCREEN_MARGIN - frame.w, area.x),
+        MIN(area.y + EDITOR_SCREEN_MARGIN, area.y + area.h - frame.h),
+    };
+    ((void (*)(id, SEL, ns_point))objc_msgSend)(win, sel_registerName("setFrameOrigin:"),
+                                                origin);
+    g_signal_handlers_disconnect_by_func(window, editor_place_bottom_right, ed);
+}
+#endif
+
+/* ---------------------------------------------------------------------------
  * editor_window_open_full() — shared implementation behind the four public
  * open functions.  Both extras are optional and mutually independent:
  *   search_term — pre-populates the in-note search box and jumps to the
@@ -1675,6 +1755,10 @@ editor_window_open_full(OnApp *app, gint64 note_id, const gchar *search_term,
     }
 
     on_db_note_meta_free(meta);
+#ifdef __APPLE__
+    g_signal_connect(ed->window, "map", G_CALLBACK(editor_place_bottom_right),
+                     ed);
+#endif
     gtk_window_present(GTK_WINDOW(ed->window));
     gtk_widget_grab_focus(GTK_WIDGET(ed->view));
     return ed->window;

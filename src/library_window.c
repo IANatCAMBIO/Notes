@@ -5899,6 +5899,11 @@ library_build_status_bar(OnLibrary *lw)
  *    Shift/Cmd-click on a row is, exactly — and the theme's 2 px outline
  *    then flashed along the top edge of the last row clicked (the rest of
  *    it clipped by the row) until GTK's 3 s timeout.
+ * 12. No pressed-state shadow on a row or card either: the theme paints an
+ *    inset top shadow on `row.activatable:active`, darker when the row is
+ *    also selected — invisible while rows selected on the release, a
+ *    dark rim along the top of the row once they select on the press
+ *    (D37).
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -5931,6 +5936,13 @@ library_install_css(void)
         "columnview.search-results > listview > row:focus:focus-visible,"
         "gridview.notes-grid > child:focus:focus-visible {"
         "  outline-width: 0; transition: none;"
+        "}"
+        /* 12: no pressed-state shadow (see the header).                   */
+        "columnview.notes-columns > listview > row:active,"
+        "listview.notes-sidebar > row:active,"
+        "columnview.search-results > listview > row:active,"
+        "gridview.notes-grid > child:active {"
+        "  box-shadow: none;"
         "}"
         "gridview.notes-grid > child:hover {"
         "  outline: 1px solid alpha(black, 0.4);"

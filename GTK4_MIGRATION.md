@@ -932,7 +932,11 @@ add a second idiom.
   sidebar expander's LABEL (the arrow keeps its click) and not on the
   Action Items check cell.  Installed on the notes list cells, the grid
   cards, the Action Items text and due cells, the sidebar labels and
-  the search results.
+  the search results.  Follow-up: the theme's pressed-state shadow
+  (`row.activatable:active`, an inset top shadow, darker on a selected
+  row) had been invisible while rows selected on the release and became
+  a dark rim along the top of the pressed row once they select on the
+  press — off, library CSS #12.
 
 ## Session log
 

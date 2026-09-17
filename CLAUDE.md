@@ -868,6 +868,11 @@ GtkTextView exists in the app.**
   the library's tooltip popup — a child NSWindow shown with `orderFront:`
   — brought the library up over the editor.  The hover itself (toolbar
   buttons lighting up under a title bar) is GDK's and cannot be helped.
+- **Releasing a modifier after a click turns the focus ring ON** (D36):
+  GtkWindow remembers the focus widget at a key press and shows
+  focus-visible on the release if the focus moved meanwhile — a
+  Shift/Cmd-click on another row.  The rows and grid cards have no focus
+  ring (library CSS #11); the selection is the keyboard's position.
 - **An input method's client widget is set at REALIZE** (D31): the macOS
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.

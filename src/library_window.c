@@ -5888,6 +5888,13 @@ library_build_status_bar(OnLibrary *lw)
  *    theme's per-button left border doubled the divider's edge line.
  * 10. The folder dialog's emoji entry hides its caret while it holds an
  *    emoji (class "notes-emoji-full", toggled by on_emoji_entry_changed).
+ * 11. No focus ring on a list row or grid card: the selection highlight
+ *    is where the keyboard is.  GtkWindow turns the ring on when a
+ *    modifier key is RELEASED with the focus on a different widget than
+ *    it was on at the press (_gtk_window_update_focus_visible) — which a
+ *    Shift/Cmd-click on a row is, exactly — and the theme's 2 px outline
+ *    then flashed along the top edge of the last row clicked (the rest of
+ *    it clipped by the row) until GTK's 3 s timeout.
  * ------------------------------------------------------------------------- */
 static void
 library_install_css(void)
@@ -5914,6 +5921,13 @@ library_install_css(void)
          * selected state has turned white was an invisible title until
          * the mouse left the cell.                                       */
         "gridview.notes-grid > child { padding: 6px; transition: none; }"
+        /* 11: no focus ring on rows and cards (see the header).           */
+        "columnview.notes-columns > listview > row:focus:focus-visible,"
+        "listview.notes-sidebar > row:focus:focus-visible,"
+        "columnview.search-results > listview > row:focus:focus-visible,"
+        "gridview.notes-grid > child:focus:focus-visible {"
+        "  outline-width: 0; transition: none;"
+        "}"
         "gridview.notes-grid > child:hover {"
         "  outline: 1px solid alpha(black, 0.4);"
         "  outline-offset: -1px;"

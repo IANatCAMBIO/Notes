@@ -585,6 +585,7 @@ search_window_build(OnApp *app, gboolean scope_to_sel)
         G_LIST_MODEL(g_object_ref(sw->store)));
     gtk_single_selection_set_autoselect(sel, FALSE);
     GtkWidget *results = gtk_column_view_new(GTK_SELECTION_MODEL(sel));
+    gtk_widget_add_css_class(results, "search-results");  /* library CSS #11 */
     const struct { const gchar *title; gint field; gboolean expand; }
         RCOLS[] = { { "Path", RF_PATH, TRUE }, { "Modified", RF_MODIFIED,
                                                  FALSE } };

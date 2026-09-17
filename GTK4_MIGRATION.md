@@ -897,10 +897,25 @@ add a second idiom.
   active shows none.  A press on the title bar is safe: the backend drops
   presses above the content (`*y < 0`).
 
+- **D36 · 2026-09-16 — No focus ring on list rows and grid cards**
+  (library CSS #11).  Reported as a one-second highlight along the top
+  of the last note clicked, appearing when Shift or Cmd was RELEASED
+  after a multi-select.  `_gtk_window_update_focus_visible`
+  (gtkwindow.c): a key press remembers the focus widget, and the key's
+  release turns focus-visible ON if the focus has moved since — a
+  modifier held across a click on another row is exactly that, so the
+  theme's `row:focus:focus-visible` 2 px outline lit up on the clicked
+  row, clipped to its top edge by the row's height, until GTK's 3 s
+  timeout (VISIBLE_FOCUS_DURATION).  Measured in an A/B capture.  The
+  selection highlight is where the keyboard is in every list of this
+  app, so the ring is off for the notes list, the sidebar, the Action
+  Items view, the search results and the grid cards.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
+- 2026-09-16 — D36: no focus ring on rows (the modifier-release flash).
 - 2026-09-16 — D35: no tooltip in an inactive window — the library's
   tooltip, hovered through an editor's title bar, raised the library.
 - 2026-09-16 — D34: double-clicks counted by the app; the GDK macOS

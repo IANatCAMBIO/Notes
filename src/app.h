@@ -404,7 +404,10 @@ void on_app_tool_item_set_icon(OnApp *app, GtkWidget *button,
  * text through a custom label and REFUSES a tooltip asked for within
  * TOOLTIP_MIN_GAP_MS of the previous one hiding, asking again when the
  * time has passed: tooltips keep their natural size, and consecutive ones
- * come a beat slower than GTK's browse mode would show them.
+ * come a beat slower than GTK's browse mode would show them.  And NO
+ * tooltip shows in a window that is not the active one (D35): the macOS
+ * backend hands the pointer to the window behind an editor's title bar,
+ * and a tooltip popup shown there brings that window to the front.
  * ------------------------------------------------------------------------- */
 void on_app_set_tooltip(GtkWidget *widget, const gchar *text);
 

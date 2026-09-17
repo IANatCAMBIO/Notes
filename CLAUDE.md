@@ -861,7 +861,13 @@ GtkTextView exists in the app.**
   is hidden, so a tooltip shown within a second of another of a different
   size was drawn at the OLD width, cut off.  The helper refuses a tooltip
   asked for within 550 ms of the previous one hiding and asks again after,
-  so consecutive tooltips come a beat slower and whole.
+  so consecutive tooltips come a beat slower and whole.  It also shows
+  NO tooltip in a window that is not active (D35): the macOS backend
+  picks the surface for a pointer event by its own content-rect hit test,
+  so a pointer on an editor's TITLE BAR hovers the library behind it, and
+  the library's tooltip popup — a child NSWindow shown with `orderFront:`
+  — brought the library up over the editor.  The hover itself (toolbar
+  buttons lighting up under a title bar) is GDK's and cannot be helped.
 - **An input method's client widget is set at REALIZE** (D31): the macOS
   method resolves the widget's surface when told, so a widget told at
   construction (no root yet) never gets a key.  `note_view_realize`.

@@ -869,10 +869,40 @@ add a second idiom.
   threshold still starts a drag and never double-clicks — that is a
   drag.
 
+- **D35 · 2026-09-16 — No tooltip in an inactive window** (the
+  `gtk_window_is_active` gate in `on_query_tooltip`, app.c).  Reported
+  as: with an editor over the library, hovering the editor's TITLE BAR
+  lit up the library's toolbar buttons underneath, and a moment later
+  the library came to the front over the editor being typed in.  Two
+  backend facts, measured with an emission hook on `GdkSurface::event`
+  (the only place that sees every event — GTK's own handler returns
+  TRUE, so a plain signal connection sees only what GTK left alone):
+  (1) the macOS backend does not trust the NSEvent's window; it picks
+  the surface itself (`find_surface_under_pointer`,
+  gdkmacosdisplay-translate.c) from its front-to-back surface list by
+  CONTENT rectangle — a title bar is outside every surface, so a pointer
+  on the editor's title bar is delivered to the library behind it, with
+  coordinates translated into the library.  That list is a cache rebuilt
+  from `[NSApp orderedWindows]` only when a window becomes key/main or a
+  surface shows/hides, so a raise that changes neither (an Accessibility
+  AXRaise) leaves EVERY pointer event, presses included, going to the
+  window behind until the next key change.  (2) GTK shows a tooltip as a
+  popup surface, on macOS a CHILD NSWindow of the hovered window shown
+  with `orderFront:` — and AppKit brings the parent up with it: the
+  library's tooltip, triggered through the editor's title bar, ordered
+  the library above the editor (three windows in the list: the tooltip,
+  the library, the editor).  Nothing app-side can change where GDK
+  delivers a hover — the toolbar buttons still light up under the title
+  bar — but the raise came from the tooltip, so a window that is not
+  active shows none.  A press on the title bar is safe: the backend drops
+  presses above the content (`*y < 0`).
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
+- 2026-09-16 — D35: no tooltip in an inactive window — the library's
+  tooltip, hovered through an editor's title bar, raised the library.
 - 2026-09-16 — D34: double-clicks counted by the app; the GDK macOS
   backend's buttonless drag motion resets every GtkGestureClick.
 - 2026-09-14 — plan written; survey numbers above.

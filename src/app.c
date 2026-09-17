@@ -677,7 +677,12 @@ tooltip_ask_again(gpointer widget)
 }
 
 /* on_query_tooltip() — hand GTK the widget's label as the tooltip, unless
- * the previous tooltip hid a moment ago: then refuse and ask again later. */
+ * the previous tooltip hid a moment ago: then refuse and ask again later.
+ * Refused outright in a window that is not the active one (D35): the
+ * macOS backend routes the pointer by its own content-rect hit test, so
+ * a pointer on an editor's TITLE BAR hovers whatever sits behind it, and
+ * showing the tooltip popup — an NSWindow child of the library — orders
+ * the library above the editor the user is typing in.                    */
 static gboolean
 on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
                  GtkTooltip *tooltip, gpointer data)
@@ -685,6 +690,9 @@ on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
     (void)x; (void)y; (void)keyboard; (void)data;
     GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
     if (label == NULL)
+        return FALSE;
+    GtkRoot *root = gtk_widget_get_root(widget);
+    if (GTK_IS_WINDOW(root) && !gtk_window_is_active(GTK_WINDOW(root)))
         return FALSE;
     if (tooltip_mapped == NULL) {
         gint64 gap = g_get_monotonic_time() - tooltip_hidden_at;

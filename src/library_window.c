@@ -4657,6 +4657,7 @@ note_cell_controllers(OnLibrary *lw, GtkWidget *widget, GtkListItem *item)
      * D34); the view's own "activate" still serves Enter.                 */
     g_object_set_data(G_OBJECT(widget), "on-item", item);
     on_app_double_click_watch(widget, on_note_double_clicked, lw);
+    on_app_select_on_press(widget, item);                       /* D37 */
 }
 
 /* cell_label_new() — a left-aligned cell label with the column's padding. */
@@ -4846,6 +4847,7 @@ on_action_text_setup(GtkListItemFactory *f, GtkListItem *item,
     g_object_set_data(G_OBJECT(label), "on-item", item);
     on_app_double_click_watch(label, on_action_cell_double_clicked,
                               user_data);
+    on_app_select_on_press(label, item);                        /* D37 */
     gtk_list_item_set_child(item, label);
 }
 
@@ -4891,6 +4893,7 @@ on_action_due_setup(GtkListItemFactory *f, GtkListItem *item,
     GtkWidget *label = cell_label_new(FALSE);
     g_object_set_data(G_OBJECT(label), "on-item", item);
     on_app_double_click_watch(label, on_due_cell_double_clicked, user_data);
+    on_app_select_on_press(label, item);                        /* D37 */
     gtk_list_item_set_child(item, label);
 }
 
@@ -4952,6 +4955,7 @@ on_sidebar_setup(GtkListItemFactory *f, GtkListItem *item,
      * dragged past it.                                                     */
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(label, TRUE);
+    on_app_select_on_press(label, item);     /* the label, not the arrow  */
     gtk_tree_expander_set_child(GTK_TREE_EXPANDER(expander), label);
     gtk_list_item_set_child(item, expander);
 

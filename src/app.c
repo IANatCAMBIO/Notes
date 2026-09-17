@@ -392,6 +392,95 @@ on_app_double_click_watch(GtkWidget *widget, OnDoubleClickFunc cb,
     gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(g));
 }
 
+/* SelectPress — a watched row's list item, and whether the press left the
+ * selection alone for a drag that the release must then collapse.        */
+typedef struct {
+    GtkListItem *item;
+    gboolean     collapse;
+} SelectPress;
+
+/* select_press_modifiers() — GTK's own reading of a press's modifiers
+ * (gtklistfactorywidget.c): Shift extends, Control toggles, and on macOS
+ * Command toggles too.                                                    */
+static void
+select_press_modifiers(GtkGesture *g, gboolean *modify, gboolean *extend)
+{
+    GdkEvent *event = gtk_gesture_get_last_event(g, NULL);
+    GdkModifierType state = event != NULL ? gdk_event_get_modifier_state(event)
+                                          : 0;
+    *extend = (state & GDK_SHIFT_MASK) != 0;
+    *modify = (state & GDK_CONTROL_MASK) != 0;
+#ifdef __APPLE__
+    *modify = *modify || (state & GDK_META_MASK) != 0;
+#endif
+}
+
+/* select_item() — run the view's "list.select-item" for the widget's row;
+ * the action resolves up the ancestry to the list.                        */
+static void
+select_item(GtkWidget *widget, guint pos, gboolean modify, gboolean extend)
+{
+    gtk_widget_activate_action(widget, "list.select-item", "(ubb)", pos,
+                               modify, extend);
+}
+
+/* on_select_pressed() — the press: select now, unless it is an unmodified
+ * press on a selected row (a drag may follow).                             */
+static void
+on_select_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                  gpointer user_data)
+{
+    (void)x; (void)y;
+    SelectPress *sp = user_data;
+    sp->collapse = FALSE;
+    if (n_press != 1)                /* the double-click's second press     */
+        return;
+    guint pos = gtk_list_item_get_position(sp->item);
+    if (pos == GTK_INVALID_LIST_POSITION)
+        return;
+    gboolean modify, extend;
+    select_press_modifiers(GTK_GESTURE(g), &modify, &extend);
+    if (!modify && !extend && gtk_list_item_get_selected(sp->item)) {
+        sp->collapse = TRUE;
+        return;
+    }
+    select_item(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+                pos, modify, extend);
+}
+
+/* on_select_released() — the release: claim it away from the row's own
+ * gesture, and finish the collapse the press deferred.                    */
+static void
+on_select_released(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                   gpointer user_data)
+{
+    (void)n_press; (void)x; (void)y;
+    SelectPress *sp = user_data;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
+    if (!sp->collapse)
+        return;
+    sp->collapse = FALSE;
+    guint pos = gtk_list_item_get_position(sp->item);
+    if (pos != GTK_INVALID_LIST_POSITION)
+        select_item(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+                    pos, FALSE, FALSE);
+}
+
+void
+on_app_select_on_press(GtkWidget *widget, GtkListItem *item)
+{
+    SelectPress *sp = g_new0(SelectPress, 1);
+    sp->item = item;
+    GtkGesture *g = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(g), GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(g),
+                                               GTK_PHASE_CAPTURE);
+    g_object_set_data_full(G_OBJECT(g), "on-select-press", sp, g_free);
+    g_signal_connect(g, "pressed",  G_CALLBACK(on_select_pressed),  sp);
+    g_signal_connect(g, "released", G_CALLBACK(on_select_released), sp);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(g));
+}
+
 void
 on_app_menu_popup(GtkWidget *attach, GMenuModel *model, gdouble x, gdouble y)
 {

@@ -911,10 +911,34 @@ add a second idiom.
   app, so the ring is off for the notes list, the sidebar, the Action
   Items view, the search results and the grid cards.
 
+- **D37 · 2026-09-17 — Rows select on the PRESS** (`on_app_select_on_press`,
+  app.h).  GTK4's row widget selects from its click gesture's "released"
+  (gtklistfactorywidget.c), so a clicked row looked unselected for the
+  length of the click; the GTK3 tree view selected on press.  A
+  capture-phase primary-button gesture on every cell/row child runs the
+  view's own `list.select-item` action at press time with GTK's reading
+  of the modifiers (Shift extends, Control/Command toggles) — the action
+  resolves up the ancestry, so it can be activated on a plain box or
+  label — except an unmodified press on a row that is already selected,
+  which is left alone so a drag can carry the multi-selection; the
+  release CLAIMS the sequence, which cancels the row's own gesture
+  (gtk_widget_propagate_event_sequence_state: a claim from a capture
+  gesture cancels the bubble gestures of its ancestors) so GTK cannot
+  select a second time and undo a toggle, and collapses to the pressed
+  row when the deferred press's drag never came.  Verified by capture:
+  press-and-hold selects, Cmd-click toggles once, Shift-click extends,
+  press on a selected row keeps the set until the release.  The claim
+  cancels every gesture BELOW the watched widget too, so it goes on the
+  sidebar expander's LABEL (the arrow keeps its click) and not on the
+  Action Items check cell.  Installed on the notes list cells, the grid
+  cards, the Action Items text and due cells, the sidebar labels and
+  the search results.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
 
+- 2026-09-17 — D37: rows select on the press (GTK4 selects on release).
 - 2026-09-16 — D36: no focus ring on rows (the modifier-release flash).
 - 2026-09-16 — D35: no tooltip in an inactive window — the library's
   tooltip, hovered through an editor's title bar, raised the library.

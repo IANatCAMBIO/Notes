@@ -455,6 +455,27 @@ void on_app_double_click_watch(GtkWidget *widget, OnDoubleClickFunc cb,
                                gpointer data);
 
 /* ---------------------------------------------------------------------------
+ * on_app_select_on_press() — make a list row select on the PRESS, not on
+ * the release (D37).  GTK4's row widget selects from its click gesture's
+ * "released" (gtklistfactorywidget.c), so a row looked unselected for
+ * the length of the click.  A capture-phase primary-button gesture on
+ * `widget`: the press runs the view's own "list.select-item" action
+ * with the modifiers GTK would read (Shift extends, Control — Command on
+ * macOS — toggles), except an unmodified press on a row that is ALREADY
+ * selected, which leaves the selection alone so a drag can carry a
+ * multi-selection; the release CLAIMS the sequence (cancelling the row's
+ * own gesture, so it cannot select a second time and undo a toggle) and
+ * collapses to the pressed row when the press left it for a drag that
+ * never came.  Anything in `widget` that has a gesture of its own (a
+ * check button, an expander's arrow) must NOT be inside it — the claim
+ * cancels every gesture below — so the sidebar installs this on the
+ * expander's LABEL and the Action Items view leaves its check cell out.
+ *   widget — the cell or row child to watch.
+ *   item   — its GtkListItem (the position is read at press time).
+ * ------------------------------------------------------------------------- */
+void on_app_select_on_press(GtkWidget *widget, GtkListItem *item);
+
+/* ---------------------------------------------------------------------------
  * on_app_install_accels() — THE keyboard-shortcut table, bound once at
  * startup with gtk_application_set_accels_for_action.  Every shortcut is a
  * "win." action, so the same key can mean different things in different

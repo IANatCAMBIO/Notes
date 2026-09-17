@@ -422,6 +422,7 @@ on_result_setup(GtkListItemFactory *f, GtkListItem *item, gpointer user_data)
     g_object_set_data(G_OBJECT(label), "on-item", item);
     on_app_double_click_watch(label, on_result_double_clicked,
                               g_object_get_data(G_OBJECT(f), "on-window"));
+    on_app_select_on_press(label, item);                        /* D37 */
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_margin_start(label, 6);

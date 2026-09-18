@@ -40,10 +40,13 @@
  *                                        numbering 'note cat --md' uses)
  *   notes note image ID N FILE       (writes the stored PNG out verbatim)
  *   notes note open PATH             (id or Folder/Title; uses the GUI)
- *   notes action list [--open|--done] [--uid]  ('!' items; NOTEID:ORD
- *                                        positions, --uid prepends the
- *                                        stable per-item id that survives
- *                                        edits and renumbering)
+ *   notes action list [--open|--done] [--context NAME] [--uid]
+ *                                        ('!' items; NOTEID:ORD positions;
+ *                                        --context = the items whose note
+ *                                        lives under that top-level
+ *                                        folder; --uid prepends the stable
+ *                                        per-item id that survives edits
+ *                                        and renumbering)
  *   notes action show UID|NOTEID:ORD (one item, as an 'action list --uid'
  *                                        record: the read-back an external
  *                                        mirror needs for a pinned item)

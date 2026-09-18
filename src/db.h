@@ -168,8 +168,8 @@ typedef struct {
  *             a note at the root).  Read off the action_items_ctx VIEW
  *             (db.c), which derives it from the folder tree — never
  *             stored: a stored copy would go stale the moment a note
- *             moved or a folder was renamed.  NULL from every other
- *             source (the extractor, the per-note list).
+ *             moved or a folder was renamed.  Filled by both db listings;
+ *             NULL from the extractor, which knows no folder.
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   note_id;
@@ -519,9 +519,9 @@ gboolean on_db_action_uids_fill(OnDatabase *db);
 gboolean on_db_action_uids_missing(OnDatabase *db);
 
 /* Every action item of every visible (non-trashed) note, newest note
- * first, note order preserved within a note; the only listing that fills
- * each item's `context` (the note's top-level folder).  Returns a GList of
- * OnActionItem*; free with on_db_action_list_free().                        */
+ * first, note order preserved within a note, each with its `context` (the
+ * note's top-level folder).  Returns a GList of OnActionItem*; free with
+ * on_db_action_list_free().                                                 */
 GList *on_db_action_list(OnDatabase *db);
 
 /* All action items for one specific note, ordered by ord.  Returns a GList

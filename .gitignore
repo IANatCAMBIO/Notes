@@ -1,6 +1,6 @@
 # Build artifacts
 build/
-notes
+/notes
 
 # Per-machine application configuration (lives next to the binary)
 notes.ini

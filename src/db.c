@@ -2009,16 +2009,17 @@ on_db_action_uids_fill(OnDatabase *db)
     return ok;
 }
 
-/* run_action_query() — collect every row of `stmt` (columns: ACTION_COLS,
- * plus an optional seventh: the note's context, see on_db_action_list)
- * into a list of OnActionItem* and finalize it — the action-item counterpart
- * of run_meta_query()/run_tag_query().                                      */
+/* The columns both listings read off the action_items_ctx view, in
+ * run_action_query()'s order: ACTION_COLS then the context.                 */
+#define ACTION_CTX_COLS ACTION_COLS ", context"
+
+/* run_action_query() — collect every row of `stmt` (columns:
+ * ACTION_CTX_COLS) into a list of OnActionItem* and finalize it — the
+ * action-item counterpart of run_meta_query()/run_tag_query().             */
 static GList *
 run_action_query(sqlite3_stmt *stmt)
 {
     GList *out = NULL;                   /* accumulated OnActionItem rows   */
-    gboolean with_context =              /* the cross-note listing only     */
-        sqlite3_column_count(stmt) > 6;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         OnActionItem *it = g_new0(OnActionItem, 1);
         it->note_id = sqlite3_column_int64(stmt, 0);
@@ -2027,9 +2028,7 @@ run_action_query(sqlite3_stmt *stmt)
         it->done    = sqlite3_column_int(stmt, 3) != 0;
         it->due     = sqlite3_column_int64(stmt, 4);
         it->uid     = sqlite3_column_int64(stmt, 5);
-        if (with_context)
-            it->context =
-                g_strdup((const gchar *)sqlite3_column_text(stmt, 6));
+        it->context = g_strdup((const gchar *)sqlite3_column_text(stmt, 6));
         out = g_list_prepend(out, it);
     }
     sqlite3_finalize(stmt);
@@ -2040,10 +2039,9 @@ GList *
 on_db_action_list(OnDatabase *db)
 {
     /* Off the action_items_ctx view, so the GUI's Context and a sister
-     * app's reading of it are one definition; the seventh column is the
-     * view's `context`.                                                     */
+     * app's reading of it are one definition.                              */
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT " ACTION_COLS ", context FROM " ACTION_CTX_VIEW_NAME " "
+        "SELECT " ACTION_CTX_COLS " FROM " ACTION_CTX_VIEW_NAME " "
         "WHERE visible ORDER BY updated_at DESC, ord");
     return (stmt != NULL) ? run_action_query(stmt) : NULL;
 }
@@ -2051,8 +2049,12 @@ on_db_action_list(OnDatabase *db)
 GList *
 on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
 {
+    /* Off the view as well, so an item read by note carries the same
+     * context an item read across notes does (action show vs action list).
+     * The folder CTE it runs is over a table of at most a few hundred rows;
+     * every caller is a cold path (a CLI command, an editor opening).      */
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT " ACTION_COLS " FROM action_items "
+        "SELECT " ACTION_CTX_COLS " FROM " ACTION_CTX_VIEW_NAME " "
         "WHERE note_id=? ORDER BY ord");
     if (stmt == NULL)
         return NULL;

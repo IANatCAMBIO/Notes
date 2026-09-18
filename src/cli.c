@@ -1689,7 +1689,10 @@ action_print_line(const OnActionItem *it, gboolean with_uid)
                ",\"ord\":%d,\"done\":%s,\"due\":",
                it->uid, it->note_id, it->ord, it->done ? "true" : "false");
         json_str(when);              /* null when the item has no due date  */
-        printf(",\"due_at\":%" G_GINT64_FORMAT ",\"text\":", it->due);
+        printf(",\"due_at\":%" G_GINT64_FORMAT ",\"context\":", it->due);
+        json_str(it->context);       /* the note's top-level folder, "" at
+                                        the root                            */
+        printf(",\"text\":");
         json_str(it->text);
         putchar('}');
         g_free(when);
@@ -1708,14 +1711,19 @@ action_print_line(const OnActionItem *it, gboolean with_uid)
 /* ---------------------------------------------------------------------------
  * cmd_action_list() — every action item across the visible notes, newest
  * note first, one action_print_line() record each.  `filter` narrows to
- * open or done items; with_uid adds the uid column.  The default form is
- * byte-for-byte what it always was.
+ * open or done items; `context` (NULL = any) to the items whose note lives
+ * under that top-level folder, compared case-insensitively so "stride"
+ * finds Stride — the plain form does not print the context, so the filter
+ * is the only way to ask for it there; with_uid adds the uid column.  The
+ * default form is byte-for-byte what it always was.
  * ------------------------------------------------------------------------- */
 typedef enum { ACTION_ALL, ACTION_OPEN, ACTION_DONE } ActionFilter;
 
 static int
-cmd_action_list(OnDatabase *db, ActionFilter filter, gboolean with_uid)
+cmd_action_list(OnDatabase *db, ActionFilter filter, const gchar *context,
+                gboolean with_uid)
 {
+    gchar *want = context != NULL ? g_utf8_casefold(context, -1) : NULL;
     GList *items = on_db_action_list(db);
     json_array_begin();
     for (GList *l = items; l != NULL; l = l->next) {
@@ -1723,8 +1731,17 @@ cmd_action_list(OnDatabase *db, ActionFilter filter, gboolean with_uid)
         if ((filter == ACTION_OPEN && it->done) ||
             (filter == ACTION_DONE && !it->done))
             continue;
+        if (want != NULL) {
+            gchar *have = g_utf8_casefold(
+                it->context != NULL ? it->context : "", -1);
+            gboolean hit = g_strcmp0(have, want) == 0;
+            g_free(have);
+            if (!hit)
+                continue;
+        }
         action_print_line(it, with_uid);
     }
+    g_free(want);
     json_array_end();
     on_db_action_list_free(items);
     return 0;
@@ -2155,8 +2172,12 @@ usage(FILE *out)
 "                                    starts Notes if it is not running\n"
 "\n"
 "  action list [--open|--done]       print every '!' action item across\n"
-"              [--uid]               the notes: NOTEID:ORD, [x]/[ ],\n"
-"                                    due date ('-' = none), text.\n"
+"              [--context NAME]      the notes: NOTEID:ORD, [x]/[ ],\n"
+"              [--uid]               due date ('-' = none), text.\n"
+"                                    --context keeps the items whose\n"
+"                                    note lives under top-level folder\n"
+"                                    NAME (case-insensitive; '' = the\n"
+"                                    root); --json records carry it.\n"
 "                                    --uid adds the item's stable UID as\n"
 "                                    a first column: that id survives\n"
 "                                    editing, reordering and renumbering,\n"
@@ -2268,6 +2289,7 @@ dispatch_action(OnDatabase *db, const char *verb, char **argv, int argc)
         /* Flags in any order; anything unrecognised is a usage error (exit
          * 1), which is how a caller probes an older build for --uid.       */
         ActionFilter filter   = ACTION_ALL;
+        const gchar *context  = NULL;    /* --context NAME                  */
         gboolean     with_uid = FALSE;
         for (int i = 0; i < argc; i++) {
             if (g_strcmp0(argv[i], "--open") == 0)
@@ -2276,10 +2298,12 @@ dispatch_action(OnDatabase *db, const char *verb, char **argv, int argc)
                 filter = ACTION_DONE;
             else if (g_strcmp0(argv[i], "--uid") == 0)
                 with_uid = TRUE;
+            else if (g_strcmp0(argv[i], "--context") == 0 && i + 1 < argc)
+                context = argv[++i];
             else
                 return usage(stderr);
         }
-        return cmd_action_list(db, filter, with_uid);
+        return cmd_action_list(db, filter, context, with_uid);
     }
     if (g_strcmp0(verb, "show") == 0 && argc == 1)
         return cmd_action_show(db, argv[0]);

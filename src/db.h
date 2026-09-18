@@ -16,8 +16,20 @@
  *              pinned, body_text, trashed)
  *   tags      (id, name UNIQUE)
  *   note_tags    (note_id, tag_id)                       -- many-to-many
- *   action_items (note_id, ord, text, done, due, uid)    -- queryable mirror of '!' lines
+ *   list_groups, lists, tasks                            -- the Tasks app's tables, VERBATIM
+ *   note_task (uid, task_id, note_id, ord)               -- a '!' line's task, keyed by the
+ *                                                           uid the note blob carries
  *   action_uid_seq (id, next)                            -- uid high-water mark
+ *
+ * An ACTION ITEM is a TASK ROW: a '!' line in a note is a rendering of its
+ * task's title, done state (status 2) and due date, linked through
+ * note_task by the uid the line carries in the blob (BNBF ACTION record).
+ * The task is the source of truth; the line is rewritten from it.  The
+ * three tables are the sister Tasks app's own DDL so the two databases can
+ * merge without a notion of "action item vs task"; Notes writes only
+ * title/status/due/completed_at/updated_at/deleted and never touches the
+ * Tasks-only columns.  The action_items_ctx view (db.c) is what every
+ * listing reads.
  *
  * A NULL parent_id means "top-level folder"; a NULL folder_id means the
  * note lives at the top level ("Notes" root).
@@ -141,36 +153,30 @@ typedef struct {
 } OnTag;
 
 /* ---------------------------------------------------------------------------
- * OnActionItem — one follow-up action item: a note line starting with '!'
- * (see on_note_extract_actions in serialize.h, which derives these from
- * note content; the action_items table is a queryable mirror rebuilt on
- * every save, like note_tags).
+ * OnActionItem — one action item as the listings hand it out (a row of
+ * the action_items_ctx view: a task with its note's placement) and as a
+ * save hands the note's '!' lines in (on_note_document_save builds one
+ * per line for on_db_note_save_actions).
  *
  * Fields:
- *   note_id — owning note (0 when coming straight from the extractor).
+ *   note_id — owning note.
  *   ord     — the item's position among the note's action lines.
- *   text    — item text: the '!' line's remainder, trimmed, without any
- *             trailing "due <date>" (owned).
- *   done    — completed: the whole text is struck through in the note.
- *   due     — due date as a UNIX timestamp (local midnight), parsed from
- *             the line's trailing "due <date>"; 0 = no due date.
- *   uid     — the item's STABLE identity: assigned once when the item
- *             first appears and carried across every later rebuild of
- *             the mirror (see on_db_note_set_actions), so an external
- *             mirror can hold a reference that survives editing and
- *             renumbering.  Nothing about it is stored in the note text.
- *             0 = "not known": the extractor leaves it zero, and a
- *             caller may set it as a MATCH HINT (see below) before
- *             calling on_db_note_set_actions, which fills in the
- *             assigned uid on return.  Never reused once retired.
+ *   text    — the task's title = the '!' line's remainder, trimmed,
+ *             without any trailing "due <date>" (owned).
+ *   done    — the task's status is DONE = the line is struck through.
+ *   due     — the task's due date as a UNIX timestamp (local midnight) =
+ *             the line's trailing "due <date>"; 0 = none.
+ *   uid     — the item's STABLE identity: the line carries it in the note
+ *             blob (BNBF ACTION record), note_task maps it to the task.
+ *             Allocated once from action_uid_seq when a line is first
+ *             saved, never reused once retired.
  *   context — the CONTAINER the owning note lives in: the name of its
  *             own folder, whatever sits above that — a note in
  *             Salt/Deployments/Stride has the context "Stride" ("" for a
- *             note at the root).  Read off the action_items_ctx VIEW
- *             (db.c), which derives it from the folder tree — never
- *             stored: a stored copy would go stale the moment a note
- *             moved or a folder was renamed.  Filled by both db listings;
- *             NULL from the extractor, which knows no folder.
+ *             note at the root).  Derived by the view from the folder
+ *             tree — never stored: a stored copy would go stale the
+ *             moment a note moved or a folder was renamed.  NULL on an
+ *             item built from a line, which knows no folder.
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   note_id;
@@ -486,38 +492,73 @@ GList *on_db_note_tag_list(OnDatabase *db, gint64 note_id);
 
 /* --------------------------- action items -------------------------------- */
 
-/* Replace note `note_id`'s action_items rows with `items` (a GList of
- * OnActionItem; ord is assigned from list order).  One transaction.
- *
- * The rows are rebuilt DELETE-then-INSERT, but each item's `uid` is
- * CARRIED ACROSS that rebuild so it stays a stable external reference:
- * the note's old rows are read first and matched against `items` in four
- * passes, strongest evidence first —
- *   1. identical text (an item that merely moved),
- *   2. the caller's hint in it->uid (the live editor's per-line marks —
- *      the only signal that survives a reword; see editor_window.c),
- *   3. the same ord (the headless fallback: a reword with no hint),
- *   4. otherwise a fresh uid from the action_uid_seq high-water mark.
- * Every item's assigned uid is written back into the list on return.
- * A retired uid is never handed out again.
- *
- * Returns TRUE on success.                                                  */
-gboolean on_db_note_set_actions(OnDatabase *db, gint64 note_id,
-                                GList *items);
+/* The Tasks app's constants, spelled as it spells them (tasks/src/db.h),
+ * so both schemas carry the same defaults and status encoding.            */
+#define ON_TASK_RECUR_TIME_DEFAULT (8 * 60)       /* minutes past midnight */
+#define ON_TASK_RECUR_LEAD_DEFAULT (7 * 24 * 60)  /* minutes                */
+#define ON_TASK_DUE_TIME_DEFAULT   (8 * 60)       /* minutes past midnight */
+#define ON_TASK_STATUS_NEW         0
+#define ON_TASK_STATUS_IN_PROGRESS 1
+#define ON_TASK_STATUS_DONE        2              /* == struck in the note */
+
+/* The one managed list every note-born task is filed in — the name and
+ * emoji the Tasks app's Notes plugin gives ITS managed list, so the merge
+ * finds one list, not two.                                                */
+#define ON_TASK_LIST_NAME  "Action Items"
+#define ON_TASK_LIST_EMOJI "\xe2\x9d\x97"          /* U+2757                */
+
+/* Allocate a fresh uid from the action_uid_seq high-water mark: only ever
+ * incremented, so a uid retired with a deleted item is never handed out
+ * again.  Runs in its own transaction unless the caller already has one
+ * open; a uid burned by a save that then fails is harmless.  Returns 0 on
+ * failure.                                                                */
+gint64 on_db_action_uid_alloc(OnDatabase *db);
+
+/* Sync note `note_id`'s task rows to `items` — the note's real action
+ * lines in document order, each with the uid its line carries (never 0:
+ * the caller allocates first, since the blob must hold the uid before it
+ * is written).  One transaction: an item with no task row gets one
+ * (created in the managed list); an existing task is updated only where
+ * title / done / due differ (done folds into status the way the Tasks
+ * app's done-only sources do: done → 2, undone → 1 if it was 2, else
+ * unchanged; completed_at stamped on entering 2; a tombstoned row comes
+ * back to life — the undo of a deleted line); its note_task row is
+ * re-pointed and re-numbered when the line moved; and every task of this
+ * note whose uid is no longer among the items is TOMBSTONED (deleted=1).
+ * `changed` (optional) receives whether any task row was written.
+ * Returns TRUE on success.                                                */
+gboolean on_db_note_save_actions(OnDatabase *db, gint64 note_id,
+                                 GList *items, gboolean *changed);
+
+/* Create the task for one '!' line (uid, position, fields) — the
+ * building block on_db_note_save_actions uses, exposed for the one-time
+ * v5 migration; goes back to being private with it.  Returns TRUE on
+ * success.                                                                */
+gboolean on_db_action_create(OnDatabase *db, gint64 note_id, gint64 uid,
+                             gint ord, const gchar *title, gboolean done,
+                             gint64 due);
+
+/* One live item by uid, off the view (context included); NULL when no
+ * live task carries that uid.  Free with on_db_action_item_free().        */
+OnActionItem *on_db_action_get(OnDatabase *db, gint64 uid);
+
+/* Write one live item's title / done / due onto its task (the row-first
+ * half of an external edit; the line is re-rendered from it afterwards).
+ * FALSE when no live task carries that uid.                               */
+gboolean on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
+                          gboolean done, gint64 due);
+
+/* The uid of the item at position `ord` among note `note_id`'s live items
+ * (the CLI's NOTEID:ORD form), or 0.                                      */
+gint64 on_db_action_uid_at(OnDatabase *db, gint64 note_id, gint ord);
+
+/* Free one OnActionItem.                                                  */
+void on_db_action_item_free(OnActionItem *it);
 
 /* Resolve a stable uid to the item's current address.  Returns FALSE when
  * no item carries that uid (it was deleted, or never existed).             */
 gboolean on_db_action_find_uid(OnDatabase *db, gint64 uid,
                                gint64 *note_id, gint *ord);
-
-/* Give every action_items row still lacking a uid (rows written before the
- * column existed) a fresh one.  One transaction; gated by its caller —
- * see on_app_action_uids_backfill().  Returns TRUE on success.             */
-gboolean on_db_action_uids_fill(OnDatabase *db);
-
-/* Does any action_items row still lack a uid?  An indexed existence probe,
- * cheap enough to run on every open.                                       */
-gboolean on_db_action_uids_missing(OnDatabase *db);
 
 /* Every action item of every visible (non-trashed) note, newest note
  * first, note order preserved within a note, each with its `context` (the
@@ -528,10 +569,6 @@ GList *on_db_action_list(OnDatabase *db);
 /* All action items for one specific note, ordered by ord.  Returns a GList
  * of OnActionItem*; free with on_db_action_list_free().                     */
 GList *on_db_action_list_for_note(OnDatabase *db, gint64 note_id);
-
-/* Set one item's done flag (addressed by note id + position).               */
-gboolean on_db_action_set_done(OnDatabase *db, gint64 note_id, gint ord,
-                               gboolean done);
 
 /* Item counts across all visible notes (either out-param may be NULL):
  * `total` = every item, `open` = the not-yet-done ones.                     */

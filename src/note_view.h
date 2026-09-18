@@ -60,9 +60,14 @@ GtkWidget *on_note_view_new(OnApp *app);
  * too.  Returns the group (borrowed; the view owns it).                   */
 GActionGroup *on_note_view_action_group(OnNoteView *v);
 
-/* on_note_view_load() — replace the note with a stored BNBF blob (NULL =
- * empty note): caret to the start, undo history cleared, nothing reported
- * as an edit.                                                             */
+/* on_note_view_load_document() — replace the note with `doc`, which the
+ * view takes over: caret to the start, undo history cleared (a document
+ * reconciled against its task rows arrives with those rewrites in its
+ * log — they are not the user's to undo), nothing reported as an edit.  */
+void on_note_view_load_document(OnNoteView *v, OnDocument *doc);
+
+/* on_note_view_load() — the same from a stored BNBF blob (NULL = empty
+ * note).                                                                  */
 void on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len);
 
 /* on_note_view_serialize() — the note as a new BNBF blob (g_free it).     */
@@ -158,21 +163,11 @@ gboolean on_note_view_take_tags_modified(OnNoteView *v);
 gboolean on_note_view_take_actions_modified(OnNoteView *v);
 
 /* ---------------------------------------------------------------------------
- * ACTION-ITEM IDENTITY — every '!' block carries its item's stable uid
- * (OnBlock.action_uid), which rides every edit of that block.  The host
- * owns the action_items table; the view owns the blocks.
+ * ACTION ITEMS — every '!' block carries its item's stable uid
+ * (OnBlock.action_uid, the blob's ACTION record), which rides every edit
+ * of that block; the host resolves a uid to a line with
+ * on_document_action_ord over on_note_view_document.
  * ------------------------------------------------------------------------- */
-
-/* on_note_view_action_marks_hint() — fill each item's uid with the uid of
- * its block, as a match hint for on_db_note_set_actions.  An item whose
- * block carries none keeps uid 0.
- *   items — freshly extracted OnActionItem list, in ord order.           */
-void on_note_view_action_marks_hint(OnNoteView *v, GList *items);
-
-/* on_note_view_action_marks_sync() — give the n-th real action block the
- * n-th item's uid: after any save that rewrote the table and once after
- * load.                                                                   */
-void on_note_view_action_marks_sync(OnNoteView *v, GList *items);
 
 /* on_note_view_action_strike/due/text() — the live-editor side of the
  * headless on_document_action_* rewrites: the same edit, then "edited". */
@@ -204,7 +199,9 @@ gboolean on_note_view_feed_click(OnNoteView *v, gdouble x, gdouble y,
 /* on_note_view_caret() — where the caret is (for the probe's checks).    */
 OnPos on_note_view_caret(OnNoteView *v);
 
-/* on_note_view_document() — the note itself (borrowed; read-only use).   */
+/* on_note_view_document() — the note itself (borrowed).  The host reads
+ * it, and the save (on_note_document_save) gives its action blocks their
+ * uids through it; every other change goes through the view's API.      */
 OnDocument *on_note_view_document(OnNoteView *v);
 
 #endif /* ON_NOTE_VIEW_H */

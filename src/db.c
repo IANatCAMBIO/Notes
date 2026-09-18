@@ -45,15 +45,22 @@ static const char *SCHEMA_SQL =
     "  tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,"
     "  PRIMARY KEY (note_id, tag_id)"
     ");"
-    "CREATE TABLE IF NOT EXISTS action_items ("
-    "  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,"
-    "  ord     INTEGER NOT NULL,"
-    "  text    TEXT NOT NULL,"
-    "  done    INTEGER NOT NULL DEFAULT 0,"
-    "  due     INTEGER NOT NULL DEFAULT 0,"
-    "  uid     INTEGER NOT NULL DEFAULT 0,"
-    "  PRIMARY KEY (note_id, ord)"
-    ");"
+    /* The Tasks app's three tables, its DDL VERBATIM (tasks/src/db.c) —
+     * the merge of the two databases depends on the two being the same
+     * text.  Only `tasks` has DEFAULTs built from macros, so it is a
+     * printf format, TASKS_SCHEMA_FMT, run right after this string.       */
+    "CREATE TABLE IF NOT EXISTS list_groups ("
+    "  id       INTEGER PRIMARY KEY,"
+    "  name     TEXT    NOT NULL DEFAULT '',"
+    "  position INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE IF NOT EXISTS lists ("
+    "  id         INTEGER PRIMARY KEY,"
+    "  name       TEXT    NOT NULL DEFAULT '',"
+    "  emoji      TEXT    NOT NULL DEFAULT '',"
+    "  position   INTEGER NOT NULL DEFAULT 0,"
+    "  group_id   INTEGER REFERENCES list_groups(id),"
+    "  updated_at INTEGER NOT NULL DEFAULT 0,"
+    "  deleted    INTEGER NOT NULL DEFAULT 0);"
     /* The uid high-water mark: one row, monotonically increasing, so a
      * uid retired by a deleted item is never handed out again.             */
     "CREATE TABLE IF NOT EXISTS action_uid_seq ("
@@ -61,19 +68,50 @@ static const char *SCHEMA_SQL =
     "  next INTEGER NOT NULL"
     ");"
     "INSERT OR IGNORE INTO action_uid_seq (id, next) VALUES (1, 1);"
-    /* NOTE: the index on action_items(uid) is NOT here — on a database
-     * predating that column this string runs BEFORE the ALTER that adds
-     * it, and indexing a missing column fails the whole batch (which
-     * means on_db_open returns NULL and the app refuses to start).  It is
-     * created after the migrations instead, with the Trash view.          */
     "CREATE INDEX IF NOT EXISTS idx_notes_folder  ON notes(folder_id);"
     "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);"
     "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);";
 
+/* The Tasks app's `tasks` table (tasks/src/db.c), the three %d being the
+ * ON_TASK_*_DEFAULT macros — the CREATE and the defaults cannot drift.
+ * note_task links a '!' line to its task: keyed by the uid the note blob
+ * carries, so the merge can renumber tasks.id by rewriting this table
+ * alone, never a blob.  Both run after SCHEMA_SQL, before the ALTERs.    */
+static const char *TASKS_SCHEMA_FMT =
+    "CREATE TABLE IF NOT EXISTS tasks ("
+    "  id           INTEGER PRIMARY KEY,"
+    "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
+    "  parent_id    INTEGER REFERENCES tasks(id),"
+    "  title        TEXT    NOT NULL DEFAULT '',"
+    "  notes        TEXT    NOT NULL DEFAULT '',"
+    "  due          INTEGER NOT NULL DEFAULT 0,"
+    "  status       INTEGER NOT NULL DEFAULT 0,"
+    "  pinned       INTEGER NOT NULL DEFAULT 0,"
+    "  priority     INTEGER NOT NULL DEFAULT 0,"
+    "  position     INTEGER NOT NULL DEFAULT 0,"
+    "  updated_at   INTEGER NOT NULL DEFAULT 0,"
+    "  deleted      INTEGER NOT NULL DEFAULT 0,"
+    "  completed_at INTEGER NOT NULL DEFAULT 0,"
+    "  recur_interval INTEGER NOT NULL DEFAULT 0,"
+    "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
+    "  recur_time     INTEGER NOT NULL DEFAULT %d,"
+    "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
+    "  recur_next     INTEGER NOT NULL DEFAULT 0,"
+    "  recur_start    INTEGER NOT NULL DEFAULT 0,"
+    "  due_time       INTEGER NOT NULL DEFAULT %d);"
+    "CREATE INDEX IF NOT EXISTS idx_tasks_list "
+    "  ON tasks(list_id, parent_id, position);"
+    "CREATE TABLE IF NOT EXISTS note_task ("
+    "  uid     INTEGER PRIMARY KEY,"
+    "  task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,"
+    "  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,"
+    "  ord     INTEGER NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS idx_note_task_note ON note_task(note_id);";
+
 /* ---------------------------------------------------------------------------
- * The views.  Each is a NAME and a BODY (the SELECT after "AS"), created by
- * db_view_ensure() in on_db_open AFTER the column migrations, since they
- * reference migrated columns (folders.trashed, action_items.uid).
+ * The views and the trigger, ensured by db_ensure() in on_db_open AFTER
+ * the column migrations, since a view references migrated columns
+ * (folders.trashed).
  * ------------------------------------------------------------------------- */
 
 /* trash_folder_ids — the recursive closure of the Trash: every folder that
@@ -97,10 +135,10 @@ static const char *SCHEMA_SQL =
  * run_action_query()'s expectations.                                        */
 #define ACTION_COLS "note_id, ord, text, done, due, uid"
 
-/* action_items_ctx — every action item WITH ITS NOTE'S PLACEMENT, the
- * contract a sister app sharing this database reads (the Tasks app's
- * planned direct read of the items, replacing its CLI mirror): ACTION_COLS,
- * then
+/* action_items_ctx — every LIVE action item as a task row WITH ITS NOTE'S
+ * PLACEMENT, the one shape every listing reads (and the contract a sister
+ * app sharing this database reads directly): ACTION_COLS, where text is
+ * the task's title and done is status = 2, then
  *   folder_id  — the owning note's folder (NULL at the root): the stable
  *                key for a context, surviving a rename,
  *   updated_at — the owning note's modification time,
@@ -109,18 +147,35 @@ static const char *SCHEMA_SQL =
  *   context    — the NAME of that folder ("" at the root): the container
  *                the note sits in, whatever is above it — a note in
  *                Salt/Deployments/Stride has the context "Stride".
- * The context is DERIVED here, never stored: a stored copy would go stale
- * the moment a note moved or a folder was renamed, and with two writers
- * on one file nobody could trust it.  The columns are spelled out (not
- * a.*) so the view's contract is exactly this list.                       */
+ * Tombstoned tasks are not in it (a note's trash state is `visible`, a
+ * task's deletion is absence).  The context is DERIVED here, never
+ * stored: a stored copy would go stale the moment a note moved or a
+ * folder was renamed, and with two writers on one file nobody could trust
+ * it.  The columns are spelled out (not t.*) so the view's contract is
+ * exactly this list.                                                      */
 #define ACTION_CTX_VIEW_NAME "action_items_ctx"
 #define ACTION_CTX_VIEW_BODY \
-    "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid," \
+    "SELECT nt.note_id, nt.ord, t.title AS text, (t.status = 2) AS done," \
+    "  t.due, nt.uid," \
     "  n.folder_id, n.updated_at," \
     "  (n." NOTE_VISIBLE_SQL ") AS visible," \
     "  COALESCE(f.name, '') AS context" \
-    " FROM action_items a JOIN notes n ON n.id = a.note_id" \
-    " LEFT JOIN folders f ON f.id = n.folder_id"
+    " FROM note_task nt JOIN tasks t ON t.id = nt.task_id" \
+    " JOIN notes n ON n.id = nt.note_id" \
+    " LEFT JOIN folders f ON f.id = n.folder_id" \
+    " WHERE t.deleted = 0"
+
+/* note_task_tombstone — a note_task row going away (the note hard-deleted
+ * or its folder, the Trash emptied: all ON DELETE CASCADE) tombstones the
+ * task the Tasks way, in the same transaction, from ONE definition — no
+ * delete path in C has to remember it.  A BEFORE DELETE trigger fires for
+ * cascaded deletes too (measured).                                        */
+#define TASK_TRIGGER_NAME "note_task_tombstone"
+#define TASK_TRIGGER_SQL \
+    "CREATE TRIGGER " TASK_TRIGGER_NAME " BEFORE DELETE ON note_task BEGIN" \
+    "  UPDATE tasks SET deleted=1, updated_at=strftime('%s','now')" \
+    "   WHERE id=OLD.task_id AND deleted=0;" \
+    " END"
 
 /* Remove tags that no longer label any note; run (via exec_simple) after
  * anything that can delete note_tags rows, so the library's tag list
@@ -268,30 +323,33 @@ cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
 }
 
 /* ---------------------------------------------------------------------------
- * db_view_ensure() — make view `name` exist with exactly `body` as its
- * definition.  A view's definition is part of the contract other readers
- * of the file rely on (action_items_ctx is read by a sister app), and
- * CREATE VIEW IF NOT EXISTS would leave an OLD definition in place forever
- * once the code's changed — silently, since the name still resolves.  So
- * the stored text is compared against the expected one (SQLite keeps a
- * view's CREATE statement verbatim in sqlite_master, minus IF NOT EXISTS)
- * and the view is dropped and recreated only on a mismatch; a database
- * whose views are current is not written to at all on open.
- *   db   — open database.
- *   name — the view's name.
- *   body — the SELECT after "AS", byte for byte what the stored text
- *          must hold.
- * Returns TRUE when the view is in place.
+ * db_ensure() — make the view or trigger `name` exist with exactly
+ * `create` as its definition.  A view's definition is part of the
+ * contract other readers of the file rely on (action_items_ctx is read by
+ * a sister app) and a trigger's is behaviour, and CREATE … IF NOT EXISTS
+ * would leave an OLD definition in place forever once the code's changed
+ * — silently, since the name still resolves.  So the stored text is
+ * compared against the expected one (SQLite keeps the CREATE statement
+ * verbatim in sqlite_master, minus IF NOT EXISTS) and the object is
+ * dropped and recreated only on a mismatch; a database whose objects are
+ * current is not written to at all on open.
+ *   db     — open database.
+ *   type   — "view" or "trigger" (sqlite_master's type, and the DROP).
+ *   name   — the object's name.
+ *   create — the whole CREATE statement, byte for byte what the stored
+ *            text must hold.
+ * Returns TRUE when the object is in place.
  * ------------------------------------------------------------------------- */
 static gboolean
-db_view_ensure(OnDatabase *db, const gchar *name, const gchar *body)
+db_ensure(OnDatabase *db, const gchar *type, const gchar *name,
+          const gchar *create)
 {
-    gchar *create = g_strconcat("CREATE VIEW ", name, " AS ", body, NULL);
     gboolean current = FALSE;        /* stored text == expected text?       */
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?");
+        "SELECT sql FROM sqlite_master WHERE type=? AND name=?");
     if (stmt != NULL) {
-        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 1, type, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
         if (sqlite3_step(stmt) == SQLITE_ROW)
             current = g_strcmp0(
                 (const gchar *)sqlite3_column_text(stmt, 0), create) == 0;
@@ -299,11 +357,10 @@ db_view_ensure(OnDatabase *db, const gchar *name, const gchar *body)
     }
     gboolean ok = TRUE;              /* the outcome                         */
     if (!current) {
-        gchar *drop = g_strconcat("DROP VIEW IF EXISTS ", name, NULL);
+        gchar *drop = g_strdup_printf("DROP %s IF EXISTS %s", type, name);
         ok = exec_simple(db, drop) && exec_simple(db, create);
         g_free(drop);
     }
-    g_free(create);
     return ok;
 }
 
@@ -373,6 +430,16 @@ on_db_open(const gchar *path_override)
         on_db_close(db);
         return NULL;
     }
+    gchar *tasks_sql = g_strdup_printf(TASKS_SCHEMA_FMT,
+                                       ON_TASK_RECUR_TIME_DEFAULT,
+                                       ON_TASK_RECUR_LEAD_DEFAULT,
+                                       ON_TASK_DUE_TIME_DEFAULT);
+    gboolean tasks_ok = exec_simple(db, tasks_sql);
+    g_free(tasks_sql);
+    if (!tasks_ok) {
+        on_db_close(db);
+        return NULL;
+    }
 
     /* Migrations: these columns arrived after the original schema.
      * ALTER fails harmlessly when the column already exists.               */
@@ -396,29 +463,19 @@ on_db_open(const gchar *path_override)
                  "NOT NULL DEFAULT 0",
                  NULL, NULL, NULL);
     sqlite3_exec(db->handle,
-                 "ALTER TABLE action_items ADD COLUMN due INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
                  "ALTER TABLE folders ADD COLUMN emoji TEXT "
                  "NOT NULL DEFAULT ''",
                  NULL, NULL, NULL);
-    /* 0 = no uid yet; on_app_action_uids_backfill() fills those in once.   */
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE action_items ADD COLUMN uid INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
 
     /* The views reference migrated columns (and action_items_ctx the
-     * Trash view), and the uid index the uid column, so all are created
-     * only after the migrations above, in this order.                       */
-    if (!db_view_ensure(db, TRASH_VIEW_NAME, TRASH_VIEW_BODY) ||
-        !db_view_ensure(db, ACTION_CTX_VIEW_NAME, ACTION_CTX_VIEW_BODY)) {
-        on_db_close(db);
-        return NULL;
-    }
-    if (!exec_simple(db, "CREATE INDEX IF NOT EXISTS idx_action_items_uid "
-                         "ON action_items(uid)")) {
+     * Trash view), so they are created only after the migrations above,
+     * in this order.                                                        */
+    if (!db_ensure(db, "view", TRASH_VIEW_NAME,
+                   "CREATE VIEW " TRASH_VIEW_NAME " AS " TRASH_VIEW_BODY) ||
+        !db_ensure(db, "view", ACTION_CTX_VIEW_NAME,
+                   "CREATE VIEW " ACTION_CTX_VIEW_NAME " AS "
+                   ACTION_CTX_VIEW_BODY) ||
+        !db_ensure(db, "trigger", TASK_TRIGGER_NAME, TASK_TRIGGER_SQL)) {
         on_db_close(db);
         return NULL;
     }
@@ -1752,169 +1809,261 @@ action_uid_alloc(OnDatabase *db)
     return ok ? uid : 0;
 }
 
-/* ---------------------------------------------------------------------------
- * OldAction — one of the note's pre-rebuild rows, used to carry uids
- * across the DELETE-then-INSERT (see on_db_note_set_actions).
- *
- * Fields:
- *   uid     — the stable id to hand on (0 for pre-column rows).
- *   ord     — the row's old position.
- *   text    — the row's old text (owned).
- *   claimed — already matched to one of the new items?
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gint64   uid;
-    gint     ord;
-    gchar   *text;
-    gboolean claimed;
-} OldAction;
+gint64
+on_db_action_uid_alloc(OnDatabase *db)
+{
+    /* Outside a transaction the read-then-write of the high-water mark is
+     * wrapped in one (IMMEDIATE: the write lock from the start), so two
+     * allocations cannot read the same `next`.                            */
+    gboolean own_txn = sqlite3_get_autocommit(db->handle) != 0;
+    if (own_txn && !exec_simple(db, "BEGIN IMMEDIATE"))
+        return 0;
+    gint64 uid = action_uid_alloc(db);
+    if (own_txn)
+        exec_simple(db, uid != 0 ? "COMMIT" : "ROLLBACK");
+    return uid;
+}
 
 /* ---------------------------------------------------------------------------
- * action_uids_carry() — assign every item in `items` its stable uid,
- * reusing the note's old rows wherever one can be identified.  Four
- * passes over the whole list, strongest evidence first (see the
- * on_db_note_set_actions banner in db.h): identical text, then the
- * caller's it->uid hint, then the same ord, then a fresh id.  Each pass
- * runs to completion before the next so a strong match anywhere always
- * beats a weak one — a text match must not lose a row to a positional
- * guess made earlier in the list.
- *   old — the pre-rebuild rows (claimed flags are updated in place).
- * Returns TRUE on success (FALSE only when the allocator fails).
+ * task_now() — the Tasks app's timestamp: UNIX seconds.
+ * ------------------------------------------------------------------------- */
+static gint64
+task_now(void)
+{
+    return g_get_real_time() / G_USEC_PER_SEC;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_list_managed() — the id of the managed "Action Items" list, created
+ * on first use (never seeded blind: a database that holds no item holds no
+ * list either, until the first).  The Tasks app's bn_managed_list, by name.
+ * Returns the list id, or 0 on failure.
+ * ------------------------------------------------------------------------- */
+static gint64
+task_list_managed(OnDatabase *db)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT id FROM lists WHERE name=? AND deleted=0 LIMIT 1");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_text(stmt, 1, ON_TASK_LIST_NAME, -1, SQLITE_STATIC);
+    gint64 id = sqlite3_step(stmt) == SQLITE_ROW
+                ? sqlite3_column_int64(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    if (id != 0)
+        return id;
+
+    stmt = prepare(db,
+        "INSERT INTO lists (name, emoji, position, updated_at) VALUES (?, ?,"
+        "  (SELECT COALESCE(MAX(position), 0) + 1 FROM lists), ?)");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_text(stmt, 1, ON_TASK_LIST_NAME, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, ON_TASK_LIST_EMOJI, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, task_now());
+    if (!stmt_done(db, stmt))
+        return 0;
+    return sqlite3_last_insert_rowid(db->handle);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_apply() — write title / done / due onto task `task_id`: THE one
+ * statement Notes writes a task with, the shape of the Tasks app's
+ * task_db_task_apply_done_source.  done folds into status the way a
+ * done-only source must (done → DONE; undone → IN_PROGRESS only if it was
+ * DONE, else unchanged, so a New task survives a round trip), completed_at
+ * is stamped on entering DONE and never cleared, updated_at is stamped,
+ * and deleted is cleared — a tombstoned task whose line came back (undo)
+ * lives again.  Every other column is the Tasks app's alone.
+ * Returns TRUE on success.
  * ------------------------------------------------------------------------- */
 static gboolean
-action_uids_carry(OnDatabase *db, GList *items, GPtrArray *old)
+task_apply(OnDatabase *db, gint64 task_id, const gchar *title,
+           gboolean done, gint64 due)
 {
-    /* Hints must be read before pass 1 overwrites any of them.            */
-    GArray *hints = g_array_new(FALSE, FALSE, sizeof(gint64));
-    for (GList *l = items; l != NULL; l = l->next) {
-        gint64 hint = ((OnActionItem *)l->data)->uid;
-        g_array_append_val(hints, hint);
-        ((OnActionItem *)l->data)->uid = 0;   /* 0 until a pass assigns it  */
-    }
+    sqlite3_stmt *stmt = prepare(db,
+        "UPDATE tasks SET title=?3, due=?4,"
+        "  completed_at = CASE WHEN ?1 = 1 AND status <> 2 THEN ?2"
+        "                      ELSE completed_at END,"
+        "  status       = CASE WHEN ?1 = 1 THEN 2"
+        "                      WHEN status = 2 THEN 1 ELSE status END,"
+        "  deleted = 0, updated_at = ?2"
+        " WHERE id = ?5");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int(stmt, 1, done ? 1 : 0);
+    sqlite3_bind_int64(stmt, 2, task_now());
+    sqlite3_bind_text(stmt, 3, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, due);
+    sqlite3_bind_int64(stmt, 5, task_id);
+    return stmt_done(db, stmt);
+}
 
-    /* Pass 1 — identical text: the item did not change, only moved.       */
-    for (GList *l = items; l != NULL; l = l->next) {
-        OnActionItem *it = l->data;
-        for (guint i = 0; i < old->len; i++) {
-            OldAction *o = g_ptr_array_index(old, i);
-            if (!o->claimed && o->uid != 0 &&
-                g_strcmp0(o->text, it->text) == 0) {
-                o->claimed = TRUE;
-                it->uid = o->uid;
-                break;
-            }
-        }
-    }
+/* ---------------------------------------------------------------------------
+ * task_create() — a new task for a '!' line: the Tasks app's create shape
+ * (appended to the managed list, no parent), then task_apply for its
+ * done/due so the status logic lives once, then the note_task link.
+ * Returns the task id, or 0 on failure.
+ * ------------------------------------------------------------------------- */
+static gint64
+task_create(OnDatabase *db, gint64 uid, gint64 note_id, gint ord,
+            const gchar *title, gboolean done, gint64 due)
+{
+    gint64 list_id = task_list_managed(db);
+    if (list_id == 0)
+        return 0;
+    sqlite3_stmt *stmt = prepare(db,
+        "INSERT INTO tasks (list_id, parent_id, title, position, updated_at)"
+        " VALUES (?1, NULL, ?2,"
+        "   (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks"
+        "     WHERE list_id = ?1 AND parent_id IS NULL), ?3)");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_int64(stmt, 1, list_id);
+    sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, task_now());
+    if (!stmt_done(db, stmt))
+        return 0;
+    gint64 task_id = sqlite3_last_insert_rowid(db->handle);
+    if (!task_apply(db, task_id, title, done, due))
+        return 0;
 
-    /* Pass 2 — the caller's hint: a live editor mark still sitting on
-     * this item's line, the one signal that survives a reword.           */
-    guint idx = 0;                       /* position in the hints array    */
-    for (GList *l = items; l != NULL; l = l->next, idx++) {
-        OnActionItem *it = l->data;
-        gint64 hint = g_array_index(hints, gint64, idx);
-        if (it->uid != 0 || hint == 0)
-            continue;
-        for (guint i = 0; i < old->len; i++) {
-            OldAction *o = g_ptr_array_index(old, i);
-            if (!o->claimed && o->uid == hint) {
-                o->claimed = TRUE;
-                it->uid = o->uid;
-                break;
-            }
-        }
-    }
-
-    /* Pass 3 — same position: the headless reword, with no hint to go on. */
-    gint ord = 0;                        /* the item's new position        */
-    for (GList *l = items; l != NULL; l = l->next, ord++) {
-        OnActionItem *it = l->data;
-        if (it->uid != 0)
-            continue;
-        for (guint i = 0; i < old->len; i++) {
-            OldAction *o = g_ptr_array_index(old, i);
-            if (!o->claimed && o->uid != 0 && o->ord == ord) {
-                o->claimed = TRUE;
-                it->uid = o->uid;
-                break;
-            }
-        }
-    }
-
-    /* Pass 4 — nothing matched: this is a new item.                       */
-    gboolean ok = TRUE;                  /* allocator still healthy?       */
-    for (GList *l = items; ok && l != NULL; l = l->next) {
-        OnActionItem *it = l->data;
-        if (it->uid == 0)
-            ok = (it->uid = action_uid_alloc(db)) != 0;
-    }
-
-    g_array_unref(hints);
-    return ok;
+    stmt = prepare(db,
+        "INSERT INTO note_task (uid, task_id, note_id, ord) VALUES (?,?,?,?)");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_int64(stmt, 1, uid);
+    sqlite3_bind_int64(stmt, 2, task_id);
+    sqlite3_bind_int64(stmt, 3, note_id);
+    sqlite3_bind_int(stmt, 4, ord);
+    return stmt_done(db, stmt) ? task_id : 0;
 }
 
 gboolean
-on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
+on_db_action_create(OnDatabase *db, gint64 note_id, gint64 uid, gint ord,
+                    const gchar *title, gboolean done, gint64 due)
 {
+    return task_create(db, uid, note_id, ord, title, done, due) != 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * TaskRow — what the save reads back for one of the note's items.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64   task_id;
+    gint64   note_id;
+    gint     ord;
+    gchar   *title;
+    gboolean done;                   /* status == DONE                      */
+    gint64   due;
+    gboolean deleted;
+} TaskRow;
+
+/* task_row_get() — the task behind `uid`, whatever note it is linked to
+ * and whether or not it is tombstoned.  Returns FALSE when there is none;
+ * `row->title` is owned.                                                    */
+static gboolean
+task_row_get(OnDatabase *db, gint64 uid, TaskRow *row)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT t.id, nt.note_id, nt.ord, t.title, t.status, t.due, t.deleted"
+        " FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+        " WHERE nt.uid = ?");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, uid);
+    gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
+    if (found) {
+        row->task_id = sqlite3_column_int64(stmt, 0);
+        row->note_id = sqlite3_column_int64(stmt, 1);
+        row->ord     = sqlite3_column_int(stmt, 2);
+        row->title   = g_strdup((const gchar *)sqlite3_column_text(stmt, 3));
+        row->done    = sqlite3_column_int(stmt, 4) == ON_TASK_STATUS_DONE;
+        row->due     = sqlite3_column_int64(stmt, 5);
+        row->deleted = sqlite3_column_int(stmt, 6) != 0;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+gboolean
+on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
+                        gboolean *changed)
+{
+    if (changed != NULL)
+        *changed = FALSE;
     if (!exec_simple(db, "BEGIN"))
         return FALSE;
-
-    /* The note's old rows, read BEFORE the delete so their uids can be
-     * carried across the rebuild.                                         */
-    GPtrArray *old = g_ptr_array_new_with_free_func(g_free);
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT uid, ord, text FROM action_items WHERE note_id=?");
-    gboolean ok = stmt != NULL;          /* overall success flag            */
-    if (ok) {
-        sqlite3_bind_int64(stmt, 1, note_id);
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            OldAction *o = g_new0(OldAction, 1);
-            o->uid  = sqlite3_column_int64(stmt, 0);
-            o->ord  = sqlite3_column_int(stmt, 1);
-            o->text = g_strdup((const gchar *)sqlite3_column_text(stmt, 2));
-            g_ptr_array_add(old, o);
+    gboolean ok = TRUE;              /* the outcome                         */
+    GHashTable *kept = g_hash_table_new(g_int64_hash, g_int64_equal);
+    gint ord = 0;                    /* position among the items            */
+    for (GList *l = items; l != NULL && ok; l = l->next, ord++) {
+        OnActionItem *it = l->data;  /* one real action line                */
+        g_hash_table_add(kept, &it->uid);
+        TaskRow row;
+        if (!task_row_get(db, it->uid, &row)) {
+            ok = task_create(db, it->uid, note_id, ord, it->text, it->done,
+                             it->due) != 0;
+            if (changed != NULL)
+                *changed = TRUE;
+            continue;
         }
-        sqlite3_finalize(stmt);
+        if (row.note_id != note_id || row.ord != ord) {
+            /* The line moved: within the note, or (cut and pasted with
+             * its record) into this note from another.                  */
+            sqlite3_stmt *stmt = prepare(db,
+                "UPDATE note_task SET note_id=?, ord=? WHERE uid=?");
+            if (stmt != NULL) {
+                sqlite3_bind_int64(stmt, 1, note_id);
+                sqlite3_bind_int(stmt, 2, ord);
+                sqlite3_bind_int64(stmt, 3, it->uid);
+            }
+            ok = stmt_done(db, stmt);
+        }
+        if (ok && (row.deleted || row.done != it->done ||
+                   row.due != it->due ||
+                   g_strcmp0(row.title, it->text) != 0)) {
+            ok = task_apply(db, row.task_id, it->text, it->done, it->due);
+            if (changed != NULL)
+                *changed = TRUE;
+        }
+        g_free(row.title);
     }
-    /* OldAction.text is owned by the struct, freed with it below.         */
 
-    if (ok && items != NULL)
-        ok = action_uids_carry(db, items, old);
-
-    /* Drop the note's old items, then insert the current set.              */
+    /* Every live task of this note whose line is gone.                    */
     if (ok) {
-        stmt = prepare(db, "DELETE FROM action_items WHERE note_id=?");
-        ok = stmt != NULL;
-        if (ok) {
+        GArray *gone = g_array_new(FALSE, FALSE, sizeof(gint64));
+        sqlite3_stmt *stmt = prepare(db,
+            "SELECT nt.uid, nt.task_id FROM note_task nt"
+            " JOIN tasks t ON t.id = nt.task_id"
+            " WHERE nt.note_id = ? AND t.deleted = 0");
+        if (stmt == NULL) {
+            ok = FALSE;
+        } else {
             sqlite3_bind_int64(stmt, 1, note_id);
-            ok = sqlite3_step(stmt) == SQLITE_DONE;
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                gint64 uid = sqlite3_column_int64(stmt, 0);
+                if (!g_hash_table_contains(kept, &uid)) {
+                    gint64 task_id = sqlite3_column_int64(stmt, 1);
+                    g_array_append_val(gone, task_id);
+                }
+            }
             sqlite3_finalize(stmt);
         }
-    }
-
-    if (ok && items != NULL) {
-        stmt = prepare(db,
-            "INSERT INTO action_items (note_id, ord, text, done, due, uid) "
-            "VALUES (?,?,?,?,?,?)");
-        ok = stmt != NULL;
-        gint ord = 0;                    /* row position, list order        */
-        for (GList *l = items; ok && l != NULL; l = l->next, ord++) {
-            OnActionItem *it = l->data;
-            sqlite3_bind_int64(stmt, 1, note_id);
-            sqlite3_bind_int(stmt, 2, ord);
-            sqlite3_bind_text(stmt, 3, it->text, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 4, it->done ? 1 : 0);
-            sqlite3_bind_int64(stmt, 5, it->due);
-            sqlite3_bind_int64(stmt, 6, it->uid);
-            ok = sqlite3_step(stmt) == SQLITE_DONE;
-            sqlite3_reset(stmt);
+        for (guint i = 0; i < gone->len && ok; i++) {
+            stmt = prepare(db,
+                "UPDATE tasks SET deleted=1, updated_at=? WHERE id=?");
+            if (stmt != NULL) {
+                sqlite3_bind_int64(stmt, 1, task_now());
+                sqlite3_bind_int64(stmt, 2, g_array_index(gone, gint64, i));
+            }
+            ok = stmt_done(db, stmt);
+            if (changed != NULL)
+                *changed = TRUE;
         }
-        if (stmt != NULL)
-            sqlite3_finalize(stmt);
+        g_array_unref(gone);
     }
-
-    for (guint i = 0; i < old->len; i++)
-        g_free(((OldAction *)g_ptr_array_index(old, i))->text);
-    g_ptr_array_unref(old);
+    g_hash_table_destroy(kept);
 
     if (ok)
         ok = exec_simple(db, "COMMIT");
@@ -1924,10 +2073,35 @@ on_db_note_set_actions(OnDatabase *db, gint64 note_id, GList *items)
 }
 
 gboolean
+on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
+                 gboolean done, gint64 due)
+{
+    gint64 task_id = query_int64(db,
+        "SELECT nt.task_id FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+        " WHERE nt.uid = ? AND t.deleted = 0", uid);
+    return task_id != 0 && task_apply(db, task_id, title, done, due);
+}
+
+gint64
+on_db_action_uid_at(OnDatabase *db, gint64 note_id, gint ord)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT uid FROM " ACTION_CTX_VIEW_NAME " WHERE note_id=? AND ord=?");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_int64(stmt, 1, note_id);
+    sqlite3_bind_int(stmt, 2, ord);
+    gint64 uid = sqlite3_step(stmt) == SQLITE_ROW
+                 ? sqlite3_column_int64(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    return uid;
+}
+
+gboolean
 on_db_action_find_uid(OnDatabase *db, gint64 uid, gint64 *note_id, gint *ord)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, ord FROM action_items WHERE uid=?");
+        "SELECT note_id, ord FROM " ACTION_CTX_VIEW_NAME " WHERE uid=?");
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_int64(stmt, 1, uid);
@@ -1938,69 +2112,6 @@ on_db_action_find_uid(OnDatabase *db, gint64 uid, gint64 *note_id, gint *ord)
     }
     sqlite3_finalize(stmt);
     return found;
-}
-
-gboolean
-on_db_action_uids_missing(OnDatabase *db)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT 1 FROM action_items WHERE uid=0 LIMIT 1");
-    if (stmt == NULL)
-        return FALSE;
-    gboolean missing = sqlite3_step(stmt) == SQLITE_ROW;
-    sqlite3_finalize(stmt);
-    return missing;
-}
-
-gboolean
-on_db_action_uids_fill(OnDatabase *db)
-{
-    if (!exec_simple(db, "BEGIN"))
-        return FALSE;
-
-    /* Collect first, update after: the rows are addressed by
-     * (note_id, ord) — the table's primary key — and rewriting them
-     * while the SELECT is still stepping would be reading a moving set.  */
-    typedef struct { gint64 note_id; gint ord; } Addr;
-    GArray *todo = g_array_new(FALSE, FALSE, sizeof(Addr));
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, ord FROM action_items WHERE uid=0");
-    gboolean ok = stmt != NULL;          /* overall success flag            */
-    if (ok) {
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            Addr a = { sqlite3_column_int64(stmt, 0),
-                       sqlite3_column_int(stmt, 1) };
-            g_array_append_val(todo, a);
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    if (ok && todo->len > 0) {
-        stmt = prepare(db,
-            "UPDATE action_items SET uid=? WHERE note_id=? AND ord=?");
-        ok = stmt != NULL;
-        for (guint i = 0; ok && i < todo->len; i++) {
-            Addr   a   = g_array_index(todo, Addr, i);
-            gint64 uid = action_uid_alloc(db);
-            ok = uid != 0;
-            if (!ok)
-                break;
-            sqlite3_bind_int64(stmt, 1, uid);
-            sqlite3_bind_int64(stmt, 2, a.note_id);
-            sqlite3_bind_int(stmt, 3, a.ord);
-            ok = sqlite3_step(stmt) == SQLITE_DONE;
-            sqlite3_reset(stmt);
-        }
-        if (stmt != NULL)
-            sqlite3_finalize(stmt);
-    }
-
-    g_array_unref(todo);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
 }
 
 /* The columns both listings read off the action_items_ctx view, in
@@ -2054,18 +2165,19 @@ on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
     return run_action_query(stmt);
 }
 
-gboolean
-on_db_action_set_done(OnDatabase *db, gint64 note_id, gint ord,
-                      gboolean done)
+OnActionItem *
+on_db_action_get(OnDatabase *db, gint64 uid)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "UPDATE action_items SET done=? WHERE note_id=? AND ord=?");
-    if (stmt != NULL) {
-        sqlite3_bind_int(stmt, 1, done ? 1 : 0);
-        sqlite3_bind_int64(stmt, 2, note_id);
-        sqlite3_bind_int(stmt, 3, ord);
-    }
-    return stmt_done(db, stmt);
+        "SELECT " ACTION_CTX_COLS " FROM " ACTION_CTX_VIEW_NAME
+        " WHERE uid=?");
+    if (stmt == NULL)
+        return NULL;
+    sqlite3_bind_int64(stmt, 1, uid);
+    GList *one = run_action_query(stmt);   /* at most one row             */
+    OnActionItem *it = one != NULL ? one->data : NULL;
+    g_list_free(one);
+    return it;
 }
 
 void
@@ -2074,9 +2186,8 @@ on_db_action_counts(OnDatabase *db, gint *total, gint *open)
     if (total != NULL) *total = 0;
     if (open  != NULL) *open  = 0;
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT COUNT(*), COALESCE(SUM(a.done=0),0) "
-        "FROM action_items a JOIN notes n ON n.id = a.note_id "
-        "WHERE n." NOTE_VISIBLE_SQL);
+        "SELECT COUNT(*), COALESCE(SUM(done=0),0) "
+        "FROM " ACTION_CTX_VIEW_NAME " WHERE visible");
     if (stmt == NULL)
         return;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -2086,11 +2197,9 @@ on_db_action_counts(OnDatabase *db, gint *total, gint *open)
     sqlite3_finalize(stmt);
 }
 
-/* free_action_item() — GDestroyNotify for one OnActionItem.                 */
-static void
-free_action_item(gpointer data)
+void
+on_db_action_item_free(OnActionItem *it)
 {
-    OnActionItem *it = data;
     g_free(it->text);
     g_free(it->context);
     g_free(it);
@@ -2099,7 +2208,7 @@ free_action_item(gpointer data)
 void
 on_db_action_list_free(GList *items)
 {
-    g_list_free_full(items, free_action_item);
+    g_list_free_full(items, (GDestroyNotify)on_db_action_item_free);
 }
 
 /* --- schema version (PRAGMA user_version) — gates one-time backfills ---- */

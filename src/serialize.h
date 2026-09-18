@@ -1,13 +1,15 @@
 /* ===========================================================================
  * serialize.h — the blob side of a note
  *
- * The blob-level helpers around a note: the body_text cache and the
- * action_items mirror (on_note_extract*, derived through the model so the
- * contract has one definition), the image ordinals the media browser and the CLI
- * address (on_note_count_images / on_note_image_nth*), THE one PNG decoder
- * (on_png_decode_capped) and encoder (on_image_png_bytes), and
- * on_note_document_load — the preamble of every consumer that does want
- * the document (document.h).  The format itself is bnbf.h.
+ * The blob-level helpers around a note: the body_text cache
+ * (on_note_extract_text, derived through the model), the image ordinals
+ * the media browser and the CLI address (on_note_count_images /
+ * on_note_image_nth*), THE one PNG decoder (on_png_decode_capped) and
+ * encoder (on_image_png_bytes), and the document's two ends —
+ * on_note_document_load, the preamble of every consumer that wants the
+ * document, and on_note_document_save, THE one way a document is written
+ * back (blob, title, body text, and the task rows its '!' lines are).
+ * The format itself is bnbf.h.
  * =========================================================================== */
 
 #ifndef BLUE_SERIALIZE_H
@@ -51,33 +53,42 @@ gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
- * on_note_extract_actions() — the ACTION ITEMS of a BNBF blob, as the
- * model defines them (on_block_is_action / on_document_block_action in
- * document.h: a PARA/H1/H2 line starting with '!' whose rest is more
- * than whitespace and a due date; text = the rest trimmed, less any
- * trailing "due <date>"; done = every non-space character after the
- * '!' struck).  ONE definition, shared with every rewrite the model does,
- * so ord n here is the line ord n addresses.
- * Returns a GList of OnActionItem (db.h; ord = list position, note_id
- * left 0); free with on_db_action_list_free().
+ * on_note_document_save() — write `doc` back as note `id`: THE one save.
+ * Every path that persists a document — the editor's autosave, the CLI's
+ * content commands, a headless action rewrite — comes through here, so
+ * what a save consists of is defined once:
+ *   1. every real action line (on_document_action_blocks) gets its uid:
+ *      a line with none is allocated one (on_db_action_uid_alloc), a uid
+ *      the document carries twice (a pasted copy that smuggled its record)
+ *      keeps it on the first line only — BEFORE the blob is written, since
+ *      the blob is where the uid lives (the ACTION record);
+ *   2. the blob, the title (first line) and the searchable body text go
+ *      to on_db_note_save (which bumps updated_at);
+ *   3. with `sync_actions`, the task rows are brought in line with the
+ *      lines (on_db_note_save_actions: create / update / re-ord /
+ *      tombstone).  The editor passes whether an action line was touched
+ *      since the last save; everyone else passes TRUE.
+ *   changed — optional; receives whether any task row was written (the
+ *             library's full refresh hangs on it).
+ * Returns TRUE on success.
  * ------------------------------------------------------------------------- */
-GList *on_note_extract_actions(const guint8 *data, gsize len);
+gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
+                               gboolean sync_actions, gboolean *changed);
 
 /* ---------------------------------------------------------------------------
- * on_note_extract() — the ONE parse behind on_note_extract_text() and
- * on_note_extract_actions(), producing both from a single OnDocument.
- * Every save needs both (body_text cache + action mirror).  Until
- * 2026-09-16 this was a second, hand-rolled BNBF walker with its own
- * byte-level idea of an action line, which disagreed with the model's
- * (list lines) — the ords in the table then named different lines than
- * the model rewrote.  There is no second reader now.
- *   out_text    — receives the plain text (g_free), or NULL to skip it.
- *   out_actions — receives the action items (on_db_action_list_free), or
- *                 NULL to skip them.
- * An unreadable blob yields "" and no items, never a failure.
+ * on_note_document_reconcile() — the task rows are the truth: for every
+ * real action line of `doc` whose uid has a live task, re-render the line
+ * from the row where the two differ (on_document_action_text / strike /
+ * due).  Run on every load — an editor opening a note, a headless rewrite
+ * about to touch one — so a task edited by the CLI, the Action Items view
+ * or (after the merge) the Tasks app while the note was closed shows in
+ * the note.  A blank task title is left alone: the line's text is not
+ * something the document can hold as empty.
+ * Returns TRUE when a line was rewritten (the caller then has an unsaved
+ * document: the editor autosaves, a headless path saves).
  * ------------------------------------------------------------------------- */
-void on_note_extract(const guint8 *data, gsize len, gchar **out_text,
-                     GList **out_actions);
+gboolean on_note_document_reconcile(OnDatabase *db, gint64 id,
+                                    OnDocument *doc);
 
 /* ---------------------------------------------------------------------------
  * on_png_decode_capped() — decode one encoded image into a pixbuf,

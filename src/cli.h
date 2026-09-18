@@ -80,7 +80,7 @@
 #ifndef BLUE_CLI_H
 #define BLUE_CLI_H
 
-#include "db.h"
+#include "app.h"                     /* OnApp (db.h through it)            */
 
 /* ---------------------------------------------------------------------------
  * on_cli_run() — dispatch a command-line invocation.
@@ -104,14 +104,16 @@ gboolean on_cli_resolve_folder_path(OnDatabase *db, const gchar *path,
                                     gboolean create, gint64 *out_id);
 
 /* ---------------------------------------------------------------------------
- * on_cli_dispatch_db() — run one validated data command (tag/folder/note/
- * backup/export-*) against an already-open database and return its process
- * exit code.  Output goes to stdout/stderr.  Used by the headless path AND by
- * a running instance executing a command on behalf of a remote CLI (ipc.c),
- * so the same code path serves both.  argv/argc are the full program args
- * (argv[1] is the command).
+ * on_cli_dispatch() — run one validated data command (tag/folder/note/
+ * backup/export-*) against `app` and return its process exit code.
+ * Output goes to stdout/stderr.  Used by the headless path (a stack OnApp
+ * holding the database alone) AND by a running instance executing a
+ * command on behalf of a remote CLI (ipc.c) — which passes ITS app, so a
+ * command that edits an action item reaches the note's OPEN editor rather
+ * than a blob its next autosave would overwrite.  argv/argc are the full
+ * program args (argv[1] is the command).
  * ------------------------------------------------------------------------- */
-int on_cli_dispatch_db(OnDatabase *db, int argc, char **argv);
+int on_cli_dispatch(OnApp *app, int argc, char **argv);
 
 /* ---------------------------------------------------------------------------
  * on_cli_set_stdin_data() — supply the text "note new -" should use instead

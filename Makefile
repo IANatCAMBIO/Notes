@@ -74,6 +74,7 @@ SRCS     := src/main.c \
             src/list_rows.c \
             src/cli.c \
             src/db.c \
+            src/migrate_v5.c \
             src/ipc.c \
             src/bnbf.c \
             src/document.c \

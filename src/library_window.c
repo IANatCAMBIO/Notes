@@ -34,6 +34,7 @@
 #include "editor_window.h"
 #include "export.h"
 #include "media_window.h"
+#include "migrate_v5.h"           /* one-time, gated; removed after      */
 #include "search_window.h"
 #include "serialize.h"
 #include "settings_window.h"
@@ -1070,6 +1071,7 @@ refresh_actions(OnLibrary *lw)
         if (it->done && !lw->app->show_done_actions)
             continue;                /* Settings: hide completed items      */
         OnActionRow *row = on_action_row_new();
+        row->uid     = it->uid;
         row->note_id = it->note_id;
         row->ord     = it->ord;
         row->done    = it->done;
@@ -1433,13 +1435,8 @@ on_action_toggled(GtkCheckButton *check, gpointer user_data)
     } else {
         on_row_touch(lw->actions_store, row);
     }
-    /* The content rewrite is authoritative and normally rebuilds the
-     * mirror itself; only a LIVE editor defers that to its autosave, and
-     * only then does the flag need writing here as well.                    */
-    gboolean synced = FALSE;         /* did the rewrite update the table?   */
-    if (on_editor_action_set_done(lw->app, row->note_id, row->ord, done,
-                                  &synced) && !synced)
-        on_db_action_set_done(lw->app->db, row->note_id, row->ord, done);
+    /* The task row is written first, the line after: durable at once.   */
+    on_editor_action_set_done(lw->app, row->uid, done);
     if (lw->app->sidebar_counts)
         refresh_sidebar(lw);         /* the section's open count changed    */
 }
@@ -1610,8 +1607,7 @@ on_due_response(GtkWindow *dlg, gint response, gpointer user_data)
     }
 
     if (new_due >= 0 &&
-        on_editor_action_set_due(lw->app, d->row->note_id, d->row->ord,
-                                 new_due)) {
+        on_editor_action_set_due(lw->app, d->row->uid, new_due)) {
         g_free(d->row->due);
         d->row->due     = action_due_text(new_due);
         d->row->due_raw = new_due;
@@ -2822,6 +2818,12 @@ open_db_switch(OnLibrary *lw, const gchar *path, gboolean set_default)
     on_db_close(app->db);
     app->db = on_db_open(path);
 
+    /* An opened file may predate the current schema: the one-time
+     * migration runs here as it does at startup (migrate_v5.h).           */
+    if (app->db != NULL && !on_migrate_v5_run(app->db)) {
+        on_db_close(app->db);
+        app->db = NULL;
+    }
     if (app->db == NULL) {
         on_app_notice(GTK_WINDOW(lw->window), "Notes - Database Error",
                       "Could not open:\n%s", path);

@@ -580,23 +580,4 @@ gchar *on_app_config_load_db_dir(void);
  * ------------------------------------------------------------------------- */
 void on_app_close_all_editors(OnApp *app);
 
-/* ---------------------------------------------------------------------------
- * on_app_actions_backfill() — one-time population of the action_items
- * table from pre-existing note content (gated by PRAGMA user_version, so
- * repeat calls cost a single PRAGMA read).  Run after EVERY on_db_open
- * that yields a long-lived handle: GUI startup, the headless CLI path,
- * and database switch/restore (an adopted or restored file may predate
- * the feature).  NULL-safe.
- * ------------------------------------------------------------------------- */
-void on_app_actions_backfill(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_app_action_uids_backfill() — one-time assignment of stable uids to
- * action_items rows written before the uid column existed (gated by
- * PRAGMA user_version, like on_app_actions_backfill, which it must run
- * AFTER: that one indexes the rows, this one identifies them).  Cheap —
- * it touches the table only, never the note blobs.  NULL-safe.
- * ------------------------------------------------------------------------- */
-void on_app_action_uids_backfill(OnDatabase *db);
-
 #endif /* BLUE_APP_H */

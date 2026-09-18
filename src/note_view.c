@@ -2638,30 +2638,6 @@ on_note_image_open_external(GBytes *png)
  * action items
  * ======================================================================== */
 
-void
-on_note_view_action_marks_hint(OnNoteView *v, GList *items)
-{
-    GArray *blocks = on_document_action_blocks(v->doc);
-    guint i = 0;
-    for (GList *l = items; l != NULL && i < blocks->len; l = l->next, i++) {
-        OnBlock *b = on_document_block(v->doc, g_array_index(blocks, guint, i));
-        if (b->action_uid != 0)
-            ((OnActionItem *)l->data)->uid = b->action_uid;
-    }
-    g_array_unref(blocks);
-}
-
-void
-on_note_view_action_marks_sync(OnNoteView *v, GList *items)
-{
-    GArray *blocks = on_document_action_blocks(v->doc);
-    guint i = 0;
-    for (GList *l = items; l != NULL && i < blocks->len; l = l->next, i++)
-        on_document_block(v->doc, g_array_index(blocks, guint, i))->action_uid =
-            ((OnActionItem *)l->data)->uid;
-    g_array_unref(blocks);
-}
-
 gboolean
 on_note_view_action_strike(OnNoteView *v, gint ord, gboolean done)
 {
@@ -2942,13 +2918,13 @@ on_note_view_new(OnApp *app)
 }
 
 void
-on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len)
+on_note_view_load_document(OnNoteView *v, OnDocument *doc)
 {
     if (v->tag_capturing)
         tag_capture_end(v, FALSE);
     typing_end(v);
     im_reset(v);
-    OnDocument *doc = on_document_from_bnbf(blob, len, NULL);
+    on_document_clear_undo(doc);
     on_document_set_observer(v->doc, NULL, NULL);
     on_document_free(v->doc);
     v->doc = doc;
@@ -2971,6 +2947,12 @@ on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len)
     if (v->find_text != NULL)
         on_note_view_find(v, v->find_text);
     gtk_widget_queue_resize(GTK_WIDGET(v));
+}
+
+void
+on_note_view_load(OnNoteView *v, const guint8 *blob, gsize len)
+{
+    on_note_view_load_document(v, on_document_from_bnbf(blob, len, NULL));
 }
 
 guint8 *

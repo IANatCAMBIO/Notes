@@ -15,6 +15,7 @@
 #include "cli.h"
 #include "app.h"
 #include "db.h"
+#include "migrate_v5.h"           /* one-time, gated; removed after      */
 #include "editor_window.h"           /* action done/due content rewrites    */
 #include "export.h"
 #include "ipc.h"
@@ -163,8 +164,12 @@ cli_open_db(void)
     }
     g_free(path);
     g_free(db_dir);
-    on_app_actions_backfill(db);     /* one-time '!'-line index (gated)     */
-    on_app_action_uids_backfill(db); /* then give those rows stable ids     */
+    if (!on_migrate_v5_run(db)) {    /* one-time, gated (migrate_v5.h)      */
+        fprintf(stderr, "error: the database could not be migrated; it was "
+                        "left unchanged\n");
+        on_db_close(db);
+        return NULL;
+    }
     return db;
 }
 
@@ -296,35 +301,6 @@ document_append_text(OnDocument *doc, const gchar *text)
         on_document_insert_text(doc, pos, t->text->str, t->text->len, 0);
     }
     on_document_free(lines);
-}
-
-/* ---------------------------------------------------------------------------
- * note_document_save() — serialize `doc` and persist it as note `id`'s
- * content: title from the first line, searchable body text refreshed —
- * the same trio every editor save writes.  Returns TRUE on success.
- * ------------------------------------------------------------------------- */
-static gboolean
-note_document_save(OnDatabase *db, gint64 id, const OnDocument *doc)
-{
-    gsize blob_len;                  /* serialized content size             */
-    guint8 *blob = on_document_to_bnbf(doc, &blob_len);
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
-                                     ON_TITLE_MAX_CHARS);
-    /* One walk for both derived values.                                   */
-    gchar *body = NULL;              /* searchable plain text               */
-    GList *actions = NULL;           /* the note's '!' lines                */
-    on_note_extract(blob, blob_len, &body, &actions);
-    gboolean ok = on_db_note_save(db, id, title, blob, blob_len, body);
-    /* CLI saves are rare enough to sync the '!' action-item mirror
-     * unconditionally (the editor compares against its last set instead).
-     * Propagate failure so callers can report it.                        */
-    if (ok)
-        ok = on_db_note_set_actions(db, id, actions);
-    on_db_action_list_free(actions);
-    g_free(body);
-    g_free(title);
-    g_free(blob);
-    return ok;
 }
 
 /* ---------------------------------------------------------------------------
@@ -887,7 +863,7 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
     }
 
     OnDocument *doc = on_document_from_text(text);
-    note_document_save(db, id, doc);
+    on_note_document_save(db, id, doc, TRUE, NULL);
 
     gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
                                      ON_TITLE_MAX_CHARS);
@@ -961,7 +937,7 @@ cmd_append_note(OnDatabase *db, const gchar *id_str, const gchar *content)
     document_append_text(doc, text);
 
     int rc = 0;                      /* process exit code                   */
-    if (note_document_save(db, meta->id, doc)) {
+    if (on_note_document_save(db, meta->id, doc, TRUE, NULL)) {
         printf("appended to note %" G_GINT64_FORMAT "\t%s\n",
                meta->id, meta->title);
     } else {
@@ -996,7 +972,7 @@ cmd_set_note(OnDatabase *db, const gchar *id_str, const gchar *content)
     OnDocument *doc = on_document_from_text(text);
 
     int rc = 0;                      /* process exit code                   */
-    if (note_document_save(db, meta->id, doc)) {
+    if (on_note_document_save(db, meta->id, doc, TRUE, NULL)) {
         /* plain text: clear any tag links from the previous content; check
          * the result so a failed sync isn't silently reported as success. */
         if (!on_db_note_set_tags(db, meta->id, NULL)) {
@@ -1066,7 +1042,7 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
         on_document_insert_block(doc, last + 1, on_block_new_image(png, 0));
     }
 
-    note_document_save(db, id, doc);
+    on_note_document_save(db, id, doc, TRUE, NULL);
     gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
                                      ON_TITLE_MAX_CHARS);
     printf("added image to note %" G_GINT64_FORMAT "\t%s\n", id, title);
@@ -1384,7 +1360,7 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         g_free(token);
 
         GList *tags = on_document_collect_tags(doc);
-        if (note_document_save(db, meta->id, doc) &&
+        if (on_note_document_save(db, meta->id, doc, TRUE, NULL) &&
             on_db_note_set_tags(db, meta->id, tags)) {
             printf("tagged note %" G_GINT64_FORMAT "\t#%s\n",
                    meta->id, name);
@@ -1475,7 +1451,7 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
         on_db_tag_list_free(linked);
     } else {
         GList *tags = on_document_collect_tags(doc);
-        if (note_document_save(db, meta->id, doc) &&
+        if (on_note_document_save(db, meta->id, doc, TRUE, NULL) &&
             on_db_note_set_tags(db, meta->id, tags)) {
             printf("untagged note %" G_GINT64_FORMAT "\t#%s\n",
                    meta->id, name);
@@ -1611,59 +1587,63 @@ cmd_set_modified(OnDatabase *db, const gchar *id_str, const gchar *ts_str)
 }
 
 /* ---------------------------------------------------------------------------
- * action_token_parse() — resolve an item address to (note_id, ord).
+ * action_token_parse() — resolve an item address to its uid.
  *
  * Two forms, told apart BY SHAPE: a token containing ':' is the legacy
  * positional "NOTEID:ORD" (the first column of plain `action list`, whose
- * meaning shifts as lines are added and removed); anything else is a
- * stable uid (the first column of `action list --uid`), looked up in the
- * table.  Since a uid is a bare decimal and the positional form always
- * carries a colon, neither can ever be read as the other.
+ * meaning shifts as lines are added and removed), resolved to the uid of
+ * the item at that position now; anything else is a stable uid (the first
+ * column of `action list --uid`).  Since a uid is a bare decimal and the
+ * positional form always carries a colon, neither can ever be read as the
+ * other.
  *
- * Validates that the note (or the uid) actually exists.
- * Returns TRUE on success; prints an error otherwise.
+ * Validates that a live item carries the uid.
+ * Returns the uid, or 0 after printing an error.
  * ------------------------------------------------------------------------- */
-static gboolean
-action_token_parse(OnDatabase *db, const gchar *token,
-                   gint64 *note_id, gint *ord)
+static gint64
+action_token_parse(OnDatabase *db, const gchar *token)
 {
     gchar *colon = strchr(token, ':');
+    gint64 uid = 0;                  /* the answer                          */
     if (colon == NULL) {             /* the stable-uid form                 */
         gchar *endp = NULL;          /* end of the parsed uid               */
-        gint64 uid = g_ascii_strtoll(token, &endp, 10);
+        uid = g_ascii_strtoll(token, &endp, 10);
         if (uid <= 0 || endp == NULL || *endp != '\0') {
             fprintf(stderr, "error: bad action item id: %s (expected a UID "
                             "from 'action list --uid', or NOTEID:ORD)\n",
                     token);
-            return FALSE;
+            return 0;
         }
-        if (!on_db_action_find_uid(db, uid, note_id, ord)) {
-            fprintf(stderr, "error: no such action item: %s\n", token);
-            return FALSE;
+        gint64 note_id;              /* existence probe                     */
+        gint   ord;
+        if (!on_db_action_find_uid(db, uid, &note_id, &ord))
+            uid = 0;
+    } else {
+        if (colon == token || colon[1] == '\0') {
+            fprintf(stderr, "error: bad action item id: %s "
+                            "(expected NOTEID:ORD, see 'action list')\n",
+                    token);
+            return 0;
         }
-        return TRUE;
-    }
-    if (colon == token || colon[1] == '\0') {
-        fprintf(stderr, "error: bad action item id: %s "
-                        "(expected NOTEID:ORD, see 'action list')\n", token);
-        return FALSE;
-    }
-    gchar *id_part = g_strndup(token, (gsize)(colon - token));
-    OnNoteMeta *meta = note_from_arg(db, id_part);
-    g_free(id_part);
-    if (meta == NULL)
-        return FALSE;
-    *note_id = meta->id;
-    on_db_note_meta_free(meta);
+        gchar *id_part = g_strndup(token, (gsize)(colon - token));
+        OnNoteMeta *meta = note_from_arg(db, id_part);
+        g_free(id_part);
+        if (meta == NULL)
+            return 0;
+        gint64 note_id = meta->id;
+        on_db_note_meta_free(meta);
 
-    gchar *endp = NULL;              /* end of the parsed ordinal           */
-    gint64 o = g_ascii_strtoll(colon + 1, &endp, 10);
-    if (o < 0 || endp == NULL || *endp != '\0') {
-        fprintf(stderr, "error: bad action item id: %s\n", token);
-        return FALSE;
+        gchar *endp = NULL;          /* end of the parsed ordinal           */
+        gint64 o = g_ascii_strtoll(colon + 1, &endp, 10);
+        if (o < 0 || endp == NULL || *endp != '\0') {
+            fprintf(stderr, "error: bad action item id: %s\n", token);
+            return 0;
+        }
+        uid = on_db_action_uid_at(db, note_id, (gint)o);
     }
-    *ord = (gint)o;
-    return TRUE;
+    if (uid == 0)
+        fprintf(stderr, "error: no such action item: %s\n", token);
+    return uid;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1761,49 +1741,34 @@ cmd_action_list(OnDatabase *db, ActionFilter filter, const gchar *context,
 static int
 cmd_action_show(OnDatabase *db, const gchar *token)
 {
-    gint64 note_id;                  /* the item's address                  */
-    gint   ord;
-    if (!action_token_parse(db, token, &note_id, &ord))
+    gint64 uid = action_token_parse(db, token);
+    if (uid == 0)
         return 2;
-
-    /* One query for the owning note, then the ord-th row — the same list
-     * the mirror itself is built from, so nothing new can drift.          */
-    GList *items = on_db_action_list_for_note(db, note_id);
-    int    rc = 2;                   /* process exit code                   */
-    for (GList *l = items; l != NULL; l = l->next) {
-        OnActionItem *it = l->data;  /* candidate row                       */
-        if (it->ord != ord)
-            continue;
-        action_print_line(it, TRUE);
-        if (cli_json)
-            putchar('\n');           /* a lone object, not an array         */
-        rc = 0;
-        break;
-    }
-    if (rc != 0)
+    OnActionItem *it = on_db_action_get(db, uid);   /* off the same view
+                                                       `list` reads       */
+    if (it == NULL) {
         fprintf(stderr, "error: no such action item: %s\n", token);
-    on_db_action_list_free(items);
-    return rc;
+        return 2;
+    }
+    action_print_line(it, TRUE);
+    if (cli_json)
+        putchar('\n');               /* a lone object, not an array         */
+    on_db_action_item_free(it);
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------
- * cmd_action_done() — mark one item done (strike its text in the note)
- * or reopen it.  The note content is authoritative: the rewrite resyncs
- * the action_items mirror.  NOTE: with the GUI running and that note
- * open in an editor, the editor's next autosave can overwrite this —
- * same caveat as `note append`/`note set`.
+ * cmd_action_done() — mark one item done or reopen it: its task row, then
+ * its '!' line (struck / un-struck) — in the note's open editor when a
+ * running instance serves this command, else in the stored blob.
  * ------------------------------------------------------------------------- */
 static int
-cmd_action_done(OnDatabase *db, const gchar *token, gboolean done)
+cmd_action_done(OnApp *app, const gchar *token, gboolean done)
 {
-    gint64 note_id;                  /* the item's address                  */
-    gint   ord;
-    if (!action_token_parse(db, token, &note_id, &ord))
+    gint64 uid = action_token_parse(app->db, token);
+    if (uid == 0)
         return 2;
-
-    OnApp app = { 0 };               /* headless context: db only           */
-    app.db = db;
-    if (!on_editor_action_set_done(&app, note_id, ord, done, NULL)) {
+    if (!on_editor_action_set_done(app, uid, done)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         return 2;
     }
@@ -1812,12 +1777,12 @@ cmd_action_done(OnDatabase *db, const gchar *token, gboolean done)
 }
 
 /* ---------------------------------------------------------------------------
- * cmd_action_due() — set or clear one item's due date: the "due <date>"
- * suffix of its '!' line is rewritten in the note text.
+ * cmd_action_due() — set or clear one item's due date: its task row, then
+ * the "due <date>" suffix of its '!' line.
  *   date_arg — "YYYY-MM-DD" (or M/D/YY), or "-" to clear.
  * ------------------------------------------------------------------------- */
 static int
-cmd_action_due(OnDatabase *db, const gchar *token, const gchar *date_arg)
+cmd_action_due(OnApp *app, const gchar *token, const gchar *date_arg)
 {
     gint64 due = 0;                  /* parsed date, 0 = clear              */
     if (g_strcmp0(date_arg, "-") != 0) {
@@ -1833,14 +1798,10 @@ cmd_action_due(OnDatabase *db, const gchar *token, const gchar *date_arg)
         }
     }
 
-    gint64 note_id;                  /* the item's address                  */
-    gint   ord;
-    if (!action_token_parse(db, token, &note_id, &ord))
+    gint64 uid = action_token_parse(app->db, token);
+    if (uid == 0)
         return 2;
-
-    OnApp app = { 0 };               /* headless context: db only           */
-    app.db = db;
-    if (!on_editor_action_set_due(&app, note_id, ord, due)) {
+    if (!on_editor_action_set_due(app, uid, due)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         return 2;
     }
@@ -1860,7 +1821,7 @@ cmd_action_due(OnDatabase *db, const gchar *token, const gchar *date_arg)
  *   content — the new text, or "-" to read it from stdin.
  * ------------------------------------------------------------------------- */
 static int
-cmd_action_text(OnDatabase *db, const gchar *token, const gchar *content)
+cmd_action_text(OnApp *app, const gchar *token, const gchar *content)
 {
     gchar *text = cli_read_content(content);   /* the new text (owned)      */
     if (text == NULL)
@@ -1884,16 +1845,12 @@ cmd_action_text(OnDatabase *db, const gchar *token, const gchar *content)
         return 2;
     }
 
-    gint64 note_id;                  /* the item's address                  */
-    gint   ord;
-    if (!action_token_parse(db, token, &note_id, &ord)) {
+    gint64 uid = action_token_parse(app->db, token);
+    if (uid == 0) {
         g_free(text);
         return 2;
     }
-
-    OnApp app = { 0 };               /* headless context: db only           */
-    app.db = db;
-    if (!on_editor_action_set_text(&app, note_id, ord, text)) {
+    if (!on_editor_action_set_text(app, uid, text)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         g_free(text);
         return 2;
@@ -1917,14 +1874,10 @@ cmd_backup(OnDatabase *db, const gchar *dest)
 
 /* cmd_export() — export every note as HTML or Markdown into a directory.    */
 static int
-cmd_export(OnDatabase *db, const gchar *dir, OnExportFormat format)
+cmd_export(OnApp *app, const gchar *dir, OnExportFormat format)
 {
-    /* The exporter only touches app->db.                                   */
-    OnApp app = { 0 };
-    app.db = db;
-
     gchar *err = NULL;               /* exporter error message              */
-    gint n = on_export_all(&app, dir, format, &err);
+    gint n = on_export_all(app, dir, format, &err);
     if (n < 0) {
         fprintf(stderr, "error: %s\n", err != NULL ? err : "export failed");
         g_free(err);
@@ -2284,8 +2237,9 @@ dispatch_folder(OnDatabase *db, const char *verb, char **argv, int argc)
 }
 
 static int
-dispatch_action(OnDatabase *db, const char *verb, char **argv, int argc)
+dispatch_action(OnApp *app, const char *verb, char **argv, int argc)
 {
+    OnDatabase *db = app->db;        /* the read-only verbs need only this  */
     if (g_strcmp0(verb, "list") == 0) {
         /* Flags in any order; anything unrecognised is a usage error (exit
          * 1), which is how a caller probes an older build for --uid.       */
@@ -2309,13 +2263,13 @@ dispatch_action(OnDatabase *db, const char *verb, char **argv, int argc)
     if (g_strcmp0(verb, "show") == 0 && argc == 1)
         return cmd_action_show(db, argv[0]);
     if (g_strcmp0(verb, "done") == 0 && argc == 1)
-        return cmd_action_done(db, argv[0], TRUE);
+        return cmd_action_done(app, argv[0], TRUE);
     if (g_strcmp0(verb, "undone") == 0 && argc == 1)
-        return cmd_action_done(db, argv[0], FALSE);
+        return cmd_action_done(app, argv[0], FALSE);
     if (g_strcmp0(verb, "due") == 0 && argc == 2)
-        return cmd_action_due(db, argv[0], argv[1]);
+        return cmd_action_due(app, argv[0], argv[1]);
     if (g_strcmp0(verb, "text") == 0 && argc == 2)
-        return cmd_action_text(db, argv[0], argv[1]);
+        return cmd_action_text(app, argv[0], argv[1]);
     return usage(stderr);
 }
 
@@ -2557,28 +2511,30 @@ cli_json_take(char **argv, int *argc)
 }
 
 /* Forward declaration: the router below, called with the flags stripped.   */
-static int cli_dispatch_verbs(OnDatabase *db, int argc, char **argv);
+static int cli_dispatch_verbs(OnApp *app, int argc, char **argv);
 
 int
-on_cli_dispatch_db(OnDatabase *db, int argc, char **argv)
+on_cli_dispatch(OnApp *app, int argc, char **argv)
 {
     /* --json is stripped from a COPY, leaving the caller's argv alone (the
      * IPC server hands us the vector it also logs).                        */
     char **args = g_memdup2(argv, (gsize)argc * sizeof *argv);
     cli_json_take(args, &argc);
-    int rc = cli_dispatch_verbs(db, argc, args);
+    int rc = cli_dispatch_verbs(app, argc, args);
     g_free(args);
     return rc;
 }
 
 /* ---------------------------------------------------------------------------
  * cli_dispatch_verbs() — route one (already flag-stripped) invocation to
- * its command.  Split from on_cli_dispatch_db so every exit path frees the
- * argument copy.
+ * its command.  Split from on_cli_dispatch so every exit path frees the
+ * argument copy.  Only the action verbs and the exporter take the app;
+ * everything else needs the database alone.
  * ------------------------------------------------------------------------- */
 static int
-cli_dispatch_verbs(OnDatabase *db, int argc, char **argv)
+cli_dispatch_verbs(OnApp *app, int argc, char **argv)
 {
+    OnDatabase *db = app->db;
     const char *cmd = argv[1];       /* the noun/flat command               */
 
     /* Noun groups need a verb.                                             */
@@ -2592,7 +2548,7 @@ cli_dispatch_verbs(OnDatabase *db, int argc, char **argv)
     if (g_strcmp0(cmd, "note") == 0)
         return dispatch_note(db, argv[2], argv + 3, argc - 3);
     if (g_strcmp0(cmd, "action") == 0)
-        return dispatch_action(db, argv[2], argv + 3, argc - 3);
+        return dispatch_action(app, argv[2], argv + 3, argc - 3);
     if (g_strcmp0(cmd, "trash") == 0)
         return dispatch_trash(db, argv[2], argv + 3, argc - 3);
     if (g_strcmp0(cmd, "stats") == 0)
@@ -2607,10 +2563,10 @@ cli_dispatch_verbs(OnDatabase *db, int argc, char **argv)
     if (g_strcmp0(cmd, "backup") == 0)
         return (argc == 3) ? cmd_backup(db, argv[2]) : usage(stderr);
     if (g_strcmp0(cmd, "export-md") == 0)
-        return (argc == 3) ? cmd_export(db, argv[2], ON_EXPORT_MARKDOWN)
+        return (argc == 3) ? cmd_export(app, argv[2], ON_EXPORT_MARKDOWN)
                            : usage(stderr);
     if (g_strcmp0(cmd, "export-html") == 0)
-        return (argc == 3) ? cmd_export(db, argv[2], ON_EXPORT_HTML)
+        return (argc == 3) ? cmd_export(app, argv[2], ON_EXPORT_HTML)
                            : usage(stderr);
     return usage(stderr);            /* unreachable for validated commands   */
 }
@@ -2662,10 +2618,11 @@ on_cli_run(int argc, char **argv)
     if (ran)
         return rc;
 
-    OnDatabase *db = cli_open_db();
-    if (db == NULL)
+    OnApp app = { 0 };               /* headless context: the database only */
+    app.db = cli_open_db();
+    if (app.db == NULL)
         return 2;
-    rc = on_cli_dispatch_db(db, argc, argv);
-    on_db_close(db);
+    rc = on_cli_dispatch(&app, argc, argv);
+    on_db_close(app.db);
     return rc;
 }

@@ -120,60 +120,43 @@ void on_editor_title_refresh_all(OnApp *app);
 void on_editor_status_refresh_all(OnApp *app);
 
 /* ---------------------------------------------------------------------------
- * on_editor_action_set_done() — reflect an action item's done state into
- * its note CONTENT: the '!' line's text is struck through (done) or
- * un-struck (reopened).  With the note open in an editor the live buffer
- * is edited and autosave persists it (including the action_items rows);
- * otherwise the stored blob is rewritten offscreen (cached PNG bytes keep
- * images from being re-encoded) and the table refreshed immediately.
- * Called by the library's Action Items checkbox column.
- *   app     — global application context.
- *   note_id — the note holding the item.
- *   ord     — the item's position among the note's action lines.
- *   done    — the new state.
- *   synced  — optional out: TRUE when the action_items mirror was rewritten
- *             as part of this call (the offscreen path), FALSE when a live
- *             editor deferred the content save to its autosave.  A caller
- *             that wants the flag durable NOW only has to write it itself in
- *             the FALSE case; doing it unconditionally meant two
- *             transactions for one tick.  May be NULL.
- * Returns TRUE when the item was found and updated.
+ * on_editor_action_set_done() — set an action item's done state: its TASK
+ * ROW first (status folds the Tasks way: done → DONE, undone → IN_PROGRESS
+ * if it was DONE), then the '!' line is re-rendered — struck through or
+ * un-struck — on the live view when the note is open (its autosave
+ * follows), else on the stored document with an immediate save.  Called
+ * by the library's Action Items checkbox column and the CLI.
+ *   app  — global application context.
+ *   uid  — the item's stable identity.
+ *   done — the new state.
+ * Returns TRUE when a live item carries `uid` and its row was written.
  * ------------------------------------------------------------------------- */
-gboolean on_editor_action_set_done(OnApp *app, gint64 note_id, gint ord,
-                                   gboolean done, gboolean *synced);
+gboolean on_editor_action_set_done(OnApp *app, gint64 uid, gboolean done);
 
 /* ---------------------------------------------------------------------------
- * on_editor_action_set_due() — rewrite an action item's due date in its
- * note CONTENT: the '!' line's trailing "due <date>" is replaced (or
+ * on_editor_action_set_due() — set an action item's due date: the task
+ * row first, then the '!' line's trailing "due <date>" is replaced (or
  * appended; `due` = 0 removes it).  The written form is ISO
  * ("due 2026-07-07"); appended text inherits the item's strike state.
- * Live-buffer + autosave when the note is open, offscreen rewrite
- * otherwise — same contract as on_editor_action_set_done.
+ * Same contract as on_editor_action_set_done.
  *   due — local-midnight UNIX timestamp, or 0 to clear.
- * Returns TRUE when the item was found and updated.
+ * Returns TRUE when a live item carries `uid` and its row was written.
  * ------------------------------------------------------------------------- */
-gboolean on_editor_action_set_due(OnApp *app, gint64 note_id, gint ord,
-                                  gint64 due);
+gboolean on_editor_action_set_due(OnApp *app, gint64 uid, gint64 due);
 
 /* ---------------------------------------------------------------------------
- * on_editor_action_set_text() — rewrite an action item's TEXT in its note
- * CONTENT: the '!' line keeps its prefix, its spacing and any trailing
- * "due <date>"; only the text between them is replaced, and it carries
- * the item's strike state over so a done item stays done.  Live-buffer +
- * autosave when the note is open, offscreen rewrite otherwise — same
+ * on_editor_action_set_text() — rename an action item: the task row's
+ * title first, then the '!' line keeps its prefix, its spacing and any
+ * trailing "due <date>"; only the text between them is replaced, and it
+ * carries the item's strike state over so a done item stays done.  The
+ * uid is the line's, in the blob, and a rename does not touch it.  Same
  * contract as on_editor_action_set_done.
- *
- * The item's stable uid SURVIVES this: the editor's identity mark sits at
- * the line START, outside the replaced span, so it is not pruned and the
- * hint pass in on_db_note_set_actions re-matches the item; headless, the
- * ord pass does the same, since a rename moves no line.
  *   text — the new item text.  Must be non-blank and contain no newline:
  *          a blank would stop the line being an action item and a newline
- *          would split it into two, either of which retires the uid.
+ *          would split it into two, either of which retires the item.
  *          Callers validate (see cmd_action_text in cli.c).
- * Returns TRUE when the item was found and updated.
+ * Returns TRUE when a live item carries `uid` and its row was written.
  * ------------------------------------------------------------------------- */
-gboolean on_editor_action_set_text(OnApp *app, gint64 note_id, gint ord,
-                                   const gchar *text);
+gboolean on_editor_action_set_text(OnApp *app, gint64 uid, const gchar *text);
 
 #endif /* BLUE_EDITOR_WINDOW_H */

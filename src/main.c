@@ -14,6 +14,7 @@
 #include "backup.h"
 #include "cli.h"
 #include "db.h"
+#include "migrate_v5.h"           /* one-time, gated; removed after      */
 #include "ipc.h"
 #include "library_window.h"
 
@@ -135,8 +136,11 @@ startup_open_db(OnApp *app)
         return FALSE;
     }
     g_free(db_path);
-    on_app_actions_backfill(app->db);     /* one-time '!'-line index (gated) */
-    on_app_action_uids_backfill(app->db); /* then give those rows stable ids */
+    if (!on_migrate_v5_run(app->db)) {   /* one-time, gated (migrate_v5.h)  */
+        g_printerr("notes: the database could not be migrated; see the "
+                   "log — it was left unchanged\n");
+        return FALSE;
+    }
     return TRUE;
 }
 

@@ -99,7 +99,6 @@ typedef enum { ON_REVEAL_NONE, ON_REVEAL_IMAGE, ON_REVEAL_ACTION } OnReveal;
  *                     `dirty` is set and green once editor_save has run.
  *                     Always visible; driven from the two places that own
  *                     `dirty`.
- *   last_actions    — the action-item set last synced to the action_items
  *                     table (OnActionItem list) — editor_save rewrites the
  *                     table only when the freshly extracted set differs,
  *                     so ordinary saves do no action work (the view's
@@ -131,7 +130,6 @@ typedef struct {
     GtkWidget      *status_path;
     GtkWidget      *status_note_id;
     GtkWidget      *status_dirty;
-    GList          *last_actions;
 } OnEditor;
 
 /* ---------------------------------------------------------------------------
@@ -479,121 +477,101 @@ on_insert_image(GSimpleAction *action, GVariant *param, gpointer user_data)
 }
 
 /* ===========================================================================
- * action items — the window's side: the action_items mirror and the
- * strike / due / text rewrites, live or headless
+ * action items — the window's side of an external edit: the task row
+ * first, then the line that renders it, live or headless
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * action_lists_equal() — same items, same order, same done flags, same
- * due dates?  Every OnActionItem field the table mirrors must be
- * compared here, or edits to that field never reach the library.
- * ------------------------------------------------------------------------- */
-static gboolean
-action_lists_equal(GList *a, GList *b)
-{
-    for (; a != NULL && b != NULL; a = a->next, b = b->next) {
-        OnActionItem *x = a->data, *y = b->data;
-        if (x->done != y->done || x->due != y->due ||
-            g_strcmp0(x->text, y->text) != 0)
-            return FALSE;
-    }
-    return a == NULL && b == NULL;
-}
-
-/* ---------------------------------------------------------------------------
- * action_apply_to_note() — run one line edit (strike, due rewrite or
- * rename) against note `note_id`: on the live view's buffer + autosave
- * when an editor is open (the save's extract-and-compare refreshes
- * action_items — the view's "edited" queues it), else on the note's
- * DOCUMENT with an immediate save + action_items resync.  The two paths
- * are the same edit: on_document_action_* under the extractor's ord
- * numbering, live or headless.
+ * action_apply() — one edit (strike, due, rename) of the item `uid`.  The
+ * task row is the truth, so it is written FIRST (on_db_action_set); then
+ * the '!' line is re-rendered from the same values: on the live view when
+ * an editor has the note open (the view marks itself edited and its
+ * autosave follows — whose sync finds the row already equal), else on the
+ * note's document, reconciled first so any other drift lands too, with an
+ * immediate save.  Both paths are the same on_document_action_* rewrite,
+ * addressed by the line the uid is on NOW (on_document_action_ord —
+ * unsaved edits in the live view included).
  *   which — the edit.
  *   arg   — its argument: a gboolean* (STRIKE), a gint64* (DUE) or the
  *           new text (TEXT); borrowed for the duration of the call.
- * Returns TRUE when the item was found and updated.
+ * Returns TRUE when a live item carries `uid` and its row was written;
+ * a line that cannot be found afterwards is logged, the row stands.
  * ------------------------------------------------------------------------- */
 typedef enum { ACTION_STRIKE, ACTION_DUE, ACTION_TEXT } ActionEdit;
 
 static gboolean
-action_apply_to_note(OnApp *app, gint64 note_id, ActionEdit which,
-                     gint ord, gconstpointer arg, gboolean *synced)
+action_apply(OnApp *app, gint64 uid, ActionEdit which, gconstpointer arg)
 {
-    if (synced != NULL)
-        *synced = FALSE;
+    OnActionItem *it = on_db_action_get(app->db, uid);
+    if (it == NULL)
+        return FALSE;
+    const gchar *title = it->text;   /* the row, with one field replaced    */
+    gboolean     done  = it->done;
+    gint64       due   = it->due;
+    switch (which) {
+    case ACTION_STRIKE: done  = *(const gboolean *)arg; break;
+    case ACTION_DUE:    due   = *(const gint64 *)arg;   break;
+    default:            title = arg;                     break;
+    }
+    gboolean ok = on_db_action_set(app->db, uid, title, done, due);
+    gint64 note_id = it->note_id;
+    on_db_action_item_free(it);
+    if (!ok)
+        return FALSE;
 
     OnEditor *ed = editor_lookup(app, note_id);   /* NULL headless / closed */
     if (ed != NULL) {
-        /* Live buffer: the autosave writes content AND the mirror later.
-         * A tag change emits no "changed", so the view reports nothing —
-         * the autosave is queued here.                                      */
+        gint ord = on_document_action_ord(on_note_view_document(ed->view), uid);
+        gboolean hit;                /* the line was found and rewritten    */
         switch (which) {
         case ACTION_STRIKE:
-            return on_note_view_action_strike(ed->view, ord,
-                                              *(const gboolean *)arg);
+            hit = on_note_view_action_strike(ed->view, ord, done);
+            break;
         case ACTION_DUE:
-            return on_note_view_action_due(ed->view, ord,
-                                           *(const gint64 *)arg);
+            hit = on_note_view_action_due(ed->view, ord, due);
+            break;
         default:
-            return on_note_view_action_text(ed->view, ord, arg);
+            hit = on_note_view_action_text(ed->view, ord, title);
+            break;
         }
+        if (!hit)
+            g_warning("action %" G_GINT64_FORMAT ": no line in the open "
+                      "editor of note %" G_GINT64_FORMAT, uid, note_id);
+        return TRUE;
     }
 
-    /* A note with no content is an empty document, where the edit finds
-     * no action line and fails on its own — no special case needed.       */
+    /* Closed: the reconcile re-renders THIS edit too (the row already
+     * holds it), so the explicit rewrite below only matters when the
+     * reconcile found nothing to do — it is the same operation either way,
+     * and a document already right is a no-op for it.                     */
     OnDocument *doc = on_note_document_load(app->db, note_id);
-    gboolean ok;
-    switch (which) {
-    case ACTION_STRIKE:
-        ok = on_document_action_strike(doc, ord, *(const gboolean *)arg);
-        break;
-    case ACTION_DUE:
-        ok = on_document_action_due(doc, ord, *(const gint64 *)arg);
-        break;
-    default:
-        ok = on_document_action_text(doc, ord, arg);
-        break;
-    }
-    if (ok) {
-        gsize   out_len;             /* re-serialized blob size             */
-        guint8 *out = on_document_to_bnbf(doc, &out_len);
-        gchar  *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
-                                          ON_TITLE_MAX_CHARS);
-        gchar  *body = NULL;         /* searchable plain text               */
-        GList  *actions = NULL;      /* the rewritten '!' lines             */
-        on_note_extract(out, out_len, &body, &actions);
-        ok = on_db_note_save(app->db, note_id, title, out, out_len, body) &&
-             on_db_note_set_actions(app->db, note_id, actions);
-        if (ok && synced != NULL)
-            *synced = TRUE;          /* the mirror is already up to date    */
-        on_db_action_list_free(actions);
-        g_free(body);
-        g_free(title);
-        g_free(out);
-    }
+    on_note_document_reconcile(app->db, note_id, doc);
+    gint ord = on_document_action_ord(doc, uid);
+    if (ord < 0)
+        g_warning("action %" G_GINT64_FORMAT ": no line in note %"
+                  G_GINT64_FORMAT, uid, note_id);
+    else
+        ok = on_note_document_save(app->db, note_id, doc, TRUE, NULL);
     on_document_free(doc);
     return ok;
 }
 
 gboolean
-on_editor_action_set_done(OnApp *app, gint64 note_id, gint ord,
-                          gboolean done, gboolean *synced)
+on_editor_action_set_done(OnApp *app, gint64 uid, gboolean done)
 {
-    return action_apply_to_note(app, note_id, ACTION_STRIKE, ord, &done,
-                                synced);
+    return action_apply(app, uid, ACTION_STRIKE, &done);
 }
 
 gboolean
-on_editor_action_set_due(OnApp *app, gint64 note_id, gint ord, gint64 due)
+on_editor_action_set_due(OnApp *app, gint64 uid, gint64 due)
 {
-    return action_apply_to_note(app, note_id, ACTION_DUE, ord, &due, NULL);
+    return action_apply(app, uid, ACTION_DUE, &due);
 }
 
 gboolean
-on_editor_action_set_text(OnApp *app, gint64 note_id, gint ord,
-                          const gchar *text)
+on_editor_action_set_text(OnApp *app, gint64 uid, const gchar *text)
 {
-    return action_apply_to_note(app, note_id, ACTION_TEXT, ord, text, NULL);
+    return action_apply(app, uid, ACTION_TEXT, text);
 }
 
 /* ===========================================================================
@@ -785,35 +763,27 @@ on_initial_reveal_idle(gpointer user_data)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * editor_save() — serialize the buffer and persist it: content blob,
- * derived title, and — only when the view's live tags-modified flag says a
- * #tag was created, renamed or deleted — the note's tag set.  Then pokes
- * the library: the light notes-pane refresh normally (editing a note can
- * never change folder counts), the full one (sidebar included) only for
- * tag changes.
+ * editor_save() — persist the note through THE save
+ * (on_note_document_save: blob, title, body text, and the task rows its
+ * '!' lines are — synced only when the view's live flag says an action
+ * line was touched since the last save, so an ordinary save does no task
+ * work), plus — only when the view's live tags-modified flag says a #tag
+ * was created, renamed or deleted — the note's tag set.  Then pokes the
+ * library: the light notes-pane refresh normally (editing a note can
+ * never change folder counts), the full one (sidebar included) when a
+ * tag or a task row changed.
  * ------------------------------------------------------------------------- */
 static void
 editor_save(OnEditor *ed)
 {
-    gsize   blob_len = 0;            /* BNBF blob size                      */
-    guint8 *blob = on_note_view_serialize(ed->view, &blob_len);
-    gchar  *title = on_note_view_first_line(ed->view);
-
-    /* ONE walk of the fresh blob for both derived values.  The action list
-     * is only wanted when the set might have changed (see below); asking for
-     * it here costs nothing extra, since the walk happens either way.  The
-     * view's flag is taken (and so cleared) on EVERY save, whatever
-     * last_actions holds, exactly as it was reset after every extract.     */
-    gboolean edited_actions =        /* could an edit have changed the set? */
+    /* The view's flag is taken (and so cleared) on EVERY save.            */
+    gboolean edited_actions =        /* could an edit have changed a task?  */
         on_note_view_take_actions_modified(ed->view);
-    gboolean want_actions = ed->last_actions != NULL || edited_actions;
-    gchar  *body = NULL;             /* searchable plain text               */
-    GList  *fresh_actions = NULL;    /* '!' lines, when wanted              */
-    on_note_extract(blob, blob_len, &body,
-                    want_actions ? &fresh_actions : NULL);
-
-    on_db_note_save(ed->app->db, ed->note_id, title, blob, blob_len, body);
-    g_free(body);
+    gboolean actions_changed = FALSE;   /* did a task row change?           */
+    on_note_document_save(ed->app->db, ed->note_id,
+                          on_note_view_document(ed->view), edited_actions,
+                          &actions_changed);
+    gchar *title = on_note_view_first_line(ed->view);
 
     /* Rewrite note_tags only when the tag set actually changed — flagged
      * live by the view while editing, so the common save does no tag work
@@ -823,29 +793,6 @@ editor_save(OnEditor *ed)
         GList *tags = on_note_view_collect_tags(ed->view);
         on_db_note_set_tags(ed->app->db, ed->note_id, tags);
         g_list_free_full(tags, g_free);
-    }
-
-    /* Mirror the '!' action lines into action_items only when they changed
-     * since the last sync (cheap blob walk, no images decoded).  Skip the
-     * walk entirely when the view reports no such edit AND last_actions is
-     * NULL — no action line existed before and no insert/delete that could
-     * have created one has occurred since the last extract.                 */
-    gboolean actions_changed = FALSE;
-    if (want_actions) {
-        GList *actions = fresh_actions;   /* from the walk above            */
-        actions_changed = !action_lists_equal(actions, ed->last_actions);
-        if (actions_changed) {
-            /* Hint from the marks (identifies reworded items), let the
-             * rebuild assign the uids, then re-place the marks on the
-             * lines as they now stand.                                     */
-            on_note_view_action_marks_hint(ed->view, actions);
-            on_db_note_set_actions(ed->app->db, ed->note_id, actions);
-            on_note_view_action_marks_sync(ed->view, actions);
-            on_db_action_list_free(ed->last_actions);
-            ed->last_actions = actions;
-        } else {
-            on_db_action_list_free(actions);
-        }
     }
     ed->dirty = FALSE;
     editor_status_dirty_update(ed);   /* dot turns green                     */
@@ -858,11 +805,10 @@ editor_save(OnEditor *ed)
     }
 
     g_free(title);
-    g_free(blob);
 
-    /* Tag-set and action-set changes touch the sidebar (tag rows, the
-     * Action Items section/count): full refresh.  Plain saves take the
-     * light notes-pane-only path.                                          */
+    /* Tag-set and task changes touch the sidebar (tag rows, the Action
+     * Items section/count): full refresh.  Plain saves take the light
+     * notes-pane-only path.                                                */
     if (tags_changed || actions_changed) {
         if (ed->app->notify_notes_changed != NULL)
             ed->app->notify_notes_changed(ed->app);
@@ -958,7 +904,6 @@ on_editor_destroy(GtkWidget *widget, gpointer user_data)
     }
 
     g_hash_table_remove(ed->app->editors, &ed->note_id);
-    on_db_action_list_free(ed->last_actions);
     g_object_unref(ed->view);        /* the engine's own teardown           */
     ed->view = NULL;
     g_free(ed);
@@ -1549,27 +1494,20 @@ editor_build_view(OnEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_load_content() — load the stored BNBF blob into the view, snapshot
- * the action set the table holds (editor_save only rewrites when it
- * drifts) and seed the view's identity marks from the stored rows.
+ * editor_load_content() — load the note's document into the view, first
+ * reconciled against its task rows (the truth: a task changed while the
+ * note was closed re-renders its line here).  A reconciled line is an
+ * unsaved change, so the autosave is queued to write it back.
  * ------------------------------------------------------------------------- */
 static void
 editor_load_content(OnEditor *ed)
 {
-    gsize   blob_len = 0;
-    guint8 *blob = on_db_note_load(ed->app->db, ed->note_id, &blob_len);
-    on_note_view_load(ed->view, blob, blob_len);
-    if (blob != NULL) {
-        ed->last_actions = on_note_extract_actions(blob, blob_len);
-        g_free(blob);
-
-        /* Seed the identity marks from the stored rows, which are in the
-         * same ord order as the lines just loaded — that is what lets a
-         * reword in this session keep its uid.                             */
-        GList *rows = on_db_action_list_for_note(ed->app->db, ed->note_id);
-        on_note_view_action_marks_sync(ed->view, rows);
-        on_db_action_list_free(rows);
-    }
+    OnDocument *doc = on_note_document_load(ed->app->db, ed->note_id);
+    gboolean healed = on_note_document_reconcile(ed->app->db, ed->note_id,
+                                                 doc);
+    on_note_view_load_document(ed->view, doc);
+    if (healed)
+        editor_queue_autosave(ed);
 }
 
 /* ---------------------------------------------------------------------------

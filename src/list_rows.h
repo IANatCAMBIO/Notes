@@ -89,6 +89,7 @@ G_DECLARE_FINAL_TYPE(OnActionRow, on_action_row, ON, ACTION_ROW, OnRow)
 
 struct _OnActionRow {
     OnRow     parent;
+    gint64    uid;                   /* the item's stable identity          */
     gint64    note_id;               /* owning note                         */
     gint      ord;                   /* position among the note's items     */
     gboolean  done;

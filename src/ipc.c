@@ -380,7 +380,7 @@ ipc_capture_run(OnApp *app, int argc, char **argv, const gchar *stdin_data,
     }
 
     on_cli_set_stdin_data(stdin_data);
-    int rc = on_cli_dispatch_db(app->db, argc, argv);
+    int rc = on_cli_dispatch(app, argc, argv);
     on_cli_set_stdin_data(NULL);
 
     if (captured) {

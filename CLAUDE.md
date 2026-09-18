@@ -204,14 +204,24 @@ handlers that duplicate a menu item.
   and log those.  Skip notes the change does not touch, and write back
   through a content-ONLY UPDATE: a migration must not bump `updated_at`,
   or the whole library reorders itself.  `migrate_v5.[ch]` (the ACTION
-  record + tasks, 2026-09-18) is the worked example — it, like the
-  2026-08 H1 strip before it, is REMOVED once the one live database has
-  crossed; `git log` has both.  (The rule used to say "never deserialize
-  in a migration": that dated from the GtkTextBuffer/pixbuf era, when a
-  deserialize decoded every PNG.)
+  record + tasks, 2026-09-18, commit 28335bd) was the worked example —
+  it, like the 2026-08 H1 strip before it, was REMOVED the same day once
+  the one live database had crossed (1352 notes, 25 rewritten, 42 tasks,
+  all 42 uids carried); `git log` has both.  Its two backups of the
+  pre-migration file physically exist: `notes.db.pre-v5.bak` beside the
+  live database in iCloud Drive (the migration's own, verified) and
+  `~/notes-backup-pre-v5-20260918-161401.db`.  (The rule used to say
+  "never deserialize in a migration": that dated from the
+  GtkTextBuffer/pixbuf era, when a deserialize decoded every PNG.)
 - **`PRAGMA user_version` 2, 3, 4 and 5 ARE CONSUMED**: 2/3 by the old
   action_items backfills, 4 by the removed H1 strip, 5 by the tasks
-  migration.  The next one-time migration must be **6 or higher**.
+  migration.  `on_db_open` stamps a below-5 file to 5 — a FRESH file —
+  but REFUSES one that still has an `action_items` table (a pre-5.0
+  backup opened via File → Open Database File…): stamping it would
+  silently drop every item it holds.  Such a file needs one open with
+  Notes 5.0.0 (`git checkout` the version tag) before this build reads
+  it — the same shape as the removed `records.db` adopt shim.  The next
+  one-time migration must be **6 or higher**.
 - **Task checkboxes are CHECK blocks** (`ON_BLOCK_CHECK`, `checked` on
   the block; BNBF v5 CHECK records, re-emitted by the saver as the CHECK
   record + " " + the text, exactly as the GtkTextBuffer era wrote them).

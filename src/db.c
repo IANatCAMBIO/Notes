@@ -467,6 +467,27 @@ on_db_open(const gchar *path_override)
                  "NOT NULL DEFAULT ''",
                  NULL, NULL, NULL);
 
+    /* PRAGMA user_version.  2, 3 and 4 were consumed by one-time passes
+     * that are gone, 5 by the 2026-09-18 migration of action items into
+     * task rows (the ACTION record in every '!' line's blob), which was
+     * removed once the one live database had crossed.  A file still
+     * carrying the old action_items table is from before that and is
+     * REFUSED — stamping it would silently drop every item it holds; it
+     * needs one open with Notes 5.0.0 first.  A fresh file has no such
+     * table and is stamped straight to 5.  The next one-time migration
+     * is 6 or higher.                                                       */
+    if (on_db_user_version(db) < 5) {
+        if (query_int64(db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                            "type='table' AND name='action_items'", -1) > 0) {
+            g_warning("db: %s predates Notes 5.0 (its action items are in "
+                      "the old action_items table); open it once with "
+                      "Notes 5.0.0 to migrate it", path);
+            on_db_close(db);
+            return NULL;
+        }
+        on_db_set_user_version(db, 5);
+    }
+
     /* The views reference migrated columns (and action_items_ctx the
      * Trash view), so they are created only after the migrations above,
      * in this order.                                                        */
@@ -1937,13 +1958,6 @@ task_create(OnDatabase *db, gint64 uid, gint64 note_id, gint ord,
     sqlite3_bind_int64(stmt, 3, note_id);
     sqlite3_bind_int(stmt, 4, ord);
     return stmt_done(db, stmt) ? task_id : 0;
-}
-
-gboolean
-on_db_action_create(OnDatabase *db, gint64 note_id, gint64 uid, gint ord,
-                    const gchar *title, gboolean done, gint64 due)
-{
-    return task_create(db, uid, note_id, ord, title, done, due) != 0;
 }
 
 /* ---------------------------------------------------------------------------

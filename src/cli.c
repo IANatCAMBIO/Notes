@@ -15,7 +15,6 @@
 #include "cli.h"
 #include "app.h"
 #include "db.h"
-#include "migrate_v5.h"           /* one-time, gated; removed after      */
 #include "editor_window.h"           /* action done/due content rewrites    */
 #include "export.h"
 #include "ipc.h"
@@ -164,12 +163,6 @@ cli_open_db(void)
     }
     g_free(path);
     g_free(db_dir);
-    if (!on_migrate_v5_run(db)) {    /* one-time, gated (migrate_v5.h)      */
-        fprintf(stderr, "error: the database could not be migrated; it was "
-                        "left unchanged\n");
-        on_db_close(db);
-        return NULL;
-    }
     return db;
 }
 

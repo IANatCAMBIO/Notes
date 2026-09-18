@@ -530,14 +530,6 @@ gint64 on_db_action_uid_alloc(OnDatabase *db);
 gboolean on_db_note_save_actions(OnDatabase *db, gint64 note_id,
                                  GList *items, gboolean *changed);
 
-/* Create the task for one '!' line (uid, position, fields) — the
- * building block on_db_note_save_actions uses, exposed for the one-time
- * v5 migration; goes back to being private with it.  Returns TRUE on
- * success.                                                                */
-gboolean on_db_action_create(OnDatabase *db, gint64 note_id, gint64 uid,
-                             gint ord, const gchar *title, gboolean done,
-                             gint64 due);
-
 /* One live item by uid, off the view (context included); NULL when no
  * live task carries that uid.  Free with on_db_action_item_free().        */
 OnActionItem *on_db_action_get(OnDatabase *db, gint64 uid);

@@ -34,7 +34,6 @@
 #include "editor_window.h"
 #include "export.h"
 #include "media_window.h"
-#include "migrate_v5.h"           /* one-time, gated; removed after      */
 #include "search_window.h"
 #include "serialize.h"
 #include "settings_window.h"
@@ -2818,12 +2817,6 @@ open_db_switch(OnLibrary *lw, const gchar *path, gboolean set_default)
     on_db_close(app->db);
     app->db = on_db_open(path);
 
-    /* An opened file may predate the current schema: the one-time
-     * migration runs here as it does at startup (migrate_v5.h).           */
-    if (app->db != NULL && !on_migrate_v5_run(app->db)) {
-        on_db_close(app->db);
-        app->db = NULL;
-    }
     if (app->db == NULL) {
         on_app_notice(GTK_WINDOW(lw->window), "Notes - Database Error",
                       "Could not open:\n%s", path);

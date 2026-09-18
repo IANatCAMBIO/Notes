@@ -4371,7 +4371,7 @@ cmp_action_text(gconstpointer a, gconstpointer b, gpointer user_data)
 }
 
 /* cmp_action_context() — the Context header: alphabetical by the note's
- * top-level folder, the root's items (no context) first.                  */
+ * folder name, the root's items (no context) first.                       */
 static gint
 cmp_action_context(gconstpointer a, gconstpointer b, gpointer user_data)
 {
@@ -4891,7 +4891,7 @@ on_action_text_bind(GtkListItemFactory *f, GtkListItem *item,
         pango_attr_list_unref(al);
 }
 
-/* on_action_context_setup() — the note's top-level folder; a double-click
+/* on_action_context_setup() — the note's folder name; a double-click
  * opens the note, like the text cell.                                     */
 static void
 on_action_context_setup(GtkListItemFactory *f, GtkListItem *item,
@@ -5797,7 +5797,7 @@ library_build_actions_view(OnLibrary *lw)
     gtk_sort_list_model_set_sorter(
         lw->actions_sorted, gtk_column_view_get_sorter(lw->actions_view));
 
-    /* Untitled checkbox column + the note's top-level folder + the item
+    /* Untitled checkbox column + the note's folder name + the item
      * text + the due date; done rows also render struck through, matching
      * the editor.  Context sits BEFORE the text because that is where it
      * used to be typed ("Stride - rerun the reports").                     */

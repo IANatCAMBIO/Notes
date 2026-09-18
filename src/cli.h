@@ -43,8 +43,8 @@
  *   notes action list [--open|--done] [--context NAME] [--uid]
  *                                        ('!' items; NOTEID:ORD positions;
  *                                        --context = the items whose note
- *                                        lives under that top-level
- *                                        folder; --uid prepends the stable
+ *                                        sits in a folder of that NAME;
+ *                                        --uid prepends the stable
  *                                        per-item id that survives edits
  *                                        and renumbering)
  *   notes action show UID|NOTEID:ORD (one item, as an 'action list --uid'

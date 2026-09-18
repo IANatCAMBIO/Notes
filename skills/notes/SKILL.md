@@ -29,9 +29,10 @@ window.  You do not need to ask the user to close it.
 
 ## The data model in five lines
 
-- **Folders** nest.  The **top-level folder** a note lives under, however
-  deep, is its **context** — the customer, deployment or project
-  ("Stride").  Notes at the root have context `""`.
+- **Folders** nest.  The **folder a note sits in** is its **context** —
+  the customer, deployment or project: a note in
+  `Salt/Deployments/Stride` has the context `Stride`, whatever is above.
+  Notes at the root have context `""`.
 - **Notes** are rich text; the first line is the title.  `note cat`
   gives plain text, `note cat --md` gives Markdown with formatting.
 - **Action items** are lines in a note whose first character is `!`.
@@ -68,9 +69,12 @@ due_at (unix|0), context, text}`.  Always use `--json` — a title or item
 text may contain a tab, which shifts the plain form's columns.
 
 **"What am I tracking for X?"** — `action list --context X --open --json`
-is the direct answer.  If X matches no context, check `folder list` for
-the spelling (it may be a subfolder: contexts are TOP-level folders
-only) and fall back to `search X`.  Present items grouped by note, with
+is the direct answer.  It matches the note's OWN folder only: items in
+`Stride/Reports` have the context `Reports`, so for "everything under
+Stride" also take `note list --all --json`, keep the paths under
+`/Stride/`, and look those notes' items up.  If X matches nothing, check
+`folder list` for the spelling and fall back to `search X`.  Present
+items grouped by note, with
 due dates, done state, and the uid available if the user wants to act on
 one.
 
@@ -129,9 +133,9 @@ to rerun the reports" — before the Context column existed.  To clean up:
 
 ## Things that look like bugs and are not
 
-- `action list` for a folder that is not top-level returns nothing for
-  `--context` — contexts are top-level names by definition; use
-  `note list PATH` + `note info` for a subfolder.
+- `--context` names a FOLDER, not a path: two folders called `Reports`
+  under different customers both match `--context Reports`; tell them
+  apart by the item's `note_id` → `note info` path.
 - An item is a PLAIN or HEADING line whose first character is `!`.  A
   `!` at the start of a bullet, numbered or checkbox line is text (the
   prefix is the first character there), a `!` in a code block is text,

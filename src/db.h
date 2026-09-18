@@ -163,9 +163,10 @@ typedef struct {
  *             caller may set it as a MATCH HINT (see below) before
  *             calling on_db_note_set_actions, which fills in the
  *             assigned uid on return.  Never reused once retired.
- *   context — the CONTAINER the owning note lives in: the name of the
- *             TOP-LEVEL folder above it, however deep the note sits ("" for
- *             a note at the root).  Read off the action_items_ctx VIEW
+ *   context — the CONTAINER the owning note lives in: the name of its
+ *             own folder, whatever sits above that — a note in
+ *             Salt/Deployments/Stride has the context "Stride" ("" for a
+ *             note at the root).  Read off the action_items_ctx VIEW
  *             (db.c), which derives it from the folder tree — never
  *             stored: a stored copy would go stale the moment a note
  *             moved or a folder was renamed.  Filled by both db listings;
@@ -520,7 +521,7 @@ gboolean on_db_action_uids_missing(OnDatabase *db);
 
 /* Every action item of every visible (non-trashed) note, newest note
  * first, note order preserved within a note, each with its `context` (the
- * note's top-level folder).  Returns a GList of OnActionItem*; free with
+ * name of the note's folder).  Returns a GList of OnActionItem*; free with
  * on_db_action_list_free().                                                 */
 GList *on_db_action_list(OnDatabase *db);
 

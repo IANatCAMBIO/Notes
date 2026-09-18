@@ -95,8 +95,8 @@ struct _OnActionRow {
     gchar    *text;
     gchar    *due;                   /* formatted due date, or NULL         */
     gint64    due_raw;               /* 0 = none                            */
-    gchar    *context;               /* the note's top-level folder, "" at
-                                        the root (OnActionItem.context)     */
+    gchar    *context;               /* the note's folder name, "" at the
+                                        root (OnActionItem.context)         */
 };
 
 /* on_action_row_new() — an empty row.                                       */

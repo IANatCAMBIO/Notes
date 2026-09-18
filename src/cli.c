@@ -1690,8 +1690,8 @@ action_print_line(const OnActionItem *it, gboolean with_uid)
                it->uid, it->note_id, it->ord, it->done ? "true" : "false");
         json_str(when);              /* null when the item has no due date  */
         printf(",\"due_at\":%" G_GINT64_FORMAT ",\"context\":", it->due);
-        json_str(it->context);       /* the note's top-level folder, "" at
-                                        the root                            */
+        json_str(it->context);       /* the note's folder name, "" at the
+                                        root                                */
         printf(",\"text\":");
         json_str(it->text);
         putchar('}');
@@ -1711,8 +1711,8 @@ action_print_line(const OnActionItem *it, gboolean with_uid)
 /* ---------------------------------------------------------------------------
  * cmd_action_list() — every action item across the visible notes, newest
  * note first, one action_print_line() record each.  `filter` narrows to
- * open or done items; `context` (NULL = any) to the items whose note lives
- * under that top-level folder, compared case-insensitively so "stride"
+ * open or done items; `context` (NULL = any) to the items whose note sits
+ * in a folder of that name, compared case-insensitively so "stride"
  * finds Stride — the plain form does not print the context, so the filter
  * is the only way to ask for it there; with_uid adds the uid column.  The
  * default form is byte-for-byte what it always was.
@@ -2175,9 +2175,10 @@ usage(FILE *out)
 "              [--context NAME]      the notes: NOTEID:ORD, [x]/[ ],\n"
 "              [--uid]               due date ('-' = none), text.\n"
 "                                    --context keeps the items whose\n"
-"                                    note lives under top-level folder\n"
-"                                    NAME (case-insensitive; '' = the\n"
-"                                    root); --json records carry it.\n"
+"                                    note sits in a folder named NAME\n"
+"                                    (its own folder, wherever that is;\n"
+"                                    case-insensitive; '' = the root);\n"
+"                                    --json records carry it.\n"
 "                                    --uid adds the item's stable UID as\n"
 "                                    a first column: that id survives\n"
 "                                    editing, reordering and renumbering,\n"

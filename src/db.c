@@ -101,32 +101,26 @@ static const char *SCHEMA_SQL =
  * contract a sister app sharing this database reads (the Tasks app's
  * planned direct read of the items, replacing its CLI mirror): ACTION_COLS,
  * then
- *   folder_id  — the owning note's folder (NULL at the root),
+ *   folder_id  — the owning note's folder (NULL at the root): the stable
+ *                key for a context, surviving a rename,
  *   updated_at — the owning note's modification time,
  *   visible    — NOTE_VISIBLE_SQL evaluated for the note, so a reader
  *                needs no knowledge of the Trash rules,
- *   context_id — the id of the TOP-LEVEL folder the note lives under (0
- *                at the root): the stable key, surviving a rename,
- *   context    — that folder's NAME ("" at the root), for display.
- * `top` maps every folder to its root ancestor, the same recursive shape
- * as the Trash view.  The context is DERIVED here, never stored: a stored
- * copy would go stale the moment a note moved or a folder was renamed,
- * and with two writers on one file nobody could trust it.  The columns
- * are spelled out (not a.*) so the view's contract is exactly this list.  */
+ *   context    — the NAME of that folder ("" at the root): the container
+ *                the note sits in, whatever is above it — a note in
+ *                Salt/Deployments/Stride has the context "Stride".
+ * The context is DERIVED here, never stored: a stored copy would go stale
+ * the moment a note moved or a folder was renamed, and with two writers
+ * on one file nobody could trust it.  The columns are spelled out (not
+ * a.*) so the view's contract is exactly this list.                       */
 #define ACTION_CTX_VIEW_NAME "action_items_ctx"
 #define ACTION_CTX_VIEW_BODY \
-    "WITH RECURSIVE top(id, root_id, root_name) AS (" \
-    "  SELECT id, id, name FROM folders WHERE parent_id IS NULL" \
-    "  UNION ALL" \
-    "  SELECT f.id, top.root_id, top.root_name" \
-    "    FROM folders f JOIN top ON f.parent_id = top.id" \
-    ") SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid," \
+    "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid," \
     "  n.folder_id, n.updated_at," \
     "  (n." NOTE_VISIBLE_SQL ") AS visible," \
-    "  COALESCE(t.root_id, 0) AS context_id," \
-    "  COALESCE(t.root_name, '') AS context" \
+    "  COALESCE(f.name, '') AS context" \
     " FROM action_items a JOIN notes n ON n.id = a.note_id" \
-    " LEFT JOIN top t ON t.id = n.folder_id"
+    " LEFT JOIN folders f ON f.id = n.folder_id"
 
 /* Remove tags that no longer label any note; run (via exec_simple) after
  * anything that can delete note_tags rows, so the library's tag list
@@ -2050,9 +2044,7 @@ GList *
 on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
 {
     /* Off the view as well, so an item read by note carries the same
-     * context an item read across notes does (action show vs action list).
-     * The folder CTE it runs is over a table of at most a few hundred rows;
-     * every caller is a cold path (a CLI command, an editor opening).      */
+     * context an item read across notes does (action show vs action list). */
     sqlite3_stmt *stmt = prepare(db,
         "SELECT " ACTION_CTX_COLS " FROM " ACTION_CTX_VIEW_NAME " "
         "WHERE note_id=? ORDER BY ord");

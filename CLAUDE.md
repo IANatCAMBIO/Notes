@@ -68,15 +68,15 @@ sees the new flags.
 |---|---|
 | `src/main.c` | GtkApplication entry; config init; sets `icons/composition.png` as default window icon |
 | `src/app.[ch]` | Shared `OnApp` context: db handle, open-editors map, icon loading, the shared toolbar-button factory (`on_app_tool_item_new`), THE transient context-menu scaffold (`on_app_menu_popup`: a GMenuModel → self-dropping GtkPopoverMenu, parented to the WINDOW's child box — never to the clicked widget, D14 — with the press translated into it; used by every right-click menu in the app), THE pixbuf → texture edge (`on_app_texture_for_pixbuf`, a memory texture over the pixbuf's own pixels), icons by NAME from the icon theme (`icons/` is an unthemed search path, so `new-folder` finds `icons/new-folder.png` and GTK does the HiDPI loading), the async file picker (`on_app_pick_path` + `OnPickFunc`) and fire-and-forget notice (`on_app_notice`, a GtkAlertDialog) and THE keyboard-shortcut table (`on_app_install_accels`, bound from the application's `startup` signal because `<Primary>` resolves through the display's keymap) |
-| `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering |
-| `src/bnbf.[ch]` | THE BNBF format, GLib only: `ON_FMT_*` flags and masks, the record reader (`on_bnbf_open/next`) and writer (`on_bnbf_write_*`), `OnTable`, and the two line parsers every layer shares (`on_list_prefix_chars`, `on_action_split_due`).  serialize.c and document.c both drive it; nothing else frames a record |
-| `src/document.[ch]` | **The block model** (BLOCK_MODEL.md): `OnDocument` = blocks (PARA/H1/H2/BULLET/NUMBER/CHECK/CODE/IMAGE/TABLE), text blocks own `OnText` (UTF-8 + tiling runs of inline flags + inline images at U+FFFC), NO newline in a block, list prefixes and checkbox characters NOT in the text (the saver re-emits them).  `on_document_from_bnbf` (an `OnDocLoadReport` counts what it normalized) / `on_document_to_bnbf` round-trip the live database byte-identical (1315/1354, the rest explained — see BLOCK_MODEL.md).  Every mutation is an operation (`on_document_insert_text` … `table_remove_col`) that logs its inverse: undo/redo/the op itself are ONE code path (`apply_op`), groupable (`begin/end_group`), observed (`OnDocumentObserver`), with live tags/actions-modified flags.  `OnBlock.eol_flags` keeps the inline flags a newline carries in the blob — fidelity only.  GLib only, no GTK: `make test` proves it |
-| `tests/test_document.c` | `make test` — 25 headless tests of the model: round trips of every construct, normalizations, ops, undo, a 400-op fuzz that undoes and redoes everything byte for byte (`--seed` reproduces a failure).  Zero leaks (`leaks --atExit`) |
-| `tools/bnbf-scan.c` | `make bnbf-scan` → `build/bnbf-scan COPY.db [--diff ID \| --blocks ID]`: round-trips every blob, verdicts identical/normalized/unexplained/invalid/error, per-category totals, shape stats.  Run it on a COPY (`sqlite3 "file:…?mode=ro" ".backup copy.db"`), never the live file |
-| `src/serialize.[ch]` | The blob-level helpers around a note (the format itself is bnbf.h; NO GtkTextBuffer anywhere any more — the editor is the drawn OnNoteView): the cheap image API the media browser needs — `on_note_count_images` (record walk, decodes nothing), `on_note_image_nth` (decode ONE image by ordinal, capped) and `on_note_image_nth_png` (the stored bytes verbatim), all on the `on_bnbf_*` reader, with `on_png_decode_capped` the ONE decode path (the grid thumbnail included) and `on_image_png_bytes` the ONE encoder; `on_note_document_load`, THE preamble of every offscreen consumer (export, CLI content commands, headless action rewrites, thumbnails): blob → OnDocument, no GTK, nothing decoded; and `on_note_extract` / `on_note_extract_text` / `on_note_extract_actions` — the body_text cache and the action_items mirror, derived THROUGH THE MODEL (`on_document_plain_text`, `on_document_action_blocks` + `on_document_block_action`) so an action line has ONE definition (`on_block_is_action`: a PARA/H1/H2 starting with `!`).  Until 2026-09-16 this was a second hand-rolled BNBF walker with its own byte-level rule, which counted bullet `!` lines the model did not — the table's ord n then named a different line than the model's strike/due/rename addressed.  Measured on a copy of the 1354-note database: 117–144 ms for every note, no slower than the walk |
+| `src/db.[ch]` | SQLite: folders (nested), notes (content BLOB), tags, note_tags, counts, ordering; the Tasks app's `tasks`/`lists`/`list_groups` VERBATIM (`TASKS_SCHEMA_FMT`) + `note_task` (uid → task) + `action_uid_seq`; the `action_items_ctx` view and the `note_task_tombstone` trigger, both through `db_ensure` (stored CREATE text compared, recreated on mismatch); THE task writer `task_apply`, `on_db_note_save_actions` (create / update / re-ord / tombstone), `on_db_action_get/set/uid_at/find_uid` |
+| `src/bnbf.[ch]` | THE BNBF format (v6), GLib only: `ON_FMT_*` flags and masks, the record reader (`on_bnbf_open/next`) and writer (`on_bnbf_write_*`; `on_bnbf_write_action` = the `[i64 uid]` before an action line, v6, refused in an older blob), `OnTable`, and the two line parsers every layer shares (`on_list_prefix_chars`, `on_action_split_due`).  serialize.c and document.c both drive it; nothing else frames a record |
+| `src/document.[ch]` | **The block model** (BLOCK_MODEL.md): `OnDocument` = blocks (PARA/H1/H2/BULLET/NUMBER/CHECK/CODE/IMAGE/TABLE), text blocks own `OnText` (UTF-8 + tiling runs of inline flags + inline images at U+FFFC), NO newline in a block, list prefixes and checkbox characters NOT in the text (the saver re-emits them).  `on_document_from_bnbf` (an `OnDocLoadReport` counts what it normalized) / `on_document_to_bnbf` round-trip the live database byte-identical (1315/1354, the rest explained — see BLOCK_MODEL.md).  Every mutation is an operation (`on_document_insert_text` … `table_remove_col`) that logs its inverse: undo/redo/the op itself are ONE code path (`apply_op`), groupable (`begin/end_group`), observed (`OnDocumentObserver`), with live tags/actions-modified flags.  `OnBlock.eol_flags` keeps the inline flags a newline carries in the blob — fidelity only.  `OnBlock.action_uid` IS serialized (the ACTION record) while the block is a real action line (`block_is_real_action`, the one test the listing, the saver and the loader share); the loader dedupes it and counts strays (`action_dup`/`action_stray`); `on_document_action_ord(d, uid)` is THE uid → line resolution.  GLib only, no GTK: `make test` proves it |
+| `tests/test_document.c` | `make test` — 35 headless tests of the model (four on the ACTION record: round trip, not-written on non-action lines / stray normalization, duplicate + version gate, split/join/copy): round trips of every construct, normalizations, ops, undo, a 400-op fuzz that undoes and redoes everything byte for byte (`--seed` reproduces a failure).  Zero leaks (`leaks --atExit`) |
+| `tools/bnbf-scan.c` | `make bnbf-scan` → `build/bnbf-scan COPY.db [--diff ID \| --blocks ID]`: round-trips every blob, verdicts identical/identical-old-header (the version field alone)/normalized/unexplained/invalid/error, per-category totals, shape stats.  Run it on a COPY (`sqlite3 "file:…?mode=ro" ".backup copy.db"`), never the live file |
+| `src/serialize.[ch]` | The document's two ends — `on_note_document_load` (blob → OnDocument, THE preamble of every offscreen consumer) and **`on_note_document_save` — THE one save** (editor autosave, CLI content commands, headless action rewrites: uids allocated before the bytes, blob + title + body text, then the task rows synced) — plus `on_note_document_reconcile` (the task rows are the truth: lines re-rendered from rows that differ, on every editor load and headless rewrite); and the blob-level helpers around a note (the format itself is bnbf.h; NO GtkTextBuffer anywhere any more — the editor is the drawn OnNoteView): the cheap image API the media browser needs — `on_note_count_images` (record walk, decodes nothing), `on_note_image_nth` (decode ONE image by ordinal, capped) and `on_note_image_nth_png` (the stored bytes verbatim), all on the `on_bnbf_*` reader, with `on_png_decode_capped` the ONE decode path (the grid thumbnail included) and `on_image_png_bytes` the ONE encoder; and `on_note_extract_text` — the body_text cache, derived THROUGH THE MODEL (`on_document_plain_text`).  Until 2026-09-16 this was a second hand-rolled BNBF walker with its own byte-level rule for an action line, which counted bullet `!` lines the model did not — the table's ord n then named a different line than the model's strike/due/rename addressed.  Measured on a copy of the 1354-note database: 117–144 ms for every note, no slower than the walk |
 | `src/note_view.[ch]` | **THE rich-text engine**: `OnNoteView`, a drawn `GtkWidget` (GtkScrollable, GtkAccessibleText; 2.7 k lines) that owns the note as an `OnDocument` and paints it through `doc_layout.[ch]` — NO widget ever lives inside it (BLOCK_MODEL.md: the D14/D17/D23/D27/D29 family had nothing to attach to once that was true).  Caret and selection are `OnPos` pairs (block / cell / byte), so a selection crosses tables and images like text; every edit is a document operation (undo = the document's op log, grouped by a 1 s typing pause and 5 sentence enders); typed text goes through `GtkIMContext` (preedit spliced into the block's layout); the clipboard carries `application/x-notes-bnbf` beside plain text so a table or an image pastes as itself; `#tag` capture with a non-focusable GtkPopover at the '#'; Enter/Backspace policy (lists continue, empty item ends the list, headings are one line, Backspace at an item's start makes it body text); the `view.` group for its context menus (`img-*`, `table-*`, cut/copy/paste; the window inserts it on itself, D14); three signals `edited`, `inline-flags-changed`, `image-activated`.  **The keyboard and pointer are also function calls** (`on_note_view_feed_key/text/click`) so `tests/ui_probe.c` can drive it.  Never references the window |
 | `src/doc_layout.[ch]` | The GEOMETRY of a document on screen: one PangoLayout per text block (and per table cell), heights as a prefix sum, invalidated per block by the document observer the view relays; hit testing (`on_doc_layout_hit`: text position, image, checkbox, copy word, table border), cursor movement (`on_doc_layout_move`: grapheme/word/line/block/document steps by Pango's log attrs, with a goal x for vertical runs), caret rects, and the painter (`on_doc_layout_snapshot`: code shading + gutter numbers + "copy" word, list prefixes, drawn task boxes, tables with fitted columns, block and inline images as textures, selection rects, caret).  Derived looks live here as Pango attributes — title line (block 0: centred, H1-sized), '!' action tint, #tag colour, macOS emoji padding, find hits.  **Images are SIZED from the PNG header and decoded only when drawn** (the 615-block note lays out in 18 ms; decoding its 17 screenshots first cost 220) |
-| `src/editor_window.[ch]` | The editor WINDOW (1.7 k lines) hosting one `OnNoteView`: a GtkApplicationWindow (`show-menubar` FALSE, so Linux draws File/View only in the library), the icons-only toolbar (a `GtkBox.toolbar` of `on_app_tool_item_new` buttons; B/I/U/S are GtkToggleButtons mirrored from the view's `inline-flags-changed`; "Aa" Styles / "≡" Lists / "+" Insert are GtkMenuButtons over GMenus naming `win.para::h1` … `win.insert-image`), the `win.` actions (new-note, find, undo, redo, inline(s), para(s), insert-*) that the accelerators name and that call the view API, the editing GATE (D19: the editing actions are disabled while the focus is in the find entry — the one other widget that owns keys — via `editor_gate_widget`), debounced autosave (`dirty`, the serialize + db write, `note_tags` from `on_note_view_take_tags_modified`, `action_items` from `last_actions` vs the fresh extract with mark hint/sync), the modal image viewer host (`editor_viewer_ops` address images by ORDINAL through `on_note_view_image_count/texture/png/reveal`; `image-activated` opens it; the window's CAPTURE-phase key controller offers every key to it first and swallows the rest while it is up, quirk #23), the status bar, and open/destroy (`on_editor_window_open()` etc. — unchanged public API; the async insert-image continuation re-finds the editor by note id through `EditorRef`).  New editors open BOTTOM-RIGHT of the library's screen on macOS (`editor_place_bottom_right`, D39: GTK4 has no positioning API, but `gdk_macos_surface_get_native_window` is public and the NSWindow's `setFrameOrigin:` is what GDK moves windows with, done from `map` before the first frame shows it); elsewhere the compositor places the window |
+| `src/editor_window.[ch]` | The editor WINDOW (1.7 k lines) hosting one `OnNoteView`: a GtkApplicationWindow (`show-menubar` FALSE, so Linux draws File/View only in the library), the icons-only toolbar (a `GtkBox.toolbar` of `on_app_tool_item_new` buttons; B/I/U/S are GtkToggleButtons mirrored from the view's `inline-flags-changed`; "Aa" Styles / "≡" Lists / "+" Insert are GtkMenuButtons over GMenus naming `win.para::h1` … `win.insert-image`), the `win.` actions (new-note, find, undo, redo, inline(s), para(s), insert-*) that the accelerators name and that call the view API, the editing GATE (D19: the editing actions are disabled while the focus is in the find entry — the one other widget that owns keys — via `editor_gate_widget`), debounced autosave (`dirty`; `on_note_document_save` with the view's take_actions_modified as the sync gate; `note_tags` from `on_note_view_take_tags_modified`), the uid-keyed `on_editor_action_set_done/due/text` (the task row first, then the line — live view or document; `action_apply`), the load that reconciles against the task rows (`editor_load_content`), the modal image viewer host (`editor_viewer_ops` address images by ORDINAL through `on_note_view_image_count/texture/png/reveal`; `image-activated` opens it; the window's CAPTURE-phase key controller offers every key to it first and swallows the rest while it is up, quirk #23), the status bar, and open/destroy (`on_editor_window_open()` etc. — unchanged public API; the async insert-image continuation re-finds the editor by note id through `EditorRef`).  New editors open BOTTOM-RIGHT of the library's screen on macOS (`editor_place_bottom_right`, D39: GTK4 has no positioning API, but `gdk_macos_surface_get_native_window` is public and the NSWindow's `setFrameOrigin:` is what GDK moves windows with, done from `map` before the first frame shows it); elsewhere the compositor places the window |
 | `src/list_rows.[ch]` | The item objects behind the list widgets: `OnSbRow` (sidebar; `children` GListStore for GtkTreeListModel), `OnNoteRow` (notes list/grid and the search results), `OnActionRow` — plain GObjects with public fields, no properties, because every consumer binds by hand in C.  `on_row_touch(store, row)` is THE in-place update protocol: mutate the fields, then it emits the row's "changed" (the factories from `on_row_factory_new` rebind on it — the list item manager reuses a re-added item's widget without rebinding, gtklistfactorywidget.c binds only when `item != old_item`) and items-changed(pos, 1, 1) on the store (a sort model re-sorts, a GtkMultiSelection keeps the row selected by identity, gtkmultiselection.c items_changed_cb re-adds the same object) |
 | `src/library_window.[ch]` | **GTK4 list widgets throughout (2026-09-16, D33)**: the sidebar is a GtkListView over a GtkTreeListModel of `OnSbRow` (list_rows.h; a row's `children` store is what expands, a folder with no subfolders is a LEAF with no arrow), the notes pane is ONE `GListStore` of `OnNoteRow` → GtkSortListModel (fed by the column view's own sorter, so a header click re-sorts the grid too) → ONE GtkMultiSelection shared by the GtkColumnView (list) and the GtkGridView (grid), so the two cannot disagree about the selection; Action Items is a GtkColumnView of `OnActionRow`.  Every row is rendered by a factory from `on_row_factory_new` (`on_*_setup` builds the widget once and installs the row's controllers with the GtkListItem stashed as "on-item", `on_*_bind` fills it and runs AGAIN whenever the bound row emits "changed"; the density-dependent title/preview is `on_title_bind`), an in-place change is `on_row_touch` ("changed" so every bound widget rebinds — GTK's item manager reuses the widget of a re-added item WITHOUT rebinding it, which is why the first cut's grid never showed a thumbnail — then items-changed for that one item so the sort model re-sorts it and the multi-selection keeps it by object identity), and a rebuild is one `g_list_store_splice`.  A drop's `refresh_all` is DEFERRED to an idle: rebuilding inside the drop handler replaced the row widget the drop target sat on before GTK finished the drop, which reported it cancelled and floated the drag icon back to its origin.  Sidebar (folders+counts+emoji prefix, tags+counts): expansion state survives a rebuild keyed by kind+id (the flattened model lists exactly the on-screen rows, an expanded row is on screen by definition), the selection is restored by `sb_reveal` (walks the OnSbRow tree for the row and expands its ANCESTORS, never the row itself), and the Tags header is unselectable by REVERTING a selection that lands on it.  Notes list: Title/Path/Modified/Created, resizable + sortable, Path and Created hidden by default, widths GTK's own (a column view sizes columns to their content; the tree view's autofit measuring pass and its `list_autofit` key are gone), alternating row tint by CSS `row:nth-child(even):not(:selected)`; Comfortable density renders a bold title + small dimmed body-text preview; notes sorted Modified-newest-first by default (a note drag is a move to a folder, never a reorder), folder context menu has Sort Subfolders Alphabetically (one level, `on_db_folder_reorder`), DnD (notes→folder incl. multi-select; single folder rows re-nest INTO / reorder BEFORE-AFTER / trash / drag-restore via `on_db_folder_move`+`on_db_folder_reorder`; drag icons: folder.png, file.png for one note, documents.png for 2+, via `on_app_icon_paintable`; the mechanism is GTK4's: a GtkDragSource on every row (installed by the factory) whose `prepare` hands over ONE boxed `OnDragRows` {kind, ids} (D8) and a GtkDropTarget on every SIDEBAR row — `motion` validates (`sidebar_drop_target`: never onto itself or into its own subtree, notes coerced INTO) and paints the indicator as a CSS class on the row (`drop-into`/`-before`/`-after`, by thirds of the row height), `leave` clears, `drop` acts; a press on a selected row that becomes a drag keeps the multi-selection because a press on a selected row leaves the selection alone until the release — D37; quirk #15 and its veto are gone), sortable headers, context menus (a CAPTURE-phase right-click gesture per row, `row_click_gesture`; column headers use `gtk_column_view_column_set_header_menu` with the stateful `win.column-<cfg>-<key>` actions), one unified toolbar (folder area \| notes area \| Sidebar, List/Grid, Hide/Show Completed, Search, Media, Settings — the sidebar toggle sits LEFT of the List/Grid button since both change what the window shows, not the folders; the completed-items toggle (`win.toggle-done`, the Tasks app's button: hidden.png while completed action items are listed, visible.png while hidden, re-pointed by `done_button_sync()` from `refresh_notes` so the Settings checkbox for the same `show_done_actions` key keeps it honest; its View-menu twin is the sidebar item's two-item device, "Hide Completed" on `app.done-hide` / "Show Completed" on `app.done-show`, `done_menu_sync()` enabling the one that names what a click will do; every route changes the key through `done_set_shown()`) flips what the Action Items view lists; the List/Grid toggle pictures the view a click switches TO rather than the one on screen — grid.png while the list is up, list.png while the grid is, re-pointed by `view_button_sync()` off the stack's own `notify::visible-child-name` (NOT from the five places that set the child, so a sixth cannot skip it) and synced once after `show_all` because the toolbar is built after the stack; `view_shows_grid()` is THE one reading of the mode, shared by that icon and by the click, so the picture cannot promise a switch the click will not make, and it answers for the THIRD stack child too — in Action Items, neither list nor grid is up, so it reads `grid_pref`, the mode the pane will come back to.  `on_app_tool_item_set_icon()` is the re-pointing call, sharing `tool_icon_widget()` with `on_app_tool_item_new` so a built button and a re-pointed one cannot disagree about the fallback glyph; the single view.png it used until 2026-09-12 is now the sidebar
 button's icons/sidebar.png.  Its Quicknote button (archive.png) calls `on_library_quicknote()` — a note in the ROOT folder whatever is selected, editor to the front; THE one implementation, also behind the `notes quicknote` CLI/IPC command \| Search …; the About button that used to sit at the far right, with its expanding spacer and per-style child swap, was removed 2026-08 — About lives in the File menu only), menubar (File/View — ONE separator in each: File is New Note / New Folder / the two Export All items, rule, then Open Database File… / Settings / About / Quit, i.e. what acts on the NOTES above and what is about the app or its file below; View is Notes as List / Notes as Grid / Show-Hide Sidebar / Hide-Show Completed, rule, then Media… / Search Notes…, i.e. what the WINDOW looks like above and the two window-openers below.  A rule between every pair of items divides nothing — that is what both menus had until 2026-09-12, matched to the sister Tasks app.  The sidebar item is an ACTION whose LABEL names what a click does: TWO model items, "Hide Sidebar" on `app.sidebar-hide` and "Show Sidebar" on `app.sidebar-show`, each `hidden-when=action-disabled`, and `sidebar_menu_sync()` enables exactly one from the pane's LIVE visibility — synced once after `show_all`, since nothing is visible before it.  Never by editing the model: see "Actions, menus and shortcuts".  Those two, the toolbar's Folders button (`app.toggle-sidebar`) and everything else that changes the pane route through `sidebar_set_visible()`, THE one place that does, so the label cannot drift from the pane), the menubar MODEL (`build_menubar`, `GMenu` over `app.` actions; `on_library_apply_native_menubar` chooses between `gtk_application_set_menubar` — native on macOS, drawn by the GtkApplicationWindow on Linux — and an in-window `gtk_menu_bar_new_from_model` for the setting's OFF state, macOS only), the action tables (`APP_COMMANDS`/`WIN_COMMANDS`: name → `void (*)(OnLibrary *)`, installed by `library_install_actions`), bottom status bar (left: selection path; selecting notes posts a transient "N files selected" event from both views' selection signals; right: latest event — post from anywhere via `on_app_status()`, printf-style, no-op until the library installs `app->notify_status`) |
@@ -87,7 +87,7 @@ button's icons/sidebar.png.  Its Quicknote button (archive.png) calls `on_librar
 | `src/settings_window.[ch]` | List density, sidebar counts, code copy/line-number toggles, first-line-H1, image viewer, native macOS menubar (macOS-only checkbox), and the Database section — a health PLATE (a bordered frame over a GtkGrid, so the five values share one x) saying Health / Current database / Data / Size on disk / SHA-256, with ONE `Update` button under the whole plate because it renews every line of it, over the rotating-backup controls.  There is NO control for WHERE the database lives and there must not be one again: that is File → Open Database File… only (see the Database section's own comment) |
 | `src/backup.[ch]` | Optional rotating database backups, OFF by default: a worker thread copies the live DB through `on_db_backup_to()`, VERIFIES the copy with `on_db_verify_file()`, discards it if it fails, and only THEN prunes beyond `backup_keep`.  A pass whose source is unchanged since the last one (the `backup_source_stamp` ini key: destination + source path + size:mtime) writes nothing.  The timer carries the db path, so `on_backup_auto_start()` must be re-called after File → Open Database File… |
 | `src/export.[ch]` | HTML + Markdown export (all notes mirroring folder tree, or single note), walking the note's OnDocument block by block (2026-09; the old buffer walk read a line's style off its first character, which for a LOADED task line was the untagged checkbox anchor — so every exported/`note cat --md` task line came out as a plain paragraph with a leading space.  Fixed by the move; 35 s → 2 s for the 700 MB library because nothing is decoded) |
-| `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path; TEXT takes the same operators as the search window — ANDed words, "quoted phrases", -exclusions — so quote the whole query for the shell, and an empty one exits 2), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/show/done/undone/due/text` (items addressed `NOTEID:ORD` **or** by stable `UID` — `action_token_parse` tells them apart BY SHAPE, a ':' means the positional form, a bare decimal means a uid; `action list --uid` prepends the uid as a further FIRST column, leaving the default output byte-identical because text must stay last, and an unknown flag exits 1 so a caller can probe an older build; done/due/text rewrite the '!' line via the on_editor_action_* helpers — headless OnApp has editors==NULL so they take the document path (`on_document_action_*`).  `action show UID` prints ONE item as the same UID-first record `list --uid` emits (`action_print_line` is the one definition of that layout) — the O(1) read-back a mirror needs for a pinned item, instead of listing and diffing the whole table.  `action text UID TEXT` RENAMES an item: `action_text_ord` replaces only the span `on_action_split_due` marks off, so the '!' prefix, the line's own spacing and any trailing `due <date>` survive, and the new run is given the old text's strike state explicitly (a plain insert would inherit it from the preceding character).  The uid survives a rename on BOTH paths — the editor's identity mark sits at the LINE START, outside the replaced span, so `action_marks_prune` leaves it alone and the hint pass re-matches; headless, the ord pass does, since a rename moves no line.  A blank or newline-containing text is REFUSED (either would stop the line being that item and retire its uid), and a new text ending in a parseable `due X` sets the due date, exactly as typing it in the editor would); `note new/append/set` and `action text` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`).  **GUI parity (2026-09)**: `folder info/rename/move/emoji/ai-mode/sort/restore`, `note info/pin/unpin`, `note list --recent|--pinned`, `trash list`/`trash empty --yes`, `stats` — all thin wrappers over db functions the GUI already used.  Two things about them: `folder restore` takes an ID, not a path, because `on_db_folder_list` filters trashed rows so a trashed folder's path no longer resolves (`trash list` is where the id comes from); and `trash empty` REFUSES without `--yes`, being the one CLI command with no undo.  `folder sort` and the GUI's Sort Subfolders Alphabetically are now ONE function, `on_db_folder_sort_children`.  **Images out**: `note images ID` lists ord/bytes/WxH (dimensions from each PNG's header via `on_png_probe_size` — nothing is decoded) and `note image ID N FILE` writes one out through `on_note_image_nth_png`, i.e. the stored bytes VERBATIM, never decode+re-encode.  N is **1-based** on both, matching the `![image N]()` placeholders `note cat --md` writes.  **`--json`** on every record-printing command (note list/info/cat/tags/images, folder list/info, tag list/notes, action list/show, search, trash list, stats): one array, or one object for the single-record commands.  The reason is escaping — a title or action text may contain a tab, which silently shifts the plain form's columns.  `cli_json_take` strips the flag from a COPY of argv before dispatch and only for commands `cli_json_capable` names, so a note whose content is literally `--json` still survives `note new`; it ASSIGNS `cli_json` every dispatch, since inside a GUI instance serving remote calls the static outlives the command.  JSON records carry more than the plain ones (path, folder_id, created, pinned; the action uid always, and the action `context` — the name of the note's folder off the `action_items_ctx` view, so `list` and `show` agree) — a JSON note listing must therefore always be given the folder-path map, which is what `cli_paths_for` is for.  `action list --context NAME` keeps the items whose note sits in a folder of that name (case-insensitive, `''` = the root); the plain form never prints the context, so the filter is the only way to ask for it there |
+| `src/cli.[ch]` | Headless subcommand interface (runs before GTK in main; tags/folders/notes CRUD, backup, export); folders by path, notes by id. Agent-ready surface: `note cat [--md]` (plain text from the body_text cache / Markdown via `on_export_note_markdown`, images as `![image N]()` placeholders), `note append`/`note set` (plain text in; `set` REPLACES content and clears the tag links), `search TEXT [--regex]` (case-insensitive titles+bodies via `on_db_note_body_map`, prints id/modified/path; TEXT takes the same operators as the search window — ANDed words, "quoted phrases", -exclusions — so quote the whole query for the shell, and an empty one exits 2), `note tags`/`tag`/`untag` + `tag notes` (`note tag` appends the literal `#name` span under the on-tag text tag and rewrites note_tags from the buffer, so GUI saves keep it), `note restore`, `action list/show/done/undone/due/text` (items addressed `NOTEID:ORD` **or** by stable `UID` — `action_token_parse` tells them apart BY SHAPE, a ':' means the positional form, a bare decimal means a uid; `action list --uid` prepends the uid as a further FIRST column, leaving the default output byte-identical because text must stay last, and an unknown flag exits 1 so a caller can probe an older build; done/due/text write the TASK ROW then re-render the '!' line via the uid-keyed on_editor_action_* helpers — `on_cli_dispatch(OnApp *)` carries the REAL app when a running instance serves the command over the socket (ipc.c), so the note's open editor is what gets rewritten; headless, the stack OnApp has editors==NULL and the document path (`on_document_action_*`) runs.  `action show UID` prints ONE item as the same UID-first record `list --uid` emits (`action_print_line` is the one definition of that layout) — the O(1) read-back a mirror needs for a pinned item, instead of listing and diffing the whole table.  `action text UID TEXT` RENAMES an item: `on_document_action_text` replaces only the span `on_action_split_due` marks off, so the '!' prefix, the line's own spacing and any trailing `due <date>` survive, and the new run is given the old text's strike state explicitly (a plain insert would inherit it from the preceding character).  The uid is the line's, in the blob; a rename does not touch it.  A blank or newline-containing text is REFUSED (either would stop the line being that item and retire its uid), and a new text ending in a parseable `due X` sets the due date, exactly as typing it in the editor would); `note new/append/set` and `action text` all accept `-` = stdin (shipped over the socket by `on_cli_command_reads_stdin`).  **GUI parity (2026-09)**: `folder info/rename/move/emoji/ai-mode/sort/restore`, `note info/pin/unpin`, `note list --recent|--pinned`, `trash list`/`trash empty --yes`, `stats` — all thin wrappers over db functions the GUI already used.  Two things about them: `folder restore` takes an ID, not a path, because `on_db_folder_list` filters trashed rows so a trashed folder's path no longer resolves (`trash list` is where the id comes from); and `trash empty` REFUSES without `--yes`, being the one CLI command with no undo.  `folder sort` and the GUI's Sort Subfolders Alphabetically are now ONE function, `on_db_folder_sort_children`.  **Images out**: `note images ID` lists ord/bytes/WxH (dimensions from each PNG's header via `on_png_probe_size` — nothing is decoded) and `note image ID N FILE` writes one out through `on_note_image_nth_png`, i.e. the stored bytes VERBATIM, never decode+re-encode.  N is **1-based** on both, matching the `![image N]()` placeholders `note cat --md` writes.  **`--json`** on every record-printing command (note list/info/cat/tags/images, folder list/info, tag list/notes, action list/show, search, trash list, stats): one array, or one object for the single-record commands.  The reason is escaping — a title or action text may contain a tab, which silently shifts the plain form's columns.  `cli_json_take` strips the flag from a COPY of argv before dispatch and only for commands `cli_json_capable` names, so a note whose content is literally `--json` still survives `note new`; it ASSIGNS `cli_json` every dispatch, since inside a GUI instance serving remote calls the static outlives the command.  JSON records carry more than the plain ones (path, folder_id, created, pinned; the action uid always, and the action `context` — the name of the note's folder off the `action_items_ctx` view, so `list` and `show` agree) — a JSON note listing must therefore always be given the folder-path map, which is what `cli_paths_for` is for.  `action list --context NAME` keeps the items whose note sits in a folder of that name (case-insensitive, `''` = the root); the plain form never prints the context, so the filter is the only way to ask for it there |
 | `skills/notes/SKILL.md` | **The agent-facing manual for the CLI** — a Claude Code skill (symlinked as `~/.claude/skills/notes`) so any session can answer "what am I tracking for Stride?" or run a bulk clean-up like stripping hand-typed context prefixes.  The CLI IS the agent surface: it names the two binaries (real vs `dev/` sandbox), the data model in five lines, every read with `--json`, every write with its rules — back up before a bulk change, show the plan and get a yes, `action text` keeps `!`/done/due by itself, never `note set` on an existing note, never `trash empty` — and the prefix-stripping recipe with its traps (a context merely mentioned, a DIFFERENT context's name, a root note's `""`).  Measured end to end on the sandbox 2026-09-18.  When a CLI command's behaviour changes, this file changes with it |
 | `icons/` | custom PNG toolbar icons + `composition.png` app logo (window icon + About dialog, and the .icns/Linux hicolor packaging icon), loaded by basename; see icons/README.md |
 | `tools/import-apple-notes.sh` | Apple Notes migration (AppleScript export → CLI import; keeps modification dates) |
@@ -180,31 +180,38 @@ handlers that duplicate a menu item.
   same way the pre-1.4 `notes.db` shim went in 2026-07.  Consequence to
   know before opening an old backup: a `records.db` is no longer picked
   up — rename the file to `notes.db` by hand.
-- Note content: **BNBF v5** blobs (magic `BNBF`; the pre-rename `ONBF`
+- Note content: **BNBF v6** blobs (magic `BNBF`; the pre-rename `ONBF`
   magic was retired 2026-07 after an offline scan found zero such blobs)
-  (see header comment in `serialize.h`).
-  TEXT records = styled runs (flag bits ↔ named GtkTextTags via one
-  shared table); IMAGE = full-resolution PNG + display width; TABLE;
-  CHECK. All older versions (1–4) still parse.
-- **A blob can be rewritten WITHOUT deserializing it**, and a format
-  migration MUST be written that way: a full deserialize decodes every PNG
-  in the database (seconds per hundred MB, and the DB is ~600 MB).  Walk
-  records like `on_note_extract_text` does, copy image payloads verbatim,
-  change only the flag words you mean to, preserve the blob's own version
-  field, and return "nothing changed" so untouched notes are never
-  rewritten.  Write back through a content-ONLY UPDATE — a formatting
-  cleanup must not bump `updated_at`, or the whole library reorders
-  itself.  The 2026-08 first-line-H1 strip
-  (`on_note_strip_first_line_h1` + `on_app_first_line_h1_strip` +
-  `on_db_note_set_content`) was the worked example; all three were removed
-  after it ran on the sole user's database and found zero notes to change
-  (verified independently: 0 of 1296 notes carried any paragraph style on
-  line 0).  `git log` has it if the shape is ever needed again.
-- **`PRAGMA user_version` 4 IS CONSUMED** even though nothing claims it any
-  more: the removed H1 strip stamped it, so the user's database sits at 4
-  while a freshly created one stops at 3.  The next one-time migration must
-  therefore be **5 or higher** — numbering it 4 would silently skip the one
-  database that matters.
+  (see header comment in `bnbf.h`).
+  TEXT records = styled runs (flag bits); IMAGE = full-resolution PNG +
+  display width; TABLE; CHECK; ACTION (v6, 2026-09-18) = the `[i64 uid]`
+  of the '!' action line it precedes — written only for a REAL action
+  line, invisible to `note cat`, exports, search and previews, cleared
+  on copy.  All older versions (1–5) still parse; **a build before v6
+  refuses a v6 blob** ("unsupported BNBF version"), so the installed app
+  must be the new build before the live database is migrated.
+- **A format migration goes THROUGH THE MODEL** (`on_document_from_bnbf`
+  → change blocks → `on_document_to_bnbf`): the loader decodes no image
+  (`OnBlock.png` is the verbatim bytes; 117–144 ms for every note of the
+  1354-note database), and the loader IS the line classifier — a
+  byte-level record walker has to reproduce it (first piece's para bit,
+  CHECK-started lines, `\r`/U+2029 breaks, `split_check`/`split_table`)
+  and the one that did diverged (the bullet-`!` bug, serialize row).
+  Keep the "change only what you mean" property with a byte-identity
+  guard: a blob the model gives back byte for byte (1312 of 1352 at the
+  v6 bump) gets exactly its bytes plus the change; one the loader
+  normalizes gets the bytes its next save would write anyway — count
+  and log those.  Skip notes the change does not touch, and write back
+  through a content-ONLY UPDATE: a migration must not bump `updated_at`,
+  or the whole library reorders itself.  `migrate_v5.[ch]` (the ACTION
+  record + tasks, 2026-09-18) is the worked example — it, like the
+  2026-08 H1 strip before it, is REMOVED once the one live database has
+  crossed; `git log` has both.  (The rule used to say "never deserialize
+  in a migration": that dated from the GtkTextBuffer/pixbuf era, when a
+  deserialize decoded every PNG.)
+- **`PRAGMA user_version` 2, 3, 4 and 5 ARE CONSUMED**: 2/3 by the old
+  action_items backfills, 4 by the removed H1 strip, 5 by the tasks
+  migration.  The next one-time migration must be **6 or higher**.
 - **Task checkboxes are CHECK blocks** (`ON_BLOCK_CHECK`, `checked` on
   the block; BNBF v5 CHECK records, re-emitted by the saver as the CHECK
   record + " " + the text, exactly as the GtkTextBuffer era wrote them).
@@ -397,23 +404,55 @@ handlers that duplicate a menu item.
   in trash views the Delete paths turn permanent (with confirm) and the
   note menu becomes Open/Restore/Delete Permanently; GUI note/folder
   deletes elsewhere just trash with a status message, no dialog.
-- **Action items are '!' lines**: a line whose FIRST character is '!'
-  (outside code blocks; anchors occupy the first slot like a character)
-  is an action item — text = rest of line trimmed, DONE = the whole rest
-  struck through (ON_FMT_STRIKE, which serializes; that is the persisted
-  state).  The one definition lives in `on_note_extract_actions`
-  (serialize.c, a cheap record walk like body_text extraction).  The
-  editor tints action lines blue via the derived, editor-only
-  `on-action` tag (priority 0 so #tags keep their orange; re-derived on
-  insert/delete/paragraph-format/load/undo like the emoji padding) —
-  nothing about "actionness" is stored in BNBF.  The `action_items`
-  table (note_id/ord/text/done/due/uid, ON DELETE CASCADE) is a queryable
-  mirror like note_tags: editor_save rewrites it only when the
-  extracted set differs from `ed->last_actions` (full library notify
-  then, light otherwise); CLI saves sync unconditionally; a one-time
-  backfill for pre-feature notes is gated by `PRAGMA user_version`
-  (`on_app_actions_backfill`, run after every long-lived `on_db_open` —
-  GUI start, CLI, db switch).  Library: "Action Items" sidebar
+- **An action item IS A TASK ROW; the '!' line renders it** (2026-09-18,
+  preparation for merging this database with the sister Tasks app's).
+  A PARA/H1/H2 line whose FIRST character is '!' with a real rest
+  (`block_is_real_action` in document.c — bare "!" and "! due X" are no
+  item; bullet/number/check/code lines never are) is the RENDERING of a
+  task: `! <title>[ due YYYY-MM-DD]`, struck through when the task's
+  status is DONE.  The tables are the Tasks app's own — `tasks`,
+  `lists`, `list_groups`, its DDL VERBATIM (`TASKS_SCHEMA_FMT` in db.c,
+  the three DEFAULTs from `ON_TASK_*_DEFAULT` macros; status NEW 0 /
+  IN_PROGRESS 1 / DONE 2) — plus `note_task(uid, task_id, note_id, ord)`
+  linking a line to its task by the uid the line carries in the blob (the
+  ACTION record).  Every note-born task goes in ONE managed list,
+  "Action Items" ❗ (`ON_TASK_LIST_NAME/EMOJI`: what Tasks' own Notes
+  plugin names its list, so the merge finds one list, not two), created
+  with the first task.  Notes writes a task with ONE statement
+  (`task_apply`: title, due, status folded the way Tasks'
+  `task_db_task_apply_done_source` folds a done-only source — done → 2,
+  undone → 1 if it was 2 else unchanged; `completed_at` stamped on
+  entering 2, never cleared; `updated_at`; `deleted` cleared) and never
+  touches a Tasks-only column (notes body, pinned, priority, position,
+  due_time, recur_*).  THE save is `on_note_document_save` (serialize.c)
+  — editor autosave, CLI content commands and headless action rewrites
+  all go through it: (1) every real action line gets its uid BEFORE the
+  bytes are written (a line with none is allocated one from
+  `action_uid_seq`, a uid the document carries twice — a pasted copy
+  that smuggled its record — keeps it on the first line); (2) blob,
+  title, body text via `on_db_note_save`; (3) `on_db_note_save_actions`:
+  create / update-where-different / re-ord, and TOMBSTONE (`deleted=1`)
+  every task of the note whose uid is no longer among the lines.  Undo
+  restores a block WITH its uid, and the next save's differ test sees
+  `deleted` and un-tombstones.  The editor syncs only when the view's
+  live actions-modified flag says an action line was touched; the
+  `changed` out-param (any task row written) picks the full library
+  notify over the light one.  **Row first, then the line**: the Action
+  Items view's checkbox and due dialog and the CLI's
+  `action done/undone/due/text` go through `on_editor_action_set_*`
+  (uid-keyed) → `on_db_action_set` writes the task → the line is
+  re-rendered at `on_document_action_ord(doc, uid)` — on the live view
+  when the note is open (autosave follows; its sync finds the row equal),
+  else on the document with an immediate save.  `on_note_document_reconcile`
+  runs on every editor load and before every headless rewrite: a task
+  changed while the note was closed (CLI; after the merge, the Tasks
+  app) re-renders its line.  Hard deletes (note, folder cascade, Trash
+  emptied) tombstone through the `note_task_tombstone` BEFORE DELETE
+  trigger — measured to fire under `ON DELETE CASCADE` — so no delete
+  path in C remembers it; trash is the note's `visible`, a task's
+  deletion is absence from the view.  The editor tints action lines blue
+  via a derived, editor-only look — nothing about "actionness" is stored
+  beyond the record.  Library: "Action Items" sidebar
   row directly under All Notes, ABOVE the folder tree (visible while
   items exist; optional count = OPEN items) shows a third notes-pane
   stack child ("actions"): untitled checkbox column + "Context" + "Action"
@@ -425,28 +464,25 @@ handlers that duplicate a menu item.
   through a recursive CTE, which named "Salt" for that note; the
   immediate folder is the container, and needs no tree walk.)  It is
   DERIVED, never stored: the **`action_items_ctx` VIEW** (db.c) joins
-  every action item to its note's placement — `folder_id` (the stable
-  key for a context across renames), `updated_at`, `visible` (the
-  NOTE_VISIBLE_SQL verdict, so a reader needs no Trash knowledge) and
-  `context` (the folder's name).
-  `on_db_action_list` reads off it and fills `OnActionItem.context`; a
-  stored column would go stale the moment a note moved or a folder was
-  renamed, and with a second writer on the file nobody could trust it.
-  The view IS the contract the sister Tasks app will read directly once
-  the two databases merge (replacing its CLI mirror and its text-pattern
-  filing rules with a `folder_id` → list mapping on ITS side), which is
-  why its columns are spelled out rather than `a.*`, and why views are
-  created by `db_view_ensure`, not `CREATE VIEW IF NOT EXISTS`: the
-  stored definition is compared against the code's and recreated only on
-  a mismatch (SQLite keeps a view's CREATE text verbatim), so a changed
+  every LIVE task (`t.deleted = 0`) to its note's placement — `note_id`,
+  `ord`, `text` (= title), `done` (= status 2), `due`, `uid`, then
+  `folder_id` (the stable key for a context across renames),
+  `updated_at`, `visible` (the NOTE_VISIBLE_SQL verdict, so a reader
+  needs no Trash knowledge) and `context` (the folder's name) — the SAME
+  columns the old mirror had, so every listing and the CLI's output are
+  unchanged.  `on_db_action_list`/`_for_note`/`_get`/`_find_uid`/
+  `_uid_at`/`_counts` all read off it; a stored context would go stale
+  the moment a note moved or a folder was renamed, and with a second
+  writer on the file nobody could trust it.  The view IS the contract
+  the sister Tasks app will read directly once the two databases merge
+  (replacing its CLI mirror and its text-pattern filing rules with a
+  `folder_id` → list mapping on ITS side), which is why its columns are
+  spelled out rather than `t.*`, and why views AND the trigger are
+  created by `db_ensure`, not `CREATE … IF NOT EXISTS`: the stored
+  definition is compared against the code's and recreated only on a
+  mismatch (SQLite keeps the CREATE text verbatim), so a changed
   definition can never silently outlive the code in the file, and a
-  current database is not written to on open.  The per-note listing and
-  the extractor leave `context` NULL.  Toggling
-  writes the db row, then `on_editor_action_set_done` strikes/un-strikes
-  the '!' line's text — in the live buffer + autosave when the note is
-  open, on the note's OnDocument (`on_document_action_strike/due/text`)
-  with an immediate save otherwise (ord = position among the note's
-  REAL action lines; bare "!" lines don't count).  DUE DATES live
+  current database is not written to on open.  DUE DATES live
   in the line text as a trailing "due <date>" — ISO "YYYY-MM-DD" is the
   written form, the parser (`on_action_split_due`, shared by extractor
   and editor like on_list_prefix_chars) also reads "M/D/YY[YY]"; the
@@ -470,42 +506,34 @@ handlers that duplicate a menu item.
   no-due rows must reset "foreground-set" (shared renderer).
   `due` is in the CREATE TABLE (so new databases have it immediately)
   and a guarded ALTER migration backfills existing databases on open.
-- **An action item's STABLE identity is `action_items.uid`** — `ord` is a
+- **An action item's STABLE identity is its `uid`, and the uid lives IN
+  THE BLOB** (the ACTION record before the line; `OnBlock.action_uid` in
+  memory, serialized while the block is a real action line).  `ord` is a
   POSITION and shifts whenever a '!' line is added or removed, so it can
-  never be a reference an external mirror (the Lists app) holds onto.
-  The uid is assigned once, invisible to the user, and NOT stored in the
-  note text (that was considered and rejected: a token in the prose
-  leaks into `note cat`, both exports, the body_text search cache and the
-  list previews, duplicates itself on copy/paste, and is deletable by
-  ordinary editing).  Since `on_db_note_set_actions` rebuilds a note's
-  rows DELETE-then-INSERT, an AUTOINCREMENT column would be reissued on
-  every save; instead the OLD rows are read first and matched against the
-  new set in four passes, strongest evidence first — identical text (an
-  item that only moved), then the live editor's per-line mark hint (the
-  ONLY signal that survives a reword), then the same ord (the headless
-  reword), then a fresh id from the `action_uid_seq` one-row high-water
-  mark (only ever incremented, so a retired uid is never handed out
-  again).  Each pass completes before the next, so a strong match cannot
-  lose its row to a positional guess made earlier in the list.  The
-  editor's hint is the BLOCK: every '!' block carries its item's uid
-  (`OnBlock.action_uid`, seeded at load by `on_note_view_action_marks_sync`,
-  re-set after any save that rewrote the table), and a block struct
-  survives every edit of its text — a rewording keeps its identity with
-  nothing to protect (the GtkTextMark-and-prune machinery of the buffer
-  era is gone with the buffer).  Undo restores a removed block WITH its
-  uid; a cut-and-paste reorder makes a new block (uid 0) and is caught by
-  the text pass instead: the two signals cover each other's blind spot.
-  Migration: `uid` is in the CREATE TABLE plus a guarded ALTER,
-  and `on_app_action_uids_backfill` (user_version 3) fills existing rows.
-  That backfill ALSO re-runs whenever any row has uid 0 — an older build
-  writing to an already-migrated database inserts without the column, and
-  the version stamp alone would leave those rows unidentified forever;
-  the probe is an indexed existence check, so the normal case is free.
-  NOTE the index on `action_items(uid)` is created AFTER the ALTER
-  migrations (with the Trash view), never in the schema string: indexing
-  a column that does not exist yet fails the whole batch, which makes
-  `on_db_open` return NULL and the app refuse to start on every existing
-  database.
+  never be a reference an external mirror holds onto — `note_task.uid`
+  is what Tasks' `notes_task.uid` keys on, which is what will let the
+  merge dedupe.  Why the uid and not `tasks.id`: both databases' `tasks.id`
+  start at 1 and WILL collide at merge; the merge renumbers one side by
+  rewriting `note_task` alone, never a blob.  A uid is allocated once
+  from the `action_uid_seq` high-water mark (only ever incremented, so a
+  retired uid is never handed out again; `on_db_action_uid_alloc`, its
+  own IMMEDIATE transaction unless the caller has one open) — at the
+  first SAVE of the line, before the bytes are written.  Until 2026-09-18
+  the uid was NOT in the blob and every save re-attached it by a
+  four-pass heuristic (identical text → live-editor block hint → same
+  ord → fresh); an id in the note TEXT had been rejected because a token
+  in the prose leaks into `note cat`, exports, search and previews and
+  duplicates on copy/paste — a RECORD does none of that: it is not text,
+  `on_document_copy_range` / `insert_fragment` clear it on copies, the
+  loader drops a repeated uid (`action_dup`) and keeps a stray one off the
+  saved bytes (`action_stray`), and the save re-allocates a duplicate.  A
+  block struct survives every edit of its text, so a rewording keeps its
+  identity; Enter at column 0 of an item moves the uid down with the text
+  (`OP_SPLIT`), Backspace there gives it back (`OP_JOIN`); undo restores
+  a removed block WITH its uid.  `on_document_action_ord(doc, uid)` is
+  THE uid → line resolution — unsaved edits included — that every writer
+  uses; the CLI's positional `NOTEID:ORD` resolves to a uid first
+  (`on_db_action_uid_at`).
   `grid_pref` restores list/grid when leaving the view.
 - **`on_db_backup_to()`** (db.c) uses SQLite's online backup API on the
   live DB.  It is THE copy path, shared by the CLI's `notes backup
@@ -1127,7 +1155,8 @@ then change the files in the "Change" column.
 | Make a CLI command print JSON too | `cli.c` (`json_str`/`json_time`/`json_array_*`, `print_note_line`) | `cli.c` (add the branch + the name to `cli_json_capable`) |
 | Add a new toolbar button | `app.c` (`on_app_tool_item_new`), target window .c | `app.h` (if new kind), target window .c |
 | Add a new ini setting | `app.h` (`OnApp` struct + block comment), `main.c` (bool loading block) | `app.h`, `main.c`, `settings_window.c` |
-| Add a new DB column | `db.c` (schema + ALTER migration section around line 223) | `db.h`, `db.c` |
+| Add a new DB column | `db.c` (schema + ALTER migration section in `on_db_open`) | `db.h`, `db.c` |
+| Change what a '!' line means, or how a task row is written | `serialize.c` (`on_note_document_save`, `on_note_document_reconcile`), `db.c` (`task_apply`, `on_db_note_save_actions`, the view) | those, and `document.c` if the line's rendering changes |
 | Modify the BNBF format | `bnbf.h` (format spec), `bnbf.c` | `bnbf.[ch]` (bump `ON_BNBF_VERSION`, add the `ON_REC_*`), `document.c` (loader + saver) |
 | Change editor window layout | `editor_window.c` (`editor_build_layout`, `editor_build_view`) | `editor_window.c` |
 | Change how a note is EDITED (keys, selection, clipboard, tags, Enter/Backspace policy) | `note_view.h` (the API and signals), `note_view.c` | `note_view.c` (+ `note_view.h` for a new API call), then `tests/ui/*.txt` |

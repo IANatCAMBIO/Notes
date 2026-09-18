@@ -35,14 +35,16 @@ window.  You do not need to ask the user to close it.
   Notes at the root have context `""`.
 - **Notes** are rich text; the first line is the title.  `note cat`
   gives plain text, `note cat --md` gives Markdown with formatting.
-- **Action items** are lines in a note whose first character is `!`.
-  Text = the rest of the line; **done** = struck through in the note;
-  **due** = a trailing `due YYYY-MM-DD` on the line.  They are mirrored
-  into a table you query — but the note line is the source of truth, so
-  every action write is a rewrite of that line.
-- **`uid`** is an item's stable identity: it survives edits, reordering
-  and renumbering.  `NOTEID:ORD` is a position and does not.  Address
-  items by uid.
+- **Action items** are TASK ROWS (the same `tasks` table the Tasks app
+  uses), rendered in the note as a line whose first character is `!`:
+  `! <title>[ due YYYY-MM-DD]`, struck through when done.  Typing such a
+  line creates the task on save; the task is the source of truth — an
+  `action done/due/text` writes the row, then the note line is re-rendered
+  from it.  Text = title; **done** = status DONE; **due** = the trailing
+  `due YYYY-MM-DD`.
+- **`uid`** is an item's stable identity: the note line carries it in the
+  note file, so it survives edits, reordering and renumbering.
+  `NOTEID:ORD` is a position and does not.  Address items by uid.
 - **Trash** is soft: deleted notes/folders are hidden, restorable, and
   excluded from every listing unless a command says otherwise.
 

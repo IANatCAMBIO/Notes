@@ -212,13 +212,21 @@ lays the block out, and the block is the only thing invalidated.
 ### Action-item identity
 
 `OnBlock.action_uid` replaces the per-line `GtkTextMark` + prune-in-
-delete-range machinery.  A block struct survives every edit to its text,
-so a rewording keeps its uid with no mark to protect; the four-pass match
-in `on_db_note_set_actions` (text → hint → ord → fresh) is unchanged, it
-just gets its hint from the block.  Cut-and-paste of a line still makes a
-new block (uid 0) and is still caught by the text pass.  Undo restores
-the block WITH its uid (the inverse of `block_remove` re-inserts the same
-struct).
+delete-range machinery, and since 2026-09-18 it is SERIALIZED: the BNBF
+ACTION record before a real action line's text (`block_is_real_action`,
+the one test the listing, the saver and the loader share).  A block
+struct survives every edit to its text, so a rewording keeps its uid;
+the loader assigns the record's uid to its line, drops a repeated uid
+(`action_dup`) and counts a stray one (`action_stray`, kept on the block,
+not written back).  A copy of a line carries no record
+(`on_document_copy_range` / `insert_fragment` clear the uid), so a paste
+makes a new item — the save allocates a uid for any real action line
+without one, before the bytes are written.  Enter at column 0 of an item
+moves the uid down with the text (`OP_SPLIT`), the join that undoes it
+gives it back (`OP_JOIN`).  Undo restores a removed block WITH its uid
+(the inverse of `block_remove` re-inserts the same struct); the save
+then finds the task tombstoned and revives it.  `on_document_action_ord`
+resolves a uid to its line, unsaved edits included.
 
 ### Operations and undo
 
@@ -433,7 +441,7 @@ one to one; the differences are all deletions:
 | `image_count/nth/reveal`                     | same; ordinal = image blocks + inline objects in document order, which is IMAGE-record order (the media browser's addressing scheme, unchanged) |
 | `settings_changed`                           | same; relayout                                            |
 | `take_tags_modified` / `take_actions_modified` | same, set by the ops that can change them (a run gaining or losing ON_FMT_TAG; a '!' or a split/join/remove at a block start) |
-| `action_marks_hint` / `action_marks_sync`    | `on_document_action_uids_get/set` — read/write `OnBlock.action_uid`; no marks |
+| `action_marks_hint` / `action_marks_sync`    | gone: the uid is in the blob (ACTION record) and on `OnBlock.action_uid`; `on_document_action_ord` resolves it |
 | `on_note_buffer_action_strike/due/text` on a bare GtkTextBuffer | `on_document_action_strike/due/text` on a bare document — the CLI's headless path becomes blob → document → op → blob with no GTK, no offscreen buffer, no `on_buffer_ensure_tags` |
 | signals `edited`, `inline-flags-changed`, `image-activated` | same                                                      |
 | signal `cell-created`                        | gone (nothing to gate)                                    |

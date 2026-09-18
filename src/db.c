@@ -71,25 +71,62 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);";
 
 /* ---------------------------------------------------------------------------
- * TRASH_VIEW_SQL — the recursive closure of the Trash: every folder that
- * is flagged trashed OR sits anywhere below a flagged folder.  Created
- * AFTER the column migrations in on_db_open (it references
- * folders.trashed).  Notes inside these folders are implicitly trashed
- * without carrying their own flag.
+ * The views.  Each is a NAME and a BODY (the SELECT after "AS"), created by
+ * db_view_ensure() in on_db_open AFTER the column migrations, since they
+ * reference migrated columns (folders.trashed, action_items.uid).
  * ------------------------------------------------------------------------- */
-static const char *TRASH_VIEW_SQL =
-    "CREATE VIEW IF NOT EXISTS trash_folder_ids AS "
-    "WITH RECURSIVE tf(id) AS ("
-    "  SELECT id FROM folders WHERE trashed=1"
-    "  UNION"
-    "  SELECT f.id FROM folders f JOIN tf ON f.parent_id = tf.id"
-    ") SELECT id FROM tf;";
+
+/* trash_folder_ids — the recursive closure of the Trash: every folder that
+ * is flagged trashed OR sits anywhere below a flagged folder.  Notes inside
+ * these folders are implicitly trashed without carrying their own flag.    */
+#define TRASH_VIEW_NAME "trash_folder_ids"
+#define TRASH_VIEW_BODY \
+    "WITH RECURSIVE tf(id) AS (" \
+    "  SELECT id FROM folders WHERE trashed=1" \
+    "  UNION" \
+    "  SELECT f.id FROM folders f JOIN tf ON f.parent_id = tf.id" \
+    ") SELECT id FROM tf"
 
 /* WHERE fragment: a note is visible in normal (non-Trash) views — not
  * directly trashed and not inside a trashed folder's subtree.               */
 #define NOTE_VISIBLE_SQL \
     "trashed=0 AND (folder_id IS NULL OR " \
     "folder_id NOT IN (SELECT id FROM trash_folder_ids))"
+
+/* Column list shared by the action-item queries, matching
+ * run_action_query()'s expectations.                                        */
+#define ACTION_COLS "note_id, ord, text, done, due, uid"
+
+/* action_items_ctx — every action item WITH ITS NOTE'S PLACEMENT, the
+ * contract a sister app sharing this database reads (the Tasks app's
+ * planned direct read of the items, replacing its CLI mirror): ACTION_COLS,
+ * then
+ *   folder_id  — the owning note's folder (NULL at the root),
+ *   updated_at — the owning note's modification time,
+ *   visible    — NOTE_VISIBLE_SQL evaluated for the note, so a reader
+ *                needs no knowledge of the Trash rules,
+ *   context_id — the id of the TOP-LEVEL folder the note lives under (0
+ *                at the root): the stable key, surviving a rename,
+ *   context    — that folder's NAME ("" at the root), for display.
+ * `top` maps every folder to its root ancestor, the same recursive shape
+ * as the Trash view.  The context is DERIVED here, never stored: a stored
+ * copy would go stale the moment a note moved or a folder was renamed,
+ * and with two writers on one file nobody could trust it.  The columns
+ * are spelled out (not a.*) so the view's contract is exactly this list.  */
+#define ACTION_CTX_VIEW_NAME "action_items_ctx"
+#define ACTION_CTX_VIEW_BODY \
+    "WITH RECURSIVE top(id, root_id, root_name) AS (" \
+    "  SELECT id, id, name FROM folders WHERE parent_id IS NULL" \
+    "  UNION ALL" \
+    "  SELECT f.id, top.root_id, top.root_name" \
+    "    FROM folders f JOIN top ON f.parent_id = top.id" \
+    ") SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid," \
+    "  n.folder_id, n.updated_at," \
+    "  (n." NOTE_VISIBLE_SQL ") AS visible," \
+    "  COALESCE(t.root_id, 0) AS context_id," \
+    "  COALESCE(t.root_name, '') AS context" \
+    " FROM action_items a JOIN notes n ON n.id = a.note_id" \
+    " LEFT JOIN top t ON t.id = n.folder_id"
 
 /* Remove tags that no longer label any note; run (via exec_simple) after
  * anything that can delete note_tags rows, so the library's tag list
@@ -237,6 +274,46 @@ cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
 }
 
 /* ---------------------------------------------------------------------------
+ * db_view_ensure() — make view `name` exist with exactly `body` as its
+ * definition.  A view's definition is part of the contract other readers
+ * of the file rely on (action_items_ctx is read by a sister app), and
+ * CREATE VIEW IF NOT EXISTS would leave an OLD definition in place forever
+ * once the code's changed — silently, since the name still resolves.  So
+ * the stored text is compared against the expected one (SQLite keeps a
+ * view's CREATE statement verbatim in sqlite_master, minus IF NOT EXISTS)
+ * and the view is dropped and recreated only on a mismatch; a database
+ * whose views are current is not written to at all on open.
+ *   db   — open database.
+ *   name — the view's name.
+ *   body — the SELECT after "AS", byte for byte what the stored text
+ *          must hold.
+ * Returns TRUE when the view is in place.
+ * ------------------------------------------------------------------------- */
+static gboolean
+db_view_ensure(OnDatabase *db, const gchar *name, const gchar *body)
+{
+    gchar *create = g_strconcat("CREATE VIEW ", name, " AS ", body, NULL);
+    gboolean current = FALSE;        /* stored text == expected text?       */
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?");
+    if (stmt != NULL) {
+        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW)
+            current = g_strcmp0(
+                (const gchar *)sqlite3_column_text(stmt, 0), create) == 0;
+        sqlite3_finalize(stmt);
+    }
+    gboolean ok = TRUE;              /* the outcome                         */
+    if (!current) {
+        gchar *drop = g_strconcat("DROP VIEW IF EXISTS ", name, NULL);
+        ok = exec_simple(db, drop) && exec_simple(db, create);
+        g_free(drop);
+    }
+    g_free(create);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * query_int64() — first column of the first row of a scalar SELECT.
  *   db      — open database.
  *   sql     — single SELECT with at most one integer '?' placeholder.
@@ -338,9 +415,11 @@ on_db_open(const gchar *path_override)
                  "NOT NULL DEFAULT 0",
                  NULL, NULL, NULL);
 
-    /* The Trash view references the trashed columns, and the uid index the
-     * uid column, so both are created only after the migrations above.      */
-    if (!exec_simple(db, TRASH_VIEW_SQL)) {
+    /* The views reference migrated columns (and action_items_ctx the
+     * Trash view), and the uid index the uid column, so all are created
+     * only after the migrations above, in this order.                       */
+    if (!db_view_ensure(db, TRASH_VIEW_NAME, TRASH_VIEW_BODY) ||
+        !db_view_ensure(db, ACTION_CTX_VIEW_NAME, ACTION_CTX_VIEW_BODY)) {
         on_db_close(db);
         return NULL;
     }
@@ -1930,17 +2009,16 @@ on_db_action_uids_fill(OnDatabase *db)
     return ok;
 }
 
-/* Column list shared by the action-item queries, matching
- * run_action_query()'s expectations.                                        */
-#define ACTION_COLS "note_id, ord, text, done, due, uid"
-
-/* run_action_query() — collect every row of `stmt` (columns: ACTION_COLS)
+/* run_action_query() — collect every row of `stmt` (columns: ACTION_COLS,
+ * plus an optional seventh: the note's context, see on_db_action_list)
  * into a list of OnActionItem* and finalize it — the action-item counterpart
  * of run_meta_query()/run_tag_query().                                      */
 static GList *
 run_action_query(sqlite3_stmt *stmt)
 {
     GList *out = NULL;                   /* accumulated OnActionItem rows   */
+    gboolean with_context =              /* the cross-note listing only     */
+        sqlite3_column_count(stmt) > 6;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         OnActionItem *it = g_new0(OnActionItem, 1);
         it->note_id = sqlite3_column_int64(stmt, 0);
@@ -1949,6 +2027,9 @@ run_action_query(sqlite3_stmt *stmt)
         it->done    = sqlite3_column_int(stmt, 3) != 0;
         it->due     = sqlite3_column_int64(stmt, 4);
         it->uid     = sqlite3_column_int64(stmt, 5);
+        if (with_context)
+            it->context =
+                g_strdup((const gchar *)sqlite3_column_text(stmt, 6));
         out = g_list_prepend(out, it);
     }
     sqlite3_finalize(stmt);
@@ -1958,13 +2039,12 @@ run_action_query(sqlite3_stmt *stmt)
 GList *
 on_db_action_list(OnDatabase *db)
 {
-    /* The join needs the "a." qualifier, so the column list is spelled with
-     * the alias here; the order still matches ACTION_COLS.                  */
+    /* Off the action_items_ctx view, so the GUI's Context and a sister
+     * app's reading of it are one definition; the seventh column is the
+     * view's `context`.                                                     */
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT a.note_id, a.ord, a.text, a.done, a.due, a.uid "
-        "FROM action_items a JOIN notes n ON n.id = a.note_id "
-        "WHERE n." NOTE_VISIBLE_SQL " "
-        "ORDER BY n.updated_at DESC, a.ord");
+        "SELECT " ACTION_COLS ", context FROM " ACTION_CTX_VIEW_NAME " "
+        "WHERE visible ORDER BY updated_at DESC, ord");
     return (stmt != NULL) ? run_action_query(stmt) : NULL;
 }
 
@@ -2018,6 +2098,7 @@ free_action_item(gpointer data)
 {
     OnActionItem *it = data;
     g_free(it->text);
+    g_free(it->context);
     g_free(it);
 }
 

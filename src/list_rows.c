@@ -116,6 +116,7 @@ on_action_row_finalize(GObject *object)
     OnActionRow *r = ON_ACTION_ROW(object);
     g_free(r->text);
     g_free(r->due);
+    g_free(r->context);
     G_OBJECT_CLASS(on_action_row_parent_class)->finalize(object);
 }
 

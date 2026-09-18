@@ -408,8 +408,30 @@ handlers that duplicate a menu item.
   GUI start, CLI, db switch).  Library: "Action Items" sidebar
   row directly under All Notes, ABOVE the folder tree (visible while
   items exist; optional count = OPEN items) shows a third notes-pane
-  stack child ("actions"): untitled checkbox column + "Action" text
-  column (done rows struck).  Toggling
+  stack child ("actions"): untitled checkbox column + "Context" + "Action"
+  text column (done rows struck) + "Due Date".  CONTEXT is the name of
+  the TOP-LEVEL folder the owning note lives under, however deep the note
+  sits ("" at the root) — what used to be typed by hand as a prefix
+  ("Stride - rerun the reports").  It is DERIVED, never stored: the
+  **`action_items_ctx` VIEW** (db.c) joins every action item to its
+  note's placement — `folder_id`, `updated_at`, `visible` (the
+  NOTE_VISIBLE_SQL verdict, so a reader needs no Trash knowledge),
+  `context_id` (the root folder's id, the stable key across renames) and
+  `context` (its name) — with a recursive CTE mapping each folder to its
+  root ancestor, the same shape as `trash_folder_ids`.
+  `on_db_action_list` reads off it and fills `OnActionItem.context`; a
+  stored column would go stale the moment a note moved or a folder was
+  renamed, and with a second writer on the file nobody could trust it.
+  The view IS the contract the sister Tasks app will read directly once
+  the two databases merge (replacing its CLI mirror and its text-pattern
+  filing rules with a `context_id` → list mapping on ITS side), which is
+  why its columns are spelled out rather than `a.*`, and why views are
+  created by `db_view_ensure`, not `CREATE VIEW IF NOT EXISTS`: the
+  stored definition is compared against the code's and recreated only on
+  a mismatch (SQLite keeps a view's CREATE text verbatim), so a changed
+  definition can never silently outlive the code in the file, and a
+  current database is not written to on open.  The per-note listing and
+  the extractor leave `context` NULL.  Toggling
   writes the db row, then `on_editor_action_set_done` strikes/un-strikes
   the '!' line's text — in the live buffer + autosave when the note is
   open, on the note's OnDocument (`on_document_action_strike/due/text`)
@@ -427,9 +449,12 @@ handlers that duplicate a menu item.
   the notes list's column conventions — the layout machinery is
   view-generic (`view_columns_persist/apply`, config key + count +
   default carried as object data on the VIEW, header buttons carry
-  "on-view"); `action_columns` ini key, default `done:1,action:1,due:1`;
-  headers sort (Action alpha, Due soonest-first with undated last, Done
-  by state).  The Due Date cell is tinted by urgency via a cell data
+  "on-view"); `action_columns` ini key, default
+  `done:1,context:1,action:1,due:1` (an ini saved before the Context
+  column existed lists three — the unlisted column keeps its built state
+  but lands AFTER the listed ones, so it appears at the far right until
+  dragged); headers sort (Context alpha with the root's items first,
+  Action alpha, Due soonest-first with undated last, Done by state).  The Due Date cell is tinted by urgency via a cell data
   func (draw-time, so it rolls over at midnight): overdue red, today
   dark yellow, ahead green — darkened for the striped row backgrounds;
   no-due rows must reset "foreground-set" (shared renderer).

@@ -83,8 +83,9 @@ enum {
  * keep in sync with the COLS[] table in library_build_notes_list.           */
 #define N_LIST_COLUMNS 4
 
-/* How many columns the Action Items list owns (done, Action, Due Date).    */
-#define N_ACTION_COLUMNS 3
+/* How many columns the Action Items list owns (done, Context, Action,
+ * Due Date).                                                               */
+#define N_ACTION_COLUMNS 4
 
 /* ---------------------------------------------------------------------------
  * OnDragRows — THE content of every drag in this window (D8): what is being
@@ -1075,6 +1076,7 @@ refresh_actions(OnLibrary *lw)
         row->text    = g_strdup(it->text);
         row->due     = action_due_text(it->due);
         row->due_raw = it->due;
+        row->context = g_strdup(it->context);
         g_ptr_array_add(rows, row);
     }
     on_db_action_list_free(items);
@@ -4368,6 +4370,16 @@ cmp_action_text(gconstpointer a, gconstpointer b, gpointer user_data)
                         ((const OnActionRow *)b)->text);
 }
 
+/* cmp_action_context() — the Context header: alphabetical by the note's
+ * top-level folder, the root's items (no context) first.                  */
+static gint
+cmp_action_context(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+    (void)user_data;
+    return utf8_casecmp(((const OnActionRow *)a)->context,
+                        ((const OnActionRow *)b)->context);
+}
+
 /* cmp_action_done() — the checkbox header: open items first.               */
 static gint
 cmp_action_done(gconstpointer a, gconstpointer b, gpointer user_data)
@@ -4871,6 +4883,41 @@ on_action_text_bind(GtkListItemFactory *f, GtkListItem *item,
     OnActionRow *row = gtk_list_item_get_item(item);
     GtkLabel *label = GTK_LABEL(gtk_list_item_get_child(item));
     gchar *markup = on_markup_escape_emoji(row->text, lw->emoji_pad);
+    gtk_label_set_markup(label, markup);
+    g_free(markup);
+    PangoAttrList *al = strike_attrs(row->done);
+    gtk_label_set_attributes(label, al);
+    if (al != NULL)
+        pango_attr_list_unref(al);
+}
+
+/* on_action_context_setup() — the note's top-level folder; a double-click
+ * opens the note, like the text cell.                                     */
+static void
+on_action_context_setup(GtkListItemFactory *f, GtkListItem *item,
+                        gpointer user_data)
+{
+    (void)f;
+    GtkWidget *label = cell_label_new(TRUE);
+    g_object_set_data(G_OBJECT(label), "on-item", item);
+    on_app_double_click_watch(label, on_action_cell_double_clicked,
+                              user_data);
+    on_app_select_on_press(label, item);                        /* D37 */
+    gtk_list_item_set_child(item, label);
+}
+
+/* on_action_context_bind() — the folder name (emoji-padded like the
+ * sidebar's), struck when done so the whole row reads as one item.       */
+static void
+on_action_context_bind(GtkListItemFactory *f, GtkListItem *item,
+                       gpointer user_data)
+{
+    (void)f;
+    OnLibrary *lw = user_data;       /* owning library window               */
+    OnActionRow *row = gtk_list_item_get_item(item);
+    GtkLabel *label = GTK_LABEL(gtk_list_item_get_child(item));
+    gchar *markup = on_markup_escape_emoji(
+        row->context != NULL ? row->context : "", lw->emoji_pad);
     gtk_label_set_markup(label, markup);
     g_free(markup);
     PangoAttrList *al = strike_attrs(row->done);
@@ -5730,7 +5777,7 @@ library_build_notes_grid(OnLibrary *lw)
 
 /* ---------------------------------------------------------------------------
  * library_build_actions_view() — build lw->actions_store and
- * lw->actions_view (a GtkColumnView) with their three columns, sorters
+ * lw->actions_view (a GtkColumnView) with their four columns, sorters
  * and column layout; returns the scroll container.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
@@ -5750,14 +5797,20 @@ library_build_actions_view(OnLibrary *lw)
     gtk_sort_list_model_set_sorter(
         lw->actions_sorted, gtk_column_view_get_sorter(lw->actions_view));
 
-    /* Untitled checkbox column + the item text + the due date; done rows
-     * also render struck through, matching the editor.                    */
+    /* Untitled checkbox column + the note's top-level folder + the item
+     * text + the due date; done rows also render struck through, matching
+     * the editor.  Context sits BEFORE the text because that is where it
+     * used to be typed ("Stride - rerun the reports").                     */
     GtkColumnViewColumn *cd = column_new(
         lw->actions_view, "",
         on_row_factory_new(G_CALLBACK(on_action_done_setup),
                     G_CALLBACK(on_action_done_bind), lw),
         cmp_action_done, "done", FALSE);
     g_object_set_data(G_OBJECT(cd), "on-collabel", (gpointer)"Done");
+    column_new(lw->actions_view, "Context",
+               on_row_factory_new(G_CALLBACK(on_action_context_setup),
+                           G_CALLBACK(on_action_context_bind), lw),
+               cmp_action_context, "context", FALSE);
     column_new(lw->actions_view, "Action",
                on_row_factory_new(G_CALLBACK(on_action_text_setup),
                            G_CALLBACK(on_action_text_bind), lw),
@@ -5770,7 +5823,7 @@ library_build_actions_view(OnLibrary *lw)
     g_object_set_data(G_OBJECT(lw->actions_view), "on-colcfg",
                       (gpointer)"action_columns");
     g_object_set_data(G_OBJECT(lw->actions_view), "on-coldefault",
-                      (gpointer)"done:1,action:1,due:1");
+                      (gpointer)"done:1,context:1,action:1,due:1");
     view_columns_install(lw, lw->actions_view);
     g_signal_connect(lw->actions_view, "activate",
                      G_CALLBACK(on_action_row_activated), lw);

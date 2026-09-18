@@ -163,6 +163,13 @@ typedef struct {
  *             caller may set it as a MATCH HINT (see below) before
  *             calling on_db_note_set_actions, which fills in the
  *             assigned uid on return.  Never reused once retired.
+ *   context — the CONTAINER the owning note lives in: the name of the
+ *             TOP-LEVEL folder above it, however deep the note sits ("" for
+ *             a note at the root).  Read off the action_items_ctx VIEW
+ *             (db.c), which derives it from the folder tree — never
+ *             stored: a stored copy would go stale the moment a note
+ *             moved or a folder was renamed.  NULL from every other
+ *             source (the extractor, the per-note list).
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   note_id;
@@ -171,6 +178,7 @@ typedef struct {
     gboolean done;
     gint64   due;
     gint64   uid;
+    gchar   *context;
 } OnActionItem;
 
 /* --------------------------- lifecycle ---------------------------------- */
@@ -511,7 +519,8 @@ gboolean on_db_action_uids_fill(OnDatabase *db);
 gboolean on_db_action_uids_missing(OnDatabase *db);
 
 /* Every action item of every visible (non-trashed) note, newest note
- * first, note order preserved within a note.  Returns a GList of
+ * first, note order preserved within a note; the only listing that fills
+ * each item's `context` (the note's top-level folder).  Returns a GList of
  * OnActionItem*; free with on_db_action_list_free().                        */
 GList *on_db_action_list(OnDatabase *db);
 

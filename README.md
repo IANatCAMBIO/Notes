@@ -59,6 +59,8 @@ macOS (MacPorts):
 sudo port install pkgconf gtk4 +quartz librsvg
 make
 make run
+make install     # → ~/Applications/Notes.app, replacing the one there but
+                 #   keeping its settings (quit Notes first)
 ```
 
 Debian/Ubuntu (incl. XFCE desktops):

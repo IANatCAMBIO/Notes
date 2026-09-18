@@ -18,6 +18,13 @@ make ui-test  # the note view driven from tests/ui/*.txt, rendered to PNGs
 make run
 make app      # dist/Notes.app (unversioned name; macOS; sips/iconutil;
               # composition.png → .icns; NOT self-contained — needs MacPorts GTK)
+make install  # make app, then replace ~/Applications/Notes.app with it,
+              # KEEPING the installed bundle's notes.ini: ~/Applications is
+              # user-writable so the live ini (db_dir!) sits next to the
+              # binary INSIDE the bundle, and rm -rf'ing it would be the
+              # "my notes vanished" Welcome dialog.  Refuses while that
+              # Notes is running (matched by the binary's full path —
+              # Apple's Notes.app has the same process name)
 make deb      # dist/notes_<version>_<arch>.deb (needs dpkg-deb,
 make rpm      # dist/notes-<version>-1.<arch>.rpm  needs rpmbuild —
               # build these ON the target Linux distro; they install to

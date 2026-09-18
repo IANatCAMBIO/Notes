@@ -16,6 +16,9 @@
 #     make app      — macOS .app bundle → dist/Notes.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
+#     make install  — build that bundle and put it in ~/Applications,
+#                     replacing the one there but KEEPING its notes.ini
+#                     (refuses while Notes is running)
 #     make deb      — Debian package → dist/notes_<version>_<arch>.deb
 #                     (needs dpkg-deb; build ON a Debian/Ubuntu machine —
 #                     the packaged binary is whatever `make` produced)
@@ -279,6 +282,42 @@ app: $(BIN)
 	  > "$(APP_DIR)/Contents/Info.plist"
 	@echo "built $(APP_DIR)"
 
+# --- install: ~/Applications/Notes.app -----------------------------------------
+# Replaces the installed bundle with the one `make app` just built.  The
+# installed bundle carries the LIVE notes.ini next to its binary —
+# ~/Applications is user-writable, so the app never falls back to
+# ~/.config/notes (see on_app_config_init) — and that file names the real
+# database (db_dir) and every setting.  It is carried across: deleting it
+# with the old bundle would send the next launch to the default database
+# location and the Welcome dialog, which looks exactly like "my notes
+# vanished" (CLAUDE.md, "Custom DB location").  Refuses while THIS Notes
+# is running — matched by the installed binary's full path, since Apple's
+# Notes.app has the same process name: the old process would keep writing
+# its ini into the new bundle's path, and the swap would pull its icons
+# out from under it.
+
+INSTALL_DIR := $(HOME)/Applications
+INSTALLED   := $(INSTALL_DIR)/Notes.app
+INSTALLED_INI := $(INSTALLED)/Contents/MacOS/notes.ini
+
+install: app
+	@if pgrep -qf "^$(INSTALLED)/Contents/MacOS/Notes"; then \
+	  echo "error: Notes is running — quit it, then make install"; \
+	  exit 1; \
+	fi
+	mkdir -p "$(INSTALL_DIR)"
+	@kept=""; \
+	if [ -f "$(INSTALLED_INI)" ]; then \
+	  kept=$$(mktemp) && cp -p "$(INSTALLED_INI)" "$$kept"; \
+	fi; \
+	rm -rf "$(INSTALLED)" && cp -R "$(APP_DIR)" "$(INSTALLED)" || exit 1; \
+	if [ -n "$$kept" ]; then \
+	  cp -p "$$kept" "$(INSTALLED_INI)" && rm -f "$$kept" && \
+	  echo "installed $(INSTALLED) (settings kept)"; \
+	else \
+	  echo "installed $(INSTALLED) (no previous settings)"; \
+	fi
+
 # --- shared Linux package staging ---------------------------------------------
 # Both deb and rpm install the whole app to /opt/notes (the binary
 # resolves icons/ and its defaults ini relative to argv[0]) and put a
@@ -372,4 +411,4 @@ rpm: pkgroot
 	  $(DIST)/rpm/SPECS/notes.spec
 	cp $(DIST)/rpm/RPMS/*/notes-$(VERSION)-1.*.rpm $(DIST)/
 
-.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan ui-probe ui-test app pkgroot deb rpm
+.PHONY: all run run-dev dev-check clean clean-dev test bnbf-scan ui-probe ui-test app install pkgroot deb rpm

@@ -535,6 +535,9 @@ on_document_check(const OnDocument *d, GString *why)
  * the list prefix / checkbox space the format carries in the text.
  * ======================================================================== */
 
+static gboolean block_is_real_action(const OnBlock *b);   /* with the
+                                        action helpers, after the model     */
+
 typedef struct {
     OnDocument      *doc;
     OnDocLoadReport *rep;            /* always non-NULL inside the loader   */
@@ -545,6 +548,9 @@ typedef struct {
     gboolean         from_check;     /* cur was started by a CHECK record   */
     gboolean         strip_space;    /* the CHECK's " " is still expected   */
     gint             number_run;     /* consecutive NUMBER blocks so far    */
+    gint64           pending_uid;    /* an ACTION record's uid, for the
+                                        block the current line becomes     */
+    GHashTable      *uids;           /* uids seen so far (dedupe), lazily   */
 } Loader;
 
 /* para_bit() — the (single) paragraph bit of `flags`; several set count as
@@ -648,6 +654,11 @@ finish_line(Loader *L)
          * model has nowhere to keep it.                                    */
         L->rep->mixed_para++;
     }
+
+    b->action_uid = L->pending_uid;
+    if (L->pending_uid != 0 && !block_is_real_action(b))
+        L->rep->action_stray++;      /* kept on the block, not written back */
+    L->pending_uid = 0;
 
     L->number_run = (b->kind == ON_BLOCK_NUMBER) ? L->number_run + 1 : 0;
     g_ptr_array_add(L->doc->blocks, b);
@@ -789,6 +800,28 @@ check_record(Loader *L, const OnBnbfRecord *rec)
     L->strip_space  = TRUE;
 }
 
+/* action_record() — an ACTION record: the uid of the line it precedes.  A
+ * uid seen before in this blob is dropped (a duplicate cannot be two
+ * items); a record that sits mid-line, or follows another, is counted as
+ * stray but still names the line it is on — the saver puts it back at the
+ * line start.                                                               */
+static void
+action_record(Loader *L, const OnBnbfRecord *rec)
+{
+    if (L->uids == NULL)
+        L->uids = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                        g_free, NULL);
+    gint64 *key = g_new(gint64, 1);  /* owned by the table either way       */
+    *key = rec->uid;
+    if (!g_hash_table_add(L->uids, key)) {
+        L->rep->action_dup++;        /* the table freed the duplicate key   */
+        return;
+    }
+    if (L->cur != NULL || L->from_check || L->pending_uid != 0)
+        L->rep->action_stray++;
+    L->pending_uid = rec->uid;
+}
+
 /* ---------------------------------------------------------------------------
  * line_break() — the next line break in [p, end): GtkTextBuffer — and
  * Pango — break a paragraph at "\r\n", a lone "\r" and U+2029 as well as
@@ -846,7 +879,7 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
     memset(rep, 0, sizeof *rep);
 
     OnDocument *d = doc_alloc();
-    Loader L = { d, rep, NULL, 0, FALSE, FALSE, FALSE, FALSE, 0 };
+    Loader L = { d, rep, NULL, 0, FALSE, FALSE, FALSE, FALSE, 0, 0, NULL };
 
     if (data != NULL && len > 0) {
         OnBnbfReader r;
@@ -888,6 +921,7 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                 case ON_REC_IMAGE: image_record(&L, &rec); break;
                 case ON_REC_TABLE: table_record(&L, &rec); break;
                 case ON_REC_CHECK: check_record(&L, &rec); break;
+                case ON_REC_ACTION: action_record(&L, &rec); break;
                 default: break;
                 }
             }
@@ -902,6 +936,8 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
     /* The last line has no newline; a blob that ends with one (or is empty)
      * ends in an empty block — both are what the saver reverses.           */
     finish_line(&L);
+    if (L.uids != NULL)
+        g_hash_table_destroy(L.uids);
     return d;
 }
 
@@ -914,7 +950,8 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->styled_prefix == 0 && rep->check_no_space == 0 &&
            rep->check_no_tag == 0 && rep->check_no_box == 0 &&
            rep->split_check == 0 && rep->split_table == 0 &&
-           rep->run_split == 0 && rep->cr_newlines == 0;
+           rep->run_split == 0 && rep->cr_newlines == 0 &&
+           rep->action_dup == 0 && rep->action_stray == 0;
 }
 
 /* ===========================================================================
@@ -998,6 +1035,14 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         guint32 para = on_block_kind_para_flag(b->kind);
         number_run = (b->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+
+        /* A real action line's identity precedes its text; a uid left on
+         * any other block (the '!' was deleted, the line became a bullet)
+         * is not written — that item is gone, and the save says so.       */
+        if (b->action_uid != 0 && block_is_real_action(b)) {
+            sv_flush(&S);
+            on_bnbf_write_action(&S.w, b->action_uid);
+        }
 
         switch (b->kind) {
         case ON_BLOCK_CHECK:
@@ -1215,13 +1260,44 @@ on_block_is_action(const OnBlock *b)
 {
     /* Only the kinds with NO line prefix: in a bullet, numbered or task
      * line the first character is the prefix, so a '!' after it is text;
-     * a code line is never an item.  THE definition — the action_items
-     * mirror is extracted through this very test (serialize.c), so the
-     * ord the table names is the ord the model rewrites.               */
+     * a code line is never an item.  THE definition — the task rows are
+     * synced through this very test (serialize.c), so the ord the table
+     * names is the ord the model rewrites.                               */
     return b->text != NULL &&
            (b->kind == ON_BLOCK_PARA || b->kind == ON_BLOCK_H1 ||
             b->kind == ON_BLOCK_H2) &&
            b->text->text->len > 0 && b->text->text->str[0] == '!';
+}
+
+/* ---------------------------------------------------------------------------
+ * action_rest_real() — does an action line's rest-of-line text hold a
+ * REAL item?  Bare "!" lines and lines that are nothing but a "due <date>"
+ * suffix do not count.
+ * ------------------------------------------------------------------------- */
+static gboolean
+action_rest_real(const gchar *rest)
+{
+    gchar *t = g_strdup(rest);
+    gsize  due_start;                /* where the text part ends            */
+    gint64 due;
+    if (on_action_split_due(t, &due_start, &due))
+        t[due_start] = '\0';
+    gboolean real = *g_strstrip(t) != '\0';
+    g_free(t);
+    return real;
+}
+
+/* ---------------------------------------------------------------------------
+ * block_is_real_action() — an action line that IS an item: on_block_is_action
+ * plus a real rest-of-line.  THE one test the action listing, the saver
+ * (which writes the ACTION record only for these) and the loader's stray
+ * count share, so a uid is written exactly where the listing counts an
+ * item.
+ * ------------------------------------------------------------------------- */
+static gboolean
+block_is_real_action(const OnBlock *b)
+{
+    return on_block_is_action(b) && action_rest_real(b->text->text->str + 1);
 }
 
 OnText *
@@ -1385,6 +1461,17 @@ apply_op(OnDocument *d, Op *op)
         text_paste(c->text, 0, tail);
         on_text_free(tail);
         b->eol_flags = op->flags & ON_FMT_RUN_MASK;
+        /* The identity follows the TEXT: a split at column 0 (Enter at the
+         * start of "! item") leaves the head empty and moves the whole
+         * line down, so the uid moves with it; and a redo whose tail is
+         * given the uid the head still holds takes it off the head.  Two
+         * blocks never share one.                                         */
+        if (off == 0 && op->uid == 0) {
+            c->action_uid = b->action_uid;
+            b->action_uid = 0;
+        } else if (c->action_uid != 0 && c->action_uid == b->action_uid) {
+            b->action_uid = 0;
+        }
         g_ptr_array_insert(d->blocks, (gint)i + 1, c);
         inv = op_new(OP_JOIN);
         inv->pos.block = i;
@@ -1410,6 +1497,10 @@ apply_op(OnDocument *d, Op *op)
             d->tags_modified = TRUE;
         text_paste(t, t->text->len, c->text);
         b->eol_flags = c->eol_flags;
+        /* The reverse of the column-0 split: an identity-less head takes
+         * the tail's, so undoing that Enter gives the line its uid back.  */
+        if (b->action_uid == 0)
+            b->action_uid = c->action_uid;
         g_ptr_array_remove_index(d->blocks, i + 1);
         d->actions_modified = TRUE;
         notify_changed(d, i);
@@ -2424,35 +2515,30 @@ on_document_collect_tags(const OnDocument *d)
     return g_list_reverse(names);
 }
 
-/* ---------------------------------------------------------------------------
- * action_rest_real() — does an action line's rest-of-line text hold a
- * REAL item?  Bare "!" lines and lines that are nothing but a "due <date>"
- * suffix do not count — the extractor's rule, so ord numbering stays
- * aligned with the action_items table.
- * ------------------------------------------------------------------------- */
-static gboolean
-action_rest_real(const gchar *rest)
-{
-    gchar *t = g_strdup(rest);
-    gsize  due_start;                /* where the text part ends            */
-    gint64 due;
-    if (on_action_split_due(t, &due_start, &due))
-        t[due_start] = '\0';
-    gboolean real = *g_strstrip(t) != '\0';
-    g_free(t);
-    return real;
-}
-
 GArray *
 on_document_action_blocks(const OnDocument *d)
 {
     GArray *blocks = g_array_new(FALSE, FALSE, sizeof(guint));
     for (guint i = 0; i < d->blocks->len; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        if (on_block_is_action(b) && action_rest_real(b->text->text->str + 1))
+        if (block_is_real_action(b))
             g_array_append_val(blocks, i);
     }
     return blocks;
+}
+
+gint
+on_document_action_ord(const OnDocument *d, gint64 uid)
+{
+    GArray *blocks = on_document_action_blocks(d);
+    gint ord = -1;                   /* the answer                          */
+    for (guint i = 0; i < blocks->len && ord < 0; i++) {
+        const OnBlock *b = on_document_block(d, g_array_index(blocks, guint, i));
+        if (b->action_uid == uid)
+            ord = (gint)i;
+    }
+    g_array_unref(blocks);
+    return ord;
 }
 
 /* action_block() — the block index of the `ord`-th real action line, or

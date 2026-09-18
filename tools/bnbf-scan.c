@@ -13,6 +13,10 @@
  *
  * Verdicts per note:
  *   identical   — the re-saved blob equals the stored one byte for byte
+ *   identical-old-header — it differs in the version field alone (a blob
+ *                 written by an older format version whose records the
+ *                 current saver reproduces exactly); counted apart so a
+ *                 scan after a format bump is still pass/fail at a glance
  *   normalized  — it differs, and the loader's report says why (counts
  *                 per category are totalled)
  *   unexplained — it differs and the report is clean: a model or saver
@@ -67,6 +71,10 @@ rec_dump(const guint8 *data, gsize len, gsize mark)
         case ON_REC_CHECK:
             printf("%s %6" G_GSIZE_FORMAT "  CHECK %d\n", flag, at,
                    rec.checked);
+            break;
+        case ON_REC_ACTION:
+            printf("%s %6" G_GSIZE_FORMAT "  ACTION uid=%" G_GINT64_FORMAT
+                   "\n", flag, at, rec.uid);
             break;
         case ON_REC_TABLE:
             printf("%s %6" G_GSIZE_FORMAT "  TABLE %dx%d%s\n", flag, at,
@@ -127,7 +135,7 @@ report_add(OnDocLoadReport *sum, const OnDocLoadReport *r)
     ADD(number_renumbered); ADD(styled_prefix); ADD(check_no_space);
     ADD(check_no_tag); ADD(check_no_box); ADD(split_check);
     ADD(split_table); ADD(image_inline); ADD(run_split); ADD(cr_newlines);
-    ADD(old_version);
+    ADD(old_version); ADD(action_dup); ADD(action_stray);
 #undef ADD
 }
 
@@ -163,8 +171,8 @@ main(int argc, char **argv)
     if (want_id != 0)
         sqlite3_bind_int64(st, 1, want_id);
 
-    guint n_notes = 0, n_identical = 0, n_normalized = 0, n_unexplained = 0,
-          n_invalid = 0, n_error = 0, n_empty = 0;
+    guint n_notes = 0, n_identical = 0, n_old_header = 0, n_normalized = 0,
+          n_unexplained = 0, n_invalid = 0, n_error = 0, n_empty = 0;
     guint64 bytes_total = 0;
     guint max_blocks = 0, max_text = 0;
     gint64 max_blocks_id = 0, max_text_id = 0;
@@ -254,6 +262,9 @@ main(int argc, char **argv)
             printf("ERROR    note %" G_GINT64_FORMAT ": %s\n", id, rep.error);
         } else if (diff == (gsize)-1) {
             n_identical++;
+        } else if (diff >= 4 && diff < 8 && len == n_out &&
+                   memcmp(data + 8, out + 8, len - 8) == 0) {
+            n_old_header++;          /* the version field alone             */
         } else if (!on_document_load_report_is_clean(&rep)) {
             n_normalized++;
             printf("normalized note %" G_GINT64_FORMAT ":", id);
@@ -262,7 +273,7 @@ main(int argc, char **argv)
             SAY(number_renumbered); SAY(styled_prefix); SAY(check_no_space);
             SAY(check_no_tag); SAY(check_no_box); SAY(split_check);
             SAY(split_table); SAY(run_split); SAY(cr_newlines);
-            SAY(old_version);
+            SAY(old_version); SAY(action_dup); SAY(action_stray);
 #undef SAY
             printf("\n");
         } else {
@@ -280,20 +291,23 @@ main(int argc, char **argv)
 
     printf("\n%u notes, %.1f MB of blobs, %u empty\n", n_notes,
            bytes_total / 1e6, n_empty);
-    printf("  identical    %u\n  normalized   %u\n  unexplained  %u\n"
+    printf("  identical    %u\n  identical-old-header %u\n"
+           "  normalized   %u\n  unexplained  %u\n"
            "  invalid      %u\n  error        %u\n",
-           n_identical, n_normalized, n_unexplained, n_invalid, n_error);
+           n_identical, n_old_header, n_normalized, n_unexplained,
+           n_invalid, n_error);
     printf("normalizations (lines, over all notes):\n"
            "  mixed_para %u  unknown_flags %u  bullet_no_prefix %u\n"
            "  number_renumbered %u  styled_prefix %u  check_no_space %u\n"
            "  check_no_tag %u  check_no_box %u  split_check %u\n"
            "  split_table %u  run_split %u  cr_newlines %u  old_version %u"
-           "  (image_inline %u, exact)\n",
+           "  action_dup %u  action_stray %u  (image_inline %u, exact)\n",
            sum.mixed_para, sum.unknown_flags, sum.bullet_no_prefix,
            sum.number_renumbered, sum.styled_prefix, sum.check_no_space,
            sum.check_no_tag, sum.check_no_box, sum.split_check,
            sum.split_table, sum.run_split, sum.cr_newlines,
-           sum.old_version, sum.image_inline);
+           sum.old_version, sum.action_dup, sum.action_stray,
+           sum.image_inline);
     printf("shape:\n"
            "  notes with images %u, inline images %u, tables %u, checks %u,"
            " code %u, styled newlines %u\n"

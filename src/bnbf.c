@@ -32,6 +32,18 @@ put_u32(GByteArray *buf, guint32 v)
 }
 
 /* ---------------------------------------------------------------------------
+ * put_u64() — append a little-endian u64 as two u32 halves, low first.
+ *   buf — destination array.
+ *   v   — value to append.
+ * ------------------------------------------------------------------------- */
+static void
+put_u64(GByteArray *buf, guint64 v)
+{
+    put_u32(buf, (guint32)(v & 0xffffffffu));
+    put_u32(buf, (guint32)(v >> 32));
+}
+
+/* ---------------------------------------------------------------------------
  * get_u32() — read a little-endian u32, advancing *pos.
  *   data — blob bytes.
  *   len  — blob length.
@@ -49,6 +61,25 @@ get_u32(const guint8 *data, gsize len, gsize *pos, guint32 *out)
          | ((guint32)data[*pos + 2] << 16)
          | ((guint32)data[*pos + 3] << 24);
     *pos += 4;
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * get_u64() — read a little-endian u64 (two u32 halves, low first),
+ * advancing *pos.
+ *   data — blob bytes.
+ *   len  — blob length.
+ *   pos  — in/out read cursor.
+ *   out  — receives the value.
+ * Returns FALSE if fewer than 8 bytes remain.
+ * ------------------------------------------------------------------------- */
+static gboolean
+get_u64(const guint8 *data, gsize len, gsize *pos, guint64 *out)
+{
+    guint32 lo, hi;                  /* the two halves                      */
+    if (!get_u32(data, len, pos, &lo) || !get_u32(data, len, pos, &hi))
+        return FALSE;
+    *out = (guint64)lo | ((guint64)hi << 32);
     return TRUE;
 }
 
@@ -241,6 +272,24 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
         rec->checked = r->data[r->pos++] != 0;
         return TRUE;
 
+    case ON_REC_ACTION: {
+        guint64 uid;                 /* the stored identity                 */
+        if (r->version < 6) {
+            r->error = "ACTION record in a pre-v6 blob";
+            return FALSE;
+        }
+        if (!get_u64(r->data, r->len, &r->pos, &uid)) {
+            r->error = "truncated ACTION record";
+            return FALSE;
+        }
+        if (uid == 0 || uid > (guint64)G_MAXINT64) {
+            r->error = "bad ACTION record";
+            return FALSE;
+        }
+        rec->uid = (gint64)uid;
+        return TRUE;
+    }
+
     case ON_REC_TABLE: {
         guint32 tflags = 0, rows, cols;
         if (r->version >= 4 &&
@@ -324,6 +373,13 @@ on_bnbf_write_check(OnBnbfWriter *w, gboolean checked)
     put_rec(w, ON_REC_CHECK);
     guint8 state = checked ? 1 : 0;
     g_byte_array_append(w->out, &state, 1);
+}
+
+void
+on_bnbf_write_action(OnBnbfWriter *w, gint64 uid)
+{
+    put_rec(w, ON_REC_ACTION);
+    put_u64(w->out, (guint64)uid);
 }
 
 void

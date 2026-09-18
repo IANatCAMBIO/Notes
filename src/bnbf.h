@@ -10,7 +10,7 @@
  * BNBF layout (all integers little-endian):
  *
  *   [4 bytes]  magic "BNBF"
- *   [u32]      format version (currently 5; 1–4 are still readable)
+ *   [u32]      format version (currently 6; 1–5 are still readable)
  *   ...records...
  *   [u8 0x00]  end marker
  *
@@ -24,6 +24,11 @@
  *                      rows*cols x ([u32 len] [len UTF-8 bytes]) row-major
  *   [u8 0x04]  CHECK : [u8 state]                     (version >= 5)
  *                      a task-list checkbox (0 = unchecked, 1 = checked)
+ *   [u8 0x05]  ACTION: [i64 uid]                      (version >= 6)
+ *                      the stable identity of the '!' action line that
+ *                      starts here — the note_task.uid of its task row.
+ *                      Sits immediately before the line's first TEXT
+ *                      record, like CHECK; never inside a line.
  *
  * IMAGE records always hold the image at its ORIGINAL resolution; the
  * display_width field records how wide the user chose to show it in the
@@ -41,6 +46,7 @@
  * numbered lines start with a literal "\xe2\x80\xa2 " / "12. " prefix in
  * the text; a task line starts with a CHECK record followed by " ".
  * Images, tables and checkboxes occupy a character position on their line.
+ * An ACTION record occupies none: it names the line, it is not in it.
  * =========================================================================== */
 
 #ifndef ON_BNBF_H
@@ -142,8 +148,9 @@ void on_table_set(OnTable *table, gint r, gint c, const gchar *text);
 /* Current format version the writer emits.  Version 2 added the
  * display_width field to IMAGE records; version 3 added TABLE records;
  * version 4 added the tflags field to TABLE records; version 5 added CHECK
- * records.  All older versions are still readable.                        */
-#define ON_BNBF_VERSION 5u
+ * records; version 6 added ACTION records.  All older versions are still
+ * readable.                                                               */
+#define ON_BNBF_VERSION 6u
 
 /* Record type bytes.                                                      */
 #define ON_REC_END   0x00            /* end of document                     */
@@ -151,6 +158,7 @@ void on_table_set(OnTable *table, gint r, gint c, const gchar *text);
 #define ON_REC_IMAGE 0x02            /* inline PNG image                    */
 #define ON_REC_TABLE 0x03            /* embedded table of text cells        */
 #define ON_REC_CHECK 0x04            /* task-list checkbox                  */
+#define ON_REC_ACTION 0x05           /* action line identity (uid)          */
 
 typedef struct {
     const guint8 *data;              /* the blob                            */
@@ -164,7 +172,8 @@ typedef struct {
 /* One record, as handed to the caller.  Only the fields belonging to
  * `type` are meaningful; `text` and `png` point INTO the blob.            */
 typedef struct {
-    guint8        type;              /* ON_REC_TEXT / IMAGE / TABLE / CHECK */
+    guint8        type;              /* ON_REC_TEXT / IMAGE / TABLE / CHECK
+                                        / ACTION                            */
     guint32       flags;             /* TEXT: ON_FMT_* bits of the run      */
     const gchar  *text;              /* TEXT: run bytes (NOT terminated)    */
     guint32       n_text;
@@ -172,6 +181,7 @@ typedef struct {
     guint32       n_png;
     guint32       display_width;     /* IMAGE: stored display width (v2+)   */
     gboolean      checked;           /* CHECK: the box's state              */
+    gint64        uid;               /* ACTION: the line's item uid (> 0)   */
     OnTable      *table;             /* TABLE: parsed; the CALLER owns it   */
 } OnBnbfRecord;
 
@@ -214,6 +224,10 @@ void on_bnbf_write_image(OnBnbfWriter *w, guint32 display_width,
 
 /* on_bnbf_write_check() — a CHECK record.                                 */
 void on_bnbf_write_check(OnBnbfWriter *w, gboolean checked);
+
+/* on_bnbf_write_action() — an ACTION record naming the line that follows.
+ * `uid` must be positive (a zero uid is "no identity": do not write one). */
+void on_bnbf_write_action(OnBnbfWriter *w, gint64 uid);
 
 /* on_bnbf_write_table_begin() / on_bnbf_write_table_cell() — a TABLE
  * record: the header, then EXACTLY rows*cols cells in row-major order

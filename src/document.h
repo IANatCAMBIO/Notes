@@ -97,7 +97,10 @@ typedef struct {
     gboolean    header;              /* first row is a header row            */
     GPtrArray  *cells;               /* OnText*, rows*cols, row-major        */
     /* identity — NOT serialized, survives every edit of this block         */
-    gint64      action_uid;          /* action_items.uid, 0 = none yet       */
+    gint64      action_uid;          /* the item's note_task.uid, 0 = none
+                                        yet; serialized as the ACTION record
+                                        while the block is a real action
+                                        line; survives every edit of it     */
 } OnBlock;
 
 /* ---------------------------------------------------------------------------
@@ -230,6 +233,11 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *                    own record); the saver writes the maximal run
  *   old_version    — the blob's version is below ON_BNBF_VERSION (the
  *                    bytes differ in the header alone)
+ *   action_dup     — an ACTION record repeated a uid already seen in the
+ *                    blob (a copy of a line): dropped, that line has none
+ *   action_stray   — an ACTION record mid-line, doubled, or on a line that
+ *                    is not a real action line: kept on the block but not
+ *                    written back
  * `error` is the reader's message when the blob was malformed; the
  * document holds what parsed before that point.
  * ------------------------------------------------------------------------- */
@@ -239,6 +247,7 @@ typedef struct {
     guint check_no_space, check_no_tag, check_no_box, split_check;
     guint split_table, image_inline;
     guint run_split, cr_newlines, old_version;
+    guint action_dup, action_stray;
     const gchar *error;
 } OnDocLoadReport;
 
@@ -482,6 +491,12 @@ GList *on_document_collect_tags(const OnDocument *d);
 /* on_document_action_blocks() — block indices of the real action lines,
  * ord order.  Returns a new GArray of guint; g_array_unref() it.         */
 GArray *on_document_action_blocks(const OnDocument *d);
+
+/* on_document_action_ord() — the ord (position among the real action
+ * lines) of the line carrying `uid`, or -1.  THE uid → line resolution
+ * every writer uses, so an edit addressed by identity lands on the line
+ * that identity is on now, unsaved edits included.                        */
+gint on_document_action_ord(const OnDocument *d, gint64 uid);
 
 /* on_document_block_action() — the fields of the real action item in
  * block `block`: `text` (new string — after the '!' and its leading

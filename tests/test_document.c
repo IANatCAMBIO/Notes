@@ -48,6 +48,12 @@ blob_check(Blob *b, gboolean checked)
     on_bnbf_write_check(&b->w, checked);
 }
 
+static void
+blob_action(Blob *b, gint64 uid)
+{
+    on_bnbf_write_action(&b->w, uid);
+}
+
 /* blob_table() — a rows×cols table from a NULL-terminated cell list.       */
 static void
 blob_table(Blob *b, gboolean header, gint rows, gint cols,
@@ -968,11 +974,13 @@ test_ops_blocks(void)
     blob_text(&b, ON_FMT_LIST_CHECK, " one ");
     blob_text(&b, ON_FMT_LIST_CHECK | ON_FMT_BOLD, "two");
     blob_text(&b, ON_FMT_LIST_CHECK | ON_FMT_ITALIC, "\n");
+    blob_action(&b, 9);
     blob_text(&b, 0, "! action");
     GBytes *blob = blob_end(&b);
     OnDocument *d = load_clean(blob);
-    on_document_block(d, 0)->action_uid = 7;
-    on_document_block(d, 1)->action_uid = 9;
+    on_document_block(d, 0)->action_uid = 7;    /* a stray uid on a CHECK
+                                                   line: never written    */
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 9);
     Counts c = { 0, 0, 0 };
     on_document_set_observer(d, &COUNTING, &c);
     on_document_take_actions_modified(d);
@@ -1164,7 +1172,9 @@ test_ops_fuzz(void)
     blob_table(&b, TRUE, 1, 2, cells);
     blob_text(&b, 0, "\n");
     blob_image(&b, 50, PNG_B, sizeof PNG_B);
-    blob_text(&b, 0, "\n! do it");
+    blob_text(&b, 0, "\n");
+    blob_action(&b, 3);
+    blob_text(&b, 0, "! do it");
     GBytes *blob = blob_end(&b);
     OnDocument *d = load_clean(blob);
     GRand *rng = g_rand_new_with_seed(g_test_rand_int());  /* --seed reproduces */
@@ -1411,6 +1421,185 @@ test_collect_tags(void)
     g_bytes_unref(blob);
 }
 
+/* ---------------------------------------------------------------------------
+ * ACTION records: the uid of a '!' line in the blob.
+ * ------------------------------------------------------------------------- */
+
+/* The record loads onto its line and round-trips byte for byte, whether
+ * it opens the blob or follows another line's newline.                     */
+static void
+test_action_record(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_action(&b, 42);
+    blob_text(&b, 0, "! call Bob due 2026-10-01\nplain\n");
+    blob_action(&b, 43);
+    blob_text(&b, ON_FMT_H2, "! heading item");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 42);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 0);
+    g_assert_cmpint(on_document_block(d, 2)->action_uid, ==, 43);
+    g_assert_cmpint(on_document_action_ord(d, 42), ==, 0);
+    g_assert_cmpint(on_document_action_ord(d, 43), ==, 1);
+    g_assert_cmpint(on_document_action_ord(d, 44), ==, -1);
+    assert_roundtrip(d, blob);
+
+    /* The uid goes with the block through a remove and its undo.          */
+    g_assert_true(on_document_remove_block(d, 0));
+    g_assert_cmpint(on_document_action_ord(d, 42), ==, -1);
+    g_assert_cmpint(on_document_action_ord(d, 43), ==, 0);
+    g_assert_true(on_document_undo(d));
+    g_assert_cmpint(on_document_action_ord(d, 42), ==, 0);
+    assert_roundtrip(d, blob);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
+/* A uid on a block that is not a real action line is not written; a
+ * record on such a line loads as stray and normalizes away.                */
+static void
+test_action_uid_not_written(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "!\n! due 2026-01-01\n");
+    blob_text(&b, ON_FMT_LIST_BULLET, "\xe2\x80\xa2 ! bullet\n");
+    blob_text(&b, ON_FMT_CODEBLOCK, "! code\n");
+    blob_text(&b, 0, "! real");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+    for (guint i = 0; i < 4; i++)
+        on_document_block(d, i)->action_uid = 10 + (gint64)i;
+    assert_roundtrip(d, blob);   /* none of them written                    */
+    on_document_block(d, 4)->action_uid = 5;
+    g_assert_cmpint(on_document_action_ord(d, 5), ==, 0);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    /* A record on a bare "!" line (stray) and one mid-line: both counted,
+     * the mid-line one still names its line; the save puts the real one at
+     * the line start and drops the stray.                                 */
+    Blob s;
+    blob_begin(&s);
+    blob_action(&s, 7);
+    blob_text(&s, 0, "!\n! mid");
+    blob_action(&s, 8);
+    blob_text(&s, 0, "line");
+    blob = blob_end(&s);
+    gsize n;
+    const guint8 *data = g_bytes_get_data(blob, &n);
+    OnDocLoadReport rep;
+    d = on_document_from_bnbf(data, n, &rep);
+    g_assert_cmpuint(rep.action_stray, ==, 2);
+    g_assert_null(rep.error);
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 7);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 8);
+    Blob want;
+    blob_begin(&want);
+    blob_text(&want, 0, "!\n");
+    blob_action(&want, 8);
+    blob_text(&want, 0, "! midline");
+    GBytes *normal = blob_end(&want);
+    assert_roundtrip(d, normal);
+    on_document_free(d);
+    g_bytes_unref(blob);
+    g_bytes_unref(normal);
+}
+
+/* A repeated uid is dropped from the second line; a v5 blob may not carry
+ * the record at all.                                                       */
+static void
+test_action_uid_dup_and_gate(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_action(&b, 5);
+    blob_text(&b, 0, "! one\n");
+    blob_action(&b, 5);
+    blob_text(&b, 0, "! two");
+    GBytes *blob = blob_end(&b);
+    gsize n;
+    const guint8 *data = g_bytes_get_data(blob, &n);
+    OnDocLoadReport rep;
+    OnDocument *d = on_document_from_bnbf(data, n, &rep);
+    g_assert_cmpuint(rep.action_dup, ==, 1);
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 5);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 0);
+    assert_valid(d);
+    on_document_free(d);
+
+    /* Same bytes under a v5 header: the reader refuses the record.        */
+    guint8 *v5 = g_memdup2(data, n);
+    v5[4] = 5;
+    d = on_document_from_bnbf(v5, n, &rep);
+    g_assert_cmpstr(rep.error, ==, "ACTION record in a pre-v6 blob");
+    on_document_free(d);
+    g_free(v5);
+    g_bytes_unref(blob);
+}
+
+/* Enter at column 0 of an item moves the identity down with the text;
+ * Backspace there gives it back; copies never carry one.                   */
+static void
+test_action_split_join_copy(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "Title\n");
+    blob_action(&b, 9);
+    blob_text(&b, 0, "! item");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+
+    g_assert_true(on_document_split_block(d, at(1, 0), 0));
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 0);
+    g_assert_cmpint(on_document_block(d, 2)->action_uid, ==, 9);
+    g_assert_cmpint(on_document_action_ord(d, 9), ==, 0);
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 9);
+    assert_roundtrip(d, blob);
+    g_assert_true(on_document_redo(d));
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 0);
+    g_assert_cmpint(on_document_block(d, 2)->action_uid, ==, 9);
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));
+    assert_roundtrip(d, blob);
+
+    /* Mid-line Enter: the head keeps the identity, the tail has none.      */
+    g_assert_true(on_document_split_block(d, at(1, 3), 0));
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 9);
+    g_assert_cmpint(on_document_block(d, 2)->action_uid, ==, 0);
+    g_assert_true(on_document_undo(d));
+    assert_roundtrip(d, blob);
+
+    /* A copy of the lines carries no record; pasting it makes
+     * identity-less lines beside the original, even when the fragment was
+     * given one by hand.                                                   */
+    OnDocument *frag = on_document_copy_range(d, at(0, 0), at(1, 6));
+    g_assert_cmpuint(on_document_n_blocks(frag), ==, 2);
+    g_assert_cmpint(on_document_block(frag, 1)->action_uid, ==, 0);
+    gsize n;
+    guint8 *bytes = on_document_to_bnbf(frag, &n);
+    g_assert_null(memchr(bytes + 8, ON_REC_ACTION, n - 8));
+    g_free(bytes);
+    on_document_block(frag, 1)->action_uid = 9;    /* a smuggled copy     */
+    g_assert_true(on_document_insert_fragment(d, at(1, 6), frag, NULL));
+    guint with_uid = 0;              /* blocks carrying uid 9               */
+    for (guint i = 0; i < on_document_n_blocks(d); i++)
+        with_uid += on_document_block(d, i)->action_uid == 9;
+    g_assert_cmpuint(with_uid, ==, 1);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 9);
+    g_assert_cmpint(on_document_action_ord(d, 9), ==, 0);
+    assert_valid(d);
+    on_document_free(frag);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 static void
 test_action_rewrites(void)
 {
@@ -1648,6 +1837,10 @@ main(int argc, char **argv)
     g_test_add_func("/derived/from-text", test_from_text);
     g_test_add_func("/derived/collect-tags", test_collect_tags);
     g_test_add_func("/derived/action-rewrites", test_action_rewrites);
+    g_test_add_func("/action/record", test_action_record);
+    g_test_add_func("/action/uid-not-written", test_action_uid_not_written);
+    g_test_add_func("/action/dup-and-gate", test_action_uid_dup_and_gate);
+    g_test_add_func("/action/split-join-copy", test_action_split_join_copy);
     g_test_add_func("/ops/ranges", test_ranges);
     return g_test_run();
 }

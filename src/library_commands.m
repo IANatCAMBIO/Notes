@@ -1,6 +1,11 @@
 #import "library_commands.h"
 #import "editor_window.h"
 #import "library_sidebar.h"
+#import "ui_util.h"
+
+#include "app_lifecycle.h"
+#include "export.h"
+#include "identity.h"
 
 /*
  * library_commands.m — see library_commands.h for what is implemented.
@@ -72,10 +77,151 @@ hook_quicknote(OnApp *app)
     return open_new_note(on_library(), 0);
 }
 
+/*
+ * run_new_folder — "new-folder": sheet on the library window that asks for a
+ * folder name, then creates it as a child of the current selection's folder.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu or toolbar item (unused)
+ */
+static void
+run_new_folder(id target, id sender)
+{
+    NotesLibrary *lib     = target;
+    NSWindow     *win     = lib.window;
+    gint64        parent  = on_library_current_folder_id(lib);
+
+    NSTextField *field = [NSTextField textFieldWithString:@""];
+    field.placeholderString = @"Folder Name";
+
+    NSAlert *alert             = on_ui_new_alert();
+    alert.messageText          = @"New Folder";
+    alert.informativeText      = @"Enter a name for the new folder.";
+    alert.accessoryView        = field;
+    alert.alertStyle           = NSAlertStyleInformational;
+    [alert addButtonWithTitle:@"Create"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    [alert beginSheetModalForWindow:win completionHandler:^(NSModalResponse r) {
+        if (r != NSAlertFirstButtonReturn) return;
+        NSString *name = [field.stringValue stringByTrimmingCharactersInSet:
+                          NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (name.length == 0) return;
+        on_db_folder_create(lib.app->db, parent, name.UTF8String, 0, NULL);
+        on_library_refresh_all(lib);
+    }];
+}
+
+/*
+ * run_open_db — "open-db": pick a .db file and switch to it either for this
+ * session or permanently.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu or toolbar item (unused)
+ */
+static void
+run_open_db(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    NSWindow     *win = lib.window;
+
+    on_ui_pick_path(NotesPickOpenFile,
+                    @"Choose a Notes Database File",
+                    @"Open",
+                    nil, nil, win,
+                    ^(NSString *path) {
+        if (!path) return;
+        NSAlert *alert        = on_ui_new_alert();
+        alert.messageText     = @"Open Database";
+        alert.informativeText = [NSString stringWithFormat:
+                                 @"Open \"%@\" for this session only, or set it as your default?",
+                                 path.lastPathComponent];
+        [alert addButtonWithTitle:@"Set as Default"];
+        [alert addButtonWithTitle:@"Session Only"];
+        [alert addButtonWithTitle:@"Cancel"];
+
+        [alert beginSheetModalForWindow:win completionHandler:^(NSModalResponse r) {
+            if (r == NSAlertThirdButtonReturn) return;   /* Cancel */
+            BOOL set_default = (r == NSAlertFirstButtonReturn);
+            on_app_switch_db(lib.app, path.UTF8String, set_default);
+        }];
+    });
+}
+
+/*
+ * run_export — pick a destination directory and export notes in the given
+ * format.  A notice reports how many were written or what failed.
+ *
+ * Inputs:
+ *   lib    — the library
+ *   win    — the window to attach sheets to
+ *   format — ON_EXPORT_HTML or ON_EXPORT_MARKDOWN
+ */
+static void
+run_export(NotesLibrary *lib, NSWindow *win, OnExportFormat format)
+{
+    on_ui_pick_path(NotesPickFolder,
+                    format == ON_EXPORT_HTML
+                        ? @"Choose Export Folder for HTML"
+                        : @"Choose Export Folder for Markdown",
+                    @"Export",
+                    nil, nil, win,
+                    ^(NSString *path) {
+        if (!path) return;
+        gchar *err = NULL;
+        gint   n   = on_export_all(lib.app, path.UTF8String, format, &err);
+        if (n >= 0) {
+            on_ui_show_notice([NSString stringWithFormat:
+                               @"Exported %d note%s.", n, n == 1 ? "" : "s"],
+                              [NSString stringWithFormat:@"Files written to:\n%@", path],
+                              win);
+        } else {
+            on_ui_show_notice(@"Export failed",
+                              err ? @(err) : @"An unknown error occurred.",
+                              win);
+        }
+        g_free(err);
+    });
+}
+
+/*
+ * run_export_html — "export-html": export every note as HTML.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu or toolbar item (unused)
+ */
+static void
+run_export_html(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    run_export(lib, lib.window, ON_EXPORT_HTML);
+}
+
+/*
+ * run_export_md — "export-md": export every note as Markdown.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu or toolbar item (unused)
+ */
+static void
+run_export_md(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    run_export(lib, lib.window, ON_EXPORT_MARKDOWN);
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const on_command_handler_t handlers[] = {
-    { @"new-note",  run_new_note,  NULL },
-    { @"quicknote", run_quicknote, NULL },
+    { @"new-note",    run_new_note,    NULL },
+    { @"quicknote",   run_quicknote,   NULL },
+    { @"new-folder",  run_new_folder,  NULL },
+    { @"open-db",     run_open_db,     NULL },
+    { @"export-html", run_export_html, NULL },
+    { @"export-md",   run_export_md,   NULL },
 };
 
 /*

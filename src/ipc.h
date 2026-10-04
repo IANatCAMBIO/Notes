@@ -19,9 +19,13 @@
  * data directory: the command line always finds the app that owns the same
  * notes.ini, whatever database that app has open.
  *
- * A client that cannot tell whether an app is running (the socket could
- * not even be tried) REFUSES to run headless: a wrong guess would put a
- * second writer on the database behind a live app's back.
+ * WHETHER AN APP IS RUNNING is decided by a lock, not by the socket: the
+ * app holds an exclusive flock on <data dir>/notes-appkit.lock for its
+ * whole life (the kernel releases it if the app dies).  A client that
+ * cannot connect runs headless only when that lock is free.  If the lock
+ * is held — the app is starting, is busy, or could not create its socket —
+ * or the question cannot be answered, the client REFUSES: a wrong guess
+ * would put a second writer on the database behind a live app's back.
  *
  * WIRE FORMAT (unchanged from the GTK build).
  *   Protocol A, one line each way:
@@ -56,11 +60,11 @@ typedef enum {
 
 /* Outcome of starting the server (app side).                                */
 typedef enum {
-    ON_IPC_SERVER_LISTENING,         /* this process now serves the socket   */
-    ON_IPC_SERVER_BUSY,              /* another live app already serves this
+    on_ipc_server_listening,         /* this process now serves the socket   */
+    on_ipc_server_busy,              /* another live app already serves this
                                         data directory                       */
-    ON_IPC_SERVER_FAILED,            /* the socket could not be created      */
-} OnIpcServerResult;
+    on_ipc_server_failed,            /* the socket could not be created      */
+} on_ipc_server_result_t;
 
 /* ---------------------------------------------------------------------------
  * on_ipc_try_remote() — CLIENT: send one protocol-A command line to a
@@ -132,18 +136,18 @@ void on_ipc_run_pending(OnApp *app);
  * Inputs:
  *   app — the application context commands will run against
  *
- * Output: ON_IPC_SERVER_LISTENING on success (also when already
- *         listening).  ON_IPC_SERVER_BUSY means another app instance owns
- *         this data directory and this one must not go on to write the
- *         database.  ON_IPC_SERVER_FAILED (reported on stderr) means the
- *         command line cannot reach this app and will work on the database
- *         directly — the caller must tell the user.
+ * Output: on_ipc_server_listening on success (also when already
+ *         listening).  on_ipc_server_busy means another app instance holds
+ *         this data directory's lock and this one must not go on to write
+ *         the database.  on_ipc_server_failed (reported on stderr) means
+ *         this app holds the lock but has no socket: `notes` commands will
+ *         be refused while it runs — the caller must tell the user.
  * ------------------------------------------------------------------------- */
-OnIpcServerResult on_ipc_server_start(OnApp *app);
+on_ipc_server_result_t on_ipc_server_start(OnApp *app);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_server_stop() — stop listening and remove the socket file.  Main
- * thread.  A no-op when not listening.
+ * on_ipc_server_stop() — stop listening, remove the socket file and release
+ * the app lock.  Main thread.  A no-op when the server was never started.
  *
  * Output: none.
  * ------------------------------------------------------------------------- */

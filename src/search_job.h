@@ -36,22 +36,24 @@ typedef struct {
     gchar  *path;                    /* "Folder/Sub/Title"; "/Title" for a
                                         note in the root                     */
     gchar  *when;                    /* formatted modified time              */
-} OnSearchHit;
+} on_search_hit_t;
 
-typedef struct OnSearchJob OnSearchJob;
+typedef struct on_search_job_t on_search_job_t;
 
 /* ---------------------------------------------------------------------------
- * OnSearchDoneFunc — a job finished.  Called on the main thread, exactly
+ * on_search_done_func_t — a job finished.  Called on the main thread, exactly
  * once, unless the job was cancelled first.
  *
  * Inputs:
  *   error — why the search could not run, or NULL on success
- *   hits  — the matches (OnSearchHit *), in the database's listing order;
- *           borrowed for the call — copy what is kept
+ *   hits  — the matches, in the database's listing order; borrowed for the
+ *           call — copy what is kept
+ *   n     — how many
  *   data  — the caller's data
  * ------------------------------------------------------------------------- */
-typedef void (*OnSearchDoneFunc)(const gchar *error, const GPtrArray *hits,
-                                 gpointer data);
+typedef void (*on_search_done_func_t)(const gchar *error,
+                                      const on_search_hit_t *const *hits,
+                                      size_t n, gpointer data);
 
 /* ---------------------------------------------------------------------------
  * on_search_job_start() — begin a search.  Main thread.
@@ -72,9 +74,9 @@ typedef void (*OnSearchDoneFunc)(const gchar *error, const GPtrArray *hits,
  *
  * Output: the job's handle (see LIFETIME above); never NULL.
  * ------------------------------------------------------------------------- */
-OnSearchJob *on_search_job_start(const gchar *db_path, OnQuery *query,
+on_search_job_t *on_search_job_start(const gchar *db_path, OnQuery *query,
                                  gboolean scoped, OnSearchScope scope,
-                                 gint64 scope_id, OnSearchDoneFunc done,
+                                 gint64 scope_id, on_search_done_func_t done,
                                  gpointer data);
 
 /* ---------------------------------------------------------------------------
@@ -86,6 +88,6 @@ OnSearchJob *on_search_job_start(const gchar *db_path, OnQuery *query,
  *
  * Output: none.
  * ------------------------------------------------------------------------- */
-void on_search_job_cancel(OnSearchJob *job);
+void on_search_job_cancel(on_search_job_t *job);
 
 #endif /* ON_SEARCH_JOB_H */

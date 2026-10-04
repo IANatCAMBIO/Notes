@@ -77,11 +77,12 @@ action_apply(OnApp *app, gint64 uid, action_edit_t which, gconstpointer arg)
                        ? app->live_document(app, note_id) : NULL;
     if (live != NULL) {
         gint ord = on_document_action_ord(live, uid);
-        if (!action_rewrite(live, ord, which, title, done, due)) {
+        if (action_rewrite(live, ord, which, title, done, due)) {
+            app->live_edited(app, note_id);
+        } else {
             g_warning("action %" G_GINT64_FORMAT ": no line in the open "
                       "editor of note %" G_GINT64_FORMAT, uid, note_id);
         }
-        app->live_edited(app, note_id);
         return TRUE;
     }
 
@@ -100,18 +101,27 @@ action_apply(OnApp *app, gint64 uid, action_edit_t which, gconstpointer arg)
     return ok;
 }
 
+/*
+ * on_action_edit_set_done — see action_edit.h.
+ */
 gboolean
 on_action_edit_set_done(OnApp *app, gint64 uid, gboolean done)
 {
     return action_apply(app, uid, ACTION_STRIKE, &done);
 }
 
+/*
+ * on_action_edit_set_due — see action_edit.h.
+ */
 gboolean
 on_action_edit_set_due(OnApp *app, gint64 uid, gint64 due)
 {
     return action_apply(app, uid, ACTION_DUE, &due);
 }
 
+/*
+ * on_action_edit_set_text — see action_edit.h.
+ */
 gboolean
 on_action_edit_set_text(OnApp *app, gint64 uid, const gchar *text)
 {

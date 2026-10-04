@@ -47,6 +47,9 @@ source_first_image(CGImageSourceRef source, int max_px)
     return image;
 }
 
+/*
+ * on_image_decode_capped — see image_io.h.
+ */
 CGImageRef
 on_image_decode_capped(const uint8_t *bytes, size_t n, int max_px)
 {
@@ -57,6 +60,9 @@ on_image_decode_capped(const uint8_t *bytes, size_t n, int max_px)
      * lazily and keeps its source data, which would otherwise be the
      * caller's buffer after the caller has freed it.                       */
     CFDataRef data = CFDataCreate(NULL, bytes, (CFIndex)n);
+    if (data == NULL) {
+        return NULL;
+    }
     CGImageSourceRef source = CGImageSourceCreateWithData(data, NULL);
     CFRelease(data);
     if (source == NULL) {
@@ -67,6 +73,9 @@ on_image_decode_capped(const uint8_t *bytes, size_t n, int max_px)
     return image;
 }
 
+/*
+ * on_image_probe_size — see image_io.h.
+ */
 bool
 on_image_probe_size(const uint8_t *bytes, size_t n, int *w, int *h)
 {
@@ -76,6 +85,9 @@ on_image_probe_size(const uint8_t *bytes, size_t n, int *w, int *h)
     /* No copy: nothing created here outlives the call.                     */
     CFDataRef data = CFDataCreateWithBytesNoCopy(NULL, bytes, (CFIndex)n,
                                                  kCFAllocatorNull);
+    if (data == NULL) {
+        return false;
+    }
     CGImageSourceRef source = CGImageSourceCreateWithData(data, NULL);
     CFRelease(data);
     if (source == NULL) {
@@ -106,6 +118,9 @@ on_image_probe_size(const uint8_t *bytes, size_t n, int *w, int *h)
     return true;
 }
 
+/*
+ * on_image_png_encode — see image_io.h.
+ */
 uint8_t *
 on_image_png_encode(CGImageRef image, size_t *n_out)
 {
@@ -114,6 +129,9 @@ on_image_png_encode(CGImageRef image, size_t *n_out)
         return NULL;
     }
     CFMutableDataRef data = CFDataCreateMutable(NULL, 0);
+    if (data == NULL) {
+        return NULL;
+    }
     CGImageDestinationRef dest =
         CGImageDestinationCreateWithData(data, PNG_TYPE, 1, NULL);
     uint8_t *out = NULL;             /* the caller's copy                    */
@@ -131,12 +149,18 @@ on_image_png_encode(CGImageRef image, size_t *n_out)
     return out;
 }
 
+/*
+ * on_image_file_to_png — see image_io.h.
+ */
 uint8_t *
 on_image_file_to_png(const char *path, size_t *n_out)
 {
     *n_out = 0;
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(
         NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+    if (url == NULL) {               /* an empty path: CFRelease(NULL) traps */
+        return NULL;
+    }
     CGImageSourceRef source = CGImageSourceCreateWithURL(url, NULL);
     CFRelease(url);
     if (source == NULL) {

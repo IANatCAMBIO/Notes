@@ -70,7 +70,7 @@ worker_body(void *data)
 typedef struct {
     int       fires;
     int       destroyed;
-    OnTimerId id;                    /* for a callback that removes itself   */
+    on_timer_id_t id;                    /* for a callback that removes itself   */
     bool      remove_self;
 } timer_probe_t;
 
@@ -130,7 +130,7 @@ static void
 test_timers(void)
 {
     timer_probe_t once = { 0 };
-    OnTimerId id = on_timer_add(0.05, false, probe_fire, &once, probe_destroy);
+    on_timer_id_t id = on_timer_add(0.05, false, probe_fire, &once, probe_destroy);
     check(id != 0, "a timer has a non-zero id");
     check_pump(NULL, 0.4);
     check(once.fires == 1, "a one-shot timer fires exactly once");

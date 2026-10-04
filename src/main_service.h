@@ -27,10 +27,10 @@
 #include <stdbool.h>
 
 /* A unit of work: `data` is whatever the caller handed over with it.       */
-typedef void (*OnMainFunc)(void *data);
+typedef void (*on_main_func_t)(void *data);
 
 /* A timer's handle; 0 is "no timer".                                       */
-typedef unsigned int OnTimerId;
+typedef unsigned int on_timer_id_t;
 
 /* ---------------------------------------------------------------------------
  * on_main_post() — run fn(data) on the main thread, later: the call returns
@@ -45,7 +45,7 @@ typedef unsigned int OnTimerId;
  * Output: none.  There is no way to cancel a post: a job that may be
  *         abandoned carries its own cancelled flag and frees itself in fn.
  * ------------------------------------------------------------------------- */
-void on_main_post(OnMainFunc fn, void *data);
+void on_main_post(on_main_func_t fn, void *data);
 
 /* ---------------------------------------------------------------------------
  * on_timer_add() — call fn(data) on the main thread after `seconds`, once
@@ -65,8 +65,8 @@ void on_main_post(OnMainFunc fn, void *data);
  *
  * Output: the timer's id (never 0).
  * ------------------------------------------------------------------------- */
-OnTimerId on_timer_add(double seconds, bool repeating, OnMainFunc fn,
-                       void *data, OnMainFunc destroy);
+on_timer_id_t on_timer_add(double seconds, bool repeating, on_main_func_t fn,
+                       void *data, on_main_func_t destroy);
 
 /* ---------------------------------------------------------------------------
  * on_timer_remove() — stop a timer and release its payload.  Main thread
@@ -78,7 +78,7 @@ OnTimerId on_timer_add(double seconds, bool repeating, OnMainFunc fn,
  *
  * Output: none.
  * ------------------------------------------------------------------------- */
-void on_timer_remove(OnTimerId id);
+void on_timer_remove(on_timer_id_t id);
 
 /* ---------------------------------------------------------------------------
  * on_worker_run() — run fn(data) on a background thread.  Safe from any
@@ -94,6 +94,6 @@ void on_timer_remove(OnTimerId id);
  *
  * Output: none.
  * ------------------------------------------------------------------------- */
-void on_worker_run(OnMainFunc fn, void *data);
+void on_worker_run(on_main_func_t fn, void *data);
 
 #endif /* ON_MAIN_SERVICE_H */

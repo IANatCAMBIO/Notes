@@ -23,7 +23,7 @@
 #define SEARCH_TIME_FORMAT "%b %e, %Y %H:%M"
 
 /* ---------------------------------------------------------------------------
- * OnSearchJob — everything one search needs, snapshotted on the main
+ * on_search_job_t — everything one search needs, snapshotted on the main
  * thread so the worker never touches the UI or the shared connection.
  *
  *   cancelled — set from the main thread; read by the worker between notes
@@ -32,17 +32,17 @@
  *   query     — the parsed query (owned).
  *   scoped, scope, scope_id — the candidate notes.
  *   done, data — where the result goes.
- *   hits      — OnSearchHit *, filled by the worker.
+ *   hits      — on_search_hit_t *, filled by the worker.
  *   error     — the worker's failure message, or NULL (owned).
  * ------------------------------------------------------------------------- */
-struct OnSearchJob {
+struct on_search_job_t {
     atomic_int        cancelled;
     gchar            *db_path;
     OnQuery          *query;
     gboolean          scoped;
     OnSearchScope     scope;
     gint64            scope_id;
-    OnSearchDoneFunc  done;
+    on_search_done_func_t  done;
     gpointer          data;
     GPtrArray        *hits;
     gchar            *error;
@@ -52,14 +52,14 @@ struct OnSearchJob {
  * search_hit_free — GDestroyNotify for the hits array.
  *
  * Inputs:
- *   data — an OnSearchHit
+ *   data — an on_search_hit_t
  *
  * Output: none.
  */
 static void
 search_hit_free(gpointer data)
 {
-    OnSearchHit *h = data;
+    on_search_hit_t *h = data;
     g_free(h->path);
     g_free(h->when);
     g_free(h);
@@ -71,16 +71,18 @@ search_hit_free(gpointer data)
  * only place a job is freed, so a cancelled job is still released.
  *
  * Inputs:
- *   data — the OnSearchJob
+ *   data — the on_search_job_t
  *
  * Output: none.
  */
 static void
 search_finish(void *data)
 {
-    OnSearchJob *job = data;
+    on_search_job_t *job = data;
     if (!atomic_load(&job->cancelled)) {
-        job->done(job->error, job->hits, job->data);
+        job->done(job->error,
+                  (const on_search_hit_t *const *)job->hits->pdata,
+                  job->hits->len, job->data);
     }
     g_ptr_array_free(job->hits, TRUE);
     g_free(job->db_path);
@@ -94,14 +96,14 @@ search_finish(void *data)
  * the candidate notes, the matching.  Finishes by posting search_finish.
  *
  * Inputs:
- *   data — the OnSearchJob
+ *   data — the on_search_job_t
  *
  * Output: none.
  */
 static void
 search_worker(void *data)
 {
-    OnSearchJob *job = data;
+    on_search_job_t *job = data;
     OnDatabase  *db  = on_db_open(job->db_path);
     if (db == NULL) {
         job->error = g_strdup("Could not open the database.");
@@ -147,7 +149,7 @@ search_worker(void *data)
 
         const gchar *folder = g_hash_table_lookup(paths, &m->folder_id);
         GDateTime   *dt     = g_date_time_new_from_unix_local(m->updated_at);
-        OnSearchHit *h      = g_new0(OnSearchHit, 1);
+        on_search_hit_t *h      = g_new0(on_search_hit_t, 1);
         h->id   = m->id;
         h->path = g_strdup_printf("%s/%s", folder != NULL ? folder : "",
                                   m->title);
@@ -165,12 +167,15 @@ search_worker(void *data)
     on_main_post(search_finish, job);
 }
 
-OnSearchJob *
+/*
+ * on_search_job_start — see search_job.h.
+ */
+on_search_job_t *
 on_search_job_start(const gchar *db_path, OnQuery *query, gboolean scoped,
                     OnSearchScope scope, gint64 scope_id,
-                    OnSearchDoneFunc done, gpointer data)
+                    on_search_done_func_t done, gpointer data)
 {
-    OnSearchJob *job = g_new0(OnSearchJob, 1);
+    on_search_job_t *job = g_new0(on_search_job_t, 1);
     atomic_init(&job->cancelled, 0);
     job->db_path  = g_strdup(db_path);
     job->query    = query;
@@ -184,8 +189,11 @@ on_search_job_start(const gchar *db_path, OnQuery *query, gboolean scoped,
     return job;
 }
 
+/*
+ * on_search_job_cancel — see search_job.h.
+ */
 void
-on_search_job_cancel(OnSearchJob *job)
+on_search_job_cancel(on_search_job_t *job)
 {
     atomic_store(&job->cancelled, 1);
 }

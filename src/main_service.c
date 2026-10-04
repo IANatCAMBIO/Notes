@@ -19,20 +19,23 @@
  * returns, instead of touching freed memory.
  * ------------------------------------------------------------------------- */
 typedef struct main_timer_t {
-    OnTimerId         id;
+    on_timer_id_t         id;
     dispatch_source_t source;        /* owned: cancelled + released on remove */
     bool              repeating;
-    OnMainFunc        fn;
+    on_main_func_t        fn;
     void             *data;
-    OnMainFunc        destroy;       /* releases data, or NULL               */
+    on_main_func_t        destroy;       /* releases data, or NULL               */
     struct main_timer_t  *next;
 } main_timer_t;
 
 static main_timer_t  *timers     = NULL; /* every live timer                     */
-static OnTimerId  last_timer = 0;    /* the id handed out last               */
+static on_timer_id_t  last_timer = 0;    /* the id handed out last               */
 
+/*
+ * on_main_post — see main_service.h.
+ */
 void
-on_main_post(OnMainFunc fn, void *data)
+on_main_post(on_main_func_t fn, void *data)
 {
     dispatch_async_f(dispatch_get_main_queue(), data, fn);
 }
@@ -47,7 +50,7 @@ on_main_post(OnMainFunc fn, void *data)
  *         caller can unlink it), or NULL when no such timer is live.
  */
 static main_timer_t **
-timer_find(OnTimerId id)
+timer_find(on_timer_id_t id)
 {
     for (main_timer_t **link = &timers; *link != NULL; link = &(*link)->next) {
         if ((*link)->id == id) {
@@ -70,7 +73,7 @@ timer_find(OnTimerId id)
 static void
 timer_fire(void *context)
 {
-    OnTimerId  id   = (OnTimerId)(uintptr_t)context;
+    on_timer_id_t  id   = (on_timer_id_t)(uintptr_t)context;
     main_timer_t **link = timer_find(id);
     if (link == NULL) {
         return;
@@ -82,14 +85,18 @@ timer_fire(void *context)
     }
 }
 
-OnTimerId
-on_timer_add(double seconds, bool repeating, OnMainFunc fn, void *data,
-             OnMainFunc destroy)
+/*
+ * on_timer_add — see main_service.h.
+ */
+on_timer_id_t
+on_timer_add(double seconds, bool repeating, on_main_func_t fn, void *data,
+             on_main_func_t destroy)
 {
     main_timer_t *t = calloc(1, sizeof *t);
-    if (++last_timer == 0) {         /* wrapped: 0 means "no timer"          */
-        last_timer = 1;
-    }
+    do {                             /* 0 means "no timer"; after 2^32 adds
+                                        an id may still be in use           */
+        last_timer++;
+    } while (last_timer == 0 || timer_find(last_timer) != NULL);
     t->id        = last_timer;
     t->repeating = repeating;
     t->fn        = fn;
@@ -113,8 +120,11 @@ on_timer_add(double seconds, bool repeating, OnMainFunc fn, void *data,
     return t->id;
 }
 
+/*
+ * on_timer_remove — see main_service.h.
+ */
 void
-on_timer_remove(OnTimerId id)
+on_timer_remove(on_timer_id_t id)
 {
     main_timer_t **link = timer_find(id);
     if (link == NULL) {
@@ -152,8 +162,11 @@ worker_queue_create(void *context)
         dispatch_queue_create("notes.core.worker", attr);
 }
 
+/*
+ * on_worker_run — see main_service.h.
+ */
 void
-on_worker_run(OnMainFunc fn, void *data)
+on_worker_run(on_main_func_t fn, void *data)
 {
     static dispatch_queue_t queue;   /* created once, lives for the process  */
     static dispatch_once_t  once;

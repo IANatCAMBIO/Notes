@@ -46,5 +46,6 @@
  * build's identity.)                                                        */
 #define ON_CONFIG_FILENAME "notes.ini"
 #define ON_SOCKET_FILENAME "notes-appkit.sock"
+#define ON_LOCK_FILENAME "notes-appkit.lock"
 
 #endif /* ON_IDENTITY_H */

@@ -106,13 +106,13 @@
  *                    only, then calls live_edited.  Called by action_edit.c.
  *   live_edited    — the document live_document returned was just edited:
  *                    the editor redraws, clamps its caret and queues its
- *                    autosave.  Called by action_edit.c.
+ *                    autosave.  Called by action_edit.c, only when it did
+ *                    change the document.
  *   flush_editors  — close every editor window NOW, each one saving its
  *                    unsaved edits (or deleting its note if it was left
  *                    blank) before the call returns.  Called by
- *                    on_app_shutdown; the UI also calls it before it
- *                    switches database.  See app_lifecycle.h for the
- *                    contract.
+ *                    on_app_shutdown and on_app_switch_db.  See
+ *                    app_lifecycle.h for the contract.
  * ------------------------------------------------------------------------- */
 typedef struct OnApp {
     OnDatabase *db;
@@ -135,7 +135,7 @@ typedef struct OnApp {
     gchar      *ai_custom_prompt;
 
     gboolean    backup_running;
-    OnTimerId   backup_timer;
+    on_timer_id_t   backup_timer;
 
     void        (*notify_notes_changed)(struct OnApp *app);
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);

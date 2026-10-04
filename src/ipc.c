@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -38,8 +39,12 @@
 #define IPC_MAX_BLOB  (64 * 1024 * 1024)     /* argv/stdin/output blob     */
 #define IPC_TIMEOUT_S 10                     /* per-socket-op limit (s)    */
 
-/* How many connections may wait while a command runs.                       */
-#define IPC_BACKLOG 8
+/* How long a client keeps trying to reach an app that holds the lock but
+ * does not accept yet (it is starting up, or its queue is full), and how
+ * long a starting app waits out a client's momentary probe of the lock.    */
+#define IPC_RETRY_US      (100 * 1000)
+#define IPC_CLIENT_TRIES  20
+#define IPC_SERVER_TRIES  10
 
 /* ===========================================================================
  * the socket's address
@@ -50,10 +55,14 @@
  * whole: bind() and connect() are made with the data directory as the
  * current directory and the bare file name as the address.  The previous
  * current directory is restored before the helper returns.
+ *
+ * The current directory is process-wide, so this is done only where no
+ * other thread is resolving a relative path: in the single-threaded tool,
+ * and in the app on the main thread at launch, before any worker starts.
  * =========================================================================== */
 
 /* Which of the two address-taking calls ipc_address_call makes.             */
-typedef enum { IPC_BIND, IPC_CONNECT } ipc_call_t;
+typedef enum { ipc_call_bind, ipc_call_connect } ipc_call_t;
 
 /*
  * ipc_address_call — bind or connect `fd` to the socket file in the data
@@ -61,20 +70,22 @@ typedef enum { IPC_BIND, IPC_CONNECT } ipc_call_t;
  *
  * Inputs:
  *   fd   — an AF_UNIX stream socket
- *   call — IPC_BIND or IPC_CONNECT
+ *   call — ipc_call_bind or ipc_call_connect
  *
  * Output: 0 on success; otherwise -1 with errno set — the call's own errno
- *         (ENOENT / ECONNREFUSED from connect mean "no app is listening"),
- *         or the errno of a failed directory change.  A failure to RESTORE
- *         the previous directory is reported as -1 / EXDEV even when the
- *         call itself succeeded, because the process is then in the wrong
- *         directory and must not carry on resolving relative paths.
+ *         (ENOENT / ECONNREFUSED from connect mean "nothing accepts on the
+ *         socket"), or the errno of a failed change into the data
+ *         directory.  EXDEV means the current directory could not be
+ *         saved or restored: the call is reported as failed even if it
+ *         succeeded, because the process must not carry on resolving
+ *         relative paths from the wrong directory.
  */
 static int
 ipc_address_call(int fd, ipc_call_t call)
 {
     int saved = open(".", O_RDONLY | O_CLOEXEC);
     if (saved < 0) {
+        errno = EXDEV;               /* never mistaken for "no app listening" */
         return -1;
     }
     char *dir = on_paths_data_dir();
@@ -86,7 +97,7 @@ ipc_address_call(int fd, ipc_call_t call)
         memset(&addr, 0, sizeof addr);
         addr.sun_family = AF_UNIX;
         strlcpy(addr.sun_path, ON_SOCKET_FILENAME, sizeof addr.sun_path);
-        rc = call == IPC_BIND
+        rc = call == ipc_call_bind
              ? bind(fd, (struct sockaddr *)&addr, sizeof addr)
              : connect(fd, (struct sockaddr *)&addr, sizeof addr);
         err = errno;
@@ -135,6 +146,48 @@ ipc_set_timeout(int fd, int seconds)
     struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+
+/* ===========================================================================
+ * the app lock
+ *
+ * Whether an app is running on this data directory is decided by a LOCK,
+ * not by whether a connect() succeeds: a busy app whose accept queue is
+ * full refuses connections exactly as a dead socket file does, and a
+ * client that took that for "no app" would open the database behind the
+ * app's back.  The app holds an exclusive flock on <data dir>/
+ * notes-appkit.lock from on_ipc_server_start to on_ipc_server_stop; the
+ * kernel drops it if the app dies.  A client that cannot connect asks the
+ * lock: free means no app, held means the app is there and the client
+ * waits or gives up — it never runs headless.
+ * =========================================================================== */
+
+/* The lock this process holds as the app, or -1.                            */
+static int ipc_lock_fd = -1;
+
+/*
+ * ipc_lock_try — try to take the app lock, without waiting.
+ *
+ * Output: the locked descriptor (closing it releases the lock), or -1 with
+ *         errno set: EWOULDBLOCK when a live app holds the lock, anything
+ *         else when the lock could not be tried at all.
+ */
+static int
+ipc_lock_try(void)
+{
+    char *path = on_paths_data_file(ON_LOCK_FILENAME);
+    int   fd   = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    free(path);
+    if (fd < 0) {
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        int err = errno;
+        close(fd);
+        errno = err;
+        return -1;
+    }
+    return fd;
 }
 
 /* ===========================================================================
@@ -470,12 +523,18 @@ typedef enum {
 static ipc_pending_t  pending_kind = IPC_PENDING_NONE;
 static gchar         *pending_path = NULL;   /* for IPC_PENDING_OPEN (owned) */
 
+/*
+ * on_ipc_set_pending_quicknote — see ipc.h.
+ */
 void
 on_ipc_set_pending_quicknote(void)
 {
     pending_kind = IPC_PENDING_QUICKNOTE;
 }
 
+/*
+ * on_ipc_set_pending_open — see ipc.h.
+ */
 void
 on_ipc_set_pending_open(const gchar *path)
 {
@@ -484,12 +543,18 @@ on_ipc_set_pending_open(const gchar *path)
     pending_path = g_strdup(path);
 }
 
+/*
+ * on_ipc_has_pending — see ipc.h.
+ */
 gboolean
 on_ipc_has_pending(void)
 {
     return pending_kind != IPC_PENDING_NONE;
 }
 
+/*
+ * on_ipc_run_pending — see ipc.h.
+ */
 void
 on_ipc_run_pending(OnApp *app)
 {
@@ -682,7 +747,9 @@ ipc_serve(OnApp *app, int fd)
  * ipc_accept — the listening socket is readable: accept every waiting
  * connection and serve each in turn.  Runs on the main queue, so a command
  * executes on the main thread.  Reads block the main thread; the timeout
- * bounds how long a stalled or hostile client can freeze the app.
+ * applies to each socket operation, so a client that stalls freezes the
+ * app for at most IPC_TIMEOUT_S per read (clients are the user's own
+ * `notes` tool: the socket is in a directory only the user can enter).
  *
  * Inputs:
  *   context — the ipc_server_t (the dispatch source's context)
@@ -728,45 +795,54 @@ ipc_server_free(void *context)
     free(server);
 }
 
-OnIpcServerResult
+/*
+ * on_ipc_server_start — see ipc.h.
+ */
+on_ipc_server_result_t
 on_ipc_server_start(OnApp *app)
 {
-    if (ipc_source != NULL) {
-        return ON_IPC_SERVER_LISTENING;
+    if (ipc_lock_fd >= 0) {          /* already started: say how it went     */
+        return ipc_source != NULL ? on_ipc_server_listening
+                                  : on_ipc_server_failed;
     }
 
-    /* A socket file may be left by a crash, or belong to a live instance.
-     * Connecting tells them apart: only a dead one may be cleared.         */
-    int probe = ipc_socket_new();
-    if (probe < 0) {
-        return ON_IPC_SERVER_FAILED;
+    /* The lock decides whether this is the only app.  A client probing
+     * the lock holds it for an instant, so try a few times before
+     * concluding another app is there.                                     */
+    int lock = -1;
+    for (int i = 0; i < IPC_SERVER_TRIES && lock < 0; i++) {
+        lock = ipc_lock_try();
+        if (lock < 0 && errno != EWOULDBLOCK) {
+            fprintf(stderr, "notes: cannot take the app lock: %s\n",
+                    strerror(errno));
+            return on_ipc_server_failed;
+        }
+        if (lock < 0) {
+            usleep(IPC_RETRY_US);
+        }
     }
-    int connected = ipc_address_call(probe, IPC_CONNECT);
-    int probe_err = errno;
-    close(probe);
-    if (connected == 0) {
-        return ON_IPC_SERVER_BUSY;
+    if (lock < 0) {
+        return on_ipc_server_busy;
     }
-    if (probe_err != ENOENT && probe_err != ECONNREFUSED) {
-        fprintf(stderr, "notes: cannot probe the app socket: %s\n",
-                strerror(probe_err));
-        return ON_IPC_SERVER_FAILED;
-    }
+    /* From here this process IS the app for the data directory.  The lock
+     * is kept even if the socket cannot be created: a tool that cannot
+     * connect then refuses to run, rather than write behind this app.      */
+    ipc_lock_fd = lock;
+
+    /* With the lock held, a socket file can only be a crashed app's.       */
     char *path = on_paths_data_file(ON_SOCKET_FILENAME);
-    if (probe_err == ECONNREFUSED) {
-        unlink(path);
-    }
+    unlink(path);
 
     int fd = ipc_socket_new();
-    if (fd < 0 || ipc_address_call(fd, IPC_BIND) != 0 ||
-        listen(fd, IPC_BACKLOG) != 0) {
+    if (fd < 0 || ipc_address_call(fd, ipc_call_bind) != 0 ||
+        listen(fd, SOMAXCONN) != 0) {
         fprintf(stderr, "notes: cannot listen on %s: %s\n", path,
                 strerror(errno));
         if (fd >= 0) {
             close(fd);
         }
         free(path);
-        return ON_IPC_SERVER_FAILED;
+        return on_ipc_server_failed;
     }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 
@@ -781,24 +857,30 @@ on_ipc_server_start(OnApp *app)
     dispatch_source_set_cancel_handler_f(ipc_source, ipc_server_free);
     dispatch_resume(ipc_source);
     ipc_bound_path = path;           /* kept for on_ipc_server_stop          */
-    return ON_IPC_SERVER_LISTENING;
+    return on_ipc_server_listening;
 }
 
+/*
+ * on_ipc_server_stop — see ipc.h.
+ */
 void
 on_ipc_server_stop(void)
 {
-    if (ipc_source == NULL) {
-        return;
-    }
-    /* Cancelling stops further accepts; the cancel handler then closes
-     * the descriptor and frees the context on the main queue.             */
-    dispatch_source_cancel(ipc_source);
-    dispatch_release(ipc_source);
-    ipc_source = NULL;
+    if (ipc_source != NULL) {
+        /* Cancelling stops further accepts; the cancel handler then closes
+         * the descriptor and frees the context on the main queue.         */
+        dispatch_source_cancel(ipc_source);
+        dispatch_release(ipc_source);
+        ipc_source = NULL;
 
-    unlink(ipc_bound_path);
-    free(ipc_bound_path);
-    ipc_bound_path = NULL;
+        unlink(ipc_bound_path);
+        free(ipc_bound_path);
+        ipc_bound_path = NULL;
+    }
+    if (ipc_lock_fd >= 0) {
+        close(ipc_lock_fd);          /* releases the app lock                */
+        ipc_lock_fd = -1;
+    }
 }
 
 /* ===========================================================================
@@ -808,35 +890,58 @@ on_ipc_server_stop(void)
 /*
  * ipc_connect — connect to the running app's socket, with IPC_TIMEOUT_S on
  * every socket operation so a wedged app cannot hang the command line.
+ * When nothing accepts, the app lock says whether an app exists: if one
+ * does (it is starting, or its queue is full) the connect is retried for a
+ * couple of seconds.
  *
  * Inputs:
- *   no_server — receives TRUE when nothing is listening (no socket file,
- *               or a dead one): the caller may then act on its own
+ *   no_server — receives TRUE only when it is CERTAIN no app is running on
+ *               this data directory (the lock is free): the caller may
+ *               then act on its own
  *
  * Output: the connected descriptor, or -1.  With -1 and *no_server FALSE
- *         the socket could not even be tried (errno says why) and it is
- *         NOT known that no app is running: the caller must not fall back
- *         to opening the database itself.
+ *         an app is running but did not answer, or the socket could not be
+ *         tried (errno says why): the caller must not fall back to opening
+ *         the database itself.
  */
 static int
 ipc_connect(gboolean *no_server)
 {
     *no_server = FALSE;
-    int fd = ipc_socket_new();
-    if (fd < 0) {
-        return -1;
-    }
-    ipc_set_timeout(fd, IPC_TIMEOUT_S);
-    if (ipc_address_call(fd, IPC_CONNECT) != 0) {
+    for (int i = 0; i < IPC_CLIENT_TRIES; i++) {
+        int fd = ipc_socket_new();
+        if (fd < 0) {
+            return -1;
+        }
+        ipc_set_timeout(fd, IPC_TIMEOUT_S);
+        if (ipc_address_call(fd, ipc_call_connect) == 0) {
+            return fd;
+        }
         int err = errno;
         close(fd);
-        *no_server = err == ENOENT || err == ECONNREFUSED;
-        errno = err;
-        return -1;
+        if (err != ENOENT && err != ECONNREFUSED) {
+            errno = err;
+            return -1;
+        }
+
+        int lock = ipc_lock_try();
+        if (lock >= 0) {
+            close(lock);
+            *no_server = TRUE;
+            return -1;
+        }
+        if (errno != EWOULDBLOCK) {
+            return -1;               /* the lock could not be asked          */
+        }
+        usleep(IPC_RETRY_US);        /* an app holds the lock: try again     */
     }
-    return fd;
+    errno = EBUSY;
+    return -1;
 }
 
+/*
+ * on_ipc_try_remote — see ipc.h.
+ */
 OnIpcResult
 on_ipc_try_remote(const gchar *command, gchar **reply_out)
 {
@@ -877,6 +982,9 @@ on_ipc_try_remote(const gchar *command, gchar **reply_out)
     return result;
 }
 
+/*
+ * on_ipc_try_remote_run — see ipc.h.
+ */
 int
 on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
 {

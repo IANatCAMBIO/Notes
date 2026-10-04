@@ -1,9 +1,8 @@
 /* ===========================================================================
  * db.h — SQLite persistence layer for Notes
  *
- * All notes, folders and tags live in a single SQLite database file stored
- * in the user's data directory
- * (e.g. ~/.local/share/notes/notes.db).
+ * All notes, folders and tags live in a single SQLite database file, by
+ * default notes.db in the app's data directory (config.h).
  *
  * Note *content* is stored as an opaque binary BLOB in the custom "BNBF"
  * format produced by serialize.c; this module never interprets it.
@@ -201,7 +200,7 @@ gchar *on_db_default_path(void);
 
 /* Open (creating if necessary) the notes database.
  *   path_override — explicit db path, or NULL to use the default location
- *                   under g_get_user_data_dir().
+ *                   (on_db_default_path).
  * Returns a new OnDatabase*, or NULL on failure (error is logged).          */
 OnDatabase *on_db_open(const gchar *path_override);
 

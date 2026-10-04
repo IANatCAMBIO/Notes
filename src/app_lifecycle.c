@@ -6,6 +6,9 @@
 #include "app_lifecycle.h"
 #include "backup.h"
 
+/*
+ * on_app_db_path — see app_lifecycle.h.
+ */
 gchar *
 on_app_db_path(OnApp *app)
 {
@@ -14,6 +17,9 @@ on_app_db_path(OnApp *app)
            : on_db_default_path();
 }
 
+/*
+ * on_app_open_db — see app_lifecycle.h.
+ */
 gboolean
 on_app_open_db(OnApp *app)
 {
@@ -28,13 +34,16 @@ on_app_open_db(OnApp *app)
     return app->db != NULL;
 }
 
-OnIpcServerResult
+/*
+ * on_app_start_services — see app_lifecycle.h.
+ */
+on_ipc_server_result_t
 on_app_start_services(OnApp *app)
 {
     /* The socket first: if another instance already serves this data
      * directory, this one must do nothing further.                        */
-    OnIpcServerResult served = on_ipc_server_start(app);
-    if (served == ON_IPC_SERVER_BUSY) {
+    on_ipc_server_result_t served = on_ipc_server_start(app);
+    if (served == on_ipc_server_busy) {
         return served;
     }
     on_app_status(app, "DB at %s loaded", app->db->path);
@@ -44,6 +53,9 @@ on_app_start_services(OnApp *app)
     return served;
 }
 
+/*
+ * on_app_switch_db — see app_lifecycle.h.
+ */
 gboolean
 on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
 {
@@ -81,6 +93,9 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
     return TRUE;
 }
 
+/*
+ * on_app_shutdown — see app_lifecycle.h.
+ */
 void
 on_app_shutdown(OnApp *app)
 {

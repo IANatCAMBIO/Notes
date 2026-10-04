@@ -7,7 +7,7 @@
  * =========================================================================== */
 
 #include "db.h"
-#include "config.h"                  /* on_paths_data_file: the default path */
+#include "config.h"                  /* on_paths_data_dir: the default path  */
 #include "main_service.h"            /* the health pass's worker + hand-back */
 
 #include <stdlib.h>

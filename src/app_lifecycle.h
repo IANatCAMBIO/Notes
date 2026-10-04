@@ -7,10 +7,10 @@
  *   1. on_app_config_init()            the ini, before anything reads it
  *   2. on_cli_run(argc, argv)          a command-line invocation ends here
  *   3. on_app_prefs_load(app), app->db_dir = on_app_config_load_db_dir()
- *   4. install the UI's hooks in app
- *   5. on_app_open_db(app)             — or, when no database file exists
+ *   4. on_app_open_db(app)             — or, when no database file exists
  *                                      at on_app_db_path(), ask the user
  *                                      first; never create one silently
+ *   5. install the UI's hooks in app (each module's install function)
  *   6. build the library window
  *   7. on_app_start_services(app)
  *   ...
@@ -87,13 +87,13 @@ gboolean on_app_open_db(OnApp *app);
  * Inputs:
  *   app — the application context
  *
- * Output: the IPC server's result.  ON_IPC_SERVER_BUSY means another
+ * Output: the IPC server's result.  on_ipc_server_busy means another
  *         instance owns this data directory: NOTHING else was started, and
- *         the caller must quit without writing.  ON_IPC_SERVER_FAILED
+ *         the caller must quit without writing.  on_ipc_server_failed
  *         means everything else started but the command line cannot reach
  *         this app; the caller tells the user.
  * ------------------------------------------------------------------------- */
-OnIpcServerResult on_app_start_services(OnApp *app);
+on_ipc_server_result_t on_app_start_services(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_app_switch_db() — File > Open Database File…: switch the running app

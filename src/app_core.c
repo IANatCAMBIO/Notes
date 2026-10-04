@@ -36,6 +36,9 @@ static const bool_pref_t bool_prefs[] = {
     { "ai_enabled",               FALSE, offsetof(OnApp, ai_enabled)             },
 };
 
+/*
+ * on_app_prefs_load — see app_core.h.
+ */
 void
 on_app_prefs_load(OnApp *app)
 {
@@ -49,6 +52,9 @@ on_app_prefs_load(OnApp *app)
     app->ai_custom_prompt = on_app_config_get("ai_custom_prompt");
 }
 
+/*
+ * on_app_status — see app_core.h.
+ */
 void
 on_app_status(OnApp *app, const gchar *fmt, ...)
 {
@@ -63,6 +69,9 @@ on_app_status(OnApp *app, const gchar *fmt, ...)
     g_free(message);
 }
 
+/*
+ * on_app_location_text — see app_core.h.
+ */
 gchar *
 on_app_location_text(OnApp *app, const gchar *location)
 {
@@ -109,6 +118,9 @@ db_health_done(OnDatabase *db, gpointer data)
     }
 }
 
+/*
+ * on_app_db_health_start — see app_core.h.
+ */
 void
 on_app_db_health_start(OnApp *app)
 {
@@ -118,6 +130,9 @@ on_app_db_health_start(OnApp *app)
     }
 }
 
+/*
+ * on_app_read_stream — see app_core.h.
+ */
 gchar *
 on_app_read_stream(FILE *f, gboolean rewind_first)
 {

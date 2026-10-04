@@ -63,6 +63,9 @@ paths_fatal(const char *why)
     exit(2);
 }
 
+/*
+ * on_paths_data_dir — see config.h.
+ */
 char *
 on_paths_data_dir(void)
 {
@@ -90,6 +93,9 @@ on_paths_data_dir(void)
     return dir;
 }
 
+/*
+ * on_paths_data_file — see config.h.
+ */
 char *
 on_paths_data_file(const char *name)
 {
@@ -99,6 +105,9 @@ on_paths_data_file(const char *name)
     return path;
 }
 
+/*
+ * on_app_config_init — see config.h.
+ */
 void
 on_app_config_init(void)
 {
@@ -118,6 +127,9 @@ on_app_config_init(void)
                               NULL);       /* an absent file is fine         */
 }
 
+/*
+ * on_app_config_get — see config.h.
+ */
 gchar *
 on_app_config_get(const gchar *key)
 {
@@ -132,6 +144,9 @@ on_app_config_get(const gchar *key)
     return value;
 }
 
+/*
+ * on_app_config_get_bool — see config.h.
+ */
 gboolean
 on_app_config_get_bool(const gchar *key, gboolean def)
 {
@@ -141,6 +156,9 @@ on_app_config_get_bool(const gchar *key, gboolean def)
     return r;
 }
 
+/*
+ * on_app_config_set — see config.h.
+ */
 void
 on_app_config_set(const gchar *key, const gchar *value)
 {
@@ -167,6 +185,9 @@ on_app_config_set(const gchar *key, const gchar *value)
     }
 }
 
+/*
+ * on_app_config_get_size — see config.h.
+ */
 void
 on_app_config_get_size(const gchar *key_w, const gchar *key_h,
                        gint *w, gint *h)
@@ -185,6 +206,9 @@ on_app_config_get_size(const gchar *key_w, const gchar *key_h,
     g_free(h_str);
 }
 
+/*
+ * on_app_config_load_db_dir — see config.h.
+ */
 gchar *
 on_app_config_load_db_dir(void)
 {

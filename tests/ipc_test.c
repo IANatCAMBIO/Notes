@@ -22,7 +22,9 @@
 #include "ipc.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -99,7 +101,7 @@ server_main(void)
     app.quicknote            = server_quicknote;
     app.open_note            = server_open_note;
     app.notify_notes_changed = server_changed;
-    if (app.db == NULL || on_ipc_server_start(&app) != ON_IPC_SERVER_LISTENING) {
+    if (app.db == NULL || on_ipc_server_start(&app) != on_ipc_server_listening) {
         return 3;
     }
     CFRunLoopRun();
@@ -385,7 +387,7 @@ main(int argc, char **argv)
 
     /* A second app on the same data directory must be told to stand down.  */
     static OnApp second;
-    check(on_ipc_server_start(&second) == ON_IPC_SERVER_BUSY,
+    check(on_ipc_server_start(&second) == on_ipc_server_busy,
           "a second server on a served data directory is BUSY");
 
     /* A crash leaves the socket file: clients see no server, and the next
@@ -395,12 +397,32 @@ main(int argc, char **argv)
     check(stat(ON_SOCKET_FILENAME, &sb) == 0, "a killed server leaves its socket file");
     check(on_ipc_try_remote("quicknote", &reply) == ON_IPC_NO_SERVER,
           "a dead socket file reads as no server");
-    check(on_ipc_server_start(&second) == ON_IPC_SERVER_LISTENING,
+    check(on_ipc_server_start(&second) == on_ipc_server_listening,
           "the next server clears the stale file and listens");
-    check(on_ipc_server_start(&second) == ON_IPC_SERVER_LISTENING, "starting twice is harmless");
+    check(on_ipc_server_start(&second) == on_ipc_server_listening, "starting twice is harmless");
     on_ipc_server_stop();
     check(stat(ON_SOCKET_FILENAME, &sb) != 0, "stopping removes the socket file");
     on_ipc_server_stop();
+
+    /* An app that holds the lock but is not accepting (starting up, queue
+     * full, or its socket could not be made) must make the tool REFUSE,
+     * not run headless behind it.  The test plays that app by holding the
+     * lock itself.                                                         */
+    int lock = open(ON_LOCK_FILENAME, O_RDWR | O_CREAT, 0600);
+    check(lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0, "the test takes the app lock");
+    char out[1024];
+    int  rc = run_cli("folder add BehindTheApp", out, sizeof out);
+    check(rc == 2 && strstr(out, "cannot reach the app") != NULL,
+          "with the lock held and nothing accepting, the tool refuses to run headless");
+    check(on_ipc_try_remote("quicknote", &reply) == ON_IPC_ERROR,
+          "and a GUI command is an error, not 'no server'");
+    g_free(reply);
+    check(on_ipc_server_start(&second) == on_ipc_server_busy,
+          "an app starting while the lock is held is told BUSY");
+    close(lock);
+    rc = run_cli("folder list", out, sizeof out);
+    check(rc == 0 && strstr(out, "BehindTheApp") == NULL,
+          "once the lock is free the tool runs headless, and the refused command never ran");
 
     /* A data directory too long for a socket address.                      */
     char long_dir[PATH_MAX];
@@ -419,8 +441,7 @@ main(int argc, char **argv)
     server = start_server(self);
     check(server > 0, "a server starts on the long data directory");
     if (server > 0) {
-        char out[1024];
-        int  rc = run_cli("quicknote", out, sizeof out);
+        rc = run_cli("quicknote", out, sizeof out);
         check(rc == 0 && strcmp(out, "created note 1\n") == 0,
               "and the tool reaches it there");
         stop_server(server);

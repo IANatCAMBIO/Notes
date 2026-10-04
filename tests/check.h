@@ -61,15 +61,17 @@ check_result(void)
  * check_data_dir — the test's data directory, from the environment.
  *
  * Output: the directory `make test` set in NOTES_DATA_DIR.  Exits with
- *         status 2 when it is unset or is not under a dev/ folder — a test
- *         must never run against a real data directory.
+ *         status 2 when it is unset, is not an absolute path under a
+ *         dev/test/ folder, or climbs out of one with ".." — a test must
+ *         never run against a real data directory.
  */
 static inline const char *
 check_data_dir(void)
 {
     const char *dir = getenv(ON_DATA_DIR_ENV);
-    if (dir == NULL || strstr(dir, "/dev/") == NULL) {
-        fprintf(stderr, "refusing to run: %s must name a folder under dev/ "
+    if (dir == NULL || dir[0] != '/' || strstr(dir, "/dev/test/") == NULL ||
+        strstr(dir, "..") != NULL) {
+        fprintf(stderr, "refusing to run: %s must name a folder under dev/test/ "
                         "(run the tests with `make test`)\n",
                 ON_DATA_DIR_ENV);
         exit(2);

@@ -183,21 +183,22 @@ static int  search_hits;             /* how many hits it reported            */
 static char first_path[256];         /* the first hit's path                 */
 
 /*
- * search_landed — OnSearchDoneFunc.
+ * search_landed — on_search_done_func_t.
  *
  * Inputs:
  *   error — failure message, or NULL
  *   hits  — the matches
+ *   n     — how many
  *   data  — unused
  */
 static void
-search_landed(const gchar *error, const GPtrArray *hits, gpointer data)
+search_landed(const gchar *error, const on_search_hit_t *const *hits, size_t n,
+              gpointer data)
 {
     (void)data;
-    search_hits = error != NULL ? -1 : (int)hits->len;
+    search_hits = error != NULL ? -1 : (int)n;
     if (search_hits > 0) {
-        const OnSearchHit *h = g_ptr_array_index(hits, 0);
-        snprintf(first_path, sizeof first_path, "%s", h->path);
+        snprintf(first_path, sizeof first_path, "%s", hits[0]->path);
     }
     search_done = true;
 }
@@ -229,7 +230,7 @@ test_search_job(OnApp *app)
 
     search_done = false;
     q = on_query_new("potatoes", FALSE, FALSE, NULL);
-    OnSearchJob *job = on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0,
+    on_search_job_t *job = on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0,
                                            search_landed, NULL);
     on_search_job_cancel(job);
     check_pump(NULL, 0.5);

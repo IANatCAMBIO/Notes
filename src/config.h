@@ -3,8 +3,8 @@
  *
  * LOCATION POLICY (the rule the whole fork's data safety rests on)
  *
- * Everything the app writes outside a database the user explicitly opened
- * lives in ONE directory, the data directory:
+ * Every file this app keeps — everything but a database the user
+ * explicitly opened elsewhere — lives in ONE directory, the data directory:
  *
  *     $NOTES_DATA_DIR                                  when that is set
  *     ~/Library/Application Support/NotesAppKit        otherwise
@@ -25,6 +25,11 @@
  * The only way out of the data directory is the `db_dir` setting, written
  * by File > Open Database File… > Set as Default: a decision the user makes
  * in the app, never a default.
+ *
+ * Not in the data directory, and not this module's: the anonymous temporary
+ * files ipc.c captures a command's output in (tmpfile), and what AppKit
+ * keeps for any app under its bundle identifier (~/Library/Preferences/
+ * <bundle id>.plist, saved window state).  Neither holds notes.
  *
  * SETTINGS
  *

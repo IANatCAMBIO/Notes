@@ -393,6 +393,117 @@ test_editor(void)
 }
 
 /*
+ * test_secondary_windows — the four WPH windows open, display correctly,
+ * and release their resources on close.
+ *
+ * Inputs:
+ *   lib — the library (must have a window on screen)
+ */
+static void
+test_secondary_windows(NotesLibrary *lib)
+{
+    /* Settings window ─────────────────────────────────────────────────── */
+    __weak NSWindow *weak_settings = nil;
+    @autoreleasepool {
+        /* Open via the registered command — its identifier is "preferences". */
+        NSMenuItem *pref_item = [[NSMenuItem alloc] initWithTitle:@"Preferences…"
+                                                           action:NULL
+                                                    keyEquivalent:@""];
+        pref_item.identifier = @"preferences";
+        on_library_run_command(lib, pref_item);
+        pump(0.3);
+
+        /* Find it among visible windows. */
+        NSWindow *settings_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"Settings"]) {
+                settings_win = w;
+                break;
+            }
+        }
+        check(settings_win != nil, "the settings window opens on 'preferences' command");
+        NSTabView *tv = nil;
+        for (NSView *v in settings_win.contentView.subviews) {
+            if ([v isKindOfClass:[NSTabView class]]) { tv = (NSTabView *)v; break; }
+        }
+        check(tv != nil && tv.numberOfTabViewItems == 3,
+              "the settings window has three tabs");
+
+        weak_settings = settings_win;
+        [settings_win close];
+    }
+    pump(0.3);
+    check(weak_settings == nil, "closed settings window is deallocated (no retain cycle)");
+
+    /* Search window ───────────────────────────────────────────────────── */
+    __weak NSWindow *weak_search = nil;
+    @autoreleasepool {
+        on_search_window_open(lib, NO, nil);
+        pump(0.3);
+
+        NSWindow *search_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"Search Notes"]) {
+                search_win = w;
+                break;
+            }
+        }
+        check(search_win != nil, "the search window opens via on_search_window_open");
+        weak_search = search_win;
+        [search_win close];
+    }
+    pump(0.3);
+    check(weak_search == nil, "closed search window is deallocated");
+
+    /* A second search window can open concurrently. */
+    @autoreleasepool {
+        on_search_window_open(lib, YES, @"hello");
+        on_search_window_open(lib, NO, nil);
+        pump(0.3);
+        NSInteger search_count = 0;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"Search Notes"]) search_count++;
+        }
+        check(search_count == 2, "two concurrent search windows are independent");
+        for (NSWindow *w in NSApp.windows) {
+            if ([w.title isEqualToString:@"Search Notes"]) [w close];
+        }
+    }
+    pump(0.3);
+
+    /* Media window ────────────────────────────────────────────────────── */
+    __weak NSWindow *weak_media = nil;
+    @autoreleasepool {
+        NSMenuItem *media_item = [[NSMenuItem alloc] initWithTitle:@"Media"
+                                                            action:NULL
+                                                     keyEquivalent:@""];
+        media_item.identifier = @"media";
+        on_library_run_command(lib, media_item);
+        pump(0.3);
+
+        NSWindow *media_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"Media Browser"]) {
+                media_win = w;
+                break;
+            }
+        }
+        check(media_win != nil, "the media window opens on 'media' command");
+        weak_media = media_win;
+        [media_win close];
+    }
+    pump(0.3);
+    check(weak_media == nil, "closed media window is deallocated");
+
+    /* AI pane ─────────────────────────────────────────────────────────── */
+    @autoreleasepool {
+        NSView *pane = on_library_ai_pane_new(lib);
+        check(pane != nil, "on_library_ai_pane_new returns a view");
+        check(pane.hidden, "the AI pane starts hidden");
+    }
+}
+
+/*
  * test_heap — open/close cycles on an image-bearing note must not grow the
  * heap.
  */
@@ -496,6 +607,7 @@ main(void)
 
         test_library(lib);
         test_editor();
+        test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);
         pump(0.3);

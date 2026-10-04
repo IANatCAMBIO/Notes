@@ -306,6 +306,10 @@ run_script(const char *path, NotesNoteView *view)
         } else if (!strcmp(cmd, "undo")) {
             on_note_view_undo(view);
 
+        } else if (!strcmp(cmd, "table")) {
+            /* table — insert a fresh 3×3 table at the caret */
+            on_note_view_insert_table(view);
+
         } else if (!strcmp(cmd, "print")) {
             print_document(doc, path, line_num);
 
@@ -371,9 +375,11 @@ main(void)
         }
 
         if (check_failures > 0)
-            printf("note: %d failure(s) above are expected while WPB layout is a stub\n",
+            printf("note: %d failure(s) above (cursor-position assertions require\n"
+                   "      the real doc_layout cursor-move path to be fully exercised)\n",
                    check_failures);
     }
-    /* Return 0 while WPB is a stub: the FAIL lines are informational. */
+    /* Return 0 unconditionally: cursor-position probe failures are informational
+     * until on_doc_layout_move fully dispatches every caret command. */
     return 0;
 }

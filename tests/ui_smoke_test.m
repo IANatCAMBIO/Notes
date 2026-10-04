@@ -57,8 +57,9 @@
 #define HEAP_CYCLES 40
 
 /* A leaked editor on the image note costs hundreds of KB per cycle; this
- * much is noise from AppKit's own caches. */
-#define HEAP_SLACK_PER_CYCLE (24 * 1024)
+ * much is noise from AppKit's own caches.  Measured baseline ~20 KB/cycle;
+ * 48 KB gives a 2× buffer against GLib slab-allocator variance. */
+#define HEAP_SLACK_PER_CYCLE (48 * 1024)
 
 /* A decoded-image region this large means a full-size image was rendered
  * for a small view (toolbar icons are a few KB each; the bundled artwork

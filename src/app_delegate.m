@@ -323,19 +323,19 @@ applicationShouldTerminate:(NSApplication *)sender
 }
 
 /*
- * applicationShouldTerminateAfterLastWindowClosed: — the app quits when its
- * last window closes, as the GTK build did.  Closing the library while an
- * editor is open keeps it running.
+ * applicationShouldTerminateAfterLastWindowClosed: — return NO so the app
+ * keeps running after the library window closes while editors are open.
+ * The Dock-icon handler below re-shows the library when needed.
  *
  * Inputs:
  *   sender — NSApplication (unused)
  *
- * Output: YES.
+ * Output: NO.
  */
 - (BOOL)
 applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender
 {
-    return YES;
+    return NO;
 }
 
 /*

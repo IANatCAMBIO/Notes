@@ -1,0 +1,236 @@
+#import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+#include "look.h"
+
+/*
+ * ui_util — small AppKit helpers shared across the app, so each exists
+ * exactly once: colours from look.h, images at their display size, alerts,
+ * the file pickers, formatting, the pasteboard types.  Most are Files'
+ * util.m helpers under this app's prefix.
+ *
+ * IMAGES: THE RULE.  An image shown in a view is decoded at the size it is
+ * shown, and the view that shows it is created at that size.  An
+ * NSImageView created with a zero frame and given a large image before
+ * layout makes AppKit render and cache the image's LARGEST representation
+ * (4 MB for a 1024 px icon), and its layer keeps a second copy — tens of
+ * megabytes for a screenful of icons.  So nothing in the app calls
+ * [[NSImageView alloc] init] or +imageViewWithImage:, or hands a
+ * full-size NSImage to a small view.  Use:
+ *   on_ui_icon          a bundled icon, decoded at the point size asked for
+ *   on_ui_thumbnail     a note's image, decoded capped at its display size
+ *   on_ui_image_view    an image view created at its final frame
+ * See porting/INTERFACES.md, "Memory and ownership".
+ *
+ * Everything here is main-thread only unless it says otherwise.
+ */
+
+/* ── Pasteboard types (private to this app; see identity.h) ─────────────── */
+
+/* A selection of a note, as a BNBF sub-document, so a table or an image
+ * pastes as itself.  Written beside NSPasteboardTypeString. */
+extern NSPasteboardType const on_pasteboard_type_fragment;
+
+/* A drag of library rows: notes or a folder (library_state.h). */
+extern NSPasteboardType const on_pasteboard_type_rows;
+
+/* ── Appearance ─────────────────────────────────────────────────────────── */
+
+/*
+ * on_ui_is_dark — whether a view is drawn under a dark appearance: the
+ * `dark` that on_look_pick, OnDocLayoutStyle and on_text_style_t take.
+ *
+ * Inputs:
+ *   view — the view being drawn
+ *
+ * Output: YES for a dark appearance.
+ */
+BOOL on_ui_is_dark(NSView *view);
+
+/*
+ * on_ui_color — a look.h colour as an NSColor that follows the appearance
+ * it is drawn under.
+ *
+ * Inputs:
+ *   color — the look colour
+ *
+ * Output: a dynamic NSColor.
+ */
+NSColor *on_ui_color(on_look_color_t color);
+
+/* ── Images ─────────────────────────────────────────────────────────────── */
+
+/*
+ * on_ui_icon — a bundled icon (Contents/Resources/<name>.png, the files in
+ * icons/), decoded at the size it will be drawn: `points` times the
+ * sharpest screen's scale, never the file's full 512 px.  Cached per name
+ * and size; the set of icons is fixed, so the cache is bounded.
+ *
+ * Inputs:
+ *   name   — the file's base name, e.g. @"new-folder"
+ *   points — the edge length it is shown at
+ *
+ * Output: the image, sized `points` square; nil if there is no such icon.
+ *         Do not modify it (it is shared).
+ */
+NSImage *on_ui_icon(NSString *name, CGFloat points);
+
+/*
+ * on_ui_app_icon — the app's icon as drawn (composition.png), at the About
+ * panel's size.  macOS 26 puts a bundle icon that is not its rounded-square
+ * shape on a grey backdrop in alerts and the About panel; handing them this
+ * image explicitly shows just the artwork.
+ *
+ * Output: the image, or nil if the resource is missing.
+ */
+NSImage *on_ui_app_icon(void);
+
+/*
+ * on_ui_thumbnail — encoded image bytes (a note's stored PNG) as an image
+ * for a box of the given size: decoded capped at the box's longest side in
+ * PIXELS (image_io.h: on_image_decode_capped), never at full size.  Thread
+ * safe: thumbnails are decoded on a worker and shown on the main thread.
+ *
+ * Inputs:
+ *   bytes  — the encoded image
+ *   n      — its length
+ *   box_w  — the display box, in points
+ *   box_h
+ *   scale  — the backing scale of the screen it is for (the window's
+ *            backingScaleFactor, read on the main thread)
+ *
+ * Output: an image whose point size fits the box, aspect kept, never
+ *         upscaled; nil when the bytes will not decode.
+ */
+NSImage *on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w,
+                         CGFloat box_h, CGFloat scale);
+
+/*
+ * on_ui_image_view — an image view created AT ITS FINAL SIZE (see THE RULE
+ * above), scaling its image down proportionally.  The only way the app
+ * makes an NSImageView.
+ *
+ * Inputs:
+ *   image  — what to show (from on_ui_icon / on_ui_thumbnail); may be nil
+ *            and set later, once the view has this frame
+ *   width  — the view's size in points
+ *   height
+ *
+ * Output: the view, with fixed width and height constraints so Auto Layout
+ *         keeps the size.
+ */
+NSImageView *on_ui_image_view(NSImage *image, CGFloat width, CGFloat height);
+
+/* ── Alerts ─────────────────────────────────────────────────────────────── */
+
+/*
+ * on_ui_new_alert — a new NSAlert showing on_ui_app_icon().  Every alert in
+ * the app is made with this.
+ *
+ * Output: the alert.
+ */
+NSAlert *on_ui_new_alert(void);
+
+/*
+ * on_ui_present_alert — show an alert as a sheet on a window, or app-modal
+ * when there is none.
+ *
+ * Inputs:
+ *   alert   — the configured alert
+ *   window  — the window to attach to; nil = app-modal
+ *   handler — receives the button response, on the main thread; may be nil
+ */
+void on_ui_present_alert(NSAlert *alert, NSWindow *window,
+                         void (^handler)(NSModalResponse response));
+
+/*
+ * on_ui_show_notice — a message with one OK button.  The only way a
+ * failure is shown: the title states what failed, the message why.
+ *
+ * Inputs:
+ *   title   — the headline, e.g. @"Could not open the database"
+ *   message — the detail; may be nil
+ *   window  — the window to attach to; nil = app-modal
+ */
+void on_ui_show_notice(NSString *title, NSString *message, NSWindow *window);
+
+/*
+ * on_ui_confirm — ask before something that cannot be undone.  The default
+ * button is Cancel, so Return never destroys anything.
+ *
+ * Inputs:
+ *   question — the headline, e.g. @"Delete 3 notes permanently?"
+ *   detail   — the consequence; nil for "This cannot be undone."
+ *   action   — the confirming button's title, e.g. @"Delete"
+ *   window   — the window to attach to; nil = app-modal
+ *   handler  — called on the main thread with YES only if confirmed
+ */
+void on_ui_confirm(NSString *question, NSString *detail, NSString *action,
+                   NSWindow *window, void (^handler)(BOOL confirmed));
+
+/* ── File pickers ───────────────────────────────────────────────────────── */
+
+/* What on_ui_pick_path asks for. */
+typedef NS_ENUM(NSInteger, NotesPickKind) {
+    NotesPickOpenFile,               /* an existing file                    */
+    NotesPickSaveFile,               /* a file name to write                */
+    NotesPickFolder,                 /* an existing folder (may create one) */
+};
+
+/*
+ * on_ui_pick_path — run an open or save panel and hand over the choice.
+ *
+ * Inputs:
+ *   kind      — what to pick
+ *   title     — the panel's message
+ *   prompt    — the accept button's title, e.g. @"Open"
+ *   types     — content types to allow (e.g. @[UTTypeImage]); nil = any
+ *   start_dir — the folder to open in; nil = where the user last was
+ *   window    — the window to attach to; nil = app-modal
+ *   handler   — called on the main thread, once, with the chosen path, or
+ *               nil when the panel was cancelled
+ */
+void on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt,
+                     NSArray<UTType *> *types, NSString *start_dir,
+                     NSWindow *window, void (^handler)(NSString *path));
+
+/* ── Controls ───────────────────────────────────────────────────────────── */
+
+/*
+ * on_ui_toolbar_search_field — a search field for a toolbar: fixed width,
+ * and NO focus ring.  A focused toolbar field's ring is clipped by the
+ * toolbar and changes the field's measured width; this is the one place
+ * the app turns a focus ring off — every other field keeps the system's.
+ *
+ * Inputs:
+ *   placeholder — the grey prompt, e.g. @"Search all notes"
+ *   width       — the field's width in points
+ *
+ * Output: the field.
+ */
+NSSearchField *on_ui_toolbar_search_field(NSString *placeholder, CGFloat width);
+
+/* ── Formatting ─────────────────────────────────────────────────────────── */
+
+/*
+ * on_ui_format_bytes — a byte count as Finder shows it ("12.3 MB").
+ * Thread-safe.
+ *
+ * Inputs:
+ *   bytes — the count
+ *
+ * Output: the text.
+ */
+NSString *on_ui_format_bytes(int64_t bytes);
+
+/*
+ * on_ui_format_time — a UNIX time as a medium date and a short time in the
+ * user's locale ("3 Oct 2026 at 14:05").  One shared formatter: never one
+ * per table cell.  Thread-safe.
+ *
+ * Inputs:
+ *   unix_time — seconds since the epoch; 0 yields "—"
+ *
+ * Output: the text.
+ */
+NSString *on_ui_format_time(int64_t unix_time);

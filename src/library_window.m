@@ -121,11 +121,12 @@ init_with_library:(NotesLibrary *)lib
                   styleMask:style
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    win.title              = @"Library";
+    win.title              = @ON_APP_NAME;
     win.minSize            = NSMakeSize(on_look_library_min_w, on_look_library_min_h);
     win.toolbarStyle       = NSWindowToolbarStyleExpanded;
     win.releasedWhenClosed = NO;
     [win center];
+    [win setFrameAutosaveName:@"notes.library"];
 
     self = [super initWithWindow:win];
     if (!self) return nil;

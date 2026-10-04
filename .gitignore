@@ -1,15 +1,10 @@
 # Build artifacts
 build/
-/notes
+NotesAppKit.app/
 
-# Per-machine application configuration (lives next to the binary)
-notes.ini
-
-# Development sandbox (make run-dev): its own ini and throwaway database
+# Development and test data, and the GTK reference worktree (make seed,
+# make run, make test): never the user's real data directory
 dev/
 
 # macOS noise
 .DS_Store
-
-# Packaging artifacts
-dist/

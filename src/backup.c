@@ -4,10 +4,12 @@
 
 #include "backup.h"
 #include "db.h"
+#include "main_service.h"            /* the worker, its hand-back, the timer */
 
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Backup filenames: sortable, so lexical order IS chronological order and
  * the prune can pick victims without parsing dates or trusting mtimes on a
@@ -250,17 +252,17 @@ backup_job_free(BackupJob *job)
 }
 
 /*
- * backup_finish — main-thread tail: persist the stamp, report, and release
- * the in-flight guard.
+ * backup_finish — main-thread tail (on_main_post): persist the stamp,
+ * report, and release the in-flight guard.
  *
  * Inputs:
  *   data — the BackupJob.
  *
  * Output:
- *   G_SOURCE_REMOVE always (a one-shot idle).
+ *   none.
  */
-static gboolean
-backup_finish(gpointer data)
+static void
+backup_finish(void *data)
 {
     BackupJob *job = data;           /* the pass that just ended            */
     job->app->backup_running = FALSE;
@@ -269,7 +271,6 @@ backup_finish(gpointer data)
     if (job->message != NULL)
         on_app_status(job->app, "%s", job->message);
     backup_job_free(job);
-    return G_SOURCE_REMOVE;
 }
 
 /*
@@ -290,18 +291,18 @@ backup_finish(gpointer data)
  *   data — the BackupJob.
  *
  * Output:
- *   NULL always; the outcome rides the job back through backup_finish.
+ *   none; the outcome rides the job back through backup_finish.
  */
-static gpointer
-backup_thread(gpointer data)
+static void
+backup_thread(void *data)
 {
     BackupJob  *job = data;          /* the pass in flight                  */
     OnDatabase *db  = on_db_open(job->db_path);
     if (db == NULL) {
         job->message = g_strdup("Backup failed: cannot open the database");
         g_clear_pointer(&job->stamp, g_free);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        on_main_post(backup_finish, job);
+        return;
     }
 
     /* A unique, sortable name.  The seconds-resolution stamp could collide
@@ -330,8 +331,8 @@ backup_thread(gpointer data)
         g_unlink(dest);              /* a half-written file is not history  */
         g_free(dest);
         on_db_close(db);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        on_main_post(backup_finish, job);
+        return;
     }
     on_db_close(db);
 
@@ -347,8 +348,8 @@ backup_thread(gpointer data)
         g_free(detail);
         g_clear_pointer(&job->stamp, g_free);
         g_free(dest);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        on_main_post(backup_finish, job);
+        return;
     }
     g_free(detail);
 
@@ -372,8 +373,7 @@ backup_thread(gpointer data)
         : g_strdup_printf("Backed up to %s (%u kept)", base, kept);
     g_free(base);
     g_free(dest);
-    g_idle_add(backup_finish, job);
-    return NULL;
+    on_main_post(backup_finish, job);
 }
 
 void
@@ -409,8 +409,7 @@ on_backup_start(OnApp *app, const gchar *db_path)
     job->dir     = dir;              /* handed over                         */
     job->keep    = backup_keep();
     job->stamp   = stamp;            /* handed over; NULL = do not record   */
-    GThread *th = g_thread_new("notes-backup", backup_thread, job);
-    g_thread_unref(th);
+    on_worker_run(backup_thread, job);
 }
 
 /* ---------------------------------------------------------------------------
@@ -435,7 +434,7 @@ typedef struct {
  *   none.
  */
 static void
-backup_tick_free(gpointer data)
+backup_tick_free(void *data)
 {
     BackupTick *t = data;            /* the timer's payload                 */
     g_free(t->db_path);
@@ -449,24 +448,21 @@ backup_tick_free(gpointer data)
  *   data — the BackupTick.
  *
  * Output:
- *   G_SOURCE_CONTINUE always; the timer is removed by re-arming, never by
- *   returning here.
+ *   none; the timer repeats until on_backup_auto_start re-arms or removes
+ *   it.
  */
-static gboolean
-backup_tick(gpointer data)
+static void
+backup_tick(void *data)
 {
     BackupTick *t = data;            /* the timer's payload                 */
     on_backup_start(t->app, t->db_path);
-    return G_SOURCE_CONTINUE;
 }
 
 void
 on_backup_auto_start(OnApp *app, const gchar *db_path)
 {
-    if (app->backup_timer != 0) {
-        g_source_remove(app->backup_timer);
-        app->backup_timer = 0;
-    }
+    on_timer_remove(app->backup_timer);
+    app->backup_timer = 0;
     gint minutes = backup_interval();
     if (!on_app_config_get_bool("backup_enabled", FALSE) || minutes <= 0)
         return;                      /* off, or manual-only                 */
@@ -474,7 +470,6 @@ on_backup_auto_start(OnApp *app, const gchar *db_path)
     BackupTick *t = g_new0(BackupTick, 1);
     t->app     = app;
     t->db_path = g_strdup(db_path);
-    app->backup_timer = g_timeout_add_seconds_full(
-        G_PRIORITY_DEFAULT_IDLE, (guint)minutes * 60, backup_tick, t,
-        backup_tick_free);
+    app->backup_timer = on_timer_add((double)minutes * 60.0, true,
+                                     backup_tick, t, backup_tick_free);
 }

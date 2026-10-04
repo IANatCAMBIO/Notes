@@ -3,8 +3,8 @@
  *
  * OFF by default.  Enabled in Settings → Database, where the user may also
  * pick a destination directory — and when they have not, backups go to a
- * `backups/` folder inside the DEFAULT DATABASE DIRECTORY under the home
- * directory (~/.local/share/notes/backups).  Switching the feature on
+ * `backups/` folder inside the DEFAULT DATABASE DIRECTORY, which is the
+ * data directory (config.h).  Switching the feature on
  * therefore always does something; there is no enabled-but-inert state to
  * fall into.
  *
@@ -37,7 +37,9 @@
  * must not cross threads — the same rule the search worker follows), so a
  * slow or unreachable destination — a network mount, a sleeping external
  * disk — never blocks the UI.  Completion is marshalled back with
- * g_idle_add.
+ * on_main_post (main_service.h), and the periodic timer is an on_timer: a
+ * process with no main run loop (the command-line tool) can neither finish
+ * a pass nor tick, and never starts one.
  *
  * Config keys (all in the [notes] group):
  *   backup_enabled       1|0, default 0 — the master switch.
@@ -60,7 +62,7 @@
 #ifndef BLUE_BACKUP_H
 #define BLUE_BACKUP_H
 
-#include "app.h"
+#include "app_core.h"
 
 /* Default retention and cadence, shared with the Settings spin buttons so
  * the UI and the timer cannot disagree about what "unset" means.            */

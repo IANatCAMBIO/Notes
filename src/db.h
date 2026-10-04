@@ -193,8 +193,10 @@ typedef struct {
 /* The database filename inside its directory (default or configured).      */
 #define ON_DB_FILENAME "notes.db"
 
-/* The default database path (~/.local/share/notes/notes.db),
- * creating the directory if needed. Returns a new string; g_free() it.     */
+/* The default database path: ON_DB_FILENAME inside the data directory
+ * (config.h — ~/Library/Application Support/NotesAppKit unless
+ * NOTES_DATA_DIR says otherwise), creating the directory if needed.
+ * Returns a new string; g_free() it.                                       */
 gchar *on_db_default_path(void);
 
 /* Open (creating if necessary) the notes database.

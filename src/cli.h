@@ -1,10 +1,13 @@
 /* ===========================================================================
  * cli.h — command-line automation interface
  *
- * When the binary is invoked with a subcommand, the action runs headless
- * (no windows) against the same database the GUI uses — including a
- * configured custom/shared location — and the process exits.  With no
- * subcommand the GUI starts as usual.
+ * The `notes` tool (cli_main.c) runs a subcommand against the same database
+ * the app uses — including a configured custom/shared location — and
+ * exits.  While the app is running the command is handed to it over the
+ * socket (ipc.h) and runs there; otherwise it runs headless, on the tool's
+ * own connection.  With no subcommand, and for the two commands that need
+ * a window (quicknote, note open) when no app is running, the tool starts
+ * the app.
  *
  * Commands follow a noun-verb structure:
  *
@@ -39,6 +42,9 @@
  *   notes note images ID             (N, bytes, WxH — N is 1-based, the
  *                                        numbering 'note cat --md' uses)
  *   notes note image ID N FILE       (writes the stored PNG out verbatim)
+ *   notes note add-image ID FILE     (appends an image file, stored as PNG)
+ *   notes note set-modified ID TS    (sets the modified time; TS is a UNIX
+ *                                        timestamp — for importers)
  *   notes note open PATH             (id or Folder/Title; uses the GUI)
  *   notes action list [--open|--done] [--context NAME] [--uid]
  *                                        ('!' items; NOTEID:ORD positions;
@@ -80,14 +86,16 @@
 #ifndef BLUE_CLI_H
 #define BLUE_CLI_H
 
-#include "app.h"                     /* OnApp (db.h through it)            */
+#include "app_core.h"                /* OnApp (db.h through it)            */
 
 /* ---------------------------------------------------------------------------
  * on_cli_run() — dispatch a command-line invocation.
  *   argc/argv — the program arguments as passed to main().
  * Returns a process exit code (>= 0) when a subcommand was handled, or
- * -1 when no subcommand was given (or a GUI-interacting command found no
- * running instance) and the GUI should start.
+ * -1 when it was not: no subcommand was given, the first word is not a
+ * command, or a GUI command (quicknote, note open) found no running app —
+ * in which case it is recorded as pending (on_ipc_has_pending) for the app
+ * that the caller starts.
  * ------------------------------------------------------------------------- */
 int on_cli_run(int argc, char **argv);
 

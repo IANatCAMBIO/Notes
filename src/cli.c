@@ -7,21 +7,22 @@
  *   1 — usage error (bad command/arguments)
  *   2 — operation failed (missing folder, database error, …)
  *
- * The database is resolved exactly like the GUI resolves it: the custom
- * location from notes.ini (next to the binary) when set, otherwise
- * the default per-user path.
+ * The database is resolved exactly like the app resolves it: the custom
+ * location from notes.ini (in the data directory, config.h) when set,
+ * otherwise the default path inside that directory.
  * =========================================================================== */
 
 #include "cli.h"
-#include "app.h"
+#include "action_edit.h"             /* action done/due/text: row + line    */
+#include "app_core.h"
 #include "db.h"
-#include "editor_window.h"           /* action done/due content rewrites    */
 #include "export.h"
 #include "ipc.h"
 #include "search_query.h"
 #include "serialize.h"               /* on_note_document_load, extractors  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Stdin substitute used while a command runs inside a GUI instance on behalf
@@ -831,8 +832,6 @@ cmd_list_notes(OnDatabase *db, const gchar *path)
  * cmd_new_note() — create a note from CLI-supplied content.
  *   folder_path — destination ("" = top level; must already exist).
  *   content     — the note text, or "-" to read stdin.
- * Serializing needs GTK's text buffer machinery, so GTK is initialized
- * (windowless) for this command.
  * ------------------------------------------------------------------------- */
 static int
 cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
@@ -870,7 +869,7 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
 
 /* ---------------------------------------------------------------------------
  * cmd_cat_note() — print a note's content to stdout.
- *   markdown — FALSE: the cached plain text (no GTK needed);
+ *   markdown — FALSE: the cached plain text;
  *              TRUE:  a Markdown render with formatting preserved
  *                     (images become "![image N]()" placeholders).
  * ------------------------------------------------------------------------- */
@@ -1003,25 +1002,17 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
         return 2;
     gint64 id = meta->id;            /* validated note id                   */
 
-    GError *err = NULL;
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(file, &err);
-    if (pixbuf == NULL) {
-        fprintf(stderr, "error: cannot load image %s: %s\n",
-                file, err->message);
-        g_clear_error(&err);
-        on_db_note_meta_free(meta);
-        return 2;
-    }
-
     /* The stored form is PNG whatever the file was (the editor's paste
      * path encodes the same way); encoded once, here, and never again.    */
-    GBytes *png = on_image_png_bytes(pixbuf);
-    if (png == NULL) {
-        fprintf(stderr, "error: cannot encode image %s\n", file);
-        g_object_unref(pixbuf);
+    size_t   n_png = 0;              /* encoded size                        */
+    uint8_t *bytes = on_image_file_to_png(file, &n_png);
+    if (bytes == NULL) {
+        fprintf(stderr, "error: cannot load image %s: not a readable "
+                        "image file\n", file);
         on_db_note_meta_free(meta);
         return 2;
     }
+    GBytes *png = g_bytes_new_with_free_func(bytes, n_png, free, bytes);
 
     /* Load the note and append the image on a fresh line: an empty last
      * line becomes the image, anything else gets the image after it.      */
@@ -1042,7 +1033,7 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
 
     g_free(title);
     on_document_free(doc);
-    g_object_unref(pixbuf);
+    g_bytes_unref(png);
     on_db_note_meta_free(meta);
     return 0;
 }
@@ -1204,7 +1195,7 @@ cmd_note_images(OnDatabase *db, const gchar *id_str)
         gsize n_png;                 /* encoded size                        */
         const guint8 *bytes = g_bytes_get_data(png, &n_png);
         gint w = 0, h = 0;           /* pixel dimensions from the header    */
-        on_png_probe_size(bytes, n_png, &w, &h);
+        on_image_probe_size(bytes, n_png, &w, &h);
         if (cli_json) {
             json_element();
             printf("{\"ord\":%d,\"bytes\":%" G_GSIZE_FORMAT
@@ -1761,7 +1752,7 @@ cmd_action_done(OnApp *app, const gchar *token, gboolean done)
     gint64 uid = action_token_parse(app->db, token);
     if (uid == 0)
         return 2;
-    if (!on_editor_action_set_done(app, uid, done)) {
+    if (!on_action_edit_set_done(app, uid, done)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         return 2;
     }
@@ -1794,7 +1785,7 @@ cmd_action_due(OnApp *app, const gchar *token, const gchar *date_arg)
     gint64 uid = action_token_parse(app->db, token);
     if (uid == 0)
         return 2;
-    if (!on_editor_action_set_due(app, uid, due)) {
+    if (!on_action_edit_set_due(app, uid, due)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         return 2;
     }
@@ -1810,7 +1801,7 @@ cmd_action_due(OnApp *app, const gchar *token, const gchar *date_arg)
  * replaced, keeping the line's '!' prefix, its spacing and any trailing
  * "due <date>", and carrying the done state over.  For an external mirror
  * renaming an item it pinned by uid — that uid survives the rewrite (see
- * on_editor_action_set_text).
+ * on_action_edit_set_text).
  *   content — the new text, or "-" to read it from stdin.
  * ------------------------------------------------------------------------- */
 static int
@@ -1843,7 +1834,7 @@ cmd_action_text(OnApp *app, const gchar *token, const gchar *content)
         g_free(text);
         return 2;
     }
-    if (!on_editor_action_set_text(app, uid, text)) {
+    if (!on_action_edit_set_text(app, uid, text)) {
         fprintf(stderr, "error: no such action item: %s\n", token);
         g_free(text);
         return 2;
@@ -2593,8 +2584,9 @@ on_cli_run(int argc, char **argv)
         return rc;
     }
 
-    /* Anything that is not a known noun/command falls through to GTK
-     * (which has its own option handling for things like --display).       */
+    /* Anything that is not a known noun/command is not ours: -1 hands it
+     * back to main(), which decides (the command-line tool reports an
+     * unknown command; the app ignores launch arguments it does not know). */
     gboolean is_flat = g_strcmp0(cmd, "search") == 0 ||
                        g_strcmp0(cmd, "stats") == 0 ||
                        g_strcmp0(cmd, "backup") == 0 ||

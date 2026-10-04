@@ -7,7 +7,10 @@
  * =========================================================================== */
 
 #include "db.h"
+#include "config.h"                  /* on_paths_data_file: the default path */
+#include "main_service.h"            /* the health pass's worker + hand-back */
 
+#include <stdlib.h>
 #include <string.h>
 #include <glib/gstdio.h>
 
@@ -393,11 +396,12 @@ query_int64(OnDatabase *db, const char *sql, gint64 bind_id)
 gchar *
 on_db_default_path(void)
 {
-    gchar *dir = g_build_filename(g_get_user_data_dir(),
-                                  "notes", NULL);
+    /* The data directory (config.h's policy) — never the XDG data dir the
+     * GTK build used, which is where that build's real database may be.   */
+    char *dir = on_paths_data_dir();
     g_mkdir_with_parents(dir, 0700);
     gchar *path = g_build_filename(dir, ON_DB_FILENAME, NULL);
-    g_free(dir);
+    free(dir);
     return path;
 }
 
@@ -789,7 +793,7 @@ struct HealthJob {
 
 /* on_db_health_abandon() — the connection is closing: the running pass
  * must not report to it.  The job outlives the connection and frees
- * itself from its own idle.                                              */
+ * itself in its own main-thread hand-back.                               */
 static void
 on_db_health_abandon(OnDatabase *db)
 {
@@ -797,10 +801,11 @@ on_db_health_abandon(OnDatabase *db)
     db->health_job = NULL;
 }
 
-/* health_job_done() — main-thread idle: record the verdict (unless the
- * connection was closed meanwhile) and tell the caller; free the job.     */
-static gboolean
-health_job_done(gpointer user_data)
+/* health_job_done() — on the main thread (on_main_post): record the
+ * verdict (unless the connection was closed meanwhile) and tell the
+ * caller; free the job.                                                   */
+static void
+health_job_done(void *user_data)
 {
     HealthJob *job = user_data;
     if (!job->cancelled) {
@@ -813,17 +818,16 @@ health_job_done(gpointer user_data)
     g_free(job->detail);
     g_free(job->path);
     g_free(job);
-    return G_SOURCE_REMOVE;
 }
 
-/* health_worker() — the thread: the pass over its own connection.        */
-static gpointer
-health_worker(gpointer user_data)
+/* health_worker() — the worker (on_worker_run): the pass over its own
+ * connection, then the hand-back to the main thread.                     */
+static void
+health_worker(void *user_data)
 {
     HealthJob *job = user_data;
     job->ok = db_check_file(job->path, &job->ran, &job->detail);
-    g_idle_add(health_job_done, job);
-    return NULL;
+    on_main_post(health_job_done, job);
 }
 
 void
@@ -838,7 +842,7 @@ on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done, gpointer data)
     job->data = data;
     db->health_job     = job;
     db->health.pending = TRUE;
-    g_thread_unref(g_thread_new("on-db-health", health_worker, job));
+    on_worker_run(health_worker, job);
 }
 
 const OnDbHealth *

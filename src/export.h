@@ -16,7 +16,7 @@
 #ifndef BLUE_EXPORT_H
 #define BLUE_EXPORT_H
 
-#include "app.h"
+#include "app_core.h"
 
 /* Output formats supported by on_export_all().                              */
 typedef enum {

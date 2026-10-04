@@ -1,80 +1,152 @@
 /* ===========================================================================
- * ipc.h — talk to an already-running Notes instance
+ * ipc.h — the socket between the command-line tool and the running app
  *
- * The GUI process listens on a per-user Unix-domain socket
- * (<runtime-dir>/notes.sock).  Short-lived CLI invocations
- * ("notes quicknote" / "notes note open PATH") connect to that
- * socket and hand the running instance a one-line command so the note opens
- * in the existing windows rather than a second copy of the app.  When no
- * instance is listening the CLI records the request as a "pending action" and
- * returns control to main() so the GUI starts and performs it at activate.
+ * WHY.  One process at a time may write the database.  While the app is
+ * running, a command-line invocation therefore does not open the database
+ * itself: it hands the command to the app over a Unix-domain socket, the
+ * app runs it against its own connection — refreshing its windows, and
+ * rewriting an open editor rather than the stored note — and ships the
+ * output back.  Only when no app is listening does the command line open
+ * the database directly.  The socket both DETECTS a running app (connect
+ * succeeds) and CARRIES the command to it.
  *
- * D-Bus (GApplication's usual single-instance channel) is not available on
- * the macOS target, so this bespoke socket both DETECTS a running instance
- * (connect succeeds) and CARRIES the command to it.
+ * WHERE.  <data dir>/notes-appkit.sock (config.h, identity.h): inside this
+ * build's own data directory, under a name the GTK build never uses (that
+ * build's sockets are ~/.cache/notes-<hash>.sock).  The two builds can
+ * therefore never serve each other's commands, and NOTES_DATA_DIR
+ * redirects the socket together with the ini and the database — a
+ * development run and an installed app never meet either.  One socket per
+ * data directory: the command line always finds the app that owns the same
+ * notes.ini, whatever database that app has open.
+ *
+ * A client that cannot tell whether an app is running (the socket could
+ * not even be tried) REFUSES to run headless: a wrong guess would put a
+ * second writer on the database behind a live app's back.
+ *
+ * WIRE FORMAT (unchanged from the GTK build).
+ *   Protocol A, one line each way:
+ *     request   quicknote | open <path>
+ *     response  OK <message>\n | ERR <message>\n
+ *     <path> is a numeric note id or "Folder/Sub/Title" (exact title).
+ *   Protocol B, a delegated data command:
+ *     request   RUN\n <nargs>\n then per argument <len>\n<bytes>,
+ *               then stdin as <len>\n<bytes>
+ *     response  <exit code>\n <len>\n<stdout bytes> <len>\n<stderr bytes>
+ *   Limits: 256 arguments, 64 KiB per line, 64 MiB per blob; 10 s per
+ *   socket operation, except the client's wait for a RUN response, which
+ *   is unbounded (an export takes as long as it takes).
+ *
+ * The server side needs the main run loop (its listening socket is a
+ * dispatch source on the main queue) and the UI's hooks in OnApp; the
+ * client side needs neither.
  * =========================================================================== */
 
-#ifndef BLUE_IPC_H
-#define BLUE_IPC_H
+#ifndef ON_IPC_H
+#define ON_IPC_H
 
-#include "app.h"
+#include "app_core.h"
 
-/* Outcome of trying to reach a running instance (client side).              */
+/* Outcome of trying to reach a running app (client side).                   */
 typedef enum {
-    ON_IPC_NO_SERVER = 0,            /* nothing listening — start the GUI    */
-    ON_IPC_OK,                       /* running instance handled the command */
-    ON_IPC_ERROR,                    /* it answered but reported a failure   */
+    ON_IPC_NO_SERVER = 0,            /* nothing listening                    */
+    ON_IPC_OK,                       /* the app handled the command          */
+    ON_IPC_ERROR,                    /* it reported a failure, or could not
+                                        be reached                           */
 } OnIpcResult;
 
+/* Outcome of starting the server (app side).                                */
+typedef enum {
+    ON_IPC_SERVER_LISTENING,         /* this process now serves the socket   */
+    ON_IPC_SERVER_BUSY,              /* another live app already serves this
+                                        data directory                       */
+    ON_IPC_SERVER_FAILED,            /* the socket could not be created      */
+} OnIpcServerResult;
+
 /* ---------------------------------------------------------------------------
- * on_ipc_try_remote() — CLIENT: connect to a running instance and send one
- * command line ("quicknote" or "open PATH").  On a reply, *reply_out receives
- * the instance's human-readable message (newline stripped; g_free it).
- *   command   — the command line to send (no trailing newline needed).
- *   reply_out — receives the reply message, or NULL; may be NULL to ignore.
- * Returns ON_IPC_NO_SERVER when no instance is listening, otherwise ON_IPC_OK
- * or ON_IPC_ERROR per the instance's answer.
+ * on_ipc_try_remote() — CLIENT: send one protocol-A command line to a
+ * running app and wait for its one-line reply.
+ *
+ * Inputs:
+ *   command   — "quicknote" or "open PATH" (no trailing newline)
+ *   reply_out — receives the app's message with the OK/ERR prefix and the
+ *               newline stripped (g_free it); may be NULL to ignore
+ *
+ * Output: ON_IPC_NO_SERVER when no app is listening (*reply_out NULL),
+ *         otherwise ON_IPC_OK or ON_IPC_ERROR.
  * ------------------------------------------------------------------------- */
 OnIpcResult on_ipc_try_remote(const gchar *command, gchar **reply_out);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_try_remote_run() — CLIENT: ask a running instance to execute a data
- * command (tag/folder/note/backup/export-*) against its live database and
- * stream the captured stdout/stderr back here.  On success this prints that
- * output to stdout/stderr and returns the command's exit code with *ran set
- * TRUE.  When no instance is listening it returns 0 with *ran FALSE, so the
- * caller runs the command headless instead.
- *   argc/argv — the full program arguments (argv[1] is the command).
- *   ran       — set TRUE when a running instance handled the command.
+ * on_ipc_try_remote_run() — CLIENT: ask a running app to execute a data
+ * command (protocol B) and copy its captured stdout/stderr to ours.
+ *
+ * Inputs:
+ *   argc, argv — the full program arguments (argv[1] is the command)
+ *   ran        — receives TRUE when the caller must NOT run the command
+ *                itself: the app ran it, or the socket could not be tried
+ *                (an error has been printed)
+ *
+ * Output: the command's exit code when *ran is TRUE (2 when the response
+ *         could not be read, or the socket could not be tried); 0 with
+ *         *ran FALSE when no app is listening, so the caller runs headless.
  * ------------------------------------------------------------------------- */
 int on_ipc_try_remote_run(int argc, char **argv, gboolean *ran);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_set_pending_quicknote() / on_ipc_set_pending_open() — record the
- * action for the GUI to run once it has started (used when no running
- * instance answered).  on_ipc_run_pending() executes and clears it.
+ * on_ipc_set_pending_quicknote() / on_ipc_set_pending_open() — record a GUI
+ * command that found no running app, for the app about to start to perform.
+ *
+ * Inputs:
+ *   path — the note path to open (copied)
+ *
+ * Output: none.
  * ------------------------------------------------------------------------- */
 void on_ipc_set_pending_quicknote(void);
 void on_ipc_set_pending_open(const gchar *path);
-void on_ipc_run_pending(OnApp *app);
 
-/* on_ipc_has_pending() — TRUE when a pending action is queued.  main() uses
- * this to launch the GtkApplication with a clean argv (the leftover CLI words
- * like "quicknote" would otherwise be taken as files to open).              */
+/* ---------------------------------------------------------------------------
+ * on_ipc_has_pending() — is a pending action recorded?
+ *
+ * Output: TRUE when one is.
+ * ------------------------------------------------------------------------- */
 gboolean on_ipc_has_pending(void);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_server_start() — SERVER: begin listening for CLI commands.  Safe to
- * call once, after the library window exists.  A stale socket left by a
- * crashed instance is cleared first; a genuinely-live one means another GUI
- * already serves and this call becomes a no-op.
+ * on_ipc_run_pending() — perform and clear the pending action, through the
+ * UI's hooks; a failure is reported on stderr.  A no-op when none is
+ * recorded.
+ *
+ * Inputs:
+ *   app — the application context, hooks installed, library on screen
+ *
+ * Output: none.
  * ------------------------------------------------------------------------- */
-void on_ipc_server_start(OnApp *app);
+void on_ipc_run_pending(OnApp *app);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_server_stop() — stop listening and unlink the socket file.  Called
- * at shutdown after the main loop returns.
+ * on_ipc_server_start() — SERVER: begin listening for command-line
+ * invocations.  A socket file left by a crashed instance is cleared; one a
+ * live instance still serves is left alone.  Main thread, after the hooks
+ * are installed.
+ *
+ * Inputs:
+ *   app — the application context commands will run against
+ *
+ * Output: ON_IPC_SERVER_LISTENING on success (also when already
+ *         listening).  ON_IPC_SERVER_BUSY means another app instance owns
+ *         this data directory and this one must not go on to write the
+ *         database.  ON_IPC_SERVER_FAILED (reported on stderr) means the
+ *         command line cannot reach this app and will work on the database
+ *         directly — the caller must tell the user.
+ * ------------------------------------------------------------------------- */
+OnIpcServerResult on_ipc_server_start(OnApp *app);
+
+/* ---------------------------------------------------------------------------
+ * on_ipc_server_stop() — stop listening and remove the socket file.  Main
+ * thread.  A no-op when not listening.
+ *
+ * Output: none.
  * ------------------------------------------------------------------------- */
 void on_ipc_server_stop(void);
 
-#endif /* BLUE_IPC_H */
+#endif /* ON_IPC_H */

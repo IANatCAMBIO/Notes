@@ -1,5 +1,18 @@
 # Block document model — design for the note engine's replacement
 
+> **In this fork (Notes AppKit).**  This document was written for the GTK4
+> app and is kept unchanged below as the design record of the MODEL —
+> `document.[ch]` and `bnbf.[ch]`, which this fork carries untouched and
+> which remain the single mutation path of a note.  Everything it says
+> about the VIEW (the drawn GTK widget, PangoLayout, GtkIMContext,
+> GdkClipboard, snapshot painting, `GTK4_MIGRATION.md`) describes
+> `porting/gtk_reference/src/note_view.c` and `doc_layout.c`, the
+> specification the AppKit view is being written from; the AppKit
+> interfaces are `doc_layout.h`, `text_layout.h` and `note_view.h`
+> (see `porting/INTERFACES.md`).  File references such as
+> `GTK4_MIGRATION.md` and `CLAUDE.md` mean the copies in
+> `porting/gtk_reference/docs/`.
+
 Written 2026-09-15 on the `gtk4` branch, after the day that produced
 D14/D17/D23/D27/D29.  This is a SPEC, not a log: it says what `OnDocument`
 and the drawn view are, so that step 1 below can start from an API rather

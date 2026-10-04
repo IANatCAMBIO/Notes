@@ -261,6 +261,9 @@ add_image(gint64 note_id)
     g_bytes_unref(bytes);
 }
 
+/* Forward declaration — defined after test_library which calls it. */
+static void test_notes_pane(NotesLibrary *lib);
+
 /*
  * test_library — the library window comes up with true data, and goes away
  * completely.
@@ -301,6 +304,48 @@ test_library(NotesLibrary *lib)
     on_library_window_show(lib);
     pump(0.3);
     check(lib.window != nil, "and it can be shown again");
+    test_notes_pane(lib);
+}
+
+/*
+ * test_notes_pane — notes list, grid and action items pane smoke checks.
+ */
+static void
+test_notes_pane(NotesLibrary *lib)
+{
+    /* The pane was installed by on_library_notes_new inside library_window.
+     * on_library_notes_selected_ids always returns an NSArray. */
+    NSArray *ids = on_library_notes_selected_ids(lib);
+    check(ids != nil, "notes pane: selected_ids returns an array");
+
+    /* Refresh in list mode; the seeded note should appear. */
+    lib.grid_pref = NO;
+    on_library_notes_refresh(lib);
+    pump(0.2);
+
+    /* Switch to grid mode and back. */
+    lib.grid_pref = YES;
+    on_library_notes_refresh(lib);
+    pump(0.2);
+    lib.grid_pref = NO;
+    on_library_notes_refresh(lib);
+    pump(0.2);
+    check(YES, "notes pane: list/grid toggle does not crash");
+
+    /* Switch to Action Items pane. */
+    on_sb_kind_t saved_kind = lib.sel_kind;
+    gint64       saved_id   = lib.sel_id;
+    lib.sel_kind = on_sb_actions;
+    lib.sel_id   = 0;
+    on_library_notes_refresh(lib);
+    pump(0.2);
+    check(YES, "notes pane: action items view does not crash");
+
+    /* Restore selection. */
+    lib.sel_kind = saved_kind;
+    lib.sel_id   = saved_id;
+    on_library_notes_refresh(lib);
+    pump(0.1);
 }
 
 /*

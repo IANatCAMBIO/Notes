@@ -23,8 +23,10 @@
 
 set -eu
 
-# The notes binary lives next to this repo's tools/ directory.
-BIN="$(cd "$(dirname "$0")/.." && pwd)/notes"
+# The `notes` command-line tool, inside the bundle `make` builds.  It writes
+# to the data directory it resolves: NOTES_DATA_DIR when that is set (use
+# dev/data to try an import), otherwise this app's real one.
+BIN="$(cd "$(dirname "$0")/.." && pwd)/NotesAppKit.app/Contents/MacOS/notes"
 if [ ! -x "$BIN" ]; then
     echo "error: $BIN not found — run make first" >&2
     exit 1

@@ -11,10 +11,9 @@
  * the window's status update.  It is also the library's only DROP target
  * (notes and folders dragged onto folders, the root and the Trash).
  *
- * STATUS: library_sidebar.m is a STUB for work package F — a placeholder
- * that shows the database's counts.  The specification is
- * porting/gtk_reference/src/library_window.c (refresh_sidebar, the drop
- * validation, the fit-to-content sizing).  This header is FROZEN.
+ * The specification is porting/gtk_reference/src/library_window.c
+ * (refresh_sidebar, the sidebar menus, the drop validation, the
+ * fit-to-content sizing).
  */
 
 /*
@@ -32,7 +31,9 @@ NSView *on_library_sidebar_new(NotesLibrary *lib);
  * on_library_sidebar_refresh — rebuild the rows from the database: folders,
  * tags, counts, which fixed rows exist.  Expansion state and the selection
  * survive; a selection that no longer exists falls back to the first row
- * (updating lib's selection).  Does NOT refresh the notes pane.
+ * (updating lib's selection and refreshing the notes pane for it).  When
+ * the selection survives the notes pane is not refreshed: the caller does
+ * that.
  */
 void on_library_sidebar_refresh(NotesLibrary *lib);
 

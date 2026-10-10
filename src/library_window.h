@@ -15,11 +15,6 @@
  * from show to close.  In windowWillClose: the controller removes its
  * status timer and lets go of itself; the panes' views go with the window.
  *
- * STATUS: a working skeleton — window, toolbar from the command table,
- * split view, status bar, the hooks.  Still to do for package E: the
- * toolbar's List/Grid and Completed items changing their icons (their
- * commands are the notes pane's), and persisting nothing more than the
- * GTK build did.  This header is FROZEN.
  */
 
 /*
@@ -41,3 +36,13 @@ void on_library_window_install(NotesLibrary *lib);
  *   lib — the library
  */
 void on_library_window_show(NotesLibrary *lib);
+
+/*
+ * on_library_window_location_changed — the selection changed (or what it
+ * names did): the status bar's left side shows the new location.  Called
+ * by the notes pane whenever it lists a selection.
+ *
+ * Inputs:
+ *   lib — the library
+ */
+void on_library_window_location_changed(NotesLibrary *lib);

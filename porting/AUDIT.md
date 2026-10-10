@@ -25,6 +25,10 @@ Step 2 — the editor view (part 2):
 - [x] M Find highlights were capped at 32 per block; Insert Image stored a JPEG/HEIC file's bytes as if PNG
 - [x] M Insert Image and pasted images are converted to PNG once
 
+Step 3 — sidebar and folders:
+- [x] H Folder emojis showed as mojibake ("üß™"): NSString formats read %s in the system encoding, not UTF-8 (also the image caption)
+- [x] M New Subfolder… is New Folder on a folder's menu (the dead new-subfolder command is gone); the inline rename (not in GTK) is gone — Info… renames
+
 Earlier:
 
 - [x] H Double-click / Return opens a note: list, grid, Action Items (grid was not even selectable)
@@ -95,25 +99,25 @@ Earlier:
 
 ## Sidebar (library_sidebar.m)
 
-- [ ] H Context menu never appears (`outlineView:menuForEvent:` is not a delegate method)
-- [ ] H "Notes" root row cannot be selected (treated as a header); start selection should be root
-- [ ] H Note drops never work (private pasteboard type); no drops on root/Trash; folder onto Trash
-- [ ] H Folder commands without handlers: folder-info, sort-subfolders (delete-folder, folder-restore, empty-trash done)
-- [ ] H Folder prompt lacks emoji and AI mode (New Folder, Folder Info share one tool panel in GTK)
-- [ ] H Fit-to-content never runs (`_split` never set)
+- [x] H Context menu never appears (`outlineView:menuForEvent:` is not a delegate method)
+- [x] H "Notes" root row cannot be selected (treated as a header); start selection should be root
+- [x] H Note drops never work (private pasteboard type); no drops on root/Trash; folder onto Trash
+- [x] H Folder commands without handlers: folder-info, sort-subfolders, delete-folder, folder-restore, empty-trash
+- [x] H Folder prompt lacks emoji and AI mode (New Folder, Folder Info share one tool panel in GTK)
+- [x] H Fit-to-content never runs (`_split` never set)
 - [x] H Restore Folder moves to top level (should be on_db_folder_restore)
 - [x] H Trash folder: wrong confirm ("cannot be undone"), editors left open, wrong selection
 - [x] H Permanent delete / Empty Trash leave editors open; no status
-- [ ] M Search Here… missing from menus; root menu; menus should be built from commands
-- [ ] M New Subfolder creates "New Folder" immediately instead of prompting
-- [ ] M Folder reorder before/after; between-row drops; drag trashed folders out to restore; drop status messages
-- [ ] M Selection restore refreshes notes twice; status path not updated on navigation
-- [ ] L Section styling, Trash disclosure, trashed counts, emoji spacing, scroll jump, rename extras
+- [x] M Search Here… missing from menus; root menu; menus should be built from commands
+- [x] M New Subfolder creates "New Folder" immediately instead of prompting
+- [x] M Folder reorder before/after; between-row drops; drag trashed folders out to restore; drop status messages
+- [x] M Selection restore refreshes notes twice; status path not updated on navigation
+- [x] L Section styling, Trash disclosure, trashed counts, emoji spacing, scroll jump, rename extras
 
 ## Shell, menus, commands (app_delegate, library_window, library_commands)
 
 - [ ] H note-export-html / note-export-md have no handler
-- [ ] H Status bar location never follows navigation
+- [x] H Status bar location never follows navigation
 - [ ] M open-db: no .db filter, no same-db no-op, failure not reported
 - [ ] M search / find ignore the selected folder or tag as default scope
 - [ ] M App-scope commands do not reopen a closed library window

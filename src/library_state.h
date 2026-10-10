@@ -87,7 +87,7 @@ typedef enum {
  * Inputs:
  *   app — the application context, its database open
  *
- * Output: the state, with All Notes selected.
+ * Output: the state, with the Notes root selected.
  */
 - (instancetype)init_with_app:(OnApp *)app NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

@@ -45,10 +45,9 @@ static const on_command_t commands[] = {
 
     /* ── Window scope, library ── */
     { @"delete-note",      @"Move to Trash",           KEY_BACKSPACE, cmd, win, @"deletenote" },
-    { @"delete-folder",    @"Delete Folder",           @"",  0,         win, @"delete-folder" },
+    { @"delete-folder",    @"Move Folder to Trash",    @"",  0,         win, @"delete-folder" },
     { @"empty-trash",      @"Empty Trash…",            @"",  0,         win, nil },
     { @"folder-info",      @"Folder Info…",            @"",  0,         win, nil },
-    { @"new-subfolder",    @"New Subfolder…",          @"",  0,         win, nil },
     { @"folder-restore",   @"Restore Folder",          @"",  0,         win, nil },
     { @"sort-subfolders",  @"Sort Subfolders Alphabetically", @"", 0,   win, nil },
     { @"search-here",      @"Search Here…",            @"",  0,         win, nil },

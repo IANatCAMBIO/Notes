@@ -126,6 +126,7 @@ static const double on_look_tool_btn_pad    = 24.0;   /* label to button edge, l
 static const double on_look_tool_msg_w      = 388.0;  /* wrapped message text                  */
 static const double on_look_tool_msg_max_h  = 240.0;  /* taller messages scroll                */
 static const double on_look_tool_field_w    = 260.0;  /* a single text field asking for a name */
+static const double on_look_tool_emoji_w    = 44.0;   /* the folder prompt's emoji field       */
 static const double on_look_tool_font       = 11.0;   /* every label and button title          */
 
 /* ── Library ──────────────────────────────────────────────────────────────── */
@@ -153,6 +154,7 @@ static const double on_look_status_font      = 11.0;
 static const double on_look_status_inset     = 8.0;
 static const double on_look_sidebar_w        = 180.0;  /* initial                                */
 static const double on_look_sidebar_min_w    = 160.0;  /* also the fit-to-content floor          */
+static const double on_look_sidebar_cell_pad = 4.0;    /* a sidebar row's text inset, each side  */
 static const double on_look_sidebar_max_fraction = 0.5; /* fit-to-content ceiling, of the split  */
 static const double on_look_main_pane_min_w  = 400.0;
 static const double on_look_row_h            = 20.0;   /* compact list row                       */

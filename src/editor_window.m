@@ -854,8 +854,8 @@ build_image_viewer
         if (!image) return nil;
         gchar *title = on_document_title(on_note_view_document(s.note_view),
                                          ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
-        NSString *caption = [NSString stringWithFormat:@"%s — image %ld of %ld — %zu × %zu",
-                             title, (long)idx + 1, (long)on_note_view_image_count(s.note_view),
+        NSString *caption = [NSString stringWithFormat:@"%@ — image %ld of %ld — %zu × %zu",
+                             @(title), (long)idx + 1, (long)on_note_view_image_count(s.note_view),
                              CGImageGetWidth(image), CGImageGetHeight(image)];
         g_free(title);
         return caption;

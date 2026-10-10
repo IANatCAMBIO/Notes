@@ -18,6 +18,7 @@
 #import "library_notes.h"
 #import "library_commands.h"
 #import "library_sidebar.h"
+#import "library_window.h"
 #import "activation.h"
 #import "editor_window.h"
 #import "look.h"
@@ -1474,9 +1475,9 @@ on_library_notes_new(NotesLibrary *lib)
 void
 on_library_notes_refresh(NotesLibrary *lib)
 {
-    (void)lib;
     if (!notes_pane) return;
     [notes_pane refresh];
+    on_library_window_location_changed(lib);
 }
 
 /*

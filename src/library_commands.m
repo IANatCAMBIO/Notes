@@ -5,6 +5,7 @@
 #import "ui_util.h"
 
 #include "app_lifecycle.h"
+#include "db.h"
 #include "export.h"
 #include "identity.h"
 #include "look.h"
@@ -80,10 +81,159 @@ hook_quicknote(OnApp *app)
 }
 
 /*
- * run_new_folder — "new-folder": a tool panel over the library window that
- * asks for a folder name, then creates it as a child of the current
- * selection's folder.  An empty name keeps the panel open with the problem
- * shown in its hero strip.
+ * NotesFolderFields — the controls of the folder prompt (New Folder,
+ * Folder Info), and what they hold.
+ */
+@interface NotesFolderFields : NSObject
+@property (nonatomic, strong) NSView      *view;     /* the grid, for the panel */
+@property (nonatomic, strong) NSTextField *emoji;
+@property (nonatomic, strong) NSTextField *name;
+@property (nonatomic, strong) NSArray<NSButton *> *modes;   /* Normal, Project, Custom */
+@end
+
+@implementation NotesFolderFields
+
+/*
+ * mode_clicked: — the AI mode radios act as one group.
+ *
+ * Inputs:
+ *   sender — the radio clicked
+ */
+- (void)
+mode_clicked:(NSButton *)sender
+{
+    for (NSButton *b in self.modes) b.state = b == sender ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+/*
+ * pick_emoji: — the emoji field's button: the character palette, typing
+ * into the emoji field.
+ *
+ * Inputs:
+ *   sender — the button
+ */
+- (void)
+pick_emoji:(id)sender
+{
+    [self.emoji.window makeFirstResponder:self.emoji];
+    [NSApp orderFrontCharacterPalette:sender];
+}
+
+/*
+ * ai_mode — the AI summary mode the radios say.
+ *
+ * Output: ON_AI_MODE_NORMAL, _PROJECT or _CUSTOM.
+ */
+- (gint)
+ai_mode
+{
+    for (NSUInteger i = 0; i < self.modes.count; i++)
+        if (self.modes[i].state == NSControlStateValueOn) return (gint)i;
+    return ON_AI_MODE_NORMAL;
+}
+
+@end
+
+/*
+ * folder_fields — the folder prompt's controls (GTK: prompt_for_folder):
+ * an optional emoji with a picker, the folder's name, and the AI summary
+ * mode (Normal / Project / Custom), filled in from what the folder has.
+ *
+ * Inputs:
+ *   name  — the name to show, or nil
+ *   emoji — the emoji to show, or nil
+ *   mode  — the AI mode to select (ON_AI_MODE_*)
+ *
+ * Output: the fields, their grid in .view.
+ */
+static NotesFolderFields *
+folder_fields(NSString *name, NSString *emoji, gint mode)
+{
+    NotesFolderFields *f = [[NotesFolderFields alloc] init];
+    NSFont *font = [NSFont systemFontOfSize:on_look_tool_font];
+
+    f.emoji = [NSTextField textFieldWithString:emoji ?: @""];
+    f.emoji.font      = [NSFont systemFontOfSize:on_look_tool_font + 3];
+    f.emoji.alignment = NSTextAlignmentCenter;
+    f.emoji.toolTip   = @"Optional emoji";
+    f.emoji.identifier = @"folder-emoji";
+    [f.emoji.widthAnchor constraintEqualToConstant:on_look_tool_emoji_w].active = YES;
+    NSButton *picker = [NSButton buttonWithTitle:@"Pick…" target:f action:@selector(pick_emoji:)];
+    picker.font = font;
+    NSStackView *emoji_row = [NSStackView stackViewWithViews:@[f.emoji, picker]];
+
+    f.name = [NSTextField textFieldWithString:name ?: @""];
+    f.name.placeholderString = @"Folder Name";
+    f.name.identifier = @"folder-name";
+    f.name.font = font;
+    [f.name.widthAnchor constraintEqualToConstant:on_look_tool_field_w].active = YES;
+
+    NSMutableArray<NSButton *> *modes = [NSMutableArray array];
+    for (NSString *title in @[@"Normal", @"Project", @"Custom"]) {
+        NSButton *radio = [NSButton radioButtonWithTitle:title target:f action:@selector(mode_clicked:)];
+        radio.font = font;
+        [modes addObject:radio];
+    }
+    f.modes = modes;
+    [f mode_clicked:modes[(NSUInteger)MAX(0, MIN(mode, 2))]];
+    NSStackView *mode_row = [NSStackView stackViewWithViews:modes];
+    mode_row.spacing = on_look_tool_btn_gap;
+
+    NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *text) {
+        NSTextField *l = [NSTextField labelWithString:text];
+        l.font = font;
+        return l;
+    };
+    NSGridView *grid = [NSGridView gridViewWithViews:@[
+        @[label(@"Emoji (optional):"), emoji_row],
+        @[label(@"Folder Name:"),      f.name],
+        @[label(@"AI summary mode:"),  mode_row],
+    ]];
+    grid.rowSpacing    = on_look_tool_btn_gap;
+    grid.columnSpacing = on_look_tool_btn_gap;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    for (NSInteger r = 0; r < grid.numberOfRows; r++) [grid rowAtIndex:r].yPlacement = NSGridCellPlacementCenter;
+    f.view = grid;
+    return f;
+}
+
+/*
+ * prompt_for_folder — the folder prompt in a tool panel.  OK hands the
+ * trimmed name, the AI mode and the trimmed emoji to `done`; an empty name
+ * keeps the panel open with the problem shown.
+ *
+ * Inputs:
+ *   lib     — the library (the panel sits over its window)
+ *   title   — "New Folder" or "Folder Info"
+ *   symbol  — the hero's SF Symbol
+ *   name, emoji, mode — what the fields start with
+ *   done    — writes the answer; returns nil, or a problem to show
+ */
+static void
+prompt_for_folder(NotesLibrary *lib, NSString *title, NSString *symbol,
+                  NSString *name, NSString *emoji, gint mode,
+                  NSString *(^done)(NSString *name, gint mode, NSString *emoji))
+{
+    NotesFolderFields *f = folder_fields(name, emoji, mode);
+    NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+    NotesToolPanel *panel = [NotesToolPanel
+        panel_with_title:title hero_title:title
+                subtitle:@"A folder's emoji shows before its name in the sidebar."
+                  symbol:symbol content:f.view primary_title:@"OK"
+         primary_handler:^NSString * {
+        NSString *trimmed = [f.name.stringValue stringByTrimmingCharactersInSet:space];
+        if (trimmed.length == 0) return @"The folder needs a name.";
+        return done(trimmed, [f ai_mode], [f.emoji.stringValue stringByTrimmingCharactersInSet:space]);
+    }];
+    [panel show_over:lib.window];
+    [panel.window makeFirstResponder:f.name];
+}
+
+/*
+ * run_new_folder — "new-folder" (also New Subfolder… on a folder's menu):
+ * the folder prompt, then the folder is made under the selected folder
+ * (the top level otherwise) — the parent is taken now, as the selection
+ * may move while the prompt is up.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -94,30 +244,90 @@ run_new_folder(id target, id sender)
 {
     NotesLibrary *lib    = target;
     gint64        parent = on_library_current_folder_id(lib);
-
-    NSTextField *field = [NSTextField textFieldWithString:@""];
-    field.placeholderString = @"Folder Name";
-    field.font              = [NSFont systemFontOfSize:on_look_tool_font];
-    [field.widthAnchor constraintEqualToConstant:on_look_tool_field_w].active = YES;
-
-    NotesToolPanel *panel = [NotesToolPanel
-        panel_with_title:@"New Folder"
-              hero_title:@"New Folder"
-                subtitle:@"Enter a name for the new folder."
-                  symbol:@"folder.badge.plus"
-                 content:field
-           primary_title:@"Create"
-         primary_handler:^NSString * {
-        NSString *name = [field.stringValue stringByTrimmingCharactersInSet:
-                          NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (name.length == 0) return @"The folder needs a name.";
-        if (on_db_folder_create(lib.app->db, parent, name.UTF8String, 0, NULL) == 0)
+    prompt_for_folder(lib, @"New Folder", @"folder.badge.plus", nil, nil, ON_AI_MODE_NORMAL,
+                      ^NSString *(NSString *name, gint mode, NSString *emoji) {
+        if (on_db_folder_create(lib.app->db, parent, name.UTF8String, mode, emoji.UTF8String) == 0)
             return @"The folder could not be created.";
         on_library_refresh_all(lib);
         return nil;
-    }];
-    [panel show_over:lib.window];
-    [panel.window makeFirstResponder:field];
+    });
+}
+
+/*
+ * run_folder_info — "folder-info": the folder prompt over the selected
+ * folder's name, emoji and AI mode; OK writes all three.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (unused)
+ */
+static void
+run_folder_info(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    if (lib.sel_kind != on_sb_folder) return;
+    gint64  folder = lib.sel_id;
+    gchar  *emoji  = on_db_folder_get_emoji(lib.app->db, folder);
+    gint    mode   = on_db_folder_get_ai_mode(lib.app->db, folder);
+    prompt_for_folder(lib, @"Folder Info", @"folder", lib.sel_name, @(emoji), mode,
+                      ^NSString *(NSString *name, gint new_mode, NSString *new_emoji) {
+        if (!on_db_folder_update(lib.app->db, folder, name.UTF8String, new_mode, new_emoji.UTF8String))
+            return @"The folder could not be changed.";
+        on_library_refresh_all(lib);
+        return nil;
+    });
+    g_free(emoji);
+}
+
+/*
+ * validate_folder_selected — a folder (not one in the Trash) is selected.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_folder_selected(id target, id item)
+{
+    return ((NotesLibrary *)target).sel_kind == on_sb_folder;
+}
+
+/*
+ * run_sort_subfolders — "sort-subfolders": the selected folder's (or the
+ * Notes root's) direct children, sorted alphabetically and kept that way.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (unused)
+ */
+static void
+run_sort_subfolders(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    if (lib.sel_kind != on_sb_folder && lib.sel_kind != on_sb_root) return;
+    gint n = on_db_folder_sort_children(lib.app->db, lib.sel_kind == on_sb_folder ? lib.sel_id : 0);
+    if (n > 1) {
+        on_app_status(lib.app, "Sorted %d subfolders alphabetically", n);
+        on_library_refresh_all(lib);
+    }
+}
+
+/*
+ * validate_sort_subfolders — a folder or the Notes root is selected.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_sort_subfolders(id target, id item)
+{
+    NotesLibrary *lib = target;
+    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_root;
 }
 
 /*
@@ -177,7 +387,7 @@ run_export(NotesLibrary *lib, NSWindow *win, OnExportFormat format)
         gint   n   = on_export_all(lib.app, path.UTF8String, format, &err);
         if (n >= 0) {
             on_ui_show_notice([NSString stringWithFormat:
-                               @"Exported %d note%s.", n, n == 1 ? "" : "s"],
+                               @"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
                               [NSString stringWithFormat:@"Files written to:\n%@", path],
                               win, nil);
         } else {
@@ -277,8 +487,8 @@ static BOOL
 validate_delete_folder(id target, id item)
 {
     NotesLibrary *lib = target;
-    on_command_item_update(item, lib.sel_kind == on_sb_trash_folder ? @"Delete Permanently" : nil,
-                           nil, NO);
+    on_command_item_update(item, lib.sel_kind == on_sb_trash_folder ? @"Delete Folder Permanently"
+                                                                    : nil, nil, NO);
     return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_trash_folder;
 }
 
@@ -350,6 +560,8 @@ static const on_command_handler_t handlers[] = {
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },
     { @"delete-folder",  run_delete_folder,  validate_delete_folder  },
+    { @"folder-info",     run_folder_info,     validate_folder_selected  },
+    { @"sort-subfolders", run_sort_subfolders, validate_sort_subfolders  },
     { @"folder-restore", run_folder_restore, validate_folder_restore },
     { @"empty-trash",    run_empty_trash,    NULL                    },
 };

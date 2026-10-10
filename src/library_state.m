@@ -29,8 +29,8 @@ init_with_app:(OnApp *)app
     self = [super init];
     if (!self) return nil;
     _app      = app;
-    _sel_kind = on_sb_all;
-    _sel_name = @"All Notes";
+    _sel_kind = on_sb_root;              /* the GTK app starts on the Notes root */
+    _sel_name = @"Notes";
     return self;
 }
 

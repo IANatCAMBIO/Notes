@@ -362,7 +362,6 @@ static void
 hook_notes_changed(OnApp *app)
 {
     on_library_refresh_all(on_library());
-    [library_window update_status_path];
 }
 
 /*
@@ -450,4 +449,13 @@ on_library_window_show(NotesLibrary *lib)
 {
     if (!library_window) library_window = [[NotesLibraryWindow alloc] init_with_library:lib];
     [library_window showWindow:nil];
+}
+
+/*
+ * on_library_window_location_changed — see library_window.h.
+ */
+void
+on_library_window_location_changed(NotesLibrary *lib)
+{
+    [library_window update_status_path];
 }

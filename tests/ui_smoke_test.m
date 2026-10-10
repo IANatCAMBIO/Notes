@@ -340,6 +340,7 @@ test_library(NotesLibrary *lib)
         pump(0.6);
         NSWindow *window = lib.window;
         check(window != nil && window.visible, "the library window is on screen");
+        check(lib.sel_kind == on_sb_root, "the library opens on the Notes root, as the GTK app does");
         check(window.toolbar.items.count >= 12, "its toolbar is built from the command table");
         NSImage *icon = on_ui_icon(@"newnote", on_look_toolbar_icon);
         check(icon != nil, "toolbar icons load from the bundle");
@@ -1002,6 +1003,47 @@ test_tag_suggestions(void)
 }
 
 /*
+ * view_with_identifier — a view in a view tree, by its identifier.
+ *
+ * Inputs:
+ *   root       — where to look
+ *   identifier — the identifier
+ *
+ * Output: the view, or nil.
+ */
+static NSView *
+view_with_identifier(NSView *root, NSString *identifier)
+{
+    if ([root.identifier isEqualToString:identifier]) return root;
+    for (NSView *sub in root.subviews) {
+        NSView *found = view_with_identifier(sub, identifier);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * button_titled — a button in a view tree, by its title.
+ *
+ * Inputs:
+ *   root  — where to look
+ *   title — the title
+ *
+ * Output: the button, or nil.
+ */
+static NSButton *
+button_titled(NSView *root, NSString *title)
+{
+    if ([root isKindOfClass:NSButton.class] && [((NSButton *)root).title isEqualToString:title])
+        return (NSButton *)root;
+    for (NSView *sub in root.subviews) {
+        NSButton *found = button_titled(sub, title);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
  * test_new_folder — New Folder asks in the app's own tool panel, never a
  * native alert or sheet; an empty name keeps it open, a name creates the
  * folder and closes it.
@@ -1030,28 +1072,315 @@ test_new_folder(NotesLibrary *lib)
               "New Folder asks in a tool panel, not an alert sheet");
         check(save_snapshots(panel, @"new-folder"), "new folder snapshots written, light and dark");
 
-        NSTextField *field = nil;                   /* the editable one, not a label */
-        for (NSView *v in panel.contentView.subviews) {
-            if ([v isKindOfClass:NSTextField.class] && ((NSTextField *)v).editable)
-                field = (NSTextField *)v;
-        }
+        NSTextField *field = (NSTextField *)view_with_identifier(panel.contentView, @"folder-name");
+        NSTextField *emoji = (NSTextField *)view_with_identifier(panel.contentView, @"folder-emoji");
         NSButton *create = default_button(panel);
-        check(field != nil && [create.title isEqualToString:@"Create"],
-              "it has a name field and a Create button");
+        NSButton *project = button_titled(panel.contentView, @"Project");
+        check(field != nil && project != nil && [create.title isEqualToString:@"OK"],
+              "it asks for an emoji, a name and the AI summary mode (GTK's folder prompt)");
         [create performClick:nil];
         pump(0.1);
         check(panel.visible && folder_count(parent) == before,
               "an empty name keeps the panel open and creates nothing");
 
-        field.stringValue = @"Smoke folder";
+        field.stringValue = @"  Smoke folder  ";
+        [project performClick:nil];
+        emoji.stringValue = @"🧪";
         [create performClick:nil];
         pump(0.2);
         check(!panel.visible && folder_count(parent) == before + 1,
               "a name creates the folder and closes the panel");
+        GList *folders = on_db_folder_list(app.db, parent);
+        gint64 made = 0;
+        for (GList *l = folders; l; l = l->next)
+            if (strcmp(((OnFolder *)l->data)->name, "Smoke folder") == 0) made = ((OnFolder *)l->data)->id;
+        on_db_folder_list_free(folders);
+        gchar *made_emoji = made ? on_db_folder_get_emoji(app.db, made) : g_strdup("");
+        check(made != 0 && strcmp(made_emoji, "🧪") == 0 &&
+              on_db_folder_get_ai_mode(app.db, made) == ON_AI_MODE_PROJECT,
+              "the name is trimmed, and the emoji and AI mode are stored with it");
+        g_free(made_emoji);
         weak_panel = panel;
     }
     pump(0.2);
     check(weak_panel == nil, "a closed tool panel is deallocated");
+}
+
+/*
+ * NotesFakeDrag — just enough of an NSDraggingInfo for the sidebar's drop
+ * methods: a pasteboard and a location.
+ */
+@interface NotesFakeDrag : NSObject
+@property (nonatomic, strong) NSPasteboard *pasteboard;
+@property (nonatomic, assign) NSPoint       location;
+@end
+
+@implementation NotesFakeDrag
+
+/*
+ * draggingPasteboard — the drag's pasteboard.
+ *
+ * Output: the pasteboard.
+ */
+- (NSPasteboard *)
+draggingPasteboard
+{
+    return self.pasteboard;
+}
+
+/*
+ * draggingLocation — where the pointer is, in window coordinates.
+ *
+ * Output: the point.
+ */
+- (NSPoint)
+draggingLocation
+{
+    return self.location;
+}
+
+@end
+
+/*
+ * sidebar_row — the sidebar row with a name: its text without the emoji in
+ * front (up to two spaces) and the count behind.
+ *
+ * Inputs:
+ *   outline — the sidebar
+ *   name    — the row's name (e.g. @"Notes", @"Crate")
+ *
+ * Output: the row, or -1.
+ */
+static NSInteger
+sidebar_row(NSOutlineView *outline, NSString *name)
+{
+    for (NSInteger r = 0; r < outline.numberOfRows; r++) {
+        NSString *text = ((NSTableCellView *)[outline viewAtColumn:0 row:r makeIfNecessary:YES]).textField.stringValue;
+        NSRange   gap  = [text rangeOfString:@"  "];
+        if (gap.location == NSNotFound) gap = [text rangeOfString:@"\u00a0 "];
+        if (gap.location != NSNotFound) text = [text substringFromIndex:NSMaxRange(gap)];
+        NSRange count = [text rangeOfString:@" (" options:NSBackwardsSearch];
+        if (count.location != NSNotFound && [text hasSuffix:@")"]) text = [text substringToIndex:count.location];
+        if ([text isEqualToString:name]) return r;
+    }
+    return -1;
+}
+
+/*
+ * drag_of — a drag of library rows, on a private pasteboard, over a row.
+ *
+ * Inputs:
+ *   outline — the sidebar
+ *   kind    — what is dragged
+ *   ids     — the ids
+ *   row     — the row under the pointer
+ *
+ * Output: the drag (cast to NSDraggingInfo where used).
+ */
+static NotesFakeDrag *
+drag_of(NSOutlineView *outline, on_drag_kind_t kind, NSArray<NSNumber *> *ids, NSInteger row)
+{
+    NotesFakeDrag *drag = [[NotesFakeDrag alloc] init];
+    drag.pasteboard = [NSPasteboard pasteboardWithUniqueName];
+    [drag.pasteboard clearContents];
+    [drag.pasteboard writeObjects:@[on_library_drag_item(kind, ids)]];
+    NSRect rect = [outline rectOfRow:row];
+    drag.location = [outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
+    return drag;
+}
+
+/*
+ * drop — offer a drag to the sidebar as AppKit does: validate, then
+ * accept when valid.
+ *
+ * Inputs:
+ *   outline — the sidebar
+ *   drag    — the drag
+ *   row     — the proposed row (the drop parent), or -1 for the top level
+ *   index   — the child index, or NSOutlineViewDropOnItemIndex
+ *
+ * Output: YES when the drop was accepted.
+ */
+static BOOL
+drop(NSOutlineView *outline, NotesFakeDrag *drag, NSInteger row, NSInteger index)
+{
+    id item = row >= 0 ? [outline itemAtRow:row] : nil;
+    id<NSOutlineViewDataSource> ds = outline.dataSource;
+    id<NSDraggingInfo> info = (id<NSDraggingInfo>)drag;
+    if ([ds outlineView:outline validateDrop:info proposedItem:item proposedChildIndex:index] == NSDragOperationNone)
+        return NO;
+    BOOL ok = [ds outlineView:outline acceptDrop:info item:item childIndex:index];
+    pump(0.2);
+    [drag.pasteboard releaseGlobally];
+    return ok;
+}
+
+/*
+ * menu_titles — a menu's item titles, separators left out.
+ *
+ * Inputs:
+ *   menu — the menu, or nil
+ *
+ * Output: the titles.
+ */
+static NSArray<NSString *> *
+menu_titles(NSMenu *menu)
+{
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    for (NSMenuItem *item in menu.itemArray)
+        if (!item.separatorItem) [titles addObject:item.title];
+    return titles;
+}
+
+/*
+ * right_click — the menu a right click on a sidebar row shows.
+ *
+ * Inputs:
+ *   outline — the sidebar
+ *   row     — the row
+ *
+ * Output: the menu, or nil.
+ */
+static NSMenu *
+right_click(NSOutlineView *outline, NSInteger row)
+{
+    NSRect   rect  = [outline rectOfRow:row];
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
+                                        location:[outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil]
+                                   modifierFlags:0 timestamp:0 windowNumber:outline.window.windowNumber
+                                         context:nil eventNumber:0 clickCount:1 pressure:1];
+    return [outline menuForEvent:event];
+}
+
+/*
+ * test_sidebar — the sidebar's rows, menus, commands and drops, as the
+ * GTK app has them; the status bar follows the selection; the sidebar
+ * fits its widest row.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_sidebar(NotesLibrary *lib)
+{
+    NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
+    gint64 box   = on_db_folder_create(app.db, 0, "Box", 0, NULL);
+    gint64 inner = on_db_folder_create(app.db, box, "Inner", 0, NULL);
+    gint64 zeta  = on_db_folder_create(app.db, box, "Zeta", 0, NULL);
+    gint64 alpha = on_db_folder_create(app.db, box, "Alpha", 0, NULL);
+    gint64 loose = new_note("Loose for drops\nbody");
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_folder, inner);
+    pump(0.2);
+
+    /* Menus, per kind of row. */
+    NSInteger root = sidebar_row(outline, @"Notes");
+    NSArray<NSString *> *root_menu = menu_titles(right_click(outline, root));
+    check(lib.sel_kind == on_sb_root &&
+          [root_menu isEqualToArray:@[@"New Folder…", @"Sort Subfolders Alphabetically", @"Search Here…"]],
+          "a right click on the Notes root selects it and offers New Folder, Sort, Search Here");
+    NSInteger all = sidebar_row(outline, @"All Notes");
+    check([menu_titles(right_click(outline, all)) isEqualToArray:@[@"Search Here…"]],
+          "All Notes offers Search Here");
+    NSInteger box_row = sidebar_row(outline, @"Box");
+    NSArray<NSString *> *folder_menu = menu_titles(right_click(outline, box_row));
+    check(lib.sel_kind == on_sb_folder && lib.sel_id == box &&
+          [folder_menu isEqualToArray:@[@"New Subfolder…", @"Info…", @"Move Folder to Trash",
+                                        @"Sort Subfolders Alphabetically", @"Search Here…"]],
+          "a right click on a folder selects it and offers its menu");
+    check([lib.window.contentView.subviews count] > 0 && label_with_text(lib.window.contentView, @"/Box") != nil,
+          "the status bar shows the selected folder's path");
+
+    /* Sort Subfolders: Zeta, Alpha (and Inner) become Alpha, Inner, Zeta. */
+    on_library_run_command(lib, command_item(@"sort-subfolders"));
+    pump(0.1);
+    GList *kids = on_db_folder_list(app.db, box);
+    check(kids && ((OnFolder *)kids->data)->id == alpha && ((OnFolder *)g_list_last(kids)->data)->id == zeta,
+          "Sort Subfolders orders a folder's children alphabetically");
+    on_db_folder_list_free(kids);
+
+    /* Folder Info: filled in from the folder, and saved. */
+    on_library_run_command(lib, command_item(@"folder-info"));
+    pump(0.2);
+    NSWindow *info = nil;
+    for (NSWindow *w in NSApp.windows) if (w.visible && [w.title isEqualToString:@"Folder Info"]) info = w;
+    NSTextField *name = (NSTextField *)view_with_identifier(info.contentView, @"folder-name");
+    check([name.stringValue isEqualToString:@"Box"], "Folder Info opens on the folder's name");
+    name.stringValue = @"Crate";
+    ((NSTextField *)view_with_identifier(info.contentView, @"folder-emoji")).stringValue = @"📦";
+    [default_button(info) performClick:nil];
+    pump(0.2);
+    gchar *emoji = on_db_folder_get_emoji(app.db, box);
+    check(strcmp(emoji, "📦") == 0 && sidebar_row(outline, @"Crate") >= 0 &&
+          [((NSTableCellView *)[outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES]).textField.stringValue hasPrefix:@"📦  Crate"],
+          "Folder Info renames the folder and gives it an emoji, shown in the sidebar");
+    g_free(emoji);
+
+    /* Drops. */
+    NSInteger crate = sidebar_row(outline, @"Crate");
+    [outline expandItem:[outline itemAtRow:crate]];
+    check(drop(outline, drag_of(outline, on_drag_notes, @[@(loose)], crate), crate, NSOutlineViewDropOnItemIndex),
+          "notes dropped on a folder are accepted");
+    OnNoteMeta *meta = on_db_note_get(app.db, loose);
+    check(meta && meta->folder_id == box, "and move into it");
+    on_db_note_meta_free(meta);
+
+    crate = sidebar_row(outline, @"Crate");
+    NSInteger alpha_row = sidebar_row(outline, @"Alpha");
+    check(!drop(outline, drag_of(outline, on_drag_folder, @[@(box)], alpha_row), alpha_row, NSOutlineViewDropOnItemIndex),
+          "a folder cannot be dropped into its own subfolder");
+    NSInteger zeta_row = sidebar_row(outline, @"Zeta");
+    check(drop(outline, drag_of(outline, on_drag_folder, @[@(zeta)], crate), crate, 0),
+          "a folder dropped between two rows is accepted");
+    kids = on_db_folder_list(app.db, box);
+    check(kids && ((OnFolder *)kids->data)->id == zeta, "and goes before the row it was dropped above");
+    on_db_folder_list_free(kids);
+
+    NSInteger trash_target = sidebar_row(outline, @"Notes");
+    check(drop(outline, drag_of(outline, on_drag_folder, @[@(alpha)], trash_target), trash_target,
+               NSOutlineViewDropOnItemIndex) && folder_under(0, alpha),
+          "a folder dropped on the Notes root moves to the top level");
+    (void)zeta_row;
+
+    NSInteger root_row = sidebar_row(outline, @"Notes");
+    check(drop(outline, drag_of(outline, on_drag_notes, @[@(loose)], root_row), root_row, NSOutlineViewDropOnItemIndex),
+          "notes dropped on the Notes root are accepted");
+    meta = on_db_note_get(app.db, loose);
+    check(meta && meta->folder_id == 0, "and move to the top level");
+    on_db_note_meta_free(meta);
+
+    on_library_trash_folder(lib, alpha, @"Alpha");
+    on_library_refresh_all(lib);
+    pump(0.2);
+    NSInteger trash_row = sidebar_row(outline, @"Trash");
+    [outline expandItem:[outline itemAtRow:trash_row]];
+    root_row = sidebar_row(outline, @"Notes");
+    check(drop(outline, drag_of(outline, on_drag_trashed_folder, @[@(alpha)], root_row), root_row,
+               NSOutlineViewDropOnItemIndex) && folder_under(0, alpha),
+          "a folder dragged out of the Trash onto the root is restored there");
+    trash_row = -1;
+    pump(0.2);
+    gint64 doomed = new_note("Doomed note\nbody");
+    on_library_trash_notes(lib, &doomed, 1);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    gint64 dropped = new_note("Dropped on trash\nbody");
+    on_library_refresh_all(lib);
+    pump(0.2);
+    trash_row = sidebar_row(outline, @"Trash");
+    check(drop(outline, drag_of(outline, on_drag_notes, @[@(dropped)], trash_row), trash_row,
+               NSOutlineViewDropOnItemIndex) && id_in(on_db_trash_note_ids(app.db), dropped),
+          "notes dropped on the Trash are trashed");
+
+    /* Fit to content: a long folder name widens the sidebar. */
+    app.sidebar_fit_content = TRUE;
+    on_db_folder_create(app.db, 0, "A folder with a really quite remarkably long name indeed", 0, NULL);
+    on_library_refresh_all(lib);
+    [outline expandItem:[outline itemAtRow:sidebar_row(outline, @"Notes")]];
+    pump(0.3);
+    check(outline.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
+          "with fit-to-content on, the sidebar widens to a long folder name");
+    app.sidebar_fit_content = FALSE;
 }
 
 /*
@@ -1325,6 +1654,7 @@ main(void)
         test_pointer();
         test_new_folder(lib);
         test_trash(lib);
+        test_sidebar(lib);
         test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);

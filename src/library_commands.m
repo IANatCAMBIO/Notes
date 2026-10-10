@@ -1,11 +1,13 @@
 #import "library_commands.h"
 #import "editor_window.h"
 #import "library_sidebar.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "app_lifecycle.h"
 #include "export.h"
 #include "identity.h"
+#include "look.h"
 
 /*
  * library_commands.m — see library_commands.h for what is implemented.
@@ -78,8 +80,10 @@ hook_quicknote(OnApp *app)
 }
 
 /*
- * run_new_folder — "new-folder": sheet on the library window that asks for a
- * folder name, then creates it as a child of the current selection's folder.
+ * run_new_folder — "new-folder": a tool panel over the library window that
+ * asks for a folder name, then creates it as a child of the current
+ * selection's folder.  An empty name keeps the panel open with the problem
+ * shown in its hero strip.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -88,29 +92,32 @@ hook_quicknote(OnApp *app)
 static void
 run_new_folder(id target, id sender)
 {
-    NotesLibrary *lib     = target;
-    NSWindow     *win     = lib.window;
-    gint64        parent  = on_library_current_folder_id(lib);
+    NotesLibrary *lib    = target;
+    gint64        parent = on_library_current_folder_id(lib);
 
     NSTextField *field = [NSTextField textFieldWithString:@""];
     field.placeholderString = @"Folder Name";
+    field.font              = [NSFont systemFontOfSize:on_look_tool_font];
+    [field.widthAnchor constraintEqualToConstant:on_look_tool_field_w].active = YES;
 
-    NSAlert *alert             = on_ui_new_alert();
-    alert.messageText          = @"New Folder";
-    alert.informativeText      = @"Enter a name for the new folder.";
-    alert.accessoryView        = field;
-    alert.alertStyle           = NSAlertStyleInformational;
-    [alert addButtonWithTitle:@"Create"];
-    [alert addButtonWithTitle:@"Cancel"];
-
-    [alert beginSheetModalForWindow:win completionHandler:^(NSModalResponse r) {
-        if (r != NSAlertFirstButtonReturn) return;
+    NotesToolPanel *panel = [NotesToolPanel
+        panel_with_title:@"New Folder"
+              hero_title:@"New Folder"
+                subtitle:@"Enter a name for the new folder."
+                  symbol:@"folder.badge.plus"
+                 content:field
+           primary_title:@"Create"
+         primary_handler:^NSString * {
         NSString *name = [field.stringValue stringByTrimmingCharactersInSet:
                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (name.length == 0) return;
-        on_db_folder_create(lib.app->db, parent, name.UTF8String, 0, NULL);
+        if (name.length == 0) return @"The folder needs a name.";
+        if (on_db_folder_create(lib.app->db, parent, name.UTF8String, 0, NULL) == 0)
+            return @"The folder could not be created.";
         on_library_refresh_all(lib);
+        return nil;
     }];
+    [panel show_over:lib.window];
+    [panel.window makeFirstResponder:field];
 }
 
 /*
@@ -133,19 +140,15 @@ run_open_db(id target, id sender)
                     nil, nil, win,
                     ^(NSString *path) {
         if (!path) return;
-        NSAlert *alert        = on_ui_new_alert();
-        alert.messageText     = @"Open Database";
-        alert.informativeText = [NSString stringWithFormat:
-                                 @"Open \"%@\" for this session only, or set it as your default?",
-                                 path.lastPathComponent];
-        [alert addButtonWithTitle:@"Set as Default"];
-        [alert addButtonWithTitle:@"Session Only"];
-        [alert addButtonWithTitle:@"Cancel"];
-
-        [alert beginSheetModalForWindow:win completionHandler:^(NSModalResponse r) {
-            if (r == NSAlertThirdButtonReturn) return;   /* Cancel */
-            BOOL set_default = (r == NSAlertFirstButtonReturn);
-            on_app_switch_db(lib.app, path.UTF8String, set_default);
+        NSString *message = [NSString stringWithFormat:
+                             @"Open \"%@\" for this session only, or set it as your default?",
+                             path.lastPathComponent];
+        [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
+                             buttons:@[@"Set as Default", @"Session Only", @"Cancel"]
+                                over:win
+                             handler:^(NSInteger index) {
+            if (index != 0 && index != 1) return;   /* Cancel, or dismissed */
+            on_app_switch_db(lib.app, path.UTF8String, index == 0);
         }];
     });
 }
@@ -176,11 +179,11 @@ run_export(NotesLibrary *lib, NSWindow *win, OnExportFormat format)
             on_ui_show_notice([NSString stringWithFormat:
                                @"Exported %d note%s.", n, n == 1 ? "" : "s"],
                               [NSString stringWithFormat:@"Files written to:\n%@", path],
-                              win);
+                              win, nil);
         } else {
             on_ui_show_notice(@"Export failed",
                               err ? @(err) : @"An unknown error occurred.",
-                              win);
+                              win, nil);
         }
         g_free(err);
     });

@@ -17,6 +17,7 @@
 
 #import "library_notes.h"
 #import "library_commands.h"
+#import "editor_window.h"
 #import "look.h"
 #import "ui_util.h"
 
@@ -164,6 +165,122 @@ build_records(GList *notes)
     return arr;
 }
 
+/* ── Activation: Enter or double-click opens ────────────────────────────── */
+
+/*
+ * is_activate_key — is this key event Return or keypad Enter (no Command,
+ * Option or Control)?
+ *
+ * Inputs:
+ *   event — a key-down event
+ *
+ * Output: YES for an activating key.
+ */
+static BOOL
+is_activate_key(NSEvent *event)
+{
+    NSEventModifierFlags mods = event.modifierFlags &
+        (NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagControl);
+    NSString *chars = event.charactersIgnoringModifiers;
+    if (mods != 0 || chars.length != 1) return NO;
+    unichar c = [chars characterAtIndex:0];
+    return c == '\r' || c == NSEnterCharacter;
+}
+
+/*
+ * NotesActivatingTable — a table whose Return/Enter key sends its
+ * doubleAction, as a double-click does; activated_rows tells the two apart.
+ */
+@interface NotesActivatingTable : NSTableView
+@property (nonatomic, readonly) BOOL by_key;   /* YES while Return/Enter sends */
+@end
+
+@implementation NotesActivatingTable
+
+/*
+ * keyDown: — Return or Enter with a selection sends the doubleAction;
+ * every other key goes to NSTableView.
+ *
+ * Inputs:
+ *   event — the key event
+ */
+- (void)
+keyDown:(NSEvent *)event
+{
+    if (is_activate_key(event) && self.selectedRowIndexes.count > 0 && self.doubleAction) {
+        _by_key = YES;
+        [self sendAction:self.doubleAction to:self.target];
+        _by_key = NO;
+        return;
+    }
+    [super keyDown:event];
+}
+
+@end
+
+/*
+ * activated_rows — the rows a table's doubleAction applies to: the
+ * double-clicked row, or the selection when Return/Enter sent it.
+ *
+ * Inputs:
+ *   table — the table that sent the action
+ *
+ * Output: the row indexes; empty for a double-click on no row.
+ */
+static NSIndexSet *
+activated_rows(NotesActivatingTable *table)
+{
+    if (table.by_key) return table.selectedRowIndexes;
+    if (table.clickedRow >= 0) return [NSIndexSet indexSetWithIndex:(NSUInteger)table.clickedRow];
+    return [NSIndexSet indexSet];         /* a double-click on empty space */
+}
+
+/*
+ * NotesActivatingGrid — a collection view that reports a double-click on
+ * an item, and Return/Enter on the selection, to activate_handler.
+ */
+@interface NotesActivatingGrid : NSCollectionView
+@property (nonatomic, copy) void (^activate_handler)(NSSet<NSIndexPath *> *paths);
+@end
+
+@implementation NotesActivatingGrid
+
+/*
+ * mouseDown: — NSCollectionView selects; a second click on an item then
+ * activates it.
+ *
+ * Inputs:
+ *   event — the mouse event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    [super mouseDown:event];
+    if (event.clickCount != 2 || !self.activate_handler) return;
+    NSPoint      at   = [self convertPoint:event.locationInWindow fromView:nil];
+    NSIndexPath *path = [self indexPathForItemAtPoint:at];
+    if (path) self.activate_handler([NSSet setWithObject:path]);
+}
+
+/*
+ * keyDown: — Return or Enter activates the selection; every other key
+ * goes to NSCollectionView.
+ *
+ * Inputs:
+ *   event — the key event
+ */
+- (void)
+keyDown:(NSEvent *)event
+{
+    if (is_activate_key(event) && self.selectionIndexPaths.count > 0 && self.activate_handler) {
+        self.activate_handler(self.selectionIndexPaths);
+        return;
+    }
+    [super keyDown:event];
+}
+
+@end
+
 /* ── Notes list (NSTableView) ───────────────────────────────────────────── */
 
 static NSString * const list_cell_id      = @"note";
@@ -171,7 +288,7 @@ static NSString * const list_cell_thumb   = @"thumb";
 
 @interface NotesNotesList : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, weak)   NotesLibrary               *lib;
-@property (nonatomic, strong) NSTableView                 *table;
+@property (nonatomic, strong) NotesActivatingTable        *table;
 @property (nonatomic, strong) NSScrollView                *scroll;
 @property (nonatomic, strong) NSArray<NotesNoteRecord *>  *records;
 @property (nonatomic, strong) NSCache                     *thumb_cache;
@@ -207,9 +324,11 @@ init_with_lib:(NotesLibrary *)lib cache:(NSCache *)cache
 - (void)
 build_table
 {
-    _table = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    _table = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
     _table.dataSource          = self;
     _table.delegate            = self;
+    _table.target              = self;
+    _table.doubleAction        = @selector(open_activated:);
     _table.rowHeight           = row_h_normal;
     _table.intercellSpacing    = NSMakeSize(0, 0);
     _table.allowsMultipleSelection = YES;
@@ -495,16 +614,21 @@ make_list_cell
     return YES;
 }
 
-/* Double-click or Return opens the note. */
-- (void)open_selected
+/*
+ * open_activated: — the table's doubleAction (double-click, or Return /
+ * Enter): open the activated notes in the editor.
+ *
+ * Inputs:
+ *   sender — the table (unused: activated_rows reads _table)
+ */
+- (void)
+open_activated:(id)sender
 {
-    [_table.selectedRowIndexes enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+    (void)sender;
+    [activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         (void)stop;
-        if (idx < _records.count) {
-            gint64 nid = _records[idx].note_id;
-            if (_lib.app->open_note)
-                _lib.app->open_note(_lib.app, nid);
-        }
+        if (idx < self->_records.count && self->_lib.app->open_note)
+            self->_lib.app->open_note(self->_lib.app, self->_records[idx].note_id);
     }];
 }
 
@@ -601,10 +725,21 @@ build_grid
     layout.minimumLineSpacing      = 8;
     layout.sectionInset = NSEdgeInsetsMake(12, 12, 12, 12);
 
-    _grid = [[NSCollectionView alloc] init];
+    NotesActivatingGrid *grid = [[NotesActivatingGrid alloc] init];
+    __weak NotesNotesGrid *ws = self;
+    grid.activate_handler = ^(NSSet<NSIndexPath *> *paths) {
+        NotesNotesGrid *s = ws;
+        if (!s || !s.lib.app->open_note) return;
+        for (NSIndexPath *ip in paths) {
+            if (ip.item >= 0 && (NSUInteger)ip.item < s.records.count)
+                s.lib.app->open_note(s.lib.app, s.records[(NSUInteger)ip.item].note_id);
+        }
+    };
+    _grid = grid;
     _grid.collectionViewLayout = layout;
     _grid.dataSource = self;
     _grid.delegate   = self;
+    _grid.selectable = YES;
     _grid.allowsMultipleSelection = YES;
     _grid.allowsEmptySelection    = YES;
     _grid.backgroundColors = @[NSColor.windowBackgroundColor];
@@ -753,6 +888,7 @@ load_thumbnail_for_index:(NSUInteger)idx
 @interface NotesActionRecord : NSObject
 @property (nonatomic, assign) gint64   uid;
 @property (nonatomic, assign) gint64   note_id;
+@property (nonatomic, assign) gint     ord;    /* among the note's action lines */
 @property (nonatomic, copy)   NSString *text;
 @property (nonatomic, copy)   NSString *note_title;
 @property (nonatomic, assign) gboolean done;
@@ -766,7 +902,7 @@ static NSString * const action_cell_id = @"action";
 
 @interface NotesActionsPane : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, weak)   NotesLibrary                  *lib;
-@property (nonatomic, strong) NSTableView                    *table;
+@property (nonatomic, strong) NotesActivatingTable           *table;
 @property (nonatomic, strong) NSScrollView                   *scroll;
 @property (nonatomic, strong) NSArray<NotesActionRecord *>   *records;
 @end
@@ -799,9 +935,11 @@ init_with_lib:(NotesLibrary *)lib
 - (void)
 build_table
 {
-    _table = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    _table = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
     _table.dataSource       = self;
     _table.delegate         = self;
+    _table.target           = self;
+    _table.doubleAction     = @selector(open_activated:);
     _table.rowHeight        = action_row_h;
     _table.headerView       = nil;
     _table.allowsEmptySelection = YES;
@@ -834,6 +972,7 @@ reload
         NotesActionRecord *r = [[NotesActionRecord alloc] init];
         r.uid        = ai->uid;
         r.note_id    = ai->note_id;
+        r.ord        = ai->ord;
         r.text       = @(ai->text ?: "");
         r.note_title = @(ai->context ?: "");
         r.done       = ai->done;
@@ -956,6 +1095,25 @@ toggle_action:(NSButton *)sender
     gboolean on = sender.state == NSControlStateValueOn;
     on_action_edit_set_done(_lib.app, uid, on);
     [self reload];
+}
+
+/*
+ * open_activated: — the table's doubleAction (double-click, or Return /
+ * Enter): open each activated item's note with the caret on the item.
+ *
+ * Inputs:
+ *   sender — the table (unused: activated_rows reads _table)
+ */
+- (void)
+open_activated:(id)sender
+{
+    (void)sender;
+    [activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        (void)stop;
+        if (idx >= self->_records.count) return;
+        NotesActionRecord *rec = self->_records[idx];
+        on_editor_window_open(self->_lib.app, rec.note_id, NotesEditorRevealAction, rec.ord, nil);
+    }];
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)note { (void)note; }

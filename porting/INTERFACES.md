@@ -539,10 +539,25 @@ its inputs as locals, and never reads `self.…` off the main thread.
 - **Focus ring**: off (`NSFocusRingTypeNone`) on toolbar text fields only —
   use `on_ui_toolbar_search_field`; everywhere else the system ring stays.
 - **Mac conventions win over GTK parity**: standard menus and shortcuts,
-  sheets on the window (`on_ui_present_alert`, `on_ui_confirm`,
-  `on_ui_pick_path`), system colours for chrome, dark mode supported (every
-  colour in look.h has a dark value).  GTK workarounds listed as "drops out"
-  in the map are not ported.
+  system colours for chrome, dark mode supported (every colour in look.h
+  has a dark value).  GTK workarounds listed as "drops out" in the map are
+  not ported.
+- **No header bars.**  A window has an ordinary title bar.  The one
+  `NSToolbar` is the library's, with `toolbarStyle =
+  NSWindowToolbarStyleExpanded` (the title bar above it), as in the Files
+  and Tasks main windows.  Every other window — the editor above all —
+  puts its controls in the window body (the editor's format bar and status
+  bar), never in an `NSToolbar` or an `NSTitlebarAccessoryViewController`.
+- **No native dialogs.**  Never `NSAlert`, an alert sheet or a custom
+  sheet: every message and question is a tool panel (`tool_panel.h`,
+  ported from the Files app) — `on_ui_show_notice` and `on_ui_confirm` for
+  the common cases, `NotesToolPanel` directly for anything with controls
+  (New Folder) or several answers.  Tool panels are not modal: whatever
+  must wait for the answer goes in the handler.  The one system panel kept
+  is the file picker (`on_ui_pick_path`), as in Files.
+- **Activation**: a row or card that stands for a note opens it on
+  double-click and on Return/Enter, everywhere a list of notes or action
+  items is shown.
 - Zero warnings.  `-Wno-unused-parameter` applies to `.m` only (AppKit
   signatures); C keeps the warning.
 
@@ -605,7 +620,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 | 7: view API with a callbacks struct | C functions + three `copy` handler blocks; `load`, `serialize`, `first_line`, `collect_tags` dropped; `action_strike/due/text` replaced by `begin/end_external_edit` | Files' callback convention; the dropped ones duplicated `on_document_*` calls on `on_note_view_document()`; action edits now live in the core |
 | 8: four open variants, five `*_all` refreshers | one `on_editor_window_open` with reveal + search term; one `on_editor_settings_changed` | no near-duplicates |
 | 9: plain-C row structs, `library_set_selection`, `trash_notes_core` in library_state.h | rows are private record classes of F and G; selection is set by `on_library_sidebar_select`; trash functions are in library_commands.h; `folder_path_cache` left to G | table/outline items must be objects; one module per function |
-| 10: "existing action names as command ids" | kept, except: the `sidebar-hide/show` and `done-hide/show` pairs became `toggle-sidebar` / `toggle-done` with a state function; `inline(s)` / `para(s)` became one id per value; `new-subfolder`, `show-library`, `find-next`, `find-previous`, `find-selection`, `inline-strike` added; `quit` and `insert-emoji` are AppKit's | the two-item device was a GTK workaround; AppKit items carry no parameter |
+| 10: "existing action names as command ids" | kept, except: the `sidebar-hide/show` and `done-hide/show` pairs became `toggle-sidebar` / `toggle-done` with a state function; `inline(s)` / `para(s)` became one id per value; `new-subfolder`, `show-library`, `find-next`, `find-previous`, `find-selection`, `inline-strike` added; `quit` is AppKit's; `insert-emoji` (the editor's Insert menu, as in GTK) opens AppKit's character palette, which inserts through the note view's text input | the two-item device was a GTK workaround; AppKit items carry no parameter |
 | 11: adoption of the bundle-adjacent ini; shared socket hash | none: new identity, new directory, fixed socket name per data directory | owner's decision: the fork must not be able to reach the GTK build |
 | note_edit.h | minimal: key vocabulary + the blank-note rule | it is package C's internal seam; freezing forty signatures C must then reshape helps nobody |
 

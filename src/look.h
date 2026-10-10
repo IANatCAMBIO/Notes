@@ -100,6 +100,29 @@ static const double on_look_media_w          = 780.0;
 static const double on_look_media_h          = 560.0;
 static const double on_look_settings_max_h   = 600.0;
 
+/* ── Tool panels (tool_panel.m) — the Files and Tasks apps' dialog ─────────── */
+
+static const on_look_color_t on_look_tool_hero         = { { 0.000, 0.447, 0.776, 1 }, { 0.000, 0.447, 0.776, 1 } };  /* hero strip */
+static const on_look_color_t on_look_tool_hero_sub     = { { 0.880, 0.880, 0.880, 1 }, { 0.880, 0.880, 0.880, 1 } };  /* subtitle   */
+static const on_look_color_t on_look_tool_hero_problem = { { 1.000, 0.920, 0.550, 1 }, { 1.000, 0.920, 0.550, 1 } };  /* a problem  */
+
+static const double on_look_tool_min_w      = 340.0;
+static const double on_look_tool_hero_h     = 43.0;
+static const double on_look_tool_hero_pad   = 16.0;   /* horizontal inset in the hero          */
+static const double on_look_tool_hero_gap   = 3.0;    /* hero title to subtitle                */
+static const double on_look_tool_icon       = 22.0;   /* hero symbol                           */
+static const double on_look_tool_pad        = 16.0;   /* around the caller's controls          */
+static const double on_look_tool_bar_h      = 40.0;   /* the button bar                        */
+static const double on_look_tool_btn_h      = 25.0;
+static const double on_look_tool_btn_w      = 83.0;   /* narrowest button                      */
+static const double on_look_tool_btn_gap    = 8.0;
+static const double on_look_tool_btn_margin = 12.0;
+static const double on_look_tool_btn_pad    = 24.0;   /* label to button edge, long titles     */
+static const double on_look_tool_msg_w      = 388.0;  /* wrapped message text                  */
+static const double on_look_tool_msg_max_h  = 240.0;  /* taller messages scroll                */
+static const double on_look_tool_field_w    = 260.0;  /* a single text field asking for a name */
+static const double on_look_tool_font       = 11.0;   /* every label and button title          */
+
 /* ── Library ──────────────────────────────────────────────────────────────── */
 
 static const on_look_color_t on_look_due_overdue = { { 0.753, 0.110, 0.157, 1 }, { 1.000, 0.482, 0.447, 1 } };
@@ -114,6 +137,12 @@ static const double on_look_toolbar_field_h  = 22.0;   /* a toolbar text field  
 static const double on_look_toolbar_search_w = 220.0;  /* the library's "Search all notes" field */
 static const double on_look_drag_icon        = 32.0;
 static const double on_look_about_icon       = 128.0;
+static const double on_look_format_bar_h     = 30.0;   /* editor's format bar, above a separator */
+static const double on_look_format_btn_h     = 22.0;
+static const double on_look_format_gap       = 2.0;    /* between buttons of one group           */
+static const double on_look_format_group_gap = 10.0;   /* between groups                         */
+static const double on_look_format_icon      = 16.0;   /* a format button's icon                 */
+static const double on_look_find_w           = 180.0;  /* the editor's "Find in note" field      */
 static const double on_look_status_h         = 20.0;   /* status bar, under a 1 pt separator     */
 static const double on_look_status_font      = 11.0;
 static const double on_look_status_inset     = 8.0;

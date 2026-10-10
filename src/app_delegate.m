@@ -9,6 +9,7 @@
 #import "media_window.h"
 #import "search_window.h"
 #import "settings_window.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "app_lifecycle.h"
@@ -39,7 +40,7 @@ static NSString * const menu_rule = @"-";
 static void
 hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
 {
-    on_ui_show_notice(@(title), @(message), on_library().window);
+    on_ui_show_notice(@(title), @(message), on_library().window, nil);
 }
 
 /*
@@ -168,28 +169,28 @@ applicationDidFinishLaunching:(NSNotification *)n
 - (void)
 ask_first_run
 {
-    gchar   *expected = on_app_db_path(&_app);
-    NSAlert *alert    = on_ui_new_alert();
-    alert.messageText     = @"Welcome to " ON_APP_NAME;
-    alert.informativeText = [NSString stringWithFormat:
+    gchar    *expected = on_app_db_path(&_app);
+    NSString *message  = [NSString stringWithFormat:
         @"No notes database was found at\n%@\n\nDo not open a database that another "
         @"notes app (the GTK Notes) has open: the two cannot see each other and would "
         @"both write to it.", @(expected)];
-    [alert addButtonWithTitle:@"Create a New Database"];
-    [alert addButtonWithTitle:@"Open a notes.db File…"];
-    [alert addButtonWithTitle:@"Quit"];
     g_free(expected);
 
-    NSModalResponse choice = [alert runModal];
-    if (choice == NSAlertFirstButtonReturn) {
-        [self open_database_and_start];
-    } else if (choice == NSAlertSecondButtonReturn) {
-        on_ui_pick_path(NotesPickOpenFile, @"Choose the notes.db file to open", @"Open",
-                        @[[UTType typeWithFilenameExtension:@"db"]], nil, nil,
-                        ^(NSString *path) { [self first_run_picked:path]; });
-    } else {
-        [NSApp terminate:nil];
-    }
+    [NotesToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
+                          symbol:@"note.text"
+                         buttons:@[@"Create a New Database", @"Open a notes.db File…", @"Quit"]
+                            over:nil
+                         handler:^(NSInteger index) {
+        if (index == 0) {
+            [self open_database_and_start];
+        } else if (index == 1) {
+            on_ui_pick_path(NotesPickOpenFile, @"Choose the notes.db file to open", @"Open",
+                            @[[UTType typeWithFilenameExtension:@"db"]], nil, nil,
+                            ^(NSString *path) { [self first_run_picked:path]; });
+        } else {
+            [NSApp terminate:nil];   /* Quit, or the panel dismissed */
+        }
+    }];
 }
 
 /*
@@ -204,9 +205,11 @@ ask_first_run
 first_run_picked:(NSString *)path
 {
     if (path && ![path.lastPathComponent isEqualToString:@ON_DB_FILENAME]) {
+        /* The welcome panel comes back once this one is answered. */
         on_ui_show_notice(@"That file cannot be opened",
-                          @"The database file must be named " @ON_DB_FILENAME @".", nil);
-        path = nil;
+                          @"The database file must be named " @ON_DB_FILENAME @".", nil,
+                          ^{ [self ask_first_run]; });
+        return;
     }
     if (!path) {
         [self ask_first_run];
@@ -238,9 +241,8 @@ open_database_and_start
                               @"%@\n\nIf another copy of " ON_APP_NAME
                               @" is still shutting down, try again in a few seconds.",
                               @(expected)],
-                          nil);
+                          nil, ^{ [NSApp terminate:nil]; });
         g_free(expected);
-        [NSApp terminate:nil];
         return NO;
     }
 
@@ -261,14 +263,14 @@ open_database_and_start
     on_ipc_server_result_t served = on_app_start_services(&_app);
     if (served == on_ipc_server_busy) {
         on_ui_show_notice(@ON_APP_NAME @" is already running",
-                          @"Another copy is using this data folder. This one will quit.", nil);
-        [NSApp terminate:nil];
+                          @"Another copy is using this data folder. This one will quit.", nil,
+                          ^{ [NSApp terminate:nil]; });
     } else if (served == on_ipc_server_failed) {
         on_ui_show_notice(@"The command-line tool cannot reach this app",
                           @"The app's socket could not be created. While this app is running, `"
                           @ON_CLI_NAME @"` commands will be refused rather than work on the "
                           @"database behind its back.",
-                          self.lib.window);
+                          self.lib.window, nil);
     } else {
         NSLog(@"[launch] serving `%s` commands on the socket", ON_CLI_NAME);
     }
@@ -526,7 +528,7 @@ build_menu_bar
     ]);
     NSMenuItem *insert = make_item(@"Insert", NULL, @"", 0);
     insert.submenu     = [[NSMenu alloc] initWithTitle:@"Insert"];
-    add_commands(insert.submenu, @[@"insert-image", @"insert-table", @"insert-date"]);
+    add_commands(insert.submenu, @[@"insert-image", @"insert-table", @"insert-emoji", @"insert-date"]);
     [format_menu addItem:insert];
 
     /* ── View menu ── */

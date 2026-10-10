@@ -46,6 +46,7 @@
 #import "ui_util.h"
 
 #include "action_edit.h"
+#include "look.h"
 #include "app_lifecycle.h"
 #include "serialize.h"
 
@@ -225,6 +226,45 @@ editor_window_titled(NSString *title)
 }
 
 /*
+ * find_view — the first view of a class in a view tree, depth first.
+ *
+ * Inputs:
+ *   root    — where to start (itself included)
+ *   cls     — the class wanted
+ *   exclude — a subclass of cls to skip (e.g. NSOutlineView when looking
+ *             for a plain table); Nil = none
+ *
+ * Output: the view, or nil.
+ */
+static NSView *
+find_view(NSView *root, Class cls, Class exclude)
+{
+    if ([root isKindOfClass:cls] && !(exclude && [root isKindOfClass:exclude])) return root;
+    for (NSView *sub in root.subviews) {
+        NSView *found = find_view(sub, cls, exclude);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * return_key — a synthetic Return key-down for a window.
+ *
+ * Inputs:
+ *   window — the window the event is for
+ *
+ * Output: the event.
+ */
+static NSEvent *
+return_key(NSWindow *window)
+{
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+                           timestamp:0 windowNumber:window.windowNumber context:nil
+                          characters:@"\r" charactersIgnoringModifiers:@"\r"
+                           isARepeat:NO keyCode:36];
+}
+
+/*
  * new_note — a note with the given text, saved through THE save.
  *
  * Inputs:
@@ -324,6 +364,23 @@ test_notes_pane(NotesLibrary *lib)
     on_library_notes_refresh(lib);
     pump(0.2);
 
+    /* Return on a selected row opens its note (double-click sends the same
+     * action with clickedRow set). */
+    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
+    check(table != nil && table.doubleAction != NULL && table.target != nil,
+          "notes list: double-click is wired to open the note");
+    NSUInteger before = 0, after = 0;
+    for (NSWindow *w in NSApp.windows) if (w.visible) before++;
+    if (table.numberOfRows > 0) {
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [table keyDown:return_key(lib.window)];
+        pump(0.3);
+    }
+    for (NSWindow *w in NSApp.windows) if (w.visible) after++;
+    check(table.numberOfRows > 0 && after == before + 1, "notes list: Return opens the selected note");
+    on_editor_close_all();
+    pump(0.2);
+
     /* Switch to grid mode and back. */
     lib.grid_pref = YES;
     on_library_notes_refresh(lib);
@@ -369,8 +426,11 @@ test_editor(void)
         check(window != nil, "its window carries the note's title");
         weak_window     = window;
         weak_controller = window.windowController;
-        weak_view       = ((NSScrollView *)window.contentView).documentView;
+        NSScrollView *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+        weak_view       = scroll.documentView;
         check([weak_view isKindOfClass:NotesNoteView.class], "the note view is its document view");
+        check(window.toolbar == nil && window.titlebarAccessoryViewControllers.count == 0,
+              "an editor has an ordinary title bar: no toolbar, no titlebar accessory");
         check(save_snapshots(window, @"editor"), "editor snapshots written, light and dark");
 
         on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
@@ -436,6 +496,211 @@ test_editor(void)
     check(body != NULL && strstr(body, "Flushed by close-all") != NULL,
           "flush_editors saves every open editor before it returns");
     g_free(body);
+}
+
+/*
+ * folder_count — how many folders sit directly under a parent.
+ *
+ * Inputs:
+ *   parent_id — the parent folder (0 = the top level)
+ *
+ * Output: the count.
+ */
+static guint
+folder_count(gint64 parent_id)
+{
+    GList *folders = on_db_folder_list(app.db, parent_id);
+    guint  n       = g_list_length(folders);
+    on_db_folder_list_free(folders);
+    return n;
+}
+
+/*
+ * default_button — a window's Return-key button.
+ *
+ * Inputs:
+ *   window — the window
+ *
+ * Output: the button, or nil.
+ */
+static NSButton *
+default_button(NSWindow *window)
+{
+    NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:window.contentView];
+    while (todo.count > 0) {
+        NSView *v = todo.lastObject;
+        [todo removeLastObject];
+        if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).keyEquivalent isEqualToString:@"\r"])
+            return (NSButton *)v;
+        [todo addObjectsFromArray:v.subviews];
+    }
+    return nil;
+}
+
+/*
+ * command_item — a menu item standing for a command, as the menu bar
+ * makes it.
+ *
+ * Inputs:
+ *   ident — the command
+ *
+ * Output: the item.
+ */
+static NSMenuItem *
+command_item(NSString *ident)
+{
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:ident action:@selector(run_command:)
+                                           keyEquivalent:@""];
+    item.identifier = ident;
+    return item;
+}
+
+/*
+ * send_command — run a command the way a menu item with no target does:
+ * up the responder chain from the window's first responder (the test app
+ * has no key window for NSApp's own routing).
+ *
+ * Inputs:
+ *   window — the window the command is for
+ *   item   — the item standing for the command
+ *
+ * Output: YES when something in the chain ran it.
+ */
+static BOOL
+send_command(NSWindow *window, NSMenuItem *item)
+{
+    return [window.firstResponder tryToPerform:@selector(run_command:) with:item];
+}
+
+/*
+ * label_with_text — a label in a view tree showing exactly this text.
+ *
+ * Inputs:
+ *   root — where to look
+ *   text — the text
+ *
+ * Output: the label, or nil.
+ */
+static NSTextField *
+label_with_text(NSView *root, NSString *text)
+{
+    if ([root isKindOfClass:NSTextField.class] && [((NSTextField *)root).stringValue isEqualToString:text])
+        return (NSTextField *)root;
+    for (NSView *sub in root.subviews) {
+        NSTextField *found = label_with_text(sub, text);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * test_editor_commands — an editor runs its commands through the same
+ * path the menu bar uses, gates them while the find field is typed in,
+ * shows its location and save state, and opens at the bottom-right.
+ */
+static void
+test_editor_commands(void)
+{
+    gint64 note_id = new_note("Commands note\nfind me here and find me there");
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow *window = editor_window_titled(@"Commands note");
+        NSWindowController<NSUserInterfaceValidations> *ed = (id)window.windowController;
+        NotesNoteView *view = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        check(window != nil && view != nil && window.firstResponder == view,
+              "a new editor opens with the note focused");
+
+        NSMenuItem *bold = command_item(@"inline-bold");
+        check([ed validateUserInterfaceItem:bold], "Bold is enabled in an editor");
+        send_command(window, bold);
+        check((on_note_view_inline_flags(view) & ON_FMT_BOLD) != 0,
+              "Bold from the menu reaches the note view");
+
+        NSMenuItem *find = command_item(@"find");
+        send_command(window, find);
+        NSSearchField *field = (NSSearchField *)find_view(window.contentView, NSSearchField.class, Nil);
+        check([window.firstResponder isKindOfClass:NSText.class] &&
+              ((NSText *)window.firstResponder).delegate == (id)field, "Find puts the focus in the find field");
+        check(![ed validateUserInterfaceItem:bold], "editing commands are off while the find field has the focus");
+
+        field.stringValue = @"find";
+        [NSApp sendAction:field.action to:field.target from:field];
+        NSMenuItem *next = command_item(@"find-next");
+        check([ed validateUserInterfaceItem:next], "Find Next is enabled with text in the field");
+        send_command(window, next);
+        OnPos first = on_note_view_caret(view);
+        send_command(window, next);
+        OnPos second = on_note_view_caret(view);
+        send_command(window, command_item(@"find-previous"));
+        OnPos back = on_note_view_caret(view);
+        check(first.block == 1 && second.block == 1 && second.offset > first.offset &&
+              back.offset == first.offset, "Find Next and Find Previous step between the matches");
+
+        check(label_with_text(window.contentView, @"/") != nil,
+              "the status bar shows the note's location");
+        NSTextField *dot = label_with_text(window.contentView, @"●");
+        check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
+
+        NSRect area = window.screen.visibleFrame;
+        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_editor_screen_margin)) < 1.0,
+              "a new editor opens at the bottom-right of the screen");
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+}
+
+/*
+ * test_new_folder — New Folder asks in the app's own tool panel, never a
+ * native alert or sheet; an empty name keeps it open, a name creates the
+ * folder and closes it.
+ *
+ * Inputs:
+ *   lib — the library (must have a window on screen)
+ */
+static void
+test_new_folder(NotesLibrary *lib)
+{
+    gint64 parent = on_library_current_folder_id(lib);
+    guint  before = folder_count(parent);
+    __weak NSWindow *weak_panel = nil;
+    @autoreleasepool {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"New Folder…" action:NULL
+                                               keyEquivalent:@""];
+        item.identifier = @"new-folder";
+        on_library_run_command(lib, item);
+        pump(0.3);
+
+        NSWindow *panel = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"New Folder"]) panel = w;
+        }
+        check(panel != nil && [panel isKindOfClass:NSPanel.class] && lib.window.attachedSheet == nil,
+              "New Folder asks in a tool panel, not an alert sheet");
+        check(save_snapshots(panel, @"new-folder"), "new folder snapshots written, light and dark");
+
+        NSTextField *field = nil;                   /* the editable one, not a label */
+        for (NSView *v in panel.contentView.subviews) {
+            if ([v isKindOfClass:NSTextField.class] && ((NSTextField *)v).editable)
+                field = (NSTextField *)v;
+        }
+        NSButton *create = default_button(panel);
+        check(field != nil && [create.title isEqualToString:@"Create"],
+              "it has a name field and a Create button");
+        [create performClick:nil];
+        pump(0.1);
+        check(panel.visible && folder_count(parent) == before,
+              "an empty name keeps the panel open and creates nothing");
+
+        field.stringValue = @"Smoke folder";
+        [create performClick:nil];
+        pump(0.2);
+        check(!panel.visible && folder_count(parent) == before + 1,
+              "a name creates the folder and closes the panel");
+        weak_panel = panel;
+    }
+    pump(0.2);
+    check(weak_panel == nil, "a closed tool panel is deallocated");
 }
 
 /*
@@ -653,6 +918,8 @@ main(void)
 
         test_library(lib);
         test_editor();
+        test_editor_commands();
+        test_new_folder(lib);
         test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);

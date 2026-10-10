@@ -78,6 +78,7 @@ static const on_command_t commands[] = {
     { @"para-code",        @"Code Block",              @"m", cmd_shift, win, nil },
     { @"insert-image",     @"Image…",                  @"",  0,         win, nil },
     { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil },
+    { @"insert-emoji",     @"Emoji…",                  @"",  0,         win, nil },
     { @"insert-date",      @"Date",                    @"d", cmd,       win, nil },
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
@@ -165,8 +166,9 @@ on_command_toolbar_item(NSString *ident)
 NSString *
 on_command_ident(id item)
 {
-    if ([item isKindOfClass:NSMenuItem.class]) return ((NSMenuItem *)item).identifier;
     if ([item isKindOfClass:NSToolbarItem.class]) return ((NSToolbarItem *)item).itemIdentifier;
+    if ([item isKindOfClass:NSMenuItem.class] || [item isKindOfClass:NSControl.class])
+        return ((id<NSUserInterfaceItemIdentification>)item).identifier;
     return nil;
 }
 

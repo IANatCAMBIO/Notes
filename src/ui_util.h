@@ -121,48 +121,40 @@ NSImage *on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w,
  */
 NSImageView *on_ui_image_view(NSImage *image, CGFloat width, CGFloat height);
 
-/* ── Alerts ─────────────────────────────────────────────────────────────── */
+/* ── Messages ───────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_new_alert — a new NSAlert showing on_ui_app_icon().  Every alert in
- * the app is made with this.
- *
- * Output: the alert.
+ * The app never shows a native dialog (NSAlert, an alert sheet): every
+ * message and question is a tool panel (tool_panel.h).  These two cover
+ * the common cases; anything else builds a NotesToolPanel directly.
  */
-NSAlert *on_ui_new_alert(void);
 
 /*
- * on_ui_present_alert — show an alert as a sheet on a window, or app-modal
- * when there is none.
- *
- * Inputs:
- *   alert   — the configured alert
- *   window  — the window to attach to; nil = app-modal
- *   handler — receives the button response, on the main thread; may be nil
- */
-void on_ui_present_alert(NSAlert *alert, NSWindow *window,
-                         void (^handler)(NSModalResponse response));
-
-/*
- * on_ui_show_notice — a message with one OK button.  The only way a
- * failure is shown: the title states what failed, the message why.
+ * on_ui_show_notice — a message with one OK button, in a tool panel.  The
+ * only way a failure is shown: the title states what failed, the message
+ * why.
  *
  * Inputs:
  *   title   — the headline, e.g. @"Could not open the database"
  *   message — the detail; may be nil
- *   window  — the window to attach to; nil = app-modal
+ *   window  — the window to centre over; nil = the screen
+ *   done    — called once on the main thread when the panel goes (OK,
+ *             Escape or the close box); may be nil.  The panel is not
+ *             modal: whatever must wait for the user goes here.
  */
-void on_ui_show_notice(NSString *title, NSString *message, NSWindow *window);
+void on_ui_show_notice(NSString *title, NSString *message, NSWindow *window,
+                       void (^done)(void));
 
 /*
- * on_ui_confirm — ask before something that cannot be undone.  The default
- * button is Cancel, so Return never destroys anything.
+ * on_ui_confirm — ask, in a tool panel, before something that cannot be
+ * undone.  The default button is Cancel and Escape dismisses, so neither
+ * Return nor Escape ever destroys anything.
  *
  * Inputs:
  *   question — the headline, e.g. @"Delete 3 notes permanently?"
  *   detail   — the consequence; nil for "This cannot be undone."
  *   action   — the confirming button's title, e.g. @"Delete"
- *   window   — the window to attach to; nil = app-modal
+ *   window   — the window to centre over; nil = the screen
  *   handler  — called on the main thread with YES only if confirmed
  */
 void on_ui_confirm(NSString *question, NSString *detail, NSString *action,
@@ -193,6 +185,19 @@ typedef NS_ENUM(NSInteger, NotesPickKind) {
 void on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt,
                      NSArray<UTType *> *types, NSString *start_dir,
                      NSWindow *window, void (^handler)(NSString *path));
+
+/*
+ * on_ui_open_image_external — show a note's image in an outside viewer: the
+ * bytes are written to a temporary file which is opened with the app named
+ * by the "image_viewer" setting (an app name or path), or with the
+ * system's default app for PNGs when it is unset.
+ *
+ * Inputs:
+ *   png — the image's stored bytes; nil does nothing
+ *
+ * Output: NO when the file could not be written or opened.
+ */
+BOOL on_ui_open_image_external(NSData *png);
 
 /* ── Controls ───────────────────────────────────────────────────────────── */
 

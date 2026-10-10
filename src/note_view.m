@@ -1996,13 +1996,17 @@ on_note_view_find_step(NotesNoteView *view, NSString *text, BOOL forward)
     size_t n;
     OnDocHit *hits = compute_hits(view.doc, text, &n);
     if (n == 0) { g_free(hits); return; }
-    /* Find the next hit after the caret. */
+    /* Forward: the first hit starting at or after the selection's end (the
+     * caret when nothing is selected); back: the last one starting before
+     * the selection's start — so a selected hit is stepped off, not found
+     * again.  Wraps at either end. */
+    OnPos lo, hi;
+    sel_bounds(view, &lo, &hi);
     size_t pick = forward ? 0 : n - 1;
     for (size_t i = 0; i < n; i++) {
         OnPos p = { hits[i].block, hits[i].cell, hits[i].start };
-        int cmp = on_pos_cmp(p, view.caret);
-        if (forward && cmp > 0) { pick = i; break; }
-        if (!forward && cmp < 0) pick = i;
+        if (forward && on_pos_cmp(p, hi) >= 0) { pick = i; break; }
+        if (!forward && on_pos_cmp(p, lo) < 0) pick = i;
     }
     OnDocHit *h = &hits[pick];
     OnPos a = { h->block, h->cell, h->start };
@@ -2011,6 +2015,23 @@ on_note_view_find_step(NotesNoteView *view, NSString *text, BOOL forward)
     set_caret(view, b, YES);
     g_free(hits);
     scroll_to_caret(view);
+}
+
+/*
+ * on_note_view_selected_text — see note_view.h.
+ */
+NSString *
+on_note_view_selected_text(NotesNoteView *view)
+{
+    if (!has_selection(view)) return nil;
+    OnPos a, b;
+    sel_bounds(view, &a, &b);
+    OnDocument *frag = on_document_copy_range(view.doc, a, b);
+    gchar      *text = on_document_plain_text(frag);
+    on_document_free(frag);
+    NSString *result = @(text ?: "");
+    g_free(text);
+    return result;
 }
 
 /*

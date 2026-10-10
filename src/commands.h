@@ -105,7 +105,9 @@ NSToolbarItem *on_command_toolbar_item(NSString *ident);
  * on_command_ident — which command an item stands for.
  *
  * Inputs:
- *   item — a menu item or toolbar item made by the two functions above
+ *   item — a menu item or toolbar item made by the two functions above,
+ *          or a control (a button in a window's own bar) whose identifier
+ *          is set to the command's
  *
  * Output: the command's identifier, or nil for any other object.
  */

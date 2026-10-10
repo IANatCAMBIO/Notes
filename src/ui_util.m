@@ -1,5 +1,7 @@
 #import "ui_util.h"
+#import "tool_panel.h"
 
+#include "config.h"
 #include "identity.h"
 #include "image_io.h"
 
@@ -139,63 +141,60 @@ on_ui_image_view(NSImage *image, CGFloat width, CGFloat height)
 }
 
 /*
- * on_ui_new_alert — NSAlert with the app's own icon.
- * Inputs/output are documented in ui_util.h.
- */
-NSAlert *
-on_ui_new_alert(void)
-{
-    NSAlert *alert = [[NSAlert alloc] init];
-    NSImage *icon  = on_ui_app_icon();
-    if (icon) alert.icon = icon;
-    return alert;
-}
-
-/*
- * on_ui_present_alert — alert as a sheet, or app-modal with no window.
+ * on_ui_show_notice — one-button message in a tool panel.
  * Inputs/output are documented in ui_util.h.
  */
 void
-on_ui_present_alert(NSAlert *alert, NSWindow *window, void (^handler)(NSModalResponse response))
+on_ui_show_notice(NSString *title, NSString *message, NSWindow *window, void (^done)(void))
 {
-    if (window) {
-        [alert beginSheetModalForWindow:window completionHandler:handler];
-    } else {
-        NSModalResponse response = [alert runModal];
-        if (handler) handler(response);
-    }
+    [NotesToolPanel show_message:title message:message
+                          symbol:@"exclamationmark.triangle.fill"
+                         buttons:@[@"OK"] over:window
+                         handler:^(NSInteger index) { (void)index; if (done) done(); }];
 }
 
 /*
- * on_ui_show_notice — one-button message.
- * Inputs/output are documented in ui_util.h.
- */
-void
-on_ui_show_notice(NSString *title, NSString *message, NSWindow *window)
-{
-    NSAlert *alert        = on_ui_new_alert();
-    alert.messageText     = title;
-    alert.informativeText = message ?: @"";
-    on_ui_present_alert(alert, window, nil);
-}
-
-/*
- * on_ui_confirm — confirmation with Cancel as the default.
+ * on_ui_confirm — confirmation in a tool panel, Cancel the default.
  * Inputs/output are documented in ui_util.h.
  */
 void
 on_ui_confirm(NSString *question, NSString *detail, NSString *action, NSWindow *window,
               void (^handler)(BOOL confirmed))
 {
-    NSAlert *alert        = on_ui_new_alert();
-    alert.alertStyle      = NSAlertStyleWarning;
-    alert.messageText     = question;
-    alert.informativeText = detail ?: @"This cannot be undone.";
-    [alert addButtonWithTitle:@"Cancel"];        /* first = default (Return) */
-    [alert addButtonWithTitle:action].hasDestructiveAction = YES;
-    on_ui_present_alert(alert, window, ^(NSModalResponse response) {
-        handler(response == NSAlertSecondButtonReturn);
-    });
+    [NotesToolPanel show_message:question message:detail ?: @"This cannot be undone."
+                          symbol:@"exclamationmark.triangle.fill"
+                         buttons:@[@"Cancel", action]   /* [0] = default (Return) */
+                            over:window
+                         handler:^(NSInteger index) { handler(index == 1); }];
+}
+
+/*
+ * on_ui_open_image_external — a note's image in an outside viewer.
+ * Inputs/output are documented in ui_util.h.
+ */
+BOOL
+on_ui_open_image_external(NSData *png)
+{
+    if (png == nil) return NO;
+    NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@ON_BUNDLE_ID];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES
+                                             attributes:nil error:NULL];
+    NSString *name = [NSString stringWithFormat:@"image-%@.png", NSUUID.UUID.UUIDString];
+    NSURL    *url  = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:name]];
+    if (![png writeToURL:url atomically:YES]) return NO;
+
+    gchar *viewer = on_app_config_get("image_viewer");
+    BOOL   ok;
+    if (viewer != NULL && *viewer != '\0') {
+        NSTask *task        = [[NSTask alloc] init];
+        task.executableURL  = [NSURL fileURLWithPath:@"/usr/bin/open"];
+        task.arguments      = @[@"-a", @(viewer), url.path];
+        ok = [task launchAndReturnError:NULL];
+    } else {
+        ok = [NSWorkspace.sharedWorkspace openURL:url];
+    }
+    g_free(viewer);
+    return ok;
 }
 
 /*

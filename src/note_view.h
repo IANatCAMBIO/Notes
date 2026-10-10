@@ -176,6 +176,17 @@ void on_note_view_find(NotesNoteView *view, NSString *text);
 void on_note_view_find_step(NotesNoteView *view, NSString *text, BOOL forward);
 
 /*
+ * on_note_view_selected_text — the selection as plain text (Use Selection
+ * for Find).
+ *
+ * Inputs:
+ *   view — the view
+ *
+ * Output: the text, or nil when nothing is selected.
+ */
+NSString *on_note_view_selected_text(NotesNoteView *view);
+
+/*
  * IMAGE ORDINALS — the note's images numbered in document order, block and
  * inline alike: the app's one way of addressing a note's images (the order
  * on_note_count_images walks a blob in).

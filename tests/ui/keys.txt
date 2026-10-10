@@ -1,0 +1,48 @@
+# The standard macOS key bindings: line, paragraph and word moves and
+# deletes (doCommandBySelector:, the same dispatcher a real key press uses).
+text one two three
+key Return
+text four five six
+# ⌘← / ⌘→: the line's ends.
+key Left primary
+caret 1 0
+key Right primary
+caret 1 13
+# ⌥← steps one word at a time, also from just after a space.
+key Left alt
+caret 1 10
+key Left alt
+caret 1 5
+key Left alt
+caret 1 0
+# ⌃A / ⌃E: the paragraph's ends.
+command moveToEndOfParagraph:
+caret 1 13
+command moveToBeginningOfParagraph:
+caret 1 0
+# ⌥⌫ deletes one word, not back to the block's start.
+key Right primary
+key BackSpace alt
+check 1 para four five 
+caret 1 10
+# ⌘⌫ deletes to the line's start.
+key BackSpace primary
+check 1 para 
+caret 1 0
+# One undo: consecutive deletes are one step, like a typing burst.
+undo
+check 1 para four five six
+# ⌃K deletes to the paragraph's end.
+key Up
+key Right primary
+key Left alt
+command deleteToEndOfParagraph:
+check 0 para one two 
+# Home and End go to the line's start and end.
+key Home
+caret 0 0
+key End
+caret 0 8
+# An unknown command is not handled (AppKit beeps) and changes nothing.
+command noSuchCommand:
+check 0 para one two 

@@ -39,6 +39,10 @@
  * thread. */
 @property (nonatomic, copy) void (^image_activated_handler)(NSInteger ordinal);
 
+/* The pasteboard Cut, Copy and Paste use: the general one, unless a test
+ * gives the view a private one so it never touches the user's clipboard. */
+@property (nonatomic, strong) NSPasteboard *pasteboard;
+
 /*
  * init_with_app: — a fresh view holding an empty note.
  *
@@ -156,7 +160,9 @@ void on_note_view_undo(NotesNoteView *view);
 void on_note_view_redo(NotesNoteView *view);
 
 /*
- * on_note_view_find — highlight every case-insensitive match.
+ * on_note_view_find — highlight every case-insensitive match and select
+ * the first one at or after the caret (scrolled into view), so a query
+ * lands somewhere as it is typed.
  *
  * Inputs:
  *   view — the view

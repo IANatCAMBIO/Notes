@@ -574,6 +574,27 @@ command_item(NSString *ident)
 }
 
 /*
+ * key_event — a synthetic key-down for a window, as the keyboard makes it.
+ *
+ * Inputs:
+ *   window   — the window the event is for
+ *   key_code — the virtual key code (Carbon kVK_*)
+ *   chars    — the characters it types (NSEvent function-key characters
+ *              for arrows, Home, End …)
+ *   mods     — modifier flags
+ *
+ * Output: the event.
+ */
+static NSEvent *
+key_event(NSWindow *window, unsigned short key_code, NSString *chars, NSEventModifierFlags mods)
+{
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:mods
+                           timestamp:0 windowNumber:window.windowNumber context:nil
+                          characters:chars charactersIgnoringModifiers:chars
+                           isARepeat:NO keyCode:key_code];
+}
+
+/*
  * send_command — run a command the way a menu item with no target does:
  * up the responder chain from the window's first responder (the test app
  * has no key window for NSApp's own routing).
@@ -646,22 +667,43 @@ test_editor_commands(void)
         [NSApp sendAction:field.action to:field.target from:field];
         NSMenuItem *next = command_item(@"find-next");
         check([ed validateUserInterfaceItem:next], "Find Next is enabled with text in the field");
-        send_command(window, next);
-        OnPos first = on_note_view_caret(view);
+        OnPos first = on_note_view_caret(view);          /* typing selected the first */
         send_command(window, next);
         OnPos second = on_note_view_caret(view);
         send_command(window, command_item(@"find-previous"));
         OnPos back = on_note_view_caret(view);
         check(first.block == 1 && second.block == 1 && second.offset > first.offset &&
-              back.offset == first.offset, "Find Next and Find Previous step between the matches");
+              back.offset == first.offset,
+              "typing in the find field selects the first match; Next and Previous step from it");
 
         check(label_with_text(window.contentView, @"/") != nil,
               "the status bar shows the note's location");
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
 
+        /* Real key events, through AppKit's key bindings into the view. */
+        [window makeFirstResponder:view];
+        unichar right_arrow = NSRightArrowFunctionKey, home = NSHomeFunctionKey;
+        [view keyDown:key_event(window, 0x7C, [NSString stringWithCharacters:&right_arrow length:1],
+                                NSEventModifierFlagCommand | NSEventModifierFlagFunction)];
+        OnPos line_end = on_note_view_caret(view);
+        [view keyDown:key_event(window, 0x73, [NSString stringWithCharacters:&home length:1],
+                                NSEventModifierFlagFunction)];
+        OnPos line_start = on_note_view_caret(view);
+        check(line_end.offset > 0 && line_start.offset == 0 && line_start.block == line_end.block,
+              "⌘→ and Home, as real key events, go to the line's end and start");
+        [view keyDown:key_event(window, 0x7C, [NSString stringWithCharacters:&right_arrow length:1],
+                                NSEventModifierFlagCommand | NSEventModifierFlagFunction)];
+        gsize before_delete = on_document_block(on_note_view_document(view), line_end.block)->text->text->len;
+        [view keyDown:key_event(window, 0x33, @"\x7f", NSEventModifierFlagOption)];
+        gsize after_delete = on_document_block(on_note_view_document(view), line_end.block)->text->text->len;
+        check(after_delete < before_delete && after_delete > 0,
+              "⌥⌫ deletes one word, not the whole line");
+        [NSApp sendAction:@selector(undo:) to:view from:nil];
+
+
+        on_editor_close_notes(&note_id, 1);   /* saves first: then the image is added */
         add_image(note_id);
-        on_editor_close_notes(&note_id, 1);
         on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
         pump(0.3);
         window = editor_window_titled(@"Commands note");

@@ -15,6 +15,12 @@ Step 1 — data loss and dead windows:
 - [x] M Programmatic sidebar selection of a nested folder failed: ancestors were expanded innermost first
 - [x] M ⌘⌫ (and every Move to Trash) is off while a library text field is being typed in
 
+Step 2 — the editor view (part 1):
+- [x] H Typing into a table cell made a new paragraph before the table (caret_ensure_text tested the block, not the caret's text)
+- [x] H Reshaping a table crashed: the layout freed cells by the document's new size (also wrong after block removal)
+- [x] M Home/End and Shift+Home/End work on the line (AppKit sends Shift+End as "select to document end")
+- [x] M One click path (press_at) for the mouse and the probe; one key dispatcher (run_command) for key bindings, the Edit menu and the probe
+
 Earlier:
 
 - [x] H Double-click / Return opens a note: list, grid, Action Items (grid was not even selectable)
@@ -33,27 +39,27 @@ Earlier:
 
 ## Editor view (note_view.m, doc_layout.c, text_layout.c)
 
-- [ ] H Probe runner skips `click image find step step-back settle redo select-all date width` — fix the harness first; it hides real bugs (ui_probe_test.m:229-318 vs gtk ui_probe.c:227-311); run with GTK's settings and 640 px
-- [ ] H Margins applied twice (layout already adds them): text indented 32/24 pt, 64 pt less wrap width (note_view.m:295, 1229, 1270, 2254, 1689)
-- [ ] H `current_style` ignores first_line_title, code_line_numbers, code_copy_buttons (note_view.m:312)
+- [x] H Probe runner skips `click image find step step-back settle redo select-all date width` — fix the harness first; it hides real bugs (ui_probe_test.m:229-318 vs gtk ui_probe.c:227-311); run with GTK's settings and 640 px
+- [x] H Margins applied twice (layout already adds them): text indented 32/24 pt, 64 pt less wrap width (note_view.m:295, 1229, 1270, 2254, 1689)
+- [x] H `current_style` ignores first_line_title, code_line_numbers, code_copy_buttons (note_view.m:312)
 - [ ] H Centred title never centred (no flush offset in text_layout.c)
-- [ ] H Find does not select the first match at/after the caret (note_view.m:1979)
-- [ ] H Cocoa key bindings not handled: ⌘←/→ (+shift), Home/End, ⌃A/⌃E, ⌘⌫ … beep (doCommandBySelector)
-- [ ] H Option-← / Option-⌫ jump/delete to block start (on_text_layout_prev_word)
-- [ ] H Keyboard moves never scroll the caret into view (set_caret)
-- [ ] H Checkbox click does nothing (no ON_HIT_CHECKBOX; set_kind instead of set_checked)
-- [ ] H No context menu: image Copy/Open/Full size, table rows/columns/header/delete, Cut/Copy/Paste
+- [x] H Find does not select the first match at/after the caret (note_view.m:1979)
+- [x] H Cocoa key bindings not handled: ⌘←/→ (+shift), Home/End, ⌃A/⌃E, ⌘⌫ … beep (doCommandBySelector)
+- [x] H Option-← / Option-⌫ jump/delete to block start (on_text_layout_prev_word)
+- [x] H Keyboard moves never scroll the caret into view (set_caret)
+- [x] H Checkbox click does nothing (no ON_HIT_CHECKBOX; set_kind instead of set_checked)
+- [x] H No context menu: image Copy/Open/Full size, table rows/columns/header/delete, Cut/Copy/Paste
 - [ ] H IME replacement range ignored (press-and-hold accents insert instead of replace)
 - [ ] H #tag capture and tag autocomplete absent — typing "#foo " never makes a tag
 - [ ] H Inline images never laid out or drawn
 - [ ] M Page Up/Down do not scroll a page; End on a wrapped line lands on the next line
 - [ ] M Marked text: markedRange, preedit cursor, reset on caret move/click/paste, committed "\n"
 - [ ] M Cursor shapes (I-beam / pointer over image, checkbox, copy word)
-- [ ] M Click does not reset goal_x / end typing group; image opens twice on double-click
-- [ ] M Code-block "copy" word absent
+- [x] M Click does not reset goal_x / end typing group; image opens twice on double-click
+- [x] M Code-block "copy" word absent
 - [ ] M Paste: TIFF stored as PNG bytes; JPEG/HEIC refused
 - [ ] M Find misses table cells; ASCII-only case folding; highlights stale after edits/loads
-- [ ] M Caret drawn when unfocused / with a selection; opening puts caret on the title line
+- [x] M Caret drawn when unfocused / with a selection; opening puts caret on the title line
 - [ ] M Enter at end of a table cell shows no new line
 - [ ] M Image ordinals: image/reveal count blocks only, count/png count inline too
 - [ ] M pos_to_utf16 reads out of bounds in table cells

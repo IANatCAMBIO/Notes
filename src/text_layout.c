@@ -699,37 +699,49 @@ on_text_layout_prev_cursor(const on_text_layout_t *layout, size_t byte)
 }
 
 /*
- * on_text_layout_next_word — see text_layout.h.
+ * word_boundary — the nearest word end after a UTF-16 index (forward), or
+ * the nearest word start before it (backward), walking the string's word
+ * tokens.  Spaces and punctuation are not words, so a step from just after
+ * a space still finds the word before it (Pango's is_word_start/end).
  *
- * Uses CFStringTokenizer to find word boundaries; advances to the next
- * word's end.
+ * Inputs:
+ *   layout  — the layout
+ *   cf_off  — the UTF-16 index to step from
+ *   forward — YES for the next word end
+ *
+ * Output: the boundary's UTF-16 index; the string's end (forward) or 0
+ *         (backward) when there is none.
+ */
+static CFIndex
+word_boundary(const on_text_layout_t *layout, CFIndex cf_off, bool forward)
+{
+    CFIndex           n   = CFStringGetLength(layout->cf_str);
+    CFStringTokenizerRef tok = CFStringTokenizerCreate(NULL, layout->cf_str, CFRangeMake(0, n),
+                                                       kCFStringTokenizerUnitWord, NULL);
+    CFIndex found = forward ? n : 0;
+    while (CFStringTokenizerAdvanceToNextToken(tok) != kCFStringTokenizerTokenNone) {
+        CFRange tr = CFStringTokenizerGetCurrentTokenRange(tok);
+        if (forward) {
+            if (tr.location + tr.length > cf_off) { found = tr.location + tr.length; break; }
+        } else {
+            if (tr.location >= cf_off) break;
+            found = tr.location;
+        }
+    }
+    CFRelease(tok);
+    return found;
+}
+
+/*
+ * on_text_layout_next_word — see text_layout.h.
  */
 size_t
 on_text_layout_next_word(const on_text_layout_t *layout, size_t byte)
 {
     if (byte >= layout->len) return layout->len;
-    CFStringTokenizerRef tok = CFStringTokenizerCreate(
-        NULL, layout->cf_str, CFRangeMake(0, CFStringGetLength(layout->cf_str)),
-        kCFStringTokenizerUnitWord, NULL);
     CFIndex cf_off = (CFIndex)on_utf16_from_utf8(layout->utf8, byte);
-    CFStringTokenizerGoToTokenAtIndex(tok, cf_off);
-    /* Move to end of current or next token. */
-    CFStringTokenizerTokenType type = CFStringTokenizerGetCurrentTokenRange(tok).length > 0
-        ? kCFStringTokenizerTokenNone : kCFStringTokenizerTokenNone;
-    (void)type;
-    CFRange tr = CFStringTokenizerGetCurrentTokenRange(tok);
-    CFIndex next_end;
-    if (tr.length > 0 && cf_off < tr.location + tr.length) {
-        next_end = tr.location + tr.length;
-    } else {
-        /* Advance one token. */
-        CFStringTokenizerAdvanceToNextToken(tok);
-        tr = CFStringTokenizerGetCurrentTokenRange(tok);
-        next_end = (tr.length > 0) ? tr.location + tr.length
-                                   : (CFIndex)CFStringGetLength(layout->cf_str);
-    }
-    CFRelease(tok);
-    return on_utf8_from_utf16(layout->utf8, layout->len, (size_t)next_end);
+    return on_utf8_from_utf16(layout->utf8, layout->len,
+                              (size_t)word_boundary(layout, cf_off, true));
 }
 
 /*
@@ -739,22 +751,9 @@ size_t
 on_text_layout_prev_word(const on_text_layout_t *layout, size_t byte)
 {
     if (byte == 0) return 0;
-    CFStringTokenizerRef tok = CFStringTokenizerCreate(
-        NULL, layout->cf_str, CFRangeMake(0, CFStringGetLength(layout->cf_str)),
-        kCFStringTokenizerUnitWord, NULL);
     CFIndex cf_off = (CFIndex)on_utf16_from_utf8(layout->utf8, byte);
-    /* Position one before byte, then find the word that ends there or before. */
-    if (cf_off > 0) cf_off--;
-    CFStringTokenizerGoToTokenAtIndex(tok, cf_off);
-    CFRange tr = CFStringTokenizerGetCurrentTokenRange(tok);
-    CFIndex prev_start;
-    if (tr.length > 0) {
-        prev_start = tr.location;
-    } else {
-        prev_start = 0;
-    }
-    CFRelease(tok);
-    return on_utf8_from_utf16(layout->utf8, layout->len, (size_t)prev_start);
+    return on_utf8_from_utf16(layout->utf8, layout->len,
+                              (size_t)word_boundary(layout, cf_off, false));
 }
 
 /*

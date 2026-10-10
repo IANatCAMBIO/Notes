@@ -1,0 +1,56 @@
+# Clicks on things that are not text: a task's box, a code run's "copy"
+# word, the context menu's table items.  (Coordinates are the view's, at
+# 640 pt wide with the first-line title on.)
+text Title
+key Return
+para check
+text buy milk
+check 1 check buy milk
+checked 1 0
+click 33 47
+checked 1 1
+check 1 check buy milk
+click 33 47
+checked 1 0
+# A code run's "copy" word copies the whole run.
+key End
+key Return
+para code
+text let x = 1
+key Return
+text let y = 2
+check 2 code let x = 1
+check 3 code let y = 2
+click 605 66
+clipboard let x = 1\nlet y = 2
+check 2 code let x = 1
+# A table (code continues on Return, as in GTK): the context menu adds and
+# removes rows and columns, and deletes the table.
+key End
+key Return
+key Return
+table
+table-size 5 3 3
+context 30 140
+menu table_row_add:
+table-size 5 4 3
+menu table_col_add:
+table-size 5 4 4
+menu table_row_remove:
+table-size 5 3 4
+menu table_col_remove:
+table-size 5 3 3
+menu table_delete:
+check 5 code 
+undo
+table-size 5 3 3
+# Cut, Copy and Paste in the menu act on the selection.
+click 100 47
+key Home
+key End shift
+menu copy:
+clipboard buy milk
+menu cut:
+check 1 check 
+menu paste:
+check 1 check buy milk

@@ -82,6 +82,10 @@ static const NSTimeInterval blink_interval = 0.56;
 /* Layout style in effect. */
 @property (nonatomic, assign) OnDocLayoutStyle style;
 
+/* The key event keyDown: is interpreting (nil otherwise): which key a
+ * command came from (home_end_command). */
+@property (nonatomic, strong) NSEvent *key_event;
+
 @end
 
 /* ── Document observer ───────────────────────────────────────────────────── */
@@ -261,8 +265,11 @@ caret_text(NotesNoteView *v)
 }
 
 /*
- * caret_ensure_text — if the caret is beside an image/table, insert a
- * paragraph after it and move the caret there.
+ * caret_ensure_text — make the caret sit in text: beside an object (an
+ * image, or a table as a whole — NOT inside a cell, which is text), open a
+ * new paragraph after (or before) the object and move the caret into it.
+ * The caret's TEXT is tested, not its block: a table block has no text of
+ * its own, and testing it sent typing aimed at a cell out of the table.
  *
  * Inputs:
  *   v — the view
@@ -272,8 +279,7 @@ caret_text(NotesNoteView *v)
 static void
 caret_ensure_text(NotesNoteView *v)
 {
-    const OnBlock *b = caret_block(v);
-    if (b->text != NULL)
+    if (caret_text(v) != NULL)
         return;
     guint at = v.caret.block + (v.caret.offset > 0 ? 1 : 0);
     on_document_insert_block(v.doc, at, on_block_new_text(ON_BLOCK_PARA));
@@ -284,7 +290,9 @@ caret_ensure_text(NotesNoteView *v)
 /* ── Layout width ────────────────────────────────────────────────────────── */
 
 /*
- * layout_text_width — the width available for text inside the view margins.
+ * layout_width — the width the layout lays the page out in: the view's
+ * whole width (the layout keeps the page margins itself, and its
+ * coordinates are the view's).
  *
  * Inputs:
  *   v — the view
@@ -292,16 +300,16 @@ caret_ensure_text(NotesNoteView *v)
  * Output: points.
  */
 static double
-layout_text_width(NotesNoteView *v)
+layout_width(NotesNoteView *v)
 {
-    double w = v.frame.size.width - on_look_margin_left - on_look_margin_right;
-    return MAX(w, 1.0);
+    return MAX(v.frame.size.width, 1.0);
 }
 
 /* ── Style helpers ───────────────────────────────────────────────────────── */
 
 /*
- * current_style — the layout style from the app's config and appearance.
+ * current_style — the layout style the settings and the appearance ask
+ * for (GTK: style_from_app).
  *
  * Inputs:
  *   v — the view
@@ -311,11 +319,33 @@ layout_text_width(NotesNoteView *v)
 static OnDocLayoutStyle
 current_style(NotesNoteView *v)
 {
-    OnDocLayoutStyle s = { 0 };
-    s.dark = on_ui_is_dark(v);
-    /* title_line, code_numbers, code_copy — defaults off (config wires
-     * these when settings_changed fires; for now they are always off). */
+    OnDocLayoutStyle s = {
+        .title_line   = v.app->first_line_title,
+        .code_numbers = v.app->code_line_numbers,
+        .code_copy    = v.app->code_copy_buttons,
+        .dark         = on_ui_is_dark(v),
+    };
     return s;
+}
+
+/*
+ * apply_style — give the layout the current style and fit the view's
+ * height to it (a title line or code numbers change the geometry).
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+apply_style(NotesNoteView *v)
+{
+    OnDocLayoutStyle s = current_style(v);
+    v.style = s;
+    on_doc_layout_set_style(v.layout, &s);
+    on_doc_layout_set_width(v.layout, layout_width(v));
+    NSSize sz = v.frame.size;
+    sz.height = MAX(on_doc_layout_height(v.layout), 1.0);
+    [v setFrameSize:sz];
+    v.needsDisplay = YES;
 }
 
 /* ── After-edit bookkeeping ─────────────────────────────────────────────── */
@@ -341,18 +371,21 @@ scroll_to_caret(NotesNoteView *v)
 }
 
 /*
- * blink_restart — restart the caret blink from the "on" state.
+ * blink_restart — show the caret now and, while the view has the focus,
+ * blink it from the "on" state (without the focus there is no caret and
+ * no timer).
  *
  * Inputs:
  *   v — the view
- *
- * Output: none.
  */
 static void
 blink_restart(NotesNoteView *v)
 {
     [v.blink_timer invalidate];
-    v.caret_on = YES;
+    v.blink_timer = nil;
+    v.caret_on    = YES;
+    v.needsDisplay = YES;
+    if (v.window.firstResponder != v) return;      /* blinks only with the focus */
     __weak NotesNoteView *wv = v;
     v.blink_timer = [NSTimer scheduledTimerWithTimeInterval:blink_interval
                                                     repeats:YES
@@ -393,9 +426,9 @@ im_sync_location(NotesNoteView *v)
 static void
 after_edit(NotesNoteView *v)
 {
-    double w = layout_text_width(v);
+    double w = layout_width(v);
     on_doc_layout_set_width(v.layout, w);
-    double h = on_doc_layout_height(v.layout) + on_look_margin_top + on_look_margin_bottom;
+    double h = on_doc_layout_height(v.layout);
     NSSize sz = v.frame.size;
     sz.height = MAX(h, 1.0);
     [v setFrameSize:sz];
@@ -460,23 +493,24 @@ typing_end(NotesNoteView *v)
 /* ── Selection management ────────────────────────────────────────────────── */
 
 /*
- * set_caret — move the caret; extend the selection if extend is YES,
- * otherwise collapse anchor to caret.
+ * set_caret — move the caret (clamped into the document), and the anchor
+ * too unless extending; the caret is scrolled into view, blinks from "on"
+ * and the input method is told where it is (GTK: set_caret).
  *
  * Inputs:
  *   v      — the view
  *   p      — the new caret position
- *   extend — YES to extend, NO to collapse
- *
- * Output: none.
+ *   extend — YES to extend the selection, NO to collapse it
  */
 static void
 set_caret(NotesNoteView *v, OnPos p, BOOL extend)
 {
-    v.caret = p;
+    v.caret = clamp_pos(v.doc, p);
     if (!extend)
-        v.anchor = p;
-    v.needsDisplay = YES;
+        v.anchor = v.caret;
+    blink_restart(v);
+    scroll_to_caret(v);
+    im_sync_location(v);
 }
 
 /*
@@ -625,18 +659,22 @@ enter_pressed(NotesNoteView *v)
 }
 
 /*
- * delete_key — Backspace or Delete; optionally word-wise.
+ * delete_key — a delete key: the selection if there is one, else from the
+ * caret to where `how` would move it — a character (Backspace, Delete), a
+ * word (⌥⌫, ⌥⌦), the line start (⌘⌫) or the block end (⌃K) — never
+ * across a block or cell.  At a block's edge it joins blocks, unlists a
+ * list item or removes an object, as Backspace and Delete do.
  *
  * Inputs:
- *   v        — the view
- *   backward — YES for Backspace
- *   word     — YES for word deletion
- *
- * Output: none.
+ *   v   — the view
+ *   how — ON_MOVE_CHAR_LEFT/RIGHT, WORD_LEFT/RIGHT, LINE_START or
+ *         BLOCK_END
  */
 static void
-delete_key(NotesNoteView *v, BOOL backward, BOOL word)
+delete_key(NotesNoteView *v, OnDocMove how)
 {
+    BOOL backward = how == ON_MOVE_CHAR_LEFT || how == ON_MOVE_WORD_LEFT ||
+                    how == ON_MOVE_LINE_START;
     if (has_selection(v)) {
         typing_end(v);
         delete_selection(v);
@@ -655,9 +693,7 @@ delete_key(NotesNoteView *v, BOOL backward, BOOL word)
             v.caret = v.anchor = clamp_pos(v.doc, out);
         } else {
             double gx = -1;
-            OnPos q = on_doc_layout_move(v.layout, p,
-                                        backward ? ON_MOVE_CHAR_LEFT : ON_MOVE_CHAR_RIGHT,
-                                        &gx);
+            OnPos q = on_doc_layout_move(v.layout, p, how, &gx);
             if (!pos_eq(q, p)) {
                 OnPos out;
                 on_document_delete_range(v.doc,
@@ -714,10 +750,8 @@ delete_key(NotesNoteView *v, BOOL backward, BOOL word)
     }
 
     double gx = -1;
-    OnDocMove how = backward ? (word ? ON_MOVE_WORD_LEFT  : ON_MOVE_CHAR_LEFT)
-                             : (word ? ON_MOVE_WORD_RIGHT : ON_MOVE_CHAR_RIGHT);
     OnPos q = on_doc_layout_move(v.layout, p, how, &gx);
-    /* Never cross a block boundary in a single-char delete. */
+    /* Never cross a block or cell boundary. */
     if (q.block != p.block || q.cell != p.cell) q = p;
     OnPos a = backward ? q : p, e = backward ? p : q;
     if (e.offset > a.offset)
@@ -880,7 +914,7 @@ copy_selection(NotesNoteView *v)
     gchar *text  = on_document_plain_text(frag);
     on_document_free(frag);
 
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSPasteboard *pb = v.pasteboard;
     [pb clearContents];
     NSData *data = [NSData dataWithBytesNoCopy:blob length:n freeWhenDone:NO];
     [pb setData:data forType:on_pasteboard_type_fragment];
@@ -928,7 +962,7 @@ paste_fragment(NotesNoteView *v, OnDocument *frag, BOOL plain)
 static void
 paste(NotesNoteView *v)
 {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSPasteboard *pb = v.pasteboard;
     /* Prefer our fragment type. */
     NSData *frag_data = [pb dataForType:on_pasteboard_type_fragment];
     if (frag_data) {
@@ -1057,6 +1091,334 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
     return hits;
 }
 
+/* ── Editing commands ───────────────────────────────────────────────────── */
+
+/* A caret movement command: where it goes, and whether it extends. */
+typedef struct {
+    const char *name;
+    OnDocMove   how;
+    BOOL        extend;
+} move_command_t;
+
+/*
+ * The movement commands of the standard key bindings.  A "paragraph" is a
+ * block.  (Home and End are not here: see home_end_command.)
+ */
+static const move_command_t move_commands[] = {
+    { "moveLeft:",                                     ON_MOVE_CHAR_LEFT,   NO  },
+    { "moveBackward:",                                 ON_MOVE_CHAR_LEFT,   NO  },
+    { "moveRight:",                                    ON_MOVE_CHAR_RIGHT,  NO  },
+    { "moveForward:",                                  ON_MOVE_CHAR_RIGHT,  NO  },
+    { "moveUp:",                                       ON_MOVE_LINE_UP,     NO  },
+    { "moveDown:",                                     ON_MOVE_LINE_DOWN,   NO  },
+    { "moveLeftAndModifySelection:",                   ON_MOVE_CHAR_LEFT,   YES },
+    { "moveBackwardAndModifySelection:",               ON_MOVE_CHAR_LEFT,   YES },
+    { "moveRightAndModifySelection:",                  ON_MOVE_CHAR_RIGHT,  YES },
+    { "moveForwardAndModifySelection:",                ON_MOVE_CHAR_RIGHT,  YES },
+    { "moveUpAndModifySelection:",                     ON_MOVE_LINE_UP,     YES },
+    { "moveDownAndModifySelection:",                   ON_MOVE_LINE_DOWN,   YES },
+    { "moveWordLeft:",                                 ON_MOVE_WORD_LEFT,   NO  },
+    { "moveWordBackward:",                             ON_MOVE_WORD_LEFT,   NO  },
+    { "moveWordRight:",                                ON_MOVE_WORD_RIGHT,  NO  },
+    { "moveWordForward:",                              ON_MOVE_WORD_RIGHT,  NO  },
+    { "moveWordLeftAndModifySelection:",               ON_MOVE_WORD_LEFT,   YES },
+    { "moveWordBackwardAndModifySelection:",           ON_MOVE_WORD_LEFT,   YES },
+    { "moveWordRightAndModifySelection:",              ON_MOVE_WORD_RIGHT,  YES },
+    { "moveWordForwardAndModifySelection:",            ON_MOVE_WORD_RIGHT,  YES },
+    { "moveToLeftEndOfLine:",                          ON_MOVE_LINE_START,  NO  },
+    { "moveToBeginningOfLine:",                        ON_MOVE_LINE_START,  NO  },
+    { "moveToRightEndOfLine:",                         ON_MOVE_LINE_END,    NO  },
+    { "moveToEndOfLine:",                              ON_MOVE_LINE_END,    NO  },
+    { "moveToLeftEndOfLineAndModifySelection:",        ON_MOVE_LINE_START,  YES },
+    { "moveToBeginningOfLineAndModifySelection:",      ON_MOVE_LINE_START,  YES },
+    { "moveToRightEndOfLineAndModifySelection:",       ON_MOVE_LINE_END,    YES },
+    { "moveToEndOfLineAndModifySelection:",            ON_MOVE_LINE_END,    YES },
+    { "moveToBeginningOfParagraph:",                   ON_MOVE_BLOCK_START, NO  },
+    { "moveToEndOfParagraph:",                         ON_MOVE_BLOCK_END,   NO  },
+    { "moveToBeginningOfParagraphAndModifySelection:", ON_MOVE_BLOCK_START, YES },
+    { "moveToEndOfParagraphAndModifySelection:",       ON_MOVE_BLOCK_END,   YES },
+    { "moveParagraphBackwardAndModifySelection:",      ON_MOVE_BLOCK_START, YES },
+    { "moveParagraphForwardAndModifySelection:",       ON_MOVE_BLOCK_END,   YES },
+    { "moveToBeginningOfDocument:",                    ON_MOVE_DOC_START,   NO  },
+    { "moveToEndOfDocument:",                          ON_MOVE_DOC_END,     NO  },
+    { "moveToBeginningOfDocumentAndModifySelection:",  ON_MOVE_DOC_START,   YES },
+    { "moveToEndOfDocumentAndModifySelection:",        ON_MOVE_DOC_END,     YES },
+};
+
+/* The delete commands, and how far each reaches. */
+static const struct {
+    const char *name;
+    OnDocMove   how;
+} delete_commands[] = {
+    { "deleteBackward:",                               ON_MOVE_CHAR_LEFT  },
+    { "deleteBackwardByDecomposingPreviousCharacter:", ON_MOVE_CHAR_LEFT  },
+    { "deleteForward:",                                ON_MOVE_CHAR_RIGHT },
+    { "deleteWordBackward:",                           ON_MOVE_WORD_LEFT  },
+    { "deleteWordForward:",                            ON_MOVE_WORD_RIGHT },
+    { "deleteToBeginningOfLine:",                      ON_MOVE_LINE_START },
+    { "deleteToEndOfParagraph:",                       ON_MOVE_BLOCK_END  },
+    { "deleteToEndOfLine:",                            ON_MOVE_BLOCK_END  },
+};
+
+/*
+ * cut_selection — Cut: copy the selection, then delete it.
+ *
+ * Inputs:
+ *   v — the view
+ *
+ * Output: NO when nothing was selected.
+ */
+static BOOL
+cut_selection(NotesNoteView *v)
+{
+    if (!has_selection(v)) return NO;
+    copy_selection(v);
+    typing_end(v);
+    delete_selection(v);
+    after_edit(v);
+    return YES;
+}
+
+/*
+ * run_command — THE editing-command dispatcher: what a key binding's
+ * selector does in the view.  doCommandBySelector:, the Edit menu's items
+ * and the probe's on_note_view_feed_key all come here.
+ *
+ * Inputs:
+ *   v   — the view
+ *   sel — the command
+ *
+ * Output: YES when the view handled it.
+ */
+static BOOL
+run_command(NotesNoteView *v, SEL sel)
+{
+    const char *name = sel_getName(sel);
+    for (size_t i = 0; i < sizeof move_commands / sizeof *move_commands; i++) {
+        if (strcmp(name, move_commands[i].name) == 0) {
+            move_caret(v, move_commands[i].how, move_commands[i].extend);
+            return YES;
+        }
+    }
+    for (size_t i = 0; i < sizeof delete_commands / sizeof *delete_commands; i++) {
+        if (strcmp(name, delete_commands[i].name) == 0) {
+            delete_key(v, delete_commands[i].how);
+            return YES;
+        }
+    }
+    if (sel == @selector(scrollPageUp:) || sel == @selector(pageUp:)) {
+        page_move(v, NO, NO);
+    } else if (sel == @selector(scrollPageDown:) || sel == @selector(pageDown:)) {
+        page_move(v, YES, NO);
+    } else if (sel == @selector(pageUpAndModifySelection:)) {
+        page_move(v, NO, YES);
+    } else if (sel == @selector(pageDownAndModifySelection:)) {
+        page_move(v, YES, YES);
+    } else if (sel == @selector(insertNewline:) || sel == @selector(insertLineBreak:) ||
+               sel == @selector(insertNewlineIgnoringFieldEditor:)) {
+        enter_pressed(v);
+    } else if (sel == @selector(insertTab:)) {
+        tab_pressed(v, NO);
+    } else if (sel == @selector(insertBacktab:)) {
+        tab_pressed(v, YES);
+    } else if (sel == @selector(cancelOperation:)) {
+        if (!has_selection(v)) return NO;      /* Escape goes on up the chain */
+        set_caret(v, v.caret, NO);
+    } else if (sel == @selector(selectAll:)) {
+        select_all(v);
+    } else if (sel == @selector(copy:)) {
+        copy_selection(v);
+    } else if (sel == @selector(cut:)) {
+        return cut_selection(v);
+    } else if (sel == @selector(paste:)) {
+        paste(v);
+    } else if (sel == @selector(undo:)) {
+        on_note_view_undo(v);
+    } else if (sel == @selector(redo:)) {
+        on_note_view_redo(v);
+    } else {
+        return NO;
+    }
+    return YES;
+}
+
+/* ── Pointer ─────────────────────────────────────────────────────────────── */
+
+/*
+ * event_mods — an event's modifiers as on_mod_t bits.
+ *
+ * Inputs:
+ *   event — a mouse or key event
+ *
+ * Output: the bits.
+ */
+static unsigned
+event_mods(NSEvent *event)
+{
+    NSEventModifierFlags f = event.modifierFlags;
+    return ((f & NSEventModifierFlagShift)   ? on_mod_shift   : 0) |
+           ((f & NSEventModifierFlagCommand) ? on_mod_command : 0) |
+           ((f & NSEventModifierFlagOption)  ? on_mod_option  : 0);
+}
+
+/*
+ * copy_code_run — the "copy" word: put a code run's text (its lines
+ * joined by newlines) on the pasteboard.
+ *
+ * Inputs:
+ *   v     — the view
+ *   block — a block of the run
+ */
+static void
+copy_code_run(NotesNoteView *v, guint block)
+{
+    guint first, count;
+    on_doc_layout_code_run(v.layout, block, &first, &count);
+    GString *text = g_string_new(NULL);
+    for (guint i = first; i < first + count; i++) {
+        if (i > first) g_string_append_c(text, '\n');
+        g_string_append(text, on_document_block(v.doc, i)->text->text->str);
+    }
+    [v.pasteboard clearContents];
+    [v.pasteboard setString:@(text->str) forType:NSPasteboardTypeString];
+    g_string_free(text, TRUE);
+    if (v.app) on_app_status(v.app, "Code copied");
+}
+
+/*
+ * press_at — a primary press at a point in the view: THE click handling,
+ * for mouseDown: and the probe alike (GTK: press_at).  One click on a
+ * code run's "copy" word copies the run, on a task's box ticks it, on an
+ * image opens it; otherwise one click places the caret (Shift extends) and
+ * starts a drag, two select a word, three a line.
+ *
+ * Inputs:
+ *   v      — the view
+ *   x, y   — the point, in the view's coordinates
+ *   clicks — the click count
+ *   mods   — on_mod_t bits
+ *
+ * Output: YES when something other than text took the press.
+ */
+static BOOL
+press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
+{
+    OnDocHitResult hit;
+    on_doc_layout_hit(v.layout, x, y, &hit);
+    typing_end(v);
+    v.dragging = NO;
+
+    if (clicks == 1) {
+        switch (hit.kind) {
+        case ON_HIT_COPY:
+            copy_code_run(v, hit.block);
+            return YES;
+        case ON_HIT_CHECKBOX:
+            on_document_set_checked(v.doc, hit.block, !on_document_block(v.doc, hit.block)->checked);
+            after_edit(v);
+            return YES;
+        case ON_HIT_IMAGE:
+            if (!(mods & on_mod_shift)) {
+                set_caret(v, hit.pos, NO);
+                if (v.image_activated_handler) v.image_activated_handler(hit.image_ord);
+                return YES;
+            }
+            break;
+        default:
+            break;
+        }
+        v.goal_x = -1;
+        set_caret(v, hit.pos, (mods & on_mod_shift) != 0);
+        adopt_flags(v);
+        v.dragging    = YES;
+        v.drag_anchor = v.anchor;
+    } else if (clicks == 2 || clicks == 3) {
+        OnPos a, b;
+        if (clicks == 2) on_doc_layout_word_at(v.layout, hit.pos, &a, &b);
+        else             on_doc_layout_line_at(v.layout, hit.pos, &a, &b);
+        v.anchor = a;
+        set_caret(v, b, YES);
+        adopt_flags(v);
+    }
+    return NO;
+}
+
+/*
+ * context_image_width — the stored display width of the image the context
+ * menu is on (0 = the default thumbnail size).
+ *
+ * Inputs:
+ *   v — the view
+ *
+ * Output: the width in pixels.
+ */
+static guint32
+context_image_width(NotesNoteView *v)
+{
+    OnDocHitResult hit = v.ctx_hit;
+    OnBlock *b = on_document_block(v.doc, hit.block);
+    if (b == NULL) return 0;
+    if (!hit.inline_image) return b->display_width;
+    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++) {
+        const OnInlineImage *img = &g_array_index(b->text->images, OnInlineImage, k);
+        if (img->offset == hit.pos.offset) return img->display_width;
+    }
+    return 0;
+}
+
+/*
+ * context_menu — the menu for what a secondary click landed on (GTK:
+ * context_menu): image items on an image, table items on a table, then
+ * Cut, Copy and Paste.  The caret moves to the click unless it was on the
+ * selected text.
+ *
+ * Inputs:
+ *   v    — the view
+ *   x, y — the click, in the view's coordinates
+ *
+ * Output: the menu; its items target the view.
+ */
+static NSMenu *
+context_menu(NotesNoteView *v, double x, double y)
+{
+    OnDocHitResult hit;
+    on_doc_layout_hit(v.layout, x, y, &hit);
+    typing_end(v);
+    if (!has_selection(v) || hit.kind != ON_HIT_TEXT) set_caret(v, hit.pos, NO);
+    v.ctx_hit = hit;
+
+    NSMenu  *menu = [[NSMenu alloc] initWithTitle:@""];
+    OnBlock *b    = on_document_block(v.doc, hit.block);
+    if (hit.kind == ON_HIT_IMAGE) {
+        [menu addItemWithTitle:@"Copy Image" action:@selector(image_copy:) keyEquivalent:@""];
+        [menu addItemWithTitle:@"Open"       action:@selector(image_open:) keyEquivalent:@""];
+        CGImageRef image = on_note_view_image(v, hit.image_ord);
+        guint32    shown = context_image_width(v);
+        BOOL full = image != NULL && shown > 0 && shown >= CGImageGetWidth(image);
+        [menu addItemWithTitle:full ? @"Display as Thumbnail" : @"Display Full Size"
+                        action:full ? @selector(image_thumbnail:) : @selector(image_full_size:)
+                 keyEquivalent:@""];
+        [menu addItem:NSMenuItem.separatorItem];
+    }
+    if (b != NULL && b->kind == ON_BLOCK_TABLE) {
+        [menu addItemWithTitle:@"Add Row"       action:@selector(table_row_add:) keyEquivalent:@""];
+        [menu addItemWithTitle:@"Add Column"    action:@selector(table_col_add:) keyEquivalent:@""];
+        [menu addItemWithTitle:@"Remove Row"    action:@selector(table_row_remove:) keyEquivalent:@""];
+        [menu addItemWithTitle:@"Remove Column" action:@selector(table_col_remove:) keyEquivalent:@""];
+        [menu addItem:NSMenuItem.separatorItem];
+        NSMenuItem *header = [menu addItemWithTitle:@"Header Row" action:@selector(table_header:)
+                                      keyEquivalent:@""];
+        header.state = b->header ? NSControlStateValueOn : NSControlStateValueOff;
+        [menu addItemWithTitle:@"Delete Table" action:@selector(table_delete:) keyEquivalent:@""];
+        [menu addItem:NSMenuItem.separatorItem];
+    }
+    [menu addItemWithTitle:@"Cut"   action:@selector(cut:)   keyEquivalent:@""];
+    [menu addItemWithTitle:@"Copy"  action:@selector(copy:)  keyEquivalent:@""];
+    [menu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@""];
+    for (NSMenuItem *item in menu.itemArray) item.target = v;
+    return menu;
+}
+
 @implementation NotesNoteView
 
 /* ── Initialisation ─────────────────────────────────────────────────────── */
@@ -1077,9 +1439,22 @@ init_with_app:(OnApp *)app
     _goal_x = -1;
     _caret_on = YES;
     _fresh  = YES;
+    _pasteboard = NSPasteboard.generalPasteboard;
     on_document_set_observer(_doc, &OBSERVER, (__bridge void *)self);
+    apply_style(self);
     [self updateTrackingAreas];
     return self;
+}
+
+/*
+ * viewDidChangeEffectiveAppearance — light/dark changed: the layout's
+ * colours follow.
+ */
+- (void)
+viewDidChangeEffectiveAppearance
+{
+    [super viewDidChangeEffectiveAppearance];
+    apply_style(self);
 }
 
 /*
@@ -1136,7 +1511,8 @@ becomeFirstResponder
 }
 
 /*
- * resignFirstResponder — stop blinking, keep caret visible.
+ * resignFirstResponder — stop blinking (the caret is not drawn without
+ * the focus) and close the typing undo group.
  *
  * Output: YES.
  */
@@ -1148,6 +1524,7 @@ resignFirstResponder
         [_blink_timer invalidate];
         _blink_timer = nil;
         _caret_on = YES;
+        typing_end(self);
         self.needsDisplay = YES;
     }
     return ok;
@@ -1167,8 +1544,8 @@ setFrameSize:(NSSize)size
     BOOL changed = size.width != self.frame.size.width;
     [super setFrameSize:size];
     if (changed && _layout) {
-        on_doc_layout_set_width(_layout, layout_text_width(self));
-        double h = on_doc_layout_height(_layout) + on_look_margin_top + on_look_margin_bottom;
+        on_doc_layout_set_width(_layout, layout_width(self));
+        double h = on_doc_layout_height(_layout);
         NSSize s = size;
         s.height = MAX(h, 1.0);
         [super setFrameSize:s];
@@ -1216,25 +1593,17 @@ drawRect:(NSRect)dirty
     [page setFill];
     NSRectFill(dirty);
 
-    /* Update style if appearance changed. */
-    OnDocLayoutStyle s = current_style(self);
-    if (memcmp(&s, &_style, sizeof s) != 0) {
-        _style = s;
-        on_doc_layout_set_style(_layout, &_style);
-    }
 
-    /* Translate so doc_layout coordinates have margin_left, margin_top
-     * as their origin. */
+    /* The layout's coordinates are the view's (page margins included). */
     CGContextSaveGState(ctx);
-    CGContextTranslateCTM(ctx, on_look_margin_left, on_look_margin_top);
 
     BOOL focused = (self.window.firstResponder == self);
     OnPos sel_a, sel_b;
     sel_bounds(self, &sel_a, &sel_b);
 
     on_rect_t clip = {
-        .x = dirty.origin.x - on_look_margin_left,
-        .y = dirty.origin.y - on_look_margin_top,
+        .x = dirty.origin.x,
+        .y = dirty.origin.y,
         .w = dirty.size.width,
         .h = dirty.size.height,
     };
@@ -1244,7 +1613,7 @@ drawRect:(NSRect)dirty
         .has_sel      = has_selection(self),
         .sel_a        = sel_a,
         .sel_b        = sel_b,
-        .caret_visible = _caret_on,
+        .caret_visible = _caret_on && focused && !has_selection(self),
         .caret        = _caret,
         .focused      = focused,
     };
@@ -1267,73 +1636,168 @@ drawRect:(NSRect)dirty
 hit_at_event:(NSEvent *)event out:(OnDocHitResult *)out
 {
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
-    double x = pt.x - on_look_margin_left;
-    double y = pt.y - on_look_margin_top;
-    on_doc_layout_hit(_layout, x, y, out);
+    on_doc_layout_hit(_layout, pt.x, pt.y, out);
 }
 
 /*
- * mouseDown: — begin a click or drag.
+ * mouseDown: — a primary press: take the focus and hand it to press_at.
  *
  * Inputs:
  *   event — the mouse-down event
- *
- * Output: none.
  */
 - (void)
 mouseDown:(NSEvent *)event
 {
     [self.window makeFirstResponder:self];
-    OnDocHitResult hit;
-    [self hit_at_event:event out:&hit];
-    _ctx_hit = hit;
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+    press_at(self, pt.x, pt.y, event.clickCount, event_mods(event));
+}
 
-    NSInteger clicks = event.clickCount;
-    BOOL extend = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+/*
+ * menuForEvent: — the context menu, for a right click or a Control-click.
+ *
+ * Inputs:
+ *   event — the click
+ *
+ * Output: the menu.
+ */
+- (NSMenu *)
+menuForEvent:(NSEvent *)event
+{
+    [self.window makeFirstResponder:self];
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+    return context_menu(self, pt.x, pt.y);
+}
 
-    if (hit.kind == ON_HIT_IMAGE && !extend) {
-        /* Image click: fire the handler and position caret beside it. */
-        if (self.image_activated_handler)
-            self.image_activated_handler(hit.image_ord);
-        set_caret(self, hit.pos, NO);
-        self.needsDisplay = YES;
-        return;
-    }
-    if (hit.kind == ON_HIT_CHECKBOX && !extend) {
-        /* Toggle the task checkbox. */
-        const OnBlock *b = on_document_block(_doc, hit.block);
-        on_document_set_kind(_doc, hit.block,
-                             b->kind == ON_BLOCK_CHECK ? ON_BLOCK_CHECK : ON_BLOCK_CHECK);
-        /* Actually just set the checked state (block remains CHECK kind). */
-        /* The checkbox state is in eol_flags bit 0 in this build. */
-        (void)b;
-        after_edit(self);
-        return;
-    }
+/*
+ * image_copy: — Copy Image: the context image on the pasteboard.
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void)
+image_copy:(id)sender
+{
+    GBytes *png = on_note_view_image_png(self, _ctx_hit.image_ord);
+    if (png == NULL) return;
+    gsize n;
+    const void *bytes = g_bytes_get_data(png, &n);
+    NSImage *image = [[NSImage alloc] initWithData:[NSData dataWithBytes:bytes length:n]];
+    if (image == nil) return;
+    [_pasteboard clearContents];
+    [_pasteboard writeObjects:@[image]];
+}
 
-    if (clicks == 3) {
-        /* Triple click: select the line. */
-        OnPos a, b2;
-        on_doc_layout_line_at(_layout, hit.pos, &a, &b2);
-        _anchor = a;
-        set_caret(self, b2, YES);
-    } else if (clicks == 2) {
-        /* Double click: select the word. */
-        OnPos a, b2;
-        on_doc_layout_word_at(_layout, hit.pos, &a, &b2);
-        _anchor = a;
-        set_caret(self, b2, YES);
-    } else {
-        if (extend) {
-            set_caret(self, hit.pos, YES);
-        } else {
-            set_caret(self, hit.pos, NO);
-        }
-        _dragging   = YES;
-        _drag_anchor = _anchor;
+/*
+ * image_open: — Open: the context image in the outside viewer.
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void)
+image_open:(id)sender
+{
+    GBytes *png = on_note_view_image_png(self, _ctx_hit.image_ord);
+    if (png == NULL) return;
+    gsize n;
+    const void *bytes = g_bytes_get_data(png, &n);
+    on_ui_open_image_external([NSData dataWithBytes:bytes length:n]);
+}
+
+/*
+ * set_context_image_width: — store the context image's display width.
+ *
+ * Inputs:
+ *   width — pixels; 0 = the default thumbnail size
+ */
+- (void)
+set_context_image_width:(guint32)width
+{
+    gint inline_ord = -1;
+    if (_ctx_hit.inline_image) {
+        OnBlock *b = on_document_block(_doc, _ctx_hit.block);
+        for (guint k = 0; b != NULL && b->text != NULL && k < b->text->images->len; k++)
+            if (g_array_index(b->text->images, OnInlineImage, k).offset == _ctx_hit.pos.offset)
+                inline_ord = (gint)k;
+        if (inline_ord < 0) return;
     }
-    adopt_flags(self);
-    self.needsDisplay = YES;
+    typing_end(self);
+    if (on_document_set_image_width(_doc, _ctx_hit.block, inline_ord, width)) after_edit(self);
+}
+
+/*
+ * image_full_size: / image_thumbnail: — Display Full Size / as Thumbnail.
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void)
+image_full_size:(id)sender
+{
+    CGImageRef image = on_note_view_image(self, _ctx_hit.image_ord);
+    if (image) [self set_context_image_width:(guint32)CGImageGetWidth(image)];
+}
+
+- (void)
+image_thumbnail:(id)sender
+{
+    [self set_context_image_width:0];
+}
+
+/*
+ * table_reshape: — the table items of the context menu, by selector: add
+ * or remove the row or column of the clicked cell, or delete the table.
+ *
+ * Inputs:
+ *   command — which reshape
+ */
+- (void)
+table_reshape:(SEL)command
+{
+    OnBlock *b = on_document_block(_doc, _ctx_hit.block);
+    if (b == NULL || b->kind != ON_BLOCK_TABLE) return;
+    gint cell = _ctx_hit.pos.cell >= 0 ? _ctx_hit.pos.cell : 0;
+    gint r = cell / b->cols, c = cell % b->cols;
+    typing_end(self);
+    gboolean did;
+    if (command == @selector(table_row_add:))         did = on_document_table_insert_row(_doc, _ctx_hit.block, r + 1);
+    else if (command == @selector(table_row_remove:)) did = on_document_table_remove_row(_doc, _ctx_hit.block, r);
+    else if (command == @selector(table_col_add:))    did = on_document_table_insert_col(_doc, _ctx_hit.block, c + 1);
+    else if (command == @selector(table_col_remove:)) did = on_document_table_remove_col(_doc, _ctx_hit.block, c);
+    else {
+        OnPos a = { _ctx_hit.block, -1, 0 }, e = { _ctx_hit.block, -1, 1 }, out;
+        did = on_document_delete_range(_doc, a, e, &out);
+        if (did) _caret = _anchor = clamp_pos(_doc, out);
+    }
+    if (did) after_edit(self);
+}
+
+/*
+ * table_row_add: … table_delete: — the context menu's table items.
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void) table_row_add:(id)sender    { [self table_reshape:_cmd]; }
+- (void) table_row_remove:(id)sender { [self table_reshape:_cmd]; }
+- (void) table_col_add:(id)sender    { [self table_reshape:_cmd]; }
+- (void) table_col_remove:(id)sender { [self table_reshape:_cmd]; }
+- (void) table_delete:(id)sender     { [self table_reshape:_cmd]; }
+
+/*
+ * table_header: — Header Row: turn the clicked table's header row on or
+ * off.
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void)
+table_header:(id)sender
+{
+    OnBlock *b = on_document_block(_doc, _ctx_hit.block);
+    if (b == NULL || b->kind != ON_BLOCK_TABLE) return;
+    typing_end(self);
+    if (on_document_table_set_header(_doc, _ctx_hit.block, !b->header)) after_edit(self);
 }
 
 /*
@@ -1383,119 +1847,52 @@ mouseUp:(NSEvent *)event
 - (void)
 keyDown:(NSEvent *)event
 {
+    self.key_event = event;
     [self interpretKeyEvents:@[event]];
+    self.key_event = nil;
+}
+
+/* The Home and End keys' virtual key codes (Carbon's kVK_Home, kVK_End). */
+enum { home_key_code = 0x73, end_key_code = 0x77 };
+
+/*
+ * home_end_command — Home and End move to the line's start and end, Shift
+ * extending, as in the GTK app.  AppKit's bindings would only scroll for
+ * Home/End and send Shift+End as ⌘⇧↓ (select to the document's end), so
+ * the keys themselves are recognised.
+ *
+ * Inputs:
+ *   event — the key event being interpreted, or nil
+ *   sel   — the command AppKit chose for it
+ *
+ * Output: the line command for Home or End, else `sel` unchanged.
+ */
+static SEL
+home_end_command(NSEvent *event, SEL sel)
+{
+    if (event.type != NSEventTypeKeyDown) return sel;
+    BOOL shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    if (event.keyCode == home_key_code)
+        return shift ? @selector(moveToBeginningOfLineAndModifySelection:) : @selector(moveToBeginningOfLine:);
+    if (event.keyCode == end_key_code)
+        return shift ? @selector(moveToEndOfLineAndModifySelection:) : @selector(moveToEndOfLine:);
+    return sel;
 }
 
 /*
  * doCommandBySelector: — AppKit sends this for movement and edit commands
- * after the input method passes on the key.
+ * after the input method passes on the key (the standard key bindings:
+ * ⌘← moveToLeftEndOfLine:, ⌥⌫ deleteWordBackward:, ⌃K
+ * deleteToEndOfParagraph: …).  A command the view does not know goes to
+ * NSResponder, which beeps.
  *
  * Inputs:
  *   sel — the selector for the command
- *
- * Output: none.
  */
 - (void)
 doCommandBySelector:(SEL)sel
 {
-    NSEventModifierFlags mods = NSApp.currentEvent.modifierFlags;
-    BOOL shift   = (mods & NSEventModifierFlagShift)   != 0;
-    BOOL option  = (mods & NSEventModifierFlagOption)  != 0;   /* word */
-    BOOL command = (mods & NSEventModifierFlagCommand) != 0;   /* line/doc */
-
-    if (sel == @selector(moveLeft:) || sel == @selector(moveBackward:)) {
-        move_caret(self, command ? ON_MOVE_LINE_START
-                                 : option ? ON_MOVE_WORD_LEFT : ON_MOVE_CHAR_LEFT, NO);
-    } else if (sel == @selector(moveRight:) || sel == @selector(moveForward:)) {
-        move_caret(self, command ? ON_MOVE_LINE_END
-                                 : option ? ON_MOVE_WORD_RIGHT : ON_MOVE_CHAR_RIGHT, NO);
-    } else if (sel == @selector(moveUp:)) {
-        move_caret(self, command ? ON_MOVE_DOC_START : ON_MOVE_LINE_UP, NO);
-    } else if (sel == @selector(moveDown:)) {
-        move_caret(self, command ? ON_MOVE_DOC_END : ON_MOVE_LINE_DOWN, NO);
-    } else if (sel == @selector(moveLeftAndModifySelection:)) {
-        move_caret(self, command ? ON_MOVE_LINE_START
-                                 : option ? ON_MOVE_WORD_LEFT : ON_MOVE_CHAR_LEFT, YES);
-    } else if (sel == @selector(moveRightAndModifySelection:)) {
-        move_caret(self, command ? ON_MOVE_LINE_END
-                                 : option ? ON_MOVE_WORD_RIGHT : ON_MOVE_CHAR_RIGHT, YES);
-    } else if (sel == @selector(moveUpAndModifySelection:)) {
-        move_caret(self, command ? ON_MOVE_DOC_START : ON_MOVE_LINE_UP, YES);
-    } else if (sel == @selector(moveDownAndModifySelection:)) {
-        move_caret(self, command ? ON_MOVE_DOC_END : ON_MOVE_LINE_DOWN, YES);
-    } else if (sel == @selector(moveWordLeft:) || sel == @selector(moveWordBackward:)) {
-        move_caret(self, ON_MOVE_WORD_LEFT, NO);
-    } else if (sel == @selector(moveWordRight:) || sel == @selector(moveWordForward:)) {
-        move_caret(self, ON_MOVE_WORD_RIGHT, NO);
-    } else if (sel == @selector(moveWordLeftAndModifySelection:)) {
-        move_caret(self, ON_MOVE_WORD_LEFT, YES);
-    } else if (sel == @selector(moveWordRightAndModifySelection:)) {
-        move_caret(self, ON_MOVE_WORD_RIGHT, YES);
-    } else if (sel == @selector(moveToBeginningOfLine:)) {
-        move_caret(self, ON_MOVE_LINE_START, NO);
-    } else if (sel == @selector(moveToEndOfLine:)) {
-        move_caret(self, ON_MOVE_LINE_END, NO);
-    } else if (sel == @selector(moveToBeginningOfLineAndModifySelection:)) {
-        move_caret(self, ON_MOVE_LINE_START, YES);
-    } else if (sel == @selector(moveToEndOfLineAndModifySelection:)) {
-        move_caret(self, ON_MOVE_LINE_END, YES);
-    } else if (sel == @selector(moveToBeginningOfDocument:)) {
-        move_caret(self, ON_MOVE_DOC_START, NO);
-    } else if (sel == @selector(moveToEndOfDocument:)) {
-        move_caret(self, ON_MOVE_DOC_END, NO);
-    } else if (sel == @selector(moveToBeginningOfDocumentAndModifySelection:)) {
-        move_caret(self, ON_MOVE_DOC_START, YES);
-    } else if (sel == @selector(moveToEndOfDocumentAndModifySelection:)) {
-        move_caret(self, ON_MOVE_DOC_END, YES);
-    } else if (sel == @selector(scrollPageUp:)) {
-        page_move(self, NO, NO);
-    } else if (sel == @selector(scrollPageDown:)) {
-        page_move(self, YES, NO);
-    } else if (sel == @selector(pageUpAndModifySelection:)) {
-        page_move(self, NO, YES);
-    } else if (sel == @selector(pageDownAndModifySelection:)) {
-        page_move(self, YES, YES);
-    } else if (sel == @selector(insertNewline:)) {
-        enter_pressed(self);
-    } else if (sel == @selector(deleteBackward:)) {
-        delete_key(self, YES, NO);
-    } else if (sel == @selector(deleteForward:)) {
-        delete_key(self, NO, NO);
-    } else if (sel == @selector(deleteWordBackward:)) {
-        delete_key(self, YES, YES);
-    } else if (sel == @selector(deleteWordForward:)) {
-        delete_key(self, NO, YES);
-    } else if (sel == @selector(insertTab:)) {
-        tab_pressed(self, NO);
-    } else if (sel == @selector(insertBacktab:)) {
-        tab_pressed(self, YES);
-    } else if (sel == @selector(cancelOperation:)) {
-        if (has_selection(self)) {
-            set_caret(self, _caret, NO);
-        }
-    } else if (sel == @selector(selectAll:)) {
-        select_all(self);
-    } else if (sel == @selector(copy:)) {
-        copy_selection(self);
-    } else if (sel == @selector(cut:)) {
-        if (has_selection(self)) {
-            copy_selection(self);
-            typing_end(self);
-            delete_selection(self);
-            after_edit(self);
-        }
-    } else if (sel == @selector(paste:)) {
-        paste(self);
-    } else if (sel == @selector(undo:)) {
-        on_note_view_undo(self);
-    } else if (sel == @selector(redo:)) {
-        on_note_view_redo(self);
-    } else {
-        [super doCommandBySelector:sel];
-    }
-    (void)shift;
-    (void)option;
-    (void)command;
+    if (!run_command(self, home_end_command(self.key_event, sel))) [super doCommandBySelector:sel];
 }
 
 /* ── NSTextInputClient ───────────────────────────────────────────────────── */
@@ -1686,9 +2083,7 @@ firstRectForCharacterRange:(NSRange)range
     if (actualRange) *actualRange = self.selectedRange;
     on_rect_t r;
     on_doc_layout_caret_rect(_layout, _caret, &r);
-    NSRect view_rect = NSMakeRect(r.x + on_look_margin_left,
-                                  r.y + on_look_margin_top,
-                                  r.w, r.h);
+    NSRect view_rect = NSMakeRect(r.x, r.y, r.w, r.h);
     return [self.window convertRectToScreen:[self convertRect:view_rect toView:nil]];
 }
 
@@ -1705,23 +2100,27 @@ characterIndexForPoint:(NSPoint)point
 {
     NSPoint vpt = [self convertPoint:[self.window convertPointFromScreen:point]
                             fromView:nil];
-    double x = vpt.x - on_look_margin_left;
-    double y = vpt.y - on_look_margin_top;
     OnDocHitResult hit;
-    on_doc_layout_hit(_layout, x, y, &hit);
+    on_doc_layout_hit(_layout, vpt.x, vpt.y, &hit);
     return pos_to_utf16(_doc, hit.pos);
 }
 
 /* ── NSView copy/paste/undo selectors ───────────────────────────────────── */
 
-- (void) copy:(id)sender  { (void)sender; copy_selection(self); }
-- (void) cut:(id)sender   { (void)sender;
-    if (!has_selection(self)) return;
-    copy_selection(self); typing_end(self); delete_selection(self); after_edit(self); }
-- (void) paste:(id)sender { (void)sender; paste(self); }
-- (void) selectAll:(id)sender { (void)sender; select_all(self); }
-- (void) undo:(id)sender  { (void)sender; on_note_view_undo(self); }
-- (void) redo:(id)sender  { (void)sender; on_note_view_redo(self); }
+/*
+ * copy: / cut: / paste: / selectAll: / undo: / redo: — the Edit menu's
+ * items, sent up the responder chain; each is the command of the same
+ * name (run_command).
+ *
+ * Inputs:
+ *   sender — the menu item (unused)
+ */
+- (void) copy:(id)sender      { run_command(self, _cmd); }
+- (void) cut:(id)sender       { run_command(self, _cmd); }
+- (void) paste:(id)sender     { run_command(self, _cmd); }
+- (void) selectAll:(id)sender { run_command(self, _cmd); }
+- (void) undo:(id)sender      { run_command(self, _cmd); }
+- (void) redo:(id)sender      { run_command(self, _cmd); }
 
 - (BOOL)
 validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
@@ -1760,15 +2159,17 @@ on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
     view.inline_flags = 0;
     on_document_clear_undo(doc);
     on_document_set_observer(doc, &OBSERVER, (__bridge void *)view);
-    on_doc_layout_set_width(view.layout, layout_text_width(view));
-    OnDocLayoutStyle s = current_style(view);
-    view.style = s;
-    on_doc_layout_set_style(view.layout, &s);
-    double h = on_doc_layout_height(view.layout) + on_look_margin_top + on_look_margin_bottom;
-    NSSize sz = view.frame.size;
-    sz.height = MAX(h, 1.0);
-    [view setFrameSize:sz];
-    view.needsDisplay = YES;
+    apply_style(view);
+
+    /* The caret starts on the first line of TEXT: under the first-line-
+     * title setting block 0 is the title, so an existing note opens ready
+     * to be read or added to, not renamed (GTK: load_document). */
+    OnPos start = { 0, -1, 0 };
+    if (view.app->first_line_title && on_document_n_blocks(doc) > 1) start.block = 1;
+    view.caret = view.anchor = clamp_pos(doc, start);
+    on_document_take_tags_modified(doc);
+    on_document_take_actions_modified(doc);
+    if (view.find_text != nil) on_note_view_find(view, view.find_text);
 }
 
 /*
@@ -1983,6 +2384,16 @@ on_note_view_find(NotesNoteView *view, NSString *text)
     OnDocHit *hits = compute_hits(view.doc, view.find_text, &n);
     on_doc_layout_set_hits(view.layout, hits, n);
     g_free(hits);
+    if (view.find_text != nil) {
+        /* Select the first match at or after the caret, so the query
+         * lands somewhere as it is typed; Next/Previous step from that
+         * selection.  Collapsing to the selection's start first makes a
+         * match under the caret the first pick (GTK: on_note_view_find). */
+        OnPos a, b;
+        sel_bounds(view, &a, &b);
+        view.anchor = view.caret = a;
+        on_note_view_find_step(view, view.find_text, YES);
+    }
     view.needsDisplay = YES;
 }
 
@@ -2120,13 +2531,73 @@ on_note_view_action_reveal(NotesNoteView *view, NSInteger ordinal)
 void
 on_note_view_settings_changed(NotesNoteView *view)
 {
-    OnDocLayoutStyle s = current_style(view);
-    view.style = s;
-    on_doc_layout_set_style(view.layout, &s);
-    view.needsDisplay = YES;
+    apply_style(view);
 }
 
 /* ── The probe interface ─────────────────────────────────────────────────── */
+
+/*
+ * on_note_view_feed_key — see note_view.h.
+ */
+/*
+ * key_command — the command macOS's standard key bindings send for a key,
+ * so the probe drives the same dispatcher a real key press does.
+ *
+ * Inputs:
+ *   key  — the key
+ *   mods — on_mod_t bits
+ *
+ * Output: the command's selector, or NULL for a key that types.
+ */
+static SEL
+key_command(on_key_t key, unsigned mods)
+{
+    BOOL shift   = (mods & on_mod_shift)   != 0;
+    BOOL option  = (mods & on_mod_option)  != 0;
+    BOOL command = (mods & on_mod_command) != 0;
+    const char *base = NULL;
+    switch (key) {
+    case on_key_left:  base = command ? "moveToLeftEndOfLine"  : option ? "moveWordLeft"  : "moveLeft";  break;
+    case on_key_right: base = command ? "moveToRightEndOfLine" : option ? "moveWordRight" : "moveRight"; break;
+    case on_key_up:
+        if (option) return shift ? @selector(moveParagraphBackwardAndModifySelection:)
+                                 : @selector(moveToBeginningOfParagraph:);
+        base = command ? "moveToBeginningOfDocument" : "moveUp";
+        break;
+    case on_key_down:
+        if (option) return shift ? @selector(moveParagraphForwardAndModifySelection:)
+                                 : @selector(moveToEndOfParagraph:);
+        base = command ? "moveToEndOfDocument" : "moveDown";
+        break;
+    case on_key_home:            /* as home_end_command makes of the key */
+        return shift ? @selector(moveToBeginningOfLineAndModifySelection:)
+                     : @selector(moveToBeginningOfLine:);
+    case on_key_end:
+        return shift ? @selector(moveToEndOfLineAndModifySelection:)
+                     : @selector(moveToEndOfLine:);
+    case on_key_page_up:
+        return shift ? @selector(pageUpAndModifySelection:) : @selector(scrollPageUp:);
+    case on_key_page_down:
+        return shift ? @selector(pageDownAndModifySelection:) : @selector(scrollPageDown:);
+    case on_key_return:
+        return @selector(insertNewline:);
+    case on_key_backspace:
+        return command ? @selector(deleteToBeginningOfLine:)
+                       : option ? @selector(deleteWordBackward:) : @selector(deleteBackward:);
+    case on_key_delete:
+        return option ? @selector(deleteWordForward:) : @selector(deleteForward:);
+    case on_key_tab:
+        return shift ? @selector(insertBacktab:) : @selector(insertTab:);
+    case on_key_escape:
+        return @selector(cancelOperation:);
+    case on_key_character:
+        return NULL;
+    }
+    if (base == NULL) return NULL;
+    char name[96];
+    snprintf(name, sizeof name, shift ? "%sAndModifySelection:" : "%s:", base);
+    return sel_registerName(name);
+}
 
 /*
  * on_note_view_feed_key — see note_view.h.
@@ -2135,100 +2606,43 @@ BOOL
 on_note_view_feed_key(NotesNoteView *view, on_key_t key, uint32_t character,
                       unsigned mods)
 {
-    BOOL shift   = (mods & on_mod_shift)   != 0;
-    BOOL option  = (mods & on_mod_option)  != 0;
-    BOOL command = (mods & on_mod_command) != 0;
+    SEL command = key_command(key, mods);
+    if (command) return run_command(view, command);
 
-    switch (key) {
-    case on_key_left:
-        move_caret(view, command ? ON_MOVE_LINE_START
-                                 : option ? ON_MOVE_WORD_LEFT : ON_MOVE_CHAR_LEFT, shift);
-        return YES;
-    case on_key_right:
-        move_caret(view, command ? ON_MOVE_LINE_END
-                                 : option ? ON_MOVE_WORD_RIGHT : ON_MOVE_CHAR_RIGHT, shift);
-        return YES;
-    case on_key_up:
-        move_caret(view, command ? ON_MOVE_DOC_START : ON_MOVE_LINE_UP, shift);
-        return YES;
-    case on_key_down:
-        move_caret(view, command ? ON_MOVE_DOC_END : ON_MOVE_LINE_DOWN, shift);
-        return YES;
-    case on_key_home:
-        move_caret(view, command ? ON_MOVE_DOC_START : ON_MOVE_LINE_START, shift);
-        return YES;
-    case on_key_end:
-        move_caret(view, command ? ON_MOVE_DOC_END : ON_MOVE_LINE_END, shift);
-        return YES;
-    case on_key_page_up:
-        page_move(view, NO, shift);
-        return YES;
-    case on_key_page_down:
-        page_move(view, YES, shift);
-        return YES;
-    case on_key_return:
-        enter_pressed(view);
-        return YES;
-    case on_key_backspace:
-        delete_key(view, YES, option);
-        return YES;
-    case on_key_delete:
-        delete_key(view, NO, option);
-        return YES;
-    case on_key_tab:
-        tab_pressed(view, shift);
-        return YES;
-    case on_key_escape:
-        if (has_selection(view)) {
-            set_caret(view, view.caret, NO);
-            return YES;
+    /* ⌘-letters: the Edit menu's shortcuts. */
+    if (mods & on_mod_command) {
+        switch (character | 0x20) {
+        case 'a': return run_command(view, @selector(selectAll:));
+        case 'c': return run_command(view, @selector(copy:));
+        case 'v': return run_command(view, @selector(paste:));
+        case 'x': return run_command(view, @selector(cut:));
+        case 'z': return run_command(view, (mods & on_mod_shift) ? @selector(redo:)
+                                                                 : @selector(undo:));
+        default:  return NO;
         }
-        return NO;
-    case on_key_character: {
-        /* Command+key: standard AppKit shortcuts. */
-        if (command) {
-            uint32_t lo = character | 0x20; /* lowercase */
-            if (lo == 'a') { select_all(view); return YES; }
-            if (lo == 'c') { copy_selection(view); return YES; }
-            if (lo == 'v') { paste(view); return YES; }
-            if (lo == 'x') {
-                if (!has_selection(view)) return NO;
-                copy_selection(view);
-                typing_end(view);
-                delete_selection(view);
-                after_edit(view);
-                return YES;
-            }
-            if (lo == 'z') {
-                if (shift) on_note_view_redo(view); else on_note_view_undo(view);
-                return YES;
-            }
-            return NO;
-        }
-        /* Single printable character — encode as UTF-8. */
-        char buf[8] = { 0 };
-        if (character < 0x80) {
-            buf[0] = (char)character;
-        } else if (character < 0x800) {
-            buf[0] = (char)(0xC0 | (character >> 6));
-            buf[1] = (char)(0x80 | (character & 0x3F));
-        } else if (character < 0x10000) {
-            buf[0] = (char)(0xE0 | (character >> 12));
-            buf[1] = (char)(0x80 | ((character >> 6) & 0x3F));
-            buf[2] = (char)(0x80 | (character & 0x3F));
-        } else {
-            buf[0] = (char)(0xF0 | (character >> 18));
-            buf[1] = (char)(0x80 | ((character >> 12) & 0x3F));
-            buf[2] = (char)(0x80 | ((character >> 6) & 0x3F));
-            buf[3] = (char)(0x80 | (character & 0x3F));
-        }
-        size_t n = strlen(buf);
-        if (n > 0) { insert_typed(view, buf, n); return YES; }
-        return NO;
     }
+
+    /* A printable character, typed: encode as UTF-8. */
+    char buf[8] = { 0 };
+    if (character < 0x80) {
+        buf[0] = (char)character;
+    } else if (character < 0x800) {
+        buf[0] = (char)(0xC0 | (character >> 6));
+        buf[1] = (char)(0x80 | (character & 0x3F));
+    } else if (character < 0x10000) {
+        buf[0] = (char)(0xE0 | (character >> 12));
+        buf[1] = (char)(0x80 | ((character >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (character & 0x3F));
+    } else {
+        buf[0] = (char)(0xF0 | (character >> 18));
+        buf[1] = (char)(0x80 | ((character >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((character >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (character & 0x3F));
     }
-    (void)shift; (void)option; (void)command;
-    return NO;
+    size_t n = strlen(buf);
+    if (n == 0) return NO;
+    insert_typed(view, buf, n);
+    return YES;
 }
 
 /*
@@ -2248,33 +2662,11 @@ BOOL
 on_note_view_feed_click(NotesNoteView *view, CGFloat x, CGFloat y,
                         NSInteger clicks, unsigned mods, BOOL secondary)
 {
-    (void)secondary;
-    BOOL extend = (mods & on_mod_shift) != 0;
-    OnDocHitResult hit;
-    on_doc_layout_hit(view.layout, x - on_look_margin_left,
-                      y - on_look_margin_top, &hit);
-    if (hit.kind == ON_HIT_IMAGE) {
-        if (view.image_activated_handler)
-            view.image_activated_handler(hit.image_ord);
+    if (secondary) {
+        (void)context_menu(view, x, y);
         return YES;
     }
-    if (clicks == 3) {
-        OnPos a, b;
-        on_doc_layout_line_at(view.layout, hit.pos, &a, &b);
-        view.anchor = a;
-        set_caret(view, b, YES);
-        return NO;
-    }
-    if (clicks == 2) {
-        OnPos a, b;
-        on_doc_layout_word_at(view.layout, hit.pos, &a, &b);
-        view.anchor = a;
-        set_caret(view, b, YES);
-        return NO;
-    }
-    set_caret(view, hit.pos, extend);
-    adopt_flags(view);
-    return NO;
+    return press_at(view, x, y, clicks, mods);
 }
 
 /*

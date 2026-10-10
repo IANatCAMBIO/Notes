@@ -1,21 +1,42 @@
 /* ===========================================================================
  * ui_probe_test.m — script-driven acceptance tests for the note editor
  *
- * Replays every file in tests/ui/ (the "probe scripts") against a bare
- * NotesNoteView (no window, no scroll view, no display) using the probe
- * interface: on_note_view_feed_key, on_note_view_feed_text,
- * on_note_view_feed_click.
+ * Replays every file in tests/ui/ (the "probe scripts") against a
+ * NotesNoteView, 640 pt wide, with the settings the GTK runner uses
+ * (first-line title, code line numbers, code copy buttons), through the
+ * probe interface: on_note_view_feed_key, on_note_view_feed_text,
+ * on_note_view_feed_click.  The view copies and pastes through a private
+ * pasteboard, never the user's clipboard.  The command set is the GTK
+ * runner's (porting/gtk_reference/tests/ui_probe.c); an unknown command is
+ * a failure, and so is every failed expectation — the exit status says.
  *
  * Script format (see tests/ui/ — each .txt file):
  *   text <string>                — on_note_view_feed_text
  *   key <name> [shift] [alt] [ctrl] [primary]
  *                                — on_note_view_feed_key
+ *   command <selector>           — a key binding's command, as AppKit sends
+ *                                  it (e.g. deleteToEndOfParagraph:)
+ *   click <x> <y> [n] [mods…]    — on_note_view_feed_click, view coordinates
+ *   context <x> <y>              — a secondary click: the context menu
+ *   menu <action>                — choose the context menu's item with that
+ *                                  action (e.g. table_row_add:)
  *   para <kind>                  — on_note_view_toggle_paragraph
  *   inline <style>               — on_note_view_toggle_inline
+ *   table / date                 — insert a table / today's date
+ *   image <path>                 — insert a PNG (path relative to the script)
+ *   find <text>                  — on_note_view_find
+ *   step <text> / step-back <text>
+ *                                — on_note_view_find_step
+ *   select-all                   — ⌘A
+ *   undo / redo
+ *   width <points>               — the view's width
+ *   settle [ms]                  — run the main loop a while
  *   check <index> <kind> <text>  — assert block content
  *   caret <block> <offset>       — assert caret position
- *   undo                         — on_note_view_undo
- *   print                        — print document state (debug aid)
+ *   checked <block> <0|1>        — assert a task block's tick
+ *   table-size <block> <r> <c>   — assert a table's rows and columns
+ *   clipboard <text>             — assert the pasteboard's text (\n escapes)
+ *   where / print                — print the caret / document (debug aid)
  *   # …                          — comment, ignored
  * =========================================================================== */
 
@@ -31,8 +52,11 @@
 
 #include <dirent.h>
 
-/* The app context: probe tests need none of its fields. */
+/* The app context: only the editor settings the GTK runner turns on. */
 static OnApp probe_app;
+
+/* The view's width, as the GTK runner's window. */
+static const CGFloat probe_width = 640.0;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -180,6 +204,40 @@ print_document(const OnDocument *doc, const char *file, int line)
     }
 }
 
+/*
+ * parse_mods — on_mod_t bits from the words after a key or click.
+ *
+ * Inputs:
+ *   tok — the first modifier word, then strtok(NULL, " ") for the rest
+ *
+ * Output: the bits.
+ */
+static unsigned
+parse_mods(char *tok)
+{
+    unsigned mods = 0;
+    for (; tok; tok = strtok(NULL, " ")) {
+        if (!strcmp(tok, "shift"))   mods |= on_mod_shift;
+        if (!strcmp(tok, "alt"))     mods |= on_mod_option;
+        if (!strcmp(tok, "ctrl"))    mods |= on_mod_option; /* ctrl = word on macOS */
+        if (!strcmp(tok, "primary")) mods |= on_mod_command;
+    }
+    return mods;
+}
+
+/*
+ * settle — run the main loop for a while, as the GTK runner lets its
+ * frame clock and idles run.
+ *
+ * Inputs:
+ *   ms — how long
+ */
+static void
+settle(int ms)
+{
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:ms / 1000.0]];
+}
+
 /* ── Script runner ───────────────────────────────────────────────────────── */
 
 /*
@@ -234,13 +292,7 @@ run_script(const char *path, NotesNoteView *view)
             char name[32] = { 0 };
             char *tok = strtok(arg, " ");
             if (tok) { strncpy(name, tok, sizeof name - 1); }
-            unsigned mods = 0;
-            while ((tok = strtok(NULL, " "))) {
-                if (!strcmp(tok, "shift"))   mods |= on_mod_shift;
-                if (!strcmp(tok, "alt"))     mods |= on_mod_option;
-                if (!strcmp(tok, "ctrl"))    mods |= on_mod_option; /* ctrl = word on macOS */
-                if (!strcmp(tok, "primary")) mods |= on_mod_command;
-            }
+            unsigned mods = parse_mods(strtok(NULL, " "));
             uint32_t ch = 0;
             on_key_t key = parse_key(name, &ch);
             on_note_view_feed_key(view, key, ch, mods);
@@ -271,7 +323,7 @@ run_script(const char *path, NotesNoteView *view)
                 check(false, label);
             } else {
                 const OnBlock *b = on_document_block(doc, (guint)idx);
-                const char *actual = b->text ? b->text->text->str : "";
+                gchar *actual = g_strcompress(b->text ? b->text->text->str : "");
                 BOOL ok = (b->kind == want_kind) &&
                           (!strcmp(actual, want_text));
                 if (!ok) {
@@ -280,6 +332,7 @@ run_script(const char *path, NotesNoteView *view)
                            kind_name(b->kind), actual);
                 }
                 check(ok, label);
+                g_free(actual);
             }
 
         } else if (!strcmp(cmd, "caret")) {
@@ -303,18 +356,118 @@ run_script(const char *path, NotesNoteView *view)
             }
             check(ok, label);
 
+        } else if (!strcmp(cmd, "click")) {
+            /* click <x> <y> [n] [mods…] — the view's own coordinates */
+            char  *tok = strtok(arg, " ");
+            double x   = tok ? atof(tok) : 0;
+            tok = strtok(NULL, " ");
+            double y   = tok ? atof(tok) : 0;
+            tok = strtok(NULL, " ");
+            NSInteger n = 1;
+            if (tok && tok[0] >= '0' && tok[0] <= '9') {
+                n   = atoi(tok);
+                tok = strtok(NULL, " ");
+            }
+            on_note_view_feed_click(view, x, y, n, parse_mods(tok), NO);
+
+        } else if (!strcmp(cmd, "command")) {
+            [view doCommandBySelector:NSSelectorFromString(@(arg))];
+
+        } else if (!strcmp(cmd, "context")) {
+            char  *tok = strtok(arg, " ");
+            double x   = tok ? atof(tok) : 0;
+            tok = strtok(NULL, " ");
+            on_note_view_feed_click(view, x, tok ? atof(tok) : 0, 1, 0, YES);
+
+        } else if (!strcmp(cmd, "menu")) {
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d menu %s is handled", path, line_num, arg);
+            check([NSApp sendAction:NSSelectorFromString(@(arg)) to:view from:nil], label);
+
+        } else if (!strcmp(cmd, "checked")) {
+            char *tok = strtok(arg, " ");
+            guint idx = tok ? (guint)atoi(tok) : 0;
+            tok = strtok(NULL, " ");
+            gboolean want = tok ? atoi(tok) != 0 : FALSE;
+            const OnBlock *b = idx < on_document_n_blocks(doc) ? on_document_block(doc, idx) : NULL;
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d checked %u %d", path, line_num, idx, want);
+            check(b != NULL && b->kind == ON_BLOCK_CHECK && !b->checked == !want, label);
+
+        } else if (!strcmp(cmd, "table-size")) {
+            char *tok = strtok(arg, " ");
+            guint idx = tok ? (guint)atoi(tok) : 0;
+            tok = strtok(NULL, " ");
+            int rows = tok ? atoi(tok) : -1;
+            tok = strtok(NULL, " ");
+            int cols = tok ? atoi(tok) : -1;
+            const OnBlock *b = idx < on_document_n_blocks(doc) ? on_document_block(doc, idx) : NULL;
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d table-size %u %d %d", path, line_num, idx, rows, cols);
+            if (b && b->kind == ON_BLOCK_TABLE && (b->rows != rows || b->cols != cols))
+                printf("  got: %d x %d\n", b->rows, b->cols);
+            check(b != NULL && b->kind == ON_BLOCK_TABLE && b->rows == rows && b->cols == cols, label);
+
+        } else if (!strcmp(cmd, "clipboard")) {
+            gchar    *want = g_strcompress(arg);
+            NSString *have = [view.pasteboard stringForType:NSPasteboardTypeString];
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d clipboard \"%s\"", path, line_num, arg);
+            if (![have isEqualToString:@(want)]) printf("  got: \"%s\"\n", have.UTF8String);
+            check([have isEqualToString:@(want)], label);
+            g_free(want);
+
         } else if (!strcmp(cmd, "undo")) {
             on_note_view_undo(view);
 
+        } else if (!strcmp(cmd, "redo")) {
+            on_note_view_redo(view);
+
         } else if (!strcmp(cmd, "table")) {
-            /* table — insert a fresh 3×3 table at the caret */
             on_note_view_insert_table(view);
+
+        } else if (!strcmp(cmd, "date")) {
+            on_note_view_insert_date(view);
+
+        } else if (!strcmp(cmd, "select-all")) {
+            on_note_view_feed_key(view, on_key_character, 'a', on_mod_command);
+
+        } else if (!strcmp(cmd, "find")) {
+            on_note_view_find(view, @(arg));
+
+        } else if (!strcmp(cmd, "step")) {
+            on_note_view_find_step(view, @(arg), YES);
+
+        } else if (!strcmp(cmd, "step-back")) {
+            on_note_view_find_step(view, @(arg), NO);
+
+        } else if (!strcmp(cmd, "width")) {
+            [view setFrameSize:NSMakeSize(atof(arg), view.frame.size.height)];
+
+        } else if (!strcmp(cmd, "settle")) {
+            settle(*arg ? atoi(arg) : 200);
+
+        } else if (!strcmp(cmd, "image")) {
+            /* image <path> — relative to the script's folder */
+            NSString *file = [[@(path) stringByDeletingLastPathComponent]
+                              stringByAppendingPathComponent:@(arg)];
+            NSData   *png  = [NSData dataWithContentsOfFile:file];
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d image %s can be read", path, line_num, arg);
+            check(png != nil, label);
+            if (png) on_note_view_insert_image(view, png.bytes, png.length);
+
+        } else if (!strcmp(cmd, "where")) {
+            OnPos c = on_note_view_caret(view);
+            printf("  %s:%d: caret %u:%d:%zu\n", path, line_num, c.block, c.cell, c.offset);
 
         } else if (!strcmp(cmd, "print")) {
             print_document(doc, path, line_num);
 
         } else {
-            fprintf(stderr, "%s:%d: unknown command '%s'\n", path, line_num, cmd);
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d: known command '%s'", path, line_num, cmd);
+            check(false, label);
         }
     }
     fclose(f);
@@ -325,14 +478,7 @@ run_script(const char *path, NotesNoteView *view)
 /*
  * main — find probe scripts under tests/ui/ and replay each one.
  *
- * Failures are printed but do not fail the build while the WPB layout
- * is a stub: on_doc_layout_move returns the same position, so navigation
- * and selection are no-ops, and any check that depends on cursor movement
- * will report FAIL here but is not a WPC defect.  When WPB is complete
- * and navigation works, those checks will pass and check_result() will
- * return 0 on a clean run.
- *
- * Output: 0 always (informational failures only until WPB is done).
+ * Output: 0 when every expectation held, else non-zero.
  */
 int
 main(void)
@@ -343,16 +489,19 @@ main(void)
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
         memset(&probe_app, 0, sizeof probe_app);
+        probe_app.first_line_title  = TRUE;
+        probe_app.code_line_numbers = TRUE;
+        probe_app.code_copy_buttons = TRUE;
         NotesNoteView *view = [[NotesNoteView alloc] init_with_app:&probe_app];
-        [view setFrameSize:NSMakeSize(600, 800)];
+        view.pasteboard = [NSPasteboard pasteboardWithUniqueName];
+        [view setFrameSize:NSMakeSize(probe_width, 800)];
 
         /* Find all *.txt files under tests/ui/ relative to CWD (the project
          * root, where make runs the test binary). */
         DIR *d = opendir("tests/ui");
         if (!d) {
             check(false, "tests/ui directory exists");
-            /* Return 0 even on hard errors until WPB is complete. */
-            return 0;
+            return check_result();
         }
 
         /* Collect and sort the script names so the order is deterministic. */
@@ -374,12 +523,7 @@ main(void)
             run_script(path.UTF8String, view);
         }
 
-        if (check_failures > 0)
-            printf("note: %d failure(s) above (cursor-position assertions require\n"
-                   "      the real doc_layout cursor-move path to be fully exercised)\n",
-                   check_failures);
+        [view.pasteboard releaseGlobally];
     }
-    /* Return 0 unconditionally: cursor-position probe failures are informational
-     * until on_doc_layout_move fully dispatches every caret command. */
-    return 0;
+    return check_result();
 }

@@ -192,7 +192,10 @@ size_t on_text_layout_prev_cursor(const on_text_layout_t *layout, size_t byte);
  *   layout — the layout
  *   byte   — where from
  *
- * Output: the new offset; `byte` itself when there is no further word.
+ * Output: the next word's end (forward) or the previous word's start
+ *         (back) — spaces and punctuation are skipped, as Pango's word
+ *         boundaries do; the text's end or start when there is no word
+ *         that way.
  * ------------------------------------------------------------------------- */
 size_t on_text_layout_next_word(const on_text_layout_t *layout, size_t byte);
 size_t on_text_layout_prev_word(const on_text_layout_t *layout, size_t byte);

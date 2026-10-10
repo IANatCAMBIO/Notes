@@ -988,7 +988,6 @@ apply_search:(NSString *)term
 {
     self.search_field.stringValue = term;
     on_note_view_find(self.note_view, term);
-    on_note_view_find_step(self.note_view, term, YES);
 }
 
 /*

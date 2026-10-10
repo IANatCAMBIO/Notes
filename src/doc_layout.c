@@ -20,12 +20,12 @@
 /* ── Page geometry (points) ─────────────────────────────────────────────── */
 
 #define LEFT_MARGIN   ((double)on_look_margin_left)
-#define RIGHT_MARGIN  16.0
-#define TOP_MARGIN    12.0
-#define BOTTOM_MARGIN 20.0
-#define BLOCK_GAP      2.0
+#define RIGHT_MARGIN  ((double)on_look_margin_right)
+#define TOP_MARGIN    ((double)on_look_margin_top)
+#define BOTTOM_MARGIN ((double)on_look_margin_bottom)
+#define BLOCK_GAP     ((double)on_look_block_gap)
 
-#define LIST_INDENT   32.0
+#define LIST_INDENT   ((double)on_look_list_indent)
 #define CODE_INSET    ((double)on_look_code_inset)
 #define CODE_INSET_NUM ((double)on_look_code_inset_numbered)
 #define CODE_PAD      ((double)on_look_code_pad)
@@ -47,7 +47,9 @@ typedef struct {
     /* TABLE */
     double             *col_w;      /* [cols]                                */
     double             *row_h;      /* [rows]                                */
-    on_text_layout_t  **cells;      /* [rows*cols]                           */
+    on_text_layout_t  **cells;      /* [n_cells]                             */
+    size_t              n_cells;    /* rows*cols when cells was made: the
+                                       document may have reshaped since     */
 } BL;
 
 struct OnDocLayout {
@@ -67,30 +69,31 @@ struct OnDocLayout {
     /* find hits */
     OnDocHit         *hits;
     size_t            n_hits;
+    /* the code runs' "copy" word, made when first needed for the style */
+    on_text_layout_t *copy_word;
 };
 
 /* ── BL helpers ─────────────────────────────────────────────────────────── */
 
 /*
- * bl_clear — release what a BL holds (not the struct itself).
+ * bl_clear — release what a BL holds (not the struct itself).  It reads
+ * nothing from the document: by the time a block is cleared the document
+ * may already have reshaped, moved or removed it.
  *
  * Inputs:
- *   b     — the block layout
- *   cols  — number of columns (for tables)
- *   rows  — number of rows (for tables)
- *
- * Output: none.
+ *   b — the block layout
  */
 static void
-bl_clear(BL *b, int cols, int rows)
+bl_clear(BL *b)
 {
     on_text_layout_free(b->layout);
     b->layout = NULL;
     if (b->cells) {
-        for (int k = 0; k < cols * rows; k++)
+        for (size_t k = 0; k < b->n_cells; k++)
             on_text_layout_free(b->cells[k]);
         free(b->cells);
-        b->cells = NULL;
+        b->cells   = NULL;
+        b->n_cells = 0;
     }
     free(b->col_w);
     b->col_w = NULL;
@@ -100,22 +103,16 @@ bl_clear(BL *b, int cols, int rows)
 }
 
 /*
- * bl_clear_i — clear BL at index i, reading table dimensions from the doc.
+ * bl_clear_i — clear the BL at index i.
  *
  * Inputs:
  *   L — the layout
  *   i — block index
- *
- * Output: none.
  */
 static void
 bl_clear_i(OnDocLayout *L, size_t i)
 {
-    if (i >= L->n_bl) return;
-    BL *b = &L->bl[i];
-    if (!b->cells) { bl_clear(b, 0, 0); return; }
-    const OnBlock *blk = on_document_block(L->doc, (guint)i);
-    bl_clear(b, blk ? blk->cols : 0, blk ? blk->rows : 0);
+    if (i < L->n_bl) bl_clear(&L->bl[i]);
 }
 
 /* ── Code-run helpers ───────────────────────────────────────────────────── */
@@ -384,7 +381,8 @@ layout_block(OnDocLayout *L, size_t i)
     if (blk->kind == ON_BLOCK_TABLE) {
         b->col_w = calloc((size_t)blk->cols, sizeof *b->col_w);
         b->row_h = calloc((size_t)blk->rows, sizeof *b->row_h);
-        b->cells = calloc((size_t)(blk->rows * blk->cols), sizeof *b->cells);
+        b->n_cells = (size_t)(blk->rows * blk->cols);
+        b->cells   = calloc(b->n_cells, sizeof *b->cells);
         on_text_span_t hits_buf[32];
         /* Measure each column (no wrap). */
         for (int c = 0; c < blk->cols; c++) {
@@ -545,6 +543,70 @@ text_top(const OnDocLayout *L, size_t i)
     return L->bl[i].y + (code_run_starts(L, i) ? CODE_PAD : 0.0);
 }
 
+/* The word on a code run's first line that copies the run. */
+#define COPY_WORD "copy"
+
+/*
+ * copy_word_rect — where a code run's "copy" word sits, when the style
+ * shows it: right-aligned on the run's first line.
+ *
+ * Inputs:
+ *   L     — the layout (validated)
+ *   first — the run's first block
+ *   out   — receives the word's rectangle (with 2 pt of slack each side)
+ *
+ * Output: false when code copy words are off.
+ */
+static bool
+copy_word_rect(OnDocLayout *L, size_t first, on_rect_t *out)
+{
+    if (!L->style.code_copy) return false;
+    if (L->copy_word == NULL) {
+        on_text_content_t c = { .text = COPY_WORD, .len = strlen(COPY_WORD) };
+        on_text_style_t   st = { .font_size = L->font_size, .scale = 0.85,
+                                 .action = true, .dark = L->style.dark };
+        L->copy_word = on_text_layout_new(&c, &st);
+    }
+    double w, h;
+    on_text_layout_size(L->copy_word, &w, &h);
+    *out = (on_rect_t){ L->width - RIGHT_MARGIN - 6.0 - w, L->bl[first].y + 2.0, w + 4.0, h };
+    return true;
+}
+
+/*
+ * checkbox_rect — the drawn box of a task (CHECK) block, centred on its
+ * first line.  Drawing and hit testing both use it.
+ *
+ * Inputs:
+ *   L   — the layout (validated)
+ *   i   — the block
+ *   out — receives the box
+ */
+static void
+checkbox_rect(OnDocLayout *L, size_t i, on_rect_t *out)
+{
+    on_rect_t line;
+    on_text_layout_line(L->bl[i].layout, 0, NULL, &line);
+    double line_h = line.h < CHECK_SIZE ? CHECK_SIZE : line.h;
+    *out = (on_rect_t){ LEFT_MARGIN + LIST_INDENT - CHECK_SIZE - 8.0,
+                        text_top(L, i) + (line_h - CHECK_SIZE) / 2.0, CHECK_SIZE, CHECK_SIZE };
+}
+
+/*
+ * rect_has — is a point inside a rectangle?
+ *
+ * Inputs:
+ *   r    — the rectangle
+ *   x, y — the point
+ *
+ * Output: true when it is.
+ */
+static bool
+rect_has(on_rect_t r, double x, double y)
+{
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
 /* ── cell_origin ────────────────────────────────────────────────────────── */
 
 /*
@@ -654,6 +716,7 @@ on_doc_layout_free(OnDocLayout *L)
     free(L->bl);
     free(L->pre_text);
     free(L->hits);
+    on_text_layout_free(L->copy_word);
     free(L);
 }
 
@@ -675,6 +738,8 @@ void
 on_doc_layout_set_style(OnDocLayout *L, const OnDocLayoutStyle *style)
 {
     L->style = *style;
+    on_text_layout_free(L->copy_word);     /* its colour follows the appearance */
+    L->copy_word = NULL;
     invalidate_all(L);
 }
 
@@ -972,7 +1037,21 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
         }
         return;
     }
-    /* Text block. */
+    /* Text block: the run's "copy" word, a task's box, else the text. */
+    on_rect_t r;
+    if (code_run_starts(L, i) && copy_word_rect(L, i, &r) && rect_has(r, x, y)) {
+        out->kind = ON_HIT_COPY;
+        out->pos.offset = 0;
+        return;
+    }
+    if (blk->kind == ON_BLOCK_CHECK) {
+        checkbox_rect(L, i, &r);
+        if (rect_has(r, x, y)) {
+            out->kind = ON_HIT_CHECKBOX;
+            out->pos.offset = 0;
+            return;
+        }
+    }
     double ty = text_top(L, i);
     if (b->layout) {
         size_t idx = on_text_layout_index_at(b->layout, x - b->x, y - ty);
@@ -1468,13 +1547,10 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_text_layout_draw(nl, ctx, b->x - 8.0 - nw, ty);
             on_text_layout_free(nl);
         } else if (blk->kind == ON_BLOCK_CHECK) {
-            /* Checkbox: 14×14 pt, at baseline of the first line. */
-            on_rect_t cr;
-            on_text_layout_line(b->layout, 0, NULL, &cr);
-            double line_h = cr.h < CHECK_SIZE ? CHECK_SIZE : cr.h;
-            double bx = LEFT_MARGIN + LIST_INDENT - CHECK_SIZE - 8.0;
-            double by_c = ty + (line_h - CHECK_SIZE) / 2.0;
-            on_rect_t box = { bx, by_c, CHECK_SIZE, CHECK_SIZE };
+            /* Checkbox: centred on the first line. */
+            on_rect_t box;
+            checkbox_rect(L, i, &box);
+            double bx = box.x, by_c = box.y;
             on_color_t check_c = on_look_pick(on_look_checkbox, L->style.dark);
             on_color_t white   = { 1, 1, 1, 1 };
             on_color_t bd2     = on_look_pick(on_look_table_border, L->style.dark);
@@ -1499,6 +1575,10 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             CGImageRef cg = on_doc_layout_image(L, (guint)i, (gint)k);
             if (cg) on_paint_image(ctx, cg, ir);
         }
+        /* The "copy" word on the first block of a code run. */
+        on_rect_t cw;
+        if (code_run_starts(L, i) && copy_word_rect(L, i, &cw))
+            on_text_layout_draw(L->copy_word, ctx, cw.x + 2.0, cw.y);
     }
     /* Caret. */
     if (p->caret_visible) {

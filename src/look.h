@@ -84,6 +84,11 @@ static const double on_look_table_col_max    = 320.0;
 static const double on_look_checkbox_size    = 14.0;
 static const double on_look_image_thumb_w    = 200.0;  /* box a freshly inserted image fits      */
 static const double on_look_image_thumb_h    = 125.0;
+static const double on_look_tag_popup_row_h  = 20.0;   /* the #tag suggestion list               */
+static const double on_look_tag_popup_min_w  = 120.0;
+static const double on_look_tag_popup_pad    = 10.0;   /* row text inset, each side              */
+static const double on_look_tag_popup_font   = 12.0;
+static const int    on_look_tag_popup_max    = 8;      /* rows at most (GTK TAG_POPUP_MAX)       */
 
 /* ── Windows ──────────────────────────────────────────────────────────────── */
 

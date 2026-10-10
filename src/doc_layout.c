@@ -230,27 +230,31 @@ off_of(const OnDocLayout *L, size_t block, int cell, size_t idx)
 
 /* ── Building on_text_content_t ─────────────────────────────────────────── */
 
+/* A text's content for on_text_layout_new, and the buffers it points into. */
+typedef struct {
+    on_text_content_t c;
+    char             *text_buf;     /* the preedit-spliced text, or NULL     */
+    on_text_span_t   *hits;         /* this text's find highlights           */
+    on_text_box_t    *boxes;        /* its inline images' boxes              */
+} content_t;
+
 /*
- * make_content — fill an on_text_content_t for a text or cell block,
- * splicing in the preedit if active.  Caller frees `text_buf` if non-NULL
- * (it owns the spliced string).
+ * make_content — describe a text or a table cell to the text layout: its
+ * text (with the input method's preedit spliced in), its runs, its find
+ * highlights and a box for each inline image, sized as GTK sizes them
+ * (image_fit; 16 pt for an image that cannot be read).
  *
  * Inputs:
- *   L         — the layout
- *   t         — the OnText to describe
- *   block, cell — position (for preedit check)
- *   hits_buf  — on_text_span_t array large enough for all hits; may be NULL
- *   hits_cap  — capacity of hits_buf; 0 if NULL
- *
- * Output: the filled content; text_buf is set to a malloc'd buffer if the
- *         preedit was spliced (must be freed by the caller), else NULL.
+ *   L           — the layout
+ *   t           — the OnText to describe
+ *   block, cell — where it is (for the preedit and the hits)
+ *   out         — receives the content; content_free it
  */
-static on_text_content_t
-make_content(const OnDocLayout *L, const OnText *t, size_t block, int cell,
-             char **text_buf, on_text_span_t *hits_buf, size_t hits_cap)
+static void
+make_content(const OnDocLayout *L, const OnText *t, size_t block, int cell, content_t *out)
 {
-    *text_buf = NULL;
-    on_text_content_t c = { 0 };
+    *out = (content_t){ 0 };
+    on_text_content_t *c = &out->c;
 
     /* Preedit splice. */
     bool pre = L->pre_on && (size_t)L->pre_pos.block == block &&
@@ -258,52 +262,72 @@ make_content(const OnDocLayout *L, const OnText *t, size_t block, int cell,
     size_t pre_len = pre ? strlen(L->pre_text) : 0;
     if (pre) {
         size_t base_len = t->text->len;
-        size_t ins = L->pre_pos.offset < base_len ? L->pre_pos.offset
-                                                   : base_len;
+        size_t ins = L->pre_pos.offset < base_len ? L->pre_pos.offset : base_len;
         char *buf = malloc(base_len + pre_len + 1);
         memcpy(buf, t->text->str, ins);
         memcpy(buf + ins, L->pre_text, pre_len);
         memcpy(buf + ins + pre_len, t->text->str + ins, base_len - ins);
         buf[base_len + pre_len] = '\0';
-        *text_buf = buf;
-        c.text = buf;
-        c.len  = base_len + pre_len;
-        c.marked.start = ins;
-        c.marked.len   = pre_len;
+        out->text_buf  = buf;
+        c->text        = buf;
+        c->len         = base_len + pre_len;
+        c->marked.start = ins;
+        c->marked.len   = pre_len;
     } else {
-        c.text = t->text->str;
-        c.len  = t->text->len;
+        c->text = t->text->str;
+        c->len  = t->text->len;
     }
 
     /* Runs. */
-    c.runs   = (const OnRun *)t->runs->data;
-    c.n_runs = (size_t)t->runs->len;
+    c->runs   = (const OnRun *)t->runs->data;
+    c->n_runs = (size_t)t->runs->len;
 
-    /* Inline boxes (images). */
-    c.boxes   = NULL;
-    c.n_boxes = 0;
-    if (t->images && t->images->len > 0) {
-        /* Boxes are on_text_box_t; inline images carry pixel size. */
-        /* We expose them via the boxes array. */
-        /* NOTE: doc_layout passes boxes inline; for now leave as 0 —
-         * on_text_layout draws the U+FFFC as a blank space and doc_layout
-         * draws the image into on_text_layout_box_rect().               */
+    /* Inline images: a box each, at the object character's offset. */
+    guint n_img = t->images ? t->images->len : 0;
+    if (n_img > 0) {
+        out->boxes = calloc(n_img, sizeof *out->boxes);
+        for (guint k = 0; k < n_img; k++) {
+            const OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
+            int    iw = 0, ih = 0;
+            double w = 16.0, h = 16.0;
+            if (on_image_probe_size(g_bytes_get_data(img->png, NULL),
+                                    (size_t)g_bytes_get_size(img->png), &iw, &ih))
+                image_fit(L, iw, ih, img->display_width, &w, &h);
+            out->boxes[k] = (on_text_box_t){ idx_of(L, block, cell, img->offset), w, h };
+        }
+        c->boxes   = out->boxes;
+        c->n_boxes = n_img;
     }
 
     /* Find hits on this block/cell. */
     size_t n_h = 0;
-    if (hits_buf && L->hits) {
-        for (size_t k = 0; k < L->n_hits && n_h < hits_cap; k++) {
+    for (size_t k = 0; k < L->n_hits; k++)
+        if ((size_t)L->hits[k].block == block && L->hits[k].cell == cell) n_h++;
+    if (n_h > 0) {
+        out->hits = calloc(n_h, sizeof *out->hits);
+        size_t j = 0;
+        for (size_t k = 0; k < L->n_hits; k++) {
             const OnDocHit *h = &L->hits[k];
             if ((size_t)h->block == block && h->cell == cell)
-                hits_buf[n_h++] = (on_text_span_t){ idx_of(L, block, cell, h->start),
-                                                     h->len };
+                out->hits[j++] = (on_text_span_t){ idx_of(L, block, cell, h->start), h->len };
         }
+        c->hits   = out->hits;
+        c->n_hits = n_h;
     }
-    c.hits   = hits_buf;
-    c.n_hits = n_h;
+}
 
-    return c;
+/*
+ * content_free — release what make_content allocated.
+ *
+ * Inputs:
+ *   content — the content
+ */
+static void
+content_free(content_t *content)
+{
+    free(content->text_buf);
+    free(content->hits);
+    free(content->boxes);
 }
 
 /* ── text_style_for ─────────────────────────────────────────────────────── */
@@ -383,23 +407,21 @@ layout_block(OnDocLayout *L, size_t i)
         b->row_h = calloc((size_t)blk->rows, sizeof *b->row_h);
         b->n_cells = (size_t)(blk->rows * blk->cols);
         b->cells   = calloc(b->n_cells, sizeof *b->cells);
-        on_text_span_t hits_buf[32];
         /* Measure each column (no wrap). */
         for (int c = 0; c < blk->cols; c++) {
             double widest = TABLE_COL_MIN;
             for (int r = 0; r < blk->rows; r++) {
                 OnText *cell_t = on_block_cell(blk, r, c);
                 bool hdr = blk->header && r == 0;
-                char *tbuf = NULL;
-                on_text_content_t ct = make_content(L, cell_t, i,
-                    r * blk->cols + c, &tbuf, hits_buf, 32);
+                content_t ct;
+                make_content(L, cell_t, i, r * blk->cols + c, &ct);
                 on_text_style_t st = text_style_for(L, blk, i,
                     r * blk->cols + c, 0.0, hdr, true);
-                on_text_layout_t *probe = on_text_layout_new(&ct, &st);
+                on_text_layout_t *probe = on_text_layout_new(&ct.c, &st);
                 double pw, ph;
                 on_text_layout_size(probe, &pw, &ph);
                 on_text_layout_free(probe);
-                free(tbuf);
+                content_free(&ct);
                 double want = pw + 2.0 * TABLE_PAD + 2.0;
                 if (want > widest) widest = want;
             }
@@ -423,13 +445,12 @@ layout_block(OnDocLayout *L, size_t i)
                 bool hdr = blk->header && r == 0;
                 double cw2 = b->col_w[c] - 2.0 * TABLE_PAD;
                 if (cw2 < 8.0) cw2 = 8.0;
-                char *tbuf = NULL;
-                on_text_content_t ct = make_content(L, cell_t, i, ci,
-                                                     &tbuf, hits_buf, 32);
+                content_t ct;
+                make_content(L, cell_t, i, ci, &ct);
                 on_text_style_t st = text_style_for(L, blk, i, ci, cw2,
                                                      hdr, false);
-                b->cells[ci] = on_text_layout_new(&ct, &st);
-                free(tbuf);
+                b->cells[ci] = on_text_layout_new(&ct.c, &st);
+                content_free(&ct);
                 double pw, ph;
                 on_text_layout_size(b->cells[ci], &pw, &ph);
                 if (ph > tallest) tallest = ph;
@@ -457,13 +478,11 @@ layout_block(OnDocLayout *L, size_t i)
     double tw = cw - indent - (blk->kind == ON_BLOCK_CODE ? CODE_INSET : 0.0);
     b->w = tw < 8.0 ? 8.0 : tw;
 
-    char *tbuf = NULL;
-    on_text_span_t hits_buf[32];
-    on_text_content_t ct = make_content(L, blk->text, i, -1,
-                                         &tbuf, hits_buf, 32);
+    content_t ct;
+    make_content(L, blk->text, i, -1, &ct);
     on_text_style_t st = text_style_for(L, blk, i, -1, b->w, false, false);
-    b->layout = on_text_layout_new(&ct, &st);
-    free(tbuf);
+    b->layout = on_text_layout_new(&ct.c, &st);
+    content_free(&ct);
 
     double pw, ph;
     on_text_layout_size(b->layout, &pw, &ph);
@@ -1209,15 +1228,19 @@ on_doc_layout_move(OnDocLayout *L, OnPos pos, OnDocMove how, double *goal_x)
         line_of_byte(layout, idx, &li, &lx);
         on_text_span_t span;
         on_text_layout_line(layout, li, &span, NULL);
-        size_t e = span.start + span.len;
-        /* Strip trailing newline space at a wrap point. */
-        if (how == ON_MOVE_LINE_END && li + 1 < on_text_layout_line_count(layout)) {
-            on_rect_t lr;
-            on_text_layout_line(layout, li, NULL, &lr);
-            e = on_text_layout_index_at(layout, 1e9, lr.y + lr.h / 2.0);
-        }
-        size_t raw = (how == ON_MOVE_LINE_START) ? span.start : e;
+        size_t raw = (how == ON_MOVE_LINE_START) ? span.start : span.start + span.len;
         out.offset = (gsize)off_of(L, pos.block, pos.cell, raw);
+        if (how == ON_MOVE_LINE_END && li + 1 < on_text_layout_line_count(layout)) {
+            /* A wrapped line ends with the whitespace it broke at, and that
+             * index IS the next line's start: the line's end is before it. */
+            OnText *t     = on_document_text_at(L->doc, pos);
+            gsize   start = (gsize)off_of(L, pos.block, pos.cell, span.start);
+            while (t && out.offset > start) {
+                const gchar *q = g_utf8_prev_char(t->text->str + out.offset);
+                if (!g_unichar_isspace(g_utf8_get_char(q))) break;
+                out.offset = (gsize)(q - t->text->str);
+            }
+        }
         return out;
     }
 
@@ -1375,17 +1398,18 @@ draw_selection_in_layout(CGContextRef ctx, on_text_layout_t *layout,
                          double ox, double oy, size_t s, size_t e,
                          on_color_t c)
 {
-    on_text_span_t span = { s, e > s ? e - s : 0 };
-    on_rect_t rects[32];
-    size_t n = on_text_layout_range_rects(layout, span, rects, 32);
-    size_t use = n < 32 ? n : 32;
-    for (size_t k = 0; k < use; k++) {
+    on_text_span_t span  = { s, e > s ? e - s : 0 };
+    size_t         n     = on_text_layout_range_rects(layout, span, NULL, 0);
+    on_rect_t     *rects = calloc(n + 1, sizeof *rects);
+    n = on_text_layout_range_rects(layout, span, rects, n);
+    for (size_t k = 0; k < n; k++) {
         on_rect_t r = {
             ox + rects[k].x, oy + rects[k].y,
             rects[k].w > 0.0 ? rects[k].w : 4.0, rects[k].h
         };
         on_paint_fill_rect(ctx, r, c);
     }
+    free(rects);
 }
 
 /*

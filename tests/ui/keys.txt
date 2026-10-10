@@ -46,3 +46,11 @@ caret 0 8
 # An unknown command is not handled (AppKit beeps) and changes nothing.
 command noSuchCommand:
 check 0 para one two 
+# End on a wrapped line stays on it: before the space it wrapped at.
+width 200
+command moveToEndOfDocument:
+key Return
+text alpha beta gamma delta epsilon zeta eta theta iota kappa
+command moveToBeginningOfParagraph:
+key End
+caret 2 22

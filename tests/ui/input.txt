@@ -1,0 +1,21 @@
+# The input method: an accent replaces the letter before it, marked text is
+# not in the note until committed, a committed newline is Return, and a
+# caret move drops what is still marked.
+text cafe
+commit é 3 1
+check 0 para café
+caret 0 5
+marked ka
+check 0 para café
+unmark
+check 0 para caféka
+commit \n
+check 1 para 
+marked xyz
+key Right
+check 1 para 
+caret 1 0
+commit した
+check 1 para した
+commit 下 0 2
+check 1 para 下

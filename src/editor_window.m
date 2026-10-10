@@ -31,6 +31,7 @@
 #include "db.h"
 #include "document.h"
 #include "identity.h"
+#include "image_io.h"
 #include "look.h"
 #include "note_edit.h"
 #include "serialize.h"
@@ -383,8 +384,14 @@ run_insert_image(id target, id sender)
                     @[UTTypeImage], nil, ((NotesEditorWindow *)target).window, ^(NSString *path) {
         NotesEditorWindow *ed = ws;
         if (!ed || !path) return;
-        NSData *data = [NSData dataWithContentsOfFile:path];
-        if (data) on_note_view_insert_image(ed.note_view, (const uint8_t *)data.bytes, data.length);
+        size_t   n   = 0;
+        uint8_t *png = on_image_file_to_png(path.fileSystemRepresentation, &n);   /* any format */
+        if (png) {
+            on_note_view_insert_image(ed.note_view, png, n);
+            free(png);
+        } else {
+            on_ui_show_notice(@"That file is not an image", path.lastPathComponent, ed.window, nil);
+        }
         [ed.window makeFirstResponder:ed.note_view];
     });
 }

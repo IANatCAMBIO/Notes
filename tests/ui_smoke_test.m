@@ -865,6 +865,143 @@ test_trash(NotesLibrary *lib)
 }
 
 /*
+ * test_inline_image — an image inside a line of text (older notes have
+ * them) is laid out in the line and can be opened by a click.
+ */
+static void
+test_inline_image(void)
+{
+    gint64      note_id = new_note("Inline image\nbefore " ON_OBJ_CHAR " after");
+    NSData     *png     = [NSData dataWithContentsOfURL:
+        [NSBundle.mainBundle URLForResource:@"composition" withExtension:@"png"]];
+    GBytes     *bytes   = g_bytes_new(png.bytes, png.length);
+    OnDocument *doc     = on_note_document_load(app.db, note_id);
+    on_text_add_image(on_document_block(doc, 1)->text, strlen("before "), bytes, 0);
+    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
+    on_document_free(doc);
+    g_bytes_unref(bytes);
+
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Inline image");
+        NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        check(view.frame.size.height > on_look_image_thumb_h,
+              "an inline image takes its thumbnail's room in the line");
+        check(save_snapshots(window, @"inline-image"), "inline image snapshots written");
+        __block NSInteger opened = -1;
+        void (^handler)(NSInteger) = view.image_activated_handler;
+        view.image_activated_handler = ^(NSInteger ordinal) { opened = ordinal; };
+        for (CGFloat x = 40; x < 400 && opened < 0; x += 20)
+            on_note_view_feed_click(view, x, 120, 1, 0, NO);
+        view.image_activated_handler = handler;
+        check(opened == 0 && on_note_view_image(view, 0) != NULL && on_note_view_image_png(view, 0) != NULL &&
+              on_note_view_image_reveal(view, 0) && on_note_view_caret(view).offset == strlen("before "),
+              "a click on it opens it, and every image call finds it as image 0");
+
+        /* A pasted TIFF image (what most apps put on the pasteboard) is
+         * stored as PNG, the one format a note keeps. */
+        view.pasteboard = [NSPasteboard pasteboardWithUniqueName];
+        NSImage *picture = [[NSImage alloc] initWithData:png];
+        [view.pasteboard clearContents];
+        [view.pasteboard setData:picture.TIFFRepresentation forType:NSPasteboardTypeTIFF];
+        on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
+        OnDocument *pasted = on_note_view_document(view);
+        BOOL png_block = NO;
+        for (guint i = 0; i < on_document_n_blocks(pasted); i++) {
+            const OnBlock *pb = on_document_block(pasted, i);
+            if (pb->kind != ON_BLOCK_IMAGE) continue;
+            gsize n;
+            const guint8 *d = g_bytes_get_data(pb->png, &n);
+            png_block = n > 8 && memcmp(d, "\x89PNG", 4) == 0;
+        }
+        check(png_block, "a pasted TIFF image is stored as PNG");
+        [view.pasteboard releaseGlobally];
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+}
+
+/*
+ * mouse_moved — a synthetic mouse-moved event at a point of a view.
+ *
+ * Inputs:
+ *   view — the view
+ *   pt   — the point, in the view's coordinates
+ *
+ * Output: the event.
+ */
+static NSEvent *
+mouse_moved(NSView *view, NSPoint pt)
+{
+    return [NSEvent mouseEventWithType:NSEventTypeMouseMoved
+                              location:[view convertPoint:pt toView:nil] modifierFlags:0
+                             timestamp:0 windowNumber:view.window.windowNumber context:nil
+                           eventNumber:0 clickCount:0 pressure:0];
+}
+
+/*
+ * test_pointer — the pointer is a pointing hand over a task's box and an
+ * I-beam over text.
+ */
+static void
+test_pointer(void)
+{
+    gint64      note_id = new_note("Pointer note\nbuy milk");
+    OnDocument *doc     = on_note_document_load(app.db, note_id);
+    on_document_set_kind(doc, 1, ON_BLOCK_CHECK);
+    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
+    on_document_free(doc);
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Pointer note");
+        NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        [view mouseMoved:mouse_moved(view, NSMakePoint(33, 47))];
+        NSCursor *over_box = NSCursor.currentCursor;
+        [view mouseMoved:mouse_moved(view, NSMakePoint(120, 47))];
+        NSCursor *over_text = NSCursor.currentCursor;
+        check(over_box == NSCursor.pointingHandCursor && over_text == NSCursor.IBeamCursor,
+              "the pointer is a hand over a task's box and an I-beam over text");
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+}
+
+/*
+ * test_tag_suggestions — typing "#al" lists the known tags that start so,
+ * under the caret; Down and Return choose one, which becomes a tag.
+ */
+static void
+test_tag_suggestions(void)
+{
+    gint64 tagged = new_note("Tagged note\nbody");
+    GList *tags = g_list_append(g_list_append(NULL, g_strdup("alpha")), g_strdup("alpine"));
+    on_db_note_set_tags(app.db, tagged, tags);
+    g_list_free_full(tags, g_free);
+    gint64 note_id = new_note("Tag typing\n");
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Tag typing");
+        NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        on_note_view_feed_text(view, "#al");
+        NSWindow *list = window.childWindows.firstObject;
+        NSUInteger rows = 0;
+        for (NSView *v in list.contentView.subviews) rows += [v isKindOfClass:NSButton.class];
+        check(list.visible && rows == 2, "typing #al lists the two known tags starting with al");
+        on_note_view_feed_key(view, on_key_down, 0, 0);
+        on_note_view_feed_key(view, on_key_return, 0, 0);
+        const OnBlock *b = on_document_block(on_note_view_document(view), 1);
+        check(!list.visible && strcmp(b->text->text->str, "#alpine ") == 0 &&
+              (on_text_flags_at(b->text, 1) & ON_FMT_TAG),
+              "Down and Return choose #alpine, styled as a tag, and close the list");
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+}
+
+/*
  * test_new_folder — New Folder asks in the app's own tool panel, never a
  * native alert or sheet; an empty name keeps it open, a name creates the
  * folder and closes it.
@@ -1183,6 +1320,9 @@ main(void)
         test_library(lib);
         test_editor();
         test_editor_commands();
+        test_inline_image();
+        test_tag_suggestions();
+        test_pointer();
         test_new_folder(lib);
         test_trash(lib);
         test_secondary_windows(lib);

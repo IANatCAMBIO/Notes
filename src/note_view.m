@@ -12,9 +12,12 @@
  * =========================================================================== */
 
 #import "note_view.h"
+#import "tag_popup.h"
 #import "ui_util.h"
 
+#include "db.h"
 #include "doc_layout.h"
+#include "image_io.h"
 #include "look.h"
 #include "note_edit.h"
 #include "utf_index.h"
@@ -73,8 +76,8 @@ static const NSTimeInterval blink_interval = 0.56;
 @property (nonatomic, copy) NSString *find_text;
 
 /* Input method preedit. */
-@property (nonatomic, copy) NSString *preedit;
-@property (nonatomic, assign) size_t preedit_cursor; /* byte offset in preedit */
+@property (nonatomic, copy) NSString *preedit;     /* marked text, or nil      */
+@property (nonatomic, assign) NSRange preedit_sel; /* the IME's caret inside it */
 
 /* What was under the last context click (for context-menu actions). */
 @property (nonatomic, assign) OnDocHitResult ctx_hit;
@@ -86,7 +89,21 @@ static const NSTimeInterval blink_interval = 0.56;
  * command came from (home_end_command). */
 @property (nonatomic, strong) NSEvent *key_event;
 
+/* #tag capture: on while a "#word" is being typed; where its '#' is; the
+ * known tags (fetched once per capture); the suggestion list. */
+@property (nonatomic, assign) BOOL           tag_capturing;
+@property (nonatomic, assign) OnPos          tag_start;
+@property (nonatomic, assign) GList         *tag_choices;
+@property (nonatomic, strong) NotesTagPopup *tag_popup;
+
 @end
+
+/* The #tag capture, defined with its helpers below; the editing
+ * primitives call into it. */
+static void tag_capture_end(NotesNoteView *v, BOOL apply);
+static void tag_capture_consider(NotesNoteView *v, const char *text, size_t n);
+static void tag_popup_update(NotesNoteView *v);
+static void tag_choose(NotesNoteView *v, NSString *name);
 
 /* ── Document observer ───────────────────────────────────────────────────── */
 
@@ -173,30 +190,10 @@ sel_bounds(NotesNoteView *v, OnPos *a, OnPos *b)
 }
 
 /*
- * doc_end — the position after the last character of the document.
- *
- * Inputs:
- *   doc — the document
- *
- * Output: the end position.
- */
-static OnPos
-doc_end(const OnDocument *doc)
-{
-    guint n = on_document_n_blocks(doc);
-    if (n == 0)
-        return (OnPos){ 0, -1, 0 };
-    const OnBlock *b = on_document_block(doc, n - 1);
-    OnPos p = { n - 1, -1, 0 };
-    if (b->text != NULL)
-        p.offset = b->text->text->len;
-    else
-        p.offset = 1;
-    return p;
-}
-
-/*
- * clamp_pos — nearest valid position to p in the current document.
+ * clamp_pos — the valid position nearest to p in the document (GTK:
+ * clamp_pos): past the end means the end; beside an image or a table at
+ * offset 0 or 1; in a cell that exists; within its text, never inside a
+ * UTF-8 sequence.
  *
  * Inputs:
  *   doc — the document
@@ -208,31 +205,29 @@ static OnPos
 clamp_pos(const OnDocument *doc, OnPos p)
 {
     guint n = on_document_n_blocks(doc);
-    if (n == 0)
-        return (OnPos){ 0, -1, 0 };
+    if (n == 0) return (OnPos){ 0, -1, 0 };
     if (p.block >= n) {
-        p = doc_end(doc);
-        return p;
+        p.block  = n - 1;
+        p.cell   = -1;
+        p.offset = G_MAXSIZE;
     }
     const OnBlock *b = on_document_block(doc, p.block);
-    if (b->kind == ON_BLOCK_IMAGE) {
+    if (b->kind == ON_BLOCK_IMAGE || (b->kind == ON_BLOCK_TABLE && p.cell < 0)) {
         p.cell   = -1;
         p.offset = MIN(p.offset, 1);
         return p;
     }
     if (b->kind == ON_BLOCK_TABLE) {
-        gint cells = b->rows * b->cols;
-        if (p.cell >= cells)
-            p.cell = cells - 1;
-        OnText *t = on_document_text_at(doc, p);
-        if (t != NULL)
-            p.offset = MIN(p.offset, t->text->len);
-        return p;
+        if (p.cell >= b->rows * b->cols) p.cell = b->rows * b->cols - 1;
+    } else {
+        p.cell = -1;
     }
-    /* Text block. */
-    p.cell = -1;
-    if (b->text != NULL)
-        p.offset = MIN(p.offset, b->text->text->len);
+    OnText *t = on_document_text_at(doc, p);
+    if (t == NULL) return (OnPos){ p.block, -1, 0 };
+    if (p.offset > t->text->len) p.offset = t->text->len;
+    while (p.offset > 0 && p.offset < t->text->len &&
+           ((guchar)t->text->str[p.offset] & 0xc0) == 0x80)
+        p.offset--;
     return p;
 }
 
@@ -329,6 +324,22 @@ current_style(NotesNoteView *v)
 }
 
 /*
+ * fit_height — make the view as tall as the laid-out note (the width
+ * stays: it follows the window).
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+fit_height(NotesNoteView *v)
+{
+    NSSize sz = v.frame.size;
+    sz.height = MAX(on_doc_layout_height(v.layout), 1.0);
+    [v setFrameSize:sz];
+    v.needsDisplay = YES;
+}
+
+/*
  * apply_style — give the layout the current style and fit the view's
  * height to it (a title line or code numbers change the geometry).
  *
@@ -342,10 +353,7 @@ apply_style(NotesNoteView *v)
     v.style = s;
     on_doc_layout_set_style(v.layout, &s);
     on_doc_layout_set_width(v.layout, layout_width(v));
-    NSSize sz = v.frame.size;
-    sz.height = MAX(on_doc_layout_height(v.layout), 1.0);
-    [v setFrameSize:sz];
-    v.needsDisplay = YES;
+    fit_height(v);
 }
 
 /* ── After-edit bookkeeping ─────────────────────────────────────────────── */
@@ -399,19 +407,51 @@ blink_restart(NotesNoteView *v)
 }
 
 /*
- * im_sync_location — tell the input method where the caret is on screen,
- * so it can place its candidate window correctly.
+ * im_sync_location — the caret moved: the input method asks again where
+ * it is (firstRectForCharacterRange:) for its candidate window.
  *
  * Inputs:
  *   v — the view
- *
- * Output: none.
  */
 static void
 im_sync_location(NotesNoteView *v)
 {
-    /* NSTextInputClient handles this through firstRectForCharacterRange:. */
-    (void)v;
+    [v.inputContext invalidateCharacterCoordinates];
+}
+
+/*
+ * im_reset — the caret is being moved by something other than the input
+ * method (a click, a paste, a navigation key): its marked text goes.
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+im_reset(NotesNoteView *v)
+{
+    if (!v.preedit) return;
+    v.preedit = nil;
+    on_doc_layout_set_preedit(v.layout, v.caret, NULL, 0);
+    [v.inputContext discardMarkedText];
+}
+
+
+static OnDocHit *compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out);
+
+/*
+ * refresh_hits — recompute the find highlights for the current find text
+ * (after an edit or a load), without moving the selection.
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+refresh_hits(NotesNoteView *v)
+{
+    size_t n = 0;
+    OnDocHit *hits = compute_hits(v.doc, v.find_text, &n);
+    on_doc_layout_set_hits(v.layout, hits, n);
+    g_free(hits);
 }
 
 /*
@@ -426,14 +466,10 @@ im_sync_location(NotesNoteView *v)
 static void
 after_edit(NotesNoteView *v)
 {
-    double w = layout_width(v);
-    on_doc_layout_set_width(v.layout, w);
-    double h = on_doc_layout_height(v.layout);
-    NSSize sz = v.frame.size;
-    sz.height = MAX(h, 1.0);
-    [v setFrameSize:sz];
+    on_doc_layout_set_width(v.layout, layout_width(v));
+    refresh_hits(v);                    /* matches move with the edit */
+    fit_height(v);
     scroll_to_caret(v);
-    v.needsDisplay = YES;
     im_sync_location(v);
     blink_restart(v);
     if (v.edited_handler) v.edited_handler();
@@ -547,8 +583,10 @@ adopt_flags(NotesNoteView *v)
 static void
 select_all(NotesNoteView *v)
 {
-    v.anchor = (OnPos){ 0, -1, 0 };
-    v.caret  = doc_end(v.doc);
+    double gx    = -1;
+    OnPos  start = { 0, -1, 0 };
+    v.anchor = on_doc_layout_move(v.layout, start, ON_MOVE_DOC_START, &gx);
+    v.caret  = on_doc_layout_move(v.layout, start, ON_MOVE_DOC_END, &gx);
     adopt_flags(v);
     v.needsDisplay = YES;
 }
@@ -605,6 +643,7 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
         v.caret = c;
     }
     v.anchor = v.caret;
+    tag_capture_consider(v, text, n);
     /* Sentence enders cap a typing group. */
     if (memchr(text, '.', n) || memchr(text, '?', n))
         if (++v.sentences >= max_sentences) typing_end(v);
@@ -622,6 +661,7 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
 static void
 enter_pressed(NotesNoteView *v)
 {
+    tag_capture_end(v, YES);
     typing_end(v);
     on_document_begin_group(v.doc);
     delete_selection(v);
@@ -675,6 +715,7 @@ delete_key(NotesNoteView *v, OnDocMove how)
 {
     BOOL backward = how == ON_MOVE_CHAR_LEFT || how == ON_MOVE_WORD_LEFT ||
                     how == ON_MOVE_LINE_START;
+    if (!backward) tag_capture_end(v, YES);
     if (has_selection(v)) {
         typing_end(v);
         delete_selection(v);
@@ -757,6 +798,7 @@ delete_key(NotesNoteView *v, OnDocMove how)
     if (e.offset > a.offset)
         on_document_delete_text(v.doc, a, e.offset - a.offset);
     v.caret = v.anchor = a;
+    tag_popup_update(v);                /* the word shrank, or the '#' went */
     after_edit(v);
 }
 
@@ -773,6 +815,8 @@ delete_key(NotesNoteView *v, OnDocMove how)
 static void
 move_caret(NotesNoteView *v, OnDocMove how, BOOL extend)
 {
+    if (how != ON_MOVE_LINE_UP && how != ON_MOVE_LINE_DOWN) tag_capture_end(v, YES);
+    im_reset(v);
     typing_end(v);
     /* Left/Right with a selection and no Shift collapses to its edge. */
     if (!extend && has_selection(v) &&
@@ -804,20 +848,20 @@ move_caret(NotesNoteView *v, OnDocMove how, BOOL extend)
 }
 
 /*
- * page_move — Page Up or Page Down by a screen's height.
+ * page_move — Page Up or Page Down: the caret moves a page's height, in
+ * its column, and the view scrolls by the same page (GTK: page_move).
  *
  * Inputs:
  *   v      — the view
  *   down   — YES for Page Down
  *   extend — YES when Shift is held
- *
- * Output: none.
  */
 static void
 page_move(NotesNoteView *v, BOOL down, BOOL extend)
 {
-    NSScrollView *sv = (NSScrollView *)v.enclosingScrollView;
-    double page = sv ? sv.documentVisibleRect.size.height : 400.0;
+    NSScrollView *sv   = v.enclosingScrollView;
+    NSRect        seen = sv ? sv.documentVisibleRect : NSMakeRect(0, 0, 0, 400.0);
+    double        page = seen.size.height;
     on_rect_t r;
     on_doc_layout_caret_rect(v.layout, v.caret, &r);
     double target_y = r.y + (down ? page : -page);
@@ -826,6 +870,12 @@ page_move(NotesNoteView *v, BOOL down, BOOL extend)
     OnDocHitResult hit;
     on_doc_layout_hit(v.layout, v.goal_x, MAX(0, target_y), &hit);
     double gx = v.goal_x;
+    if (sv) {
+        double top = MAX(0.0, MIN(seen.origin.y + (down ? page : -page),
+                                  v.frame.size.height - page));
+        [sv.contentView scrollToPoint:NSMakePoint(seen.origin.x, top)];
+        [sv reflectScrolledClipView:sv.contentView];
+    }
     set_caret(v, hit.pos, extend);
     v.goal_x = gx;
 }
@@ -951,17 +1001,41 @@ paste_fragment(NotesNoteView *v, OnDocument *frag, BOOL plain)
 }
 
 /*
- * paste — paste from the pasteboard: prefer our BNBF type, then PNG, then
- * plain text.
+ * pasteboard_png — the pasteboard's image as PNG bytes: its PNG data when
+ * it has some, else any image AppKit can read there (TIFF, JPEG, HEIC …)
+ * encoded once to PNG, the one format a note stores.
+ *
+ * Inputs:
+ *   pb — the pasteboard
+ *
+ * Output: the bytes (g_bytes_unref), or NULL when there is no image.
+ */
+static GBytes *
+pasteboard_png(NSPasteboard *pb)
+{
+    NSData *png = [pb dataForType:NSPasteboardTypePNG];
+    if (png) return g_bytes_new(png.bytes, png.length);
+    NSImage *image = [pb readObjectsForClasses:@[NSImage.class] options:nil].firstObject;
+    CGImageRef cg  = [image CGImageForProposedRect:NULL context:nil hints:nil];
+    size_t     n   = 0;
+    uint8_t   *buf = cg ? on_image_png_encode(cg, &n) : NULL;
+    if (buf == NULL) return NULL;
+    GBytes *bytes = g_bytes_new(buf, n);
+    free(buf);
+    return bytes;
+}
+
+/*
+ * paste — paste from the pasteboard: a note fragment (our own type) first,
+ * then an image, then plain text.
  *
  * Inputs:
  *   v — the view
- *
- * Output: none.
  */
 static void
 paste(NotesNoteView *v)
 {
+    im_reset(v);
     NSPasteboard *pb = v.pasteboard;
     /* Prefer our fragment type. */
     NSData *frag_data = [pb dataForType:on_pasteboard_type_fragment];
@@ -974,13 +1048,11 @@ paste(NotesNoteView *v)
             return;
         }
     }
-    /* PNG image. */
-    NSData *png = [pb dataForType:NSPasteboardTypePNG];
-    if (!png) png = [pb dataForType:NSPasteboardTypeTIFF];
+    /* An image, stored as PNG. */
+    GBytes *png = pasteboard_png(pb);
     if (png) {
-        GBytes *gbytes = g_bytes_new(png.bytes, png.length);
-        OnDocument *frag = on_document_new_from_block(on_block_new_image(gbytes, 0));
-        g_bytes_unref(gbytes);
+        OnDocument *frag = on_document_new_from_block(on_block_new_image(png, 0));
+        g_bytes_unref(png);
         paste_fragment(v, frag, NO);
         on_document_free(frag);
         return;
@@ -996,99 +1068,289 @@ paste(NotesNoteView *v)
     }
 }
 
-/* ── Linear index (NSTextInputClient needs UTF-16) ──────────────────────── */
-
-/*
- * pos_to_utf16 — convert an OnPos to a UTF-16 code-unit offset in the
- * linear text representation.
- *
- * Inputs:
- *   doc — the document
- *   pos — the position
- *
- * Output: the UTF-16 offset.
- */
-static NSUInteger
-pos_to_utf16(const OnDocument *doc, OnPos pos)
-{
-    size_t byte_off = 0;
-    guint n = on_document_n_blocks(doc);
-    for (guint i = 0; i < n && i <= pos.block; i++) {
-        const OnBlock *b = on_document_block(doc, i);
-        if (i == pos.block) {
-            /* Add the byte offset within this block. */
-            const char *text = (b->text != NULL) ? b->text->text->str : "";
-            size_t add = (pos.cell < 0) ? pos.offset : pos.offset;
-            byte_off += on_utf16_from_utf8(text, add);
-            break;
-        }
-        /* Add the block's full text + separator. */
-        if (b->text != NULL)
-            byte_off += on_utf16_from_utf8(b->text->text->str,
-                                           b->text->text->len);
-        else
-            byte_off += 1;
-        byte_off++;                 /* newline separator */
-    }
-    return (NSUInteger)byte_off;
-}
-
-/* ── NSTextInputClient linear UTF-8 for attributedSubstring ─────────────── */
-
-/*
- * linear_utf8 — the document as plain UTF-8 (one line per block, newline-
- * separated), borrowed from the caller's buffer.  Caller g_free()s.
- *
- * Inputs:
- *   doc — the document
- *
- * Output: UTF-8 string (g_free it).
- */
-static gchar *
-linear_utf8(const OnDocument *doc)
-{
-    return on_document_plain_text(doc);
-}
-
 /* ── find hits ───────────────────────────────────────────────────────────── */
 
 /*
- * compute_hits — find case-insensitive hits of needle in the document.
+ * find_in_text — every case-insensitive match of a needle in one text (a
+ * paragraph or a table cell), appended as OnDocHit (GTK: find_in_text).
+ * Characters compare lowercased, whole Unicode, not only ASCII.
+ *
+ * Inputs:
+ *   t      — the text
+ *   block  — its block
+ *   cell   — its cell, or -1
+ *   needle — what to find (UTF-8, not empty)
+ *   hits   — the GArray of OnDocHit to append to
+ */
+static void
+find_in_text(const OnText *t, guint block, gint cell, const char *needle, GArray *hits)
+{
+    glong     nlen   = g_utf8_strlen(needle, -1);
+    gunichar *nchars = g_utf8_to_ucs4_fast(needle, -1, NULL);
+    for (glong k = 0; k < nlen; k++) nchars[k] = g_unichar_tolower(nchars[k]);
+    for (const gchar *p = t->text->str; *p != '\0'; p = g_utf8_next_char(p)) {
+        const gchar *q = p;
+        glong k = 0;
+        for (; k < nlen && *q != '\0'; k++, q = g_utf8_next_char(q))
+            if (g_unichar_tolower(g_utf8_get_char(q)) != nchars[k]) break;
+        if (k == nlen) {
+            OnDocHit h = { .block = block, .cell = cell,
+                           .start = (gsize)(p - t->text->str), .len = (gsize)(q - p) };
+            g_array_append_val(hits, h);
+        }
+    }
+    g_free(nchars);
+}
+
+/*
+ * compute_hits — every match in the document, paragraphs and table cells
+ * alike, in document order.
  *
  * Inputs:
  *   doc    — the document
- *   needle — the string to find (nil or "" clears)
+ *   needle — what to find; nil or empty finds nothing
+ *   n_out  — receives the count
  *
- * Output: newly allocated array of OnDocHit (g_free), count in *n_out.
+ * Output: the hits (g_free), or NULL for none.
  */
 static OnDocHit *
 compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
 {
     *n_out = 0;
-    if (!needle || needle.length == 0)
-        return NULL;
     const char *n8 = needle.UTF8String;
-    if (!n8) return NULL;
-    size_t nl = strlen(n8);
-
-    /* Simple case-insensitive search block by block. */
-    GArray *arr = g_array_new(FALSE, FALSE, sizeof(OnDocHit));
-    guint nb = on_document_n_blocks(doc);
-    for (guint i = 0; i < nb; i++) {
+    if (n8 == NULL || *n8 == '\0') return NULL;
+    GArray *hits = g_array_new(FALSE, FALSE, sizeof(OnDocHit));
+    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
         const OnBlock *b = on_document_block(doc, i);
-        if (b->text == NULL) continue;
-        const char *hay = b->text->text->str;
-        size_t hl = b->text->text->len;
-        for (size_t j = 0; j + nl <= hl; j++) {
-            if (g_ascii_strncasecmp(hay + j, n8, nl) == 0) {
-                OnDocHit h = { .block = i, .cell = -1, .start = j, .len = nl };
-                g_array_append_val(arr, h);
-            }
+        if (b->text != NULL) {
+            find_in_text(b->text, i, -1, n8, hits);
+        } else if (b->kind == ON_BLOCK_TABLE) {
+            for (guint c = 0; c < b->cells->len; c++)
+                find_in_text(g_ptr_array_index(b->cells, c), i, (gint)c, n8, hits);
         }
     }
-    *n_out = arr->len;
-    OnDocHit *hits = (OnDocHit *)g_array_free(arr, FALSE);
-    return hits;
+    *n_out = hits->len;
+    return (OnDocHit *)g_array_free(hits, FALSE);
+}
+
+/* ── #tag capture and the suggestion list ───────────────────────────────── */
+
+/*
+ * Typing '#' at a word boundary starts a capture: where the '#' is is
+ * remembered, the known tags are fetched once, and the suggestion list
+ * shows the ones that start with what has been typed since.  A space,
+ * Return, a click elsewhere, a caret move or the focus leaving END the
+ * capture and style the "#word" as a tag; Escape ends it without.  While
+ * the list shows, Up/Down move in it and Return/Tab choose (GTK: the same).
+ */
+
+/*
+ * is_tag_char — can this character continue a tag's word?
+ *
+ * Inputs:
+ *   c — a code point
+ *
+ * Output: YES for letters, digits, '_' and '-'.
+ */
+static BOOL
+is_tag_char(gunichar c)
+{
+    return g_unichar_isalnum(c) || c == '_' || c == '-';
+}
+
+/*
+ * tag_span — the capture's "#word" span.
+ *
+ * Inputs:
+ *   v     — the view
+ *   start — receives the '#'
+ *   end   — receives the end of the word
+ *
+ * Output: NO when the text at the capture no longer starts with '#'.
+ */
+static BOOL
+tag_span(NotesNoteView *v, OnPos *start, OnPos *end)
+{
+    OnText *t = on_document_text_at(v.doc, v.tag_start);
+    if (t == NULL || v.tag_start.offset >= t->text->len || t->text->str[v.tag_start.offset] != '#')
+        return NO;
+    *start = v.tag_start;
+    *end   = *start;
+    const gchar *p = t->text->str + start->offset + 1;
+    while (*p != '\0' && is_tag_char(g_utf8_get_char(p))) p = g_utf8_next_char(p);
+    end->offset = (gsize)(p - t->text->str);
+    return YES;
+}
+
+/*
+ * tag_capture_end — end a capture: with `apply`, a "#word" of at least one
+ * letter is styled as a tag.
+ *
+ * Inputs:
+ *   v     — the view
+ *   apply — NO for Escape (the text stays plain)
+ */
+static void
+tag_capture_end(NotesNoteView *v, BOOL apply)
+{
+    if (!v.tag_capturing) return;
+    OnPos s, e;
+    if (apply && tag_span(v, &s, &e) && e.offset - s.offset >= 2)
+        on_document_set_flags(v.doc, s, e.offset - s.offset, ON_FMT_TAG, TRUE);
+    v.tag_capturing = NO;
+    on_db_tag_list_free(v.tag_choices);
+    v.tag_choices = NULL;
+    [v.tag_popup hide];
+    if (apply) {
+        v.needsDisplay = YES;
+        if (v.edited_handler) v.edited_handler();
+    }
+}
+
+/*
+ * tag_popup_update — show the known tags that start (case-insensitively)
+ * with what follows the '#', under the '#'; end the capture if the '#' is
+ * gone.
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+tag_popup_update(NotesNoteView *v)
+{
+    if (!v.tag_capturing) return;
+    OnPos s, e;
+    if (!tag_span(v, &s, &e)) {
+        tag_capture_end(v, NO);
+        return;
+    }
+    OnText *t       = on_document_text_at(v.doc, s);
+    gchar  *typed   = g_strndup(t->text->str + s.offset + 1, e.offset - s.offset - 1);
+    gchar  *typed_f = g_utf8_casefold(typed, -1);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (GList *l = v.tag_choices; l != NULL && names.count < on_look_tag_popup_max; l = l->next) {
+        const OnTag *tag    = l->data;
+        gchar       *name_f = g_utf8_casefold(tag->name, -1);
+        if (g_str_has_prefix(name_f, typed_f)) [names addObject:@(tag->name)];
+        g_free(name_f);
+    }
+    g_free(typed_f);
+    g_free(typed);
+    on_rect_t r;
+    on_doc_layout_caret_rect(v.layout, s, &r);
+    if (v.tag_popup == nil) {
+        v.tag_popup = [[NotesTagPopup alloc] init];
+        __weak NotesNoteView *wv = v;
+        v.tag_popup.chosen_handler = ^(NSString *name) { tag_choose(wv, name); };
+    }
+    [v.tag_popup show_names:names under:NSMakeRect(r.x, r.y, r.w, r.h) of:v];
+}
+
+/*
+ * tag_choose — a suggestion was chosen: the partial word becomes "#name",
+ * styled as a tag, followed by a space; the capture ends.
+ *
+ * Inputs:
+ *   v    — the view (nil does nothing)
+ *   name — the tag's name, without '#'
+ */
+static void
+tag_choose(NotesNoteView *v, NSString *name)
+{
+    OnPos s, e;
+    if (v == nil || !v.tag_capturing || !tag_span(v, &s, &e)) {
+        tag_capture_end(v, NO);
+        return;
+    }
+    typing_end(v);
+    on_document_begin_group(v.doc);
+    on_document_delete_text(v.doc, s, e.offset - s.offset);
+    NSString   *full = [@"#" stringByAppendingString:name];
+    const char *u8   = full.UTF8String;
+    on_document_insert_text(v.doc, s, u8, strlen(u8), ON_FMT_TAG);
+    OnPos after = s;
+    after.offset += strlen(u8);
+    on_document_insert_text(v.doc, after, " ", 1, 0);
+    after.offset++;
+    on_document_end_group(v.doc);
+    v.caret = v.anchor = after;
+    v.tag_capturing = NO;
+    on_db_tag_list_free(v.tag_choices);
+    v.tag_choices = NULL;
+    [v.tag_popup hide];
+    after_edit(v);
+}
+
+/*
+ * tag_capture_consider — `n` bytes of `text` were just typed and now end
+ * at the caret: walk them, starting a capture on a '#' at a word boundary
+ * (not in code or a table cell), ending one on a character a tag cannot
+ * hold, and refreshing the list otherwise.
+ *
+ * Inputs:
+ *   v    — the view
+ *   text — the typed text (UTF-8)
+ *   n    — its byte length
+ */
+static void
+tag_capture_consider(NotesNoteView *v, const char *text, size_t n)
+{
+    OnText *t = caret_text(v);
+    if (t == NULL || caret_block(v)->kind == ON_BLOCK_CODE || v.caret.cell >= 0) return;
+    gsize start = v.caret.offset - n;
+    for (const gchar *p = text; p < text + n; p = g_utf8_next_char(p)) {
+        gunichar c  = g_utf8_get_char(p);
+        gsize    at = start + (gsize)(p - text);
+        if (v.tag_capturing) {
+            if (!is_tag_char(c)) tag_capture_end(v, YES);
+            continue;
+        }
+        if (c != '#') continue;
+        BOOL boundary = at == 0;
+        if (!boundary) {
+            gunichar pc = g_utf8_get_char(g_utf8_prev_char(t->text->str + at));
+            boundary = g_unichar_isspace(pc) || g_unichar_ispunct(pc);
+        }
+        if (!boundary) continue;
+        v.tag_capturing = YES;
+        OnPos at_pos = v.caret;
+        at_pos.offset = at;
+        v.tag_start = at_pos;
+        on_db_tag_list_free(v.tag_choices);
+        v.tag_choices = v.app && v.app->db ? on_db_tag_list(v.app->db) : NULL;
+    }
+    if (v.tag_capturing) tag_popup_update(v);
+}
+
+/*
+ * tag_popup_command — the suggestion list's keys, while it shows (and
+ * Escape while capturing): Up/Down move, Return/Tab choose, Escape ends
+ * the capture plain.
+ *
+ * Inputs:
+ *   v   — the view
+ *   sel — the key's command
+ *
+ * Output: YES when the list took the key.
+ */
+static BOOL
+tag_popup_command(NotesNoteView *v, SEL sel)
+{
+    if (!v.tag_capturing) return NO;
+    if (sel == @selector(cancelOperation:)) {
+        tag_capture_end(v, NO);
+        return YES;
+    }
+    if (![v.tag_popup is_visible]) return NO;
+    if (sel == @selector(moveDown:)) { [v.tag_popup move_selection:+1]; return YES; }
+    if (sel == @selector(moveUp:))   { [v.tag_popup move_selection:-1]; return YES; }
+    if (sel == @selector(insertNewline:) || sel == @selector(insertTab:)) {
+        NSString *name = [v.tag_popup selected_name];
+        if (name == nil) return NO;
+        tag_choose(v, name);
+        return YES;
+    }
+    return NO;
 }
 
 /* ── Editing commands ───────────────────────────────────────────────────── */
@@ -1305,6 +1567,8 @@ press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
 {
     OnDocHitResult hit;
     on_doc_layout_hit(v.layout, x, y, &hit);
+    tag_capture_end(v, YES);
+    im_reset(v);
     typing_end(v);
     v.dragging = NO;
 
@@ -1465,6 +1729,8 @@ dealloc
 {
     [_blink_timer invalidate];
     [_typing_timer invalidate];
+    [_tag_popup hide];
+    on_db_tag_list_free(_tag_choices);
     on_document_set_observer(_doc, NULL, NULL);
     on_doc_layout_free(_layout);
     on_document_free(_doc);
@@ -1524,6 +1790,7 @@ resignFirstResponder
         [_blink_timer invalidate];
         _blink_timer = nil;
         _caret_on = YES;
+        tag_capture_end(self, YES);
         typing_end(self);
         self.needsDisplay = YES;
     }
@@ -1556,21 +1823,68 @@ setFrameSize:(NSSize)size
 /* ── Tracking areas (mouse cursor) ─────────────────────────────────────── */
 
 /*
- * updateTrackingAreas — a single tracking area covering the view.
- *
- * Output: none.
+ * updateTrackingAreas — one tracking area over the whole view, for the
+ * pointer's shape (it follows the view's size).
  */
 - (void)
 updateTrackingAreas
 {
+    [super updateTrackingAreas];
     for (NSTrackingArea *ta in self.trackingAreas.copy)
         [self removeTrackingArea:ta];
-    NSTrackingAreaOptions opts = NSTrackingMouseEnteredAndExited |
-                                 NSTrackingMouseMoved |
-                                 NSTrackingActiveInKeyWindow;
-    NSTrackingArea *ta = [[NSTrackingArea alloc]
-        initWithRect:self.bounds options:opts owner:self userInfo:nil];
-    [self addTrackingArea:ta];
+    NSTrackingAreaOptions opts = NSTrackingMouseMoved | NSTrackingCursorUpdate |
+                                 NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:opts
+                                                          owner:self userInfo:nil]];
+}
+
+/*
+ * cursor_at — the pointer's shape over a point: an I-beam over text, a
+ * pointing hand over what a click acts on (an image, a task's box, the
+ * code "copy" word), the arrow over a table's frame (GTK: on_motion).
+ *
+ * Inputs:
+ *   pt — the point, in the view's coordinates
+ *
+ * Output: the cursor.
+ */
+- (NSCursor *)
+cursor_at:(NSPoint)pt
+{
+    OnDocHitResult hit;
+    on_doc_layout_hit(_layout, pt.x, pt.y, &hit);
+    switch (hit.kind) {
+    case ON_HIT_IMAGE:
+    case ON_HIT_CHECKBOX:
+    case ON_HIT_COPY:   return NSCursor.pointingHandCursor;
+    case ON_HIT_OBJECT: return NSCursor.arrowCursor;
+    default:            return NSCursor.IBeamCursor;
+    }
+}
+
+/*
+ * cursorUpdate: — the pointer entered the view: set its shape.
+ *
+ * Inputs:
+ *   event — the event
+ */
+- (void)
+cursorUpdate:(NSEvent *)event
+{
+    [[self cursor_at:[self convertPoint:event.locationInWindow fromView:nil]] set];
+}
+
+/*
+ * mouseMoved: — the pointer moved over the view: its shape follows what
+ * is under it.
+ *
+ * Inputs:
+ *   event — the event
+ */
+- (void)
+mouseMoved:(NSEvent *)event
+{
+    [[self cursor_at:[self convertPoint:event.locationInWindow fromView:nil]] set];
 }
 
 /* ── Drawing ─────────────────────────────────────────────────────────────── */
@@ -1892,131 +2206,169 @@ home_end_command(NSEvent *event, SEL sel)
 - (void)
 doCommandBySelector:(SEL)sel
 {
+    if (tag_popup_command(self, sel)) return;
     if (!run_command(self, home_end_command(self.key_event, sel))) [super doCommandBySelector:sel];
 }
 
 /* ── NSTextInputClient ───────────────────────────────────────────────────── */
 
 /*
- * insertText:replacementRange: — committed text from the input method or
- * direct typing.  Convert the replacement range from UTF-16 to document
- * positions, delete it, then insert the text.
+ * The input method works on the text the caret is in — a paragraph or a
+ * table cell — and its ranges are UTF-16 indexes into that text: enough
+ * for accents (press and hold), reconversion and marked text, and the same
+ * in a cell as in a paragraph.  The marked (uncommitted) text is not in the
+ * document: the layout splices it in at the caret (on_doc_layout_set_preedit).
+ */
+
+/*
+ * input_select — make a UTF-16 range of the caret's text the selection,
+ * the start becoming the anchor.
+ *
+ * Inputs:
+ *   range — the range; nothing happens for NSNotFound or no caret text
+ */
+- (void)
+input_select:(NSRange)range
+{
+    OnText *t = caret_text(self);
+    if (t == NULL || range.location == NSNotFound) return;
+    OnPos a = _caret, b = _caret;
+    a.offset = on_utf8_from_utf16(t->text->str, t->text->len, range.location);
+    b.offset = on_utf8_from_utf16(t->text->str, t->text->len, NSMaxRange(range));
+    _anchor = clamp_pos(_doc, a);
+    _caret  = clamp_pos(_doc, b);
+}
+
+/*
+ * insertText:replacementRange: — committed text, typed or from the input
+ * method.  The replacement range (an accent replacing the letter before
+ * it, a reconversion) becomes the selection the text replaces; a committed
+ * newline is Return.
  *
  * Inputs:
  *   string           — NSString or NSAttributedString
- *   replacementRange — UTF-16 range in the "document string"
- *
- * Output: none.
+ *   replacementRange — UTF-16 range of the caret's text, or NSNotFound
  */
 - (void)
 insertText:(id)string replacementRange:(NSRange)replacementRange
 {
-    NSString *text = [string isKindOfClass:[NSAttributedString class]]
+    NSString *text = [string isKindOfClass:NSAttributedString.class]
                    ? ((NSAttributedString *)string).string : string;
-
-    /* If the range is not {NSNotFound, 0}, it overrides the selection. */
-    if (replacementRange.location != NSNotFound) {
-        /* Convert the UTF-16 range to document positions and select it. */
-        gchar *plain = linear_utf8(_doc);
-        size_t blen  = plain ? strlen(plain) : 0;
-        size_t ba = on_utf8_from_utf16(plain ? plain : "", blen,
-                                       replacementRange.location);
-        size_t bb = on_utf8_from_utf16(plain ? plain : "", blen,
-                                       replacementRange.location + replacementRange.length);
-        g_free(plain);
-        /* Walk to the positions (simplified: treat doc as linear for now). */
-        (void)ba; (void)bb;
-        /* Fall through to insert at the current caret after clearing. */
+    [self clear_marked_text];
+    [self input_select:replacementRange];
+    if ([text isEqualToString:@"\n"] || [text isEqualToString:@"\r"]) {
+        enter_pressed(self);
+        return;
     }
-
-    /* Clear any preedit. */
-    if (_preedit) {
-        on_doc_layout_set_preedit(_layout, _caret, NULL, 0);
-        _preedit = nil;
-    }
-
-    if (text.length == 0) return;
     const char *u8 = text.UTF8String;
-    if (!u8) return;
-    insert_typed(self, u8, strlen(u8));
+    if (u8 != NULL && *u8 != '\0') insert_typed(self, u8, strlen(u8));
 }
 
 /*
- * setMarkedText:selectedRange:replacementRange: — IME preedit text.
+ * setMarkedText:selectedRange:replacementRange: — the input method's
+ * uncommitted text, shown at the caret.  A replacement range, or else the
+ * selection, is deleted first (the marked text takes its place).
  *
  * Inputs:
- *   string           — the preedit string
- *   selectedRange    — selected range within the preedit (ignored)
- *   replacementRange — range in the document to replace (ignored here)
- *
- * Output: none.
+ *   string           — the marked text
+ *   selectedRange    — the input method's caret or selection inside it
+ *   replacementRange — UTF-16 range of the caret's text, or NSNotFound
  */
 - (void)
 setMarkedText:(id)string
  selectedRange:(NSRange)selectedRange
 replacementRange:(NSRange)replacementRange
 {
-    (void)selectedRange; (void)replacementRange;
-    NSString *text = [string isKindOfClass:[NSAttributedString class]]
+    NSString *text = [string isKindOfClass:NSAttributedString.class]
                    ? ((NSAttributedString *)string).string : string;
-    _preedit = (text.length > 0) ? text : nil;
-    const char *p8 = _preedit ? _preedit.UTF8String : NULL;
-    on_doc_layout_set_preedit(_layout, _caret, p8, 0);
-    self.needsDisplay = YES;
+    [self input_select:replacementRange];
+    if (has_selection(self)) {
+        typing_end(self);
+        delete_selection(self);
+        after_edit(self);
+    }
+    caret_ensure_text(self);
+    _preedit     = text.length > 0 ? [text copy] : nil;
+    _preedit_sel = selectedRange;
+    NSString *before = _preedit ? [_preedit substringToIndex:MIN(selectedRange.location, _preedit.length)]
+                                : nil;
+    on_doc_layout_set_preedit(_layout, _caret, _preedit.UTF8String,
+                              before ? strlen(before.UTF8String) : 0);
+    fit_height(self);
 }
 
 /*
- * unmarkText — commit the current preedit.
- *
- * Output: none.
+ * unmarkText — commit the marked text as it stands.
  */
 - (void)
 unmarkText
 {
-    if (_preedit) {
-        NSString *text = _preedit;
-        _preedit = nil;
-        on_doc_layout_set_preedit(_layout, _caret, NULL, 0);
-        const char *u8 = text.UTF8String;
-        if (u8 && strlen(u8) > 0)
-            insert_typed(self, u8, strlen(u8));
-    }
+    NSString *text = _preedit;
+    [self clear_marked_text];
+    const char *u8 = text.UTF8String;
+    if (u8 != NULL && *u8 != '\0') insert_typed(self, u8, strlen(u8));
 }
 
 /*
- * selectedRange — the current selection in UTF-16 code units.
- *
- * Output: the range; {NSNotFound, 0} when there is no selection.
+ * clear_marked_text — drop the marked text from the layout (it was never
+ * in the document).
  */
-- (NSRange)
-selectedRange
+- (void)
+clear_marked_text
 {
-    if (!has_selection(self)) {
-        NSUInteger loc = pos_to_utf16(_doc, _caret);
-        return NSMakeRange(loc, 0);
-    }
-    OnPos a, b;
-    sel_bounds(self, &a, &b);
-    NSUInteger ua = pos_to_utf16(_doc, a);
-    NSUInteger ub = pos_to_utf16(_doc, b);
-    return NSMakeRange(ua, ub - ua);
+    if (_preedit == nil) return;
+    _preedit = nil;
+    on_doc_layout_set_preedit(_layout, _caret, NULL, 0);
+    fit_height(self);
 }
 
 /*
- * markedRange — the preedit range; {NSNotFound, 0} when none.
+ * caret_u16 — the caret as a UTF-16 index of its text.
+ *
+ * Output: the index; 0 when the caret is not in text.
+ */
+- (NSUInteger)
+caret_u16
+{
+    OnText *t = caret_text(self);
+    return t ? on_utf16_from_utf8(t->text->str, MIN(_caret.offset, t->text->len)) : 0;
+}
+
+/*
+ * selectedRange — the selection (or the caret) in the caret's text; inside
+ * the marked text while there is some.
  *
  * Output: the range.
  */
 - (NSRange)
-markedRange
+selectedRange
 {
-    return NSMakeRange(NSNotFound, 0);
+    NSUInteger at = [self caret_u16];
+    if (_preedit) return NSMakeRange(at + _preedit_sel.location, _preedit_sel.length);
+    OnPos a, b;
+    sel_bounds(self, &a, &b);
+    OnText *t = caret_text(self);
+    if (t == NULL || a.block != b.block || a.cell != b.cell) return NSMakeRange(at, 0);
+    NSUInteger ua = on_utf16_from_utf8(t->text->str, a.offset);
+    NSUInteger ub = on_utf16_from_utf8(t->text->str, b.offset);
+    return NSMakeRange(ua, ub - ua);
 }
 
 /*
- * hasMarkedText — whether preedit is active.
+ * markedRange — where the marked text sits in the caret's text.
  *
- * Output: YES when there is preedit text.
+ * Output: the range; {NSNotFound, 0} when there is none.
+ */
+- (NSRange)
+markedRange
+{
+    return _preedit ? NSMakeRange([self caret_u16], _preedit.length) : NSMakeRange(NSNotFound, 0);
+}
+
+/*
+ * hasMarkedText — is there marked text?
+ *
+ * Output: YES while there is.
  */
 - (BOOL)
 hasMarkedText
@@ -2025,39 +2377,30 @@ hasMarkedText
 }
 
 /*
- * attributedSubstringForProposedRange:actualRange: — a substring for the
- * spell checker and accessibility.
+ * attributedSubstringForProposedRange:actualRange: — part of the caret's
+ * text, for the input method (reconversion, accents).
  *
  * Inputs:
  *   range       — the UTF-16 range requested
- *   actualRange — receives the range actually returned (may be nil)
+ *   actualRange — receives the range returned (may be NULL)
  *
- * Output: the attributed string, or nil.
+ * Output: the text, or nil for an empty range.
  */
 - (NSAttributedString *)
-attributedSubstringForProposedRange:(NSRange)range
-                        actualRange:(NSRangePointer)actualRange
+attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange
 {
-    gchar *plain = linear_utf8(_doc);
-    if (!plain) {
-        if (actualRange) *actualRange = NSMakeRange(0, 0);
-        return nil;
-    }
-    NSString *str = @(plain);
-    g_free(plain);
-    NSRange clamped = NSMakeRange(MIN(range.location, str.length),
-                                  0);
-    clamped.length = MIN(range.length, str.length - clamped.location);
-    if (actualRange) *actualRange = clamped;
-    if (clamped.length == 0) return nil;
-    NSString *sub = [str substringWithRange:clamped];
-    return [[NSAttributedString alloc] initWithString:sub];
+    OnText   *t   = caret_text(self);
+    NSString *str = t ? @(t->text->str) : @"";
+    NSRange   r   = NSMakeRange(MIN(range.location, str.length), 0);
+    r.length = MIN(range.length, str.length - r.location);
+    if (actualRange) *actualRange = r;
+    return r.length > 0 ? [[NSAttributedString alloc] initWithString:[str substringWithRange:r]] : nil;
 }
 
 /*
- * validAttributesForMarkedText — attributes we understand in preedit.
+ * validAttributesForMarkedText — marked-text attributes understood.
  *
- * Output: empty array (we handle preedit as plain text only).
+ * Output: none: marked text is drawn underlined, in the text's own style.
  */
 - (NSArray<NSAttributedStringKey> *)
 validAttributesForMarkedText
@@ -2066,43 +2409,48 @@ validAttributesForMarkedText
 }
 
 /*
- * firstRectForCharacterRange:actualRange: — the caret rectangle in screen
- * coordinates, for the IME window.
+ * firstRectForCharacterRange:actualRange: — where a range of the caret's
+ * text is on screen, for the input method's candidate window.
  *
  * Inputs:
- *   range       — the character range
- *   actualRange — receives the range actually used
+ *   range       — the UTF-16 range
+ *   actualRange — receives the range used (may be NULL)
  *
- * Output: the screen rectangle.
+ * Output: the screen rectangle of its first character's caret.
  */
 - (NSRect)
-firstRectForCharacterRange:(NSRange)range
-               actualRange:(NSRangePointer)actualRange
+firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange
 {
-    (void)range;
-    if (actualRange) *actualRange = self.selectedRange;
+    if (actualRange) *actualRange = range;
+    OnText *t   = caret_text(self);
+    OnPos   pos = _caret;
+    if (t && range.location != NSNotFound)
+        pos.offset = on_utf8_from_utf16(t->text->str, t->text->len, range.location);
     on_rect_t r;
-    on_doc_layout_caret_rect(_layout, _caret, &r);
-    NSRect view_rect = NSMakeRect(r.x, r.y, r.w, r.h);
-    return [self.window convertRectToScreen:[self convertRect:view_rect toView:nil]];
+    on_doc_layout_caret_rect(_layout, pos, &r);
+    NSRect rect = [self convertRect:NSMakeRect(r.x, r.y, r.w, r.h) toView:nil];
+    return self.window ? [self.window convertRectToScreen:rect] : rect;
 }
 
 /*
- * characterIndexForPoint: — the UTF-16 index nearest a screen point.
+ * characterIndexForPoint: — the UTF-16 index of the caret's text under a
+ * screen point.
  *
  * Inputs:
  *   point — screen coordinates
  *
- * Output: the UTF-16 index.
+ * Output: the index, or NSNotFound when the point is not on that text.
  */
 - (NSUInteger)
 characterIndexForPoint:(NSPoint)point
 {
-    NSPoint vpt = [self convertPoint:[self.window convertPointFromScreen:point]
-                            fromView:nil];
+    NSPoint p = [self convertPoint:[self.window convertPointFromScreen:point] fromView:nil];
     OnDocHitResult hit;
-    on_doc_layout_hit(_layout, vpt.x, vpt.y, &hit);
-    return pos_to_utf16(_doc, hit.pos);
+    on_doc_layout_hit(_layout, p.x, p.y, &hit);
+    OnText *t = caret_text(self);
+    if (t == NULL || hit.kind != ON_HIT_TEXT || hit.pos.block != _caret.block || hit.pos.cell != _caret.cell)
+        return NSNotFound;
+    return on_utf16_from_utf8(t->text->str, MIN(hit.pos.offset, t->text->len));
 }
 
 /* ── NSView copy/paste/undo selectors ───────────────────────────────────── */
@@ -2145,6 +2493,8 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 void
 on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
 {
+    tag_capture_end(view, NO);
+    im_reset(view);
     typing_end(view);
     on_document_set_observer(view.doc, NULL, NULL);
     on_doc_layout_free(view.layout);
@@ -2199,8 +2549,7 @@ on_note_view_end_external_edit(NotesNoteView *view)
 {
     view.caret = clamp_pos(view.doc, view.caret);
     view.anchor = view.caret;
-    after_edit(view);
-    if (view.edited_handler) view.edited_handler();
+    after_edit(view);                   /* fires edited_handler, once */
 }
 
 /*
@@ -2353,6 +2702,7 @@ on_note_view_insert_date(NotesNoteView *view)
 void
 on_note_view_undo(NotesNoteView *view)
 {
+    tag_capture_end(view, NO);
     typing_end(view);
     if (!on_document_undo(view.doc)) return;
     view.caret = view.anchor = clamp_pos(view.doc, on_document_last_change(view.doc));
@@ -2366,6 +2716,7 @@ on_note_view_undo(NotesNoteView *view)
 void
 on_note_view_redo(NotesNoteView *view)
 {
+    tag_capture_end(view, NO);
     typing_end(view);
     if (!on_document_redo(view.doc)) return;
     view.caret = view.anchor = clamp_pos(view.doc, on_document_last_change(view.doc));
@@ -2380,10 +2731,7 @@ void
 on_note_view_find(NotesNoteView *view, NSString *text)
 {
     view.find_text = (text.length > 0) ? text : nil;
-    size_t n;
-    OnDocHit *hits = compute_hits(view.doc, view.find_text, &n);
-    on_doc_layout_set_hits(view.layout, hits, n);
-    g_free(hits);
+    refresh_hits(view);
     if (view.find_text != nil) {
         /* Select the first match at or after the caret, so the query
          * lands somewhere as it is typed; Next/Previous step from that
@@ -2455,23 +2803,74 @@ on_note_view_image_count(NotesNoteView *view)
 }
 
 /*
+ * image_locate — where the note's ordinal-th image is: image blocks and
+ * inline images counted together in document order, as everywhere else
+ * that addresses images (GTK: image_locate).
+ *
+ * Inputs:
+ *   doc        — the document
+ *   ordinal    — the image ordinal
+ *   block      — receives its block
+ *   inline_ord — receives its index among the block's inline images, or
+ *                -1 for an image block
+ *
+ * Output: NO when there is no such image.
+ */
+static BOOL
+image_locate(const OnDocument *doc, NSInteger ordinal, guint *block, gint *inline_ord)
+{
+    if (ordinal < 0) return NO;
+    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
+        const OnBlock *b = on_document_block(doc, i);
+        if (b->kind == ON_BLOCK_IMAGE) {
+            if (ordinal-- == 0) {
+                *block = i;
+                *inline_ord = -1;
+                return YES;
+            }
+        } else if (b->text != NULL) {
+            if ((NSUInteger)ordinal < b->text->images->len) {
+                *block = i;
+                *inline_ord = (gint)ordinal;
+                return YES;
+            }
+            ordinal -= (NSInteger)b->text->images->len;
+        }
+    }
+    return NO;
+}
+
+/*
+ * reveal_pos — the caret to a position, scrolled a third of the way down
+ * the window: the one placement both reveals share (GTK: reveal_pos).
+ *
+ * Inputs:
+ *   v — the view
+ *   p — the position
+ */
+static void
+reveal_pos(NotesNoteView *v, OnPos p)
+{
+    set_caret(v, p, NO);
+    NSScrollView *sv = v.enclosingScrollView;
+    if (sv == nil) return;
+    on_rect_t r;
+    on_doc_layout_caret_rect(v.layout, p, &r);
+    double page = sv.documentVisibleRect.size.height;
+    double top  = MAX(0.0, MIN(r.y - page * 0.3, v.frame.size.height - page));
+    [sv.contentView scrollToPoint:NSMakePoint(0, top)];
+    [sv reflectScrolledClipView:sv.contentView];
+}
+
+/*
  * on_note_view_image — see note_view.h.
  */
 CGImageRef
 on_note_view_image(NotesNoteView *view, NSInteger ordinal)
 {
-    /* Walk blocks to find the ordinal-th image block. */
-    gint ord = 0;
-    guint nb = on_document_n_blocks(view.doc);
-    for (guint i = 0; i < nb; i++) {
-        const OnBlock *b = on_document_block(view.doc, i);
-        if (b->kind == ON_BLOCK_IMAGE) {
-            if (ord == (gint)ordinal)
-                return on_doc_layout_image(view.layout, i, -1);
-            ord++;
-        }
-    }
-    return NULL;
+    guint block;
+    gint  k;
+    return image_locate(view.doc, ordinal, &block, &k) ? on_doc_layout_image(view.layout, block, k) : NULL;
 }
 
 /*
@@ -2489,21 +2888,15 @@ on_note_view_image_png(NotesNoteView *view, NSInteger ordinal)
 BOOL
 on_note_view_image_reveal(NotesNoteView *view, NSInteger ordinal)
 {
-    gint ord = 0;
-    guint nb = on_document_n_blocks(view.doc);
-    for (guint i = 0; i < nb; i++) {
-        const OnBlock *b = on_document_block(view.doc, i);
-        if (b->kind == ON_BLOCK_IMAGE) {
-            if (ord == (gint)ordinal) {
-                OnPos p = { i, -1, 0 };
-                set_caret(view, p, NO);
-                scroll_to_caret(view);
-                return YES;
-            }
-            ord++;
-        }
-    }
-    return NO;
+    guint block;
+    gint  k;
+    if (!image_locate(view.doc, ordinal, &block, &k)) return NO;
+    OnPos p = { block, -1, 0 };
+    if (k >= 0)
+        p.offset = g_array_index(on_document_block(view.doc, block)->text->images,
+                                 OnInlineImage, k).offset;
+    reveal_pos(view, p);
+    return YES;
 }
 
 /*
@@ -2519,9 +2912,8 @@ on_note_view_action_reveal(NotesNoteView *view, NSInteger ordinal)
     }
     guint block_idx = g_array_index(blocks, guint, ordinal);
     g_array_free(blocks, TRUE);
-    OnPos p = { block_idx, -1, 0 };
-    set_caret(view, p, NO);
-    scroll_to_caret(view);
+    OnPos p = { block_idx, -1, 1 };          /* just after the '!' */
+    reveal_pos(view, p);
     return YES;
 }
 
@@ -2536,9 +2928,6 @@ on_note_view_settings_changed(NotesNoteView *view)
 
 /* ── The probe interface ─────────────────────────────────────────────────── */
 
-/*
- * on_note_view_feed_key — see note_view.h.
- */
 /*
  * key_command — the command macOS's standard key bindings send for a key,
  * so the probe drives the same dispatcher a real key press does.
@@ -2607,7 +2996,7 @@ on_note_view_feed_key(NotesNoteView *view, on_key_t key, uint32_t character,
                       unsigned mods)
 {
     SEL command = key_command(key, mods);
-    if (command) return run_command(view, command);
+    if (command) return tag_popup_command(view, command) || run_command(view, command);
 
     /* ⌘-letters: the Edit menu's shortcuts. */
     if (mods & on_mod_command) {

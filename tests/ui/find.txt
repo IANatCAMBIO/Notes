@@ -1,0 +1,29 @@
+# Find folds case in any script and searches table cells too.
+text Title
+key Return
+text Ärger und ärger
+find ärger
+caret 1 6
+step ärger
+caret 1 17
+# Return replaces the selected match; a table follows.
+key Return
+table
+click 30 70
+text ÄRGER
+command moveToBeginningOfDocument:
+find ärger
+caret 1 6
+step ärger
+caret 2 6
+step-back ärger
+caret 1 6
+# Return at a cell's end opens a new line in the cell: Up comes back to
+# the cell's first line rather than leaving the table.
+click 30 70
+command moveToEndOfParagraph:
+caret 2 6
+key Return
+caret 2 7
+key Up
+caret 2 0

@@ -156,6 +156,7 @@ struct on_text_layout {
     double         *line_y;        /* top of each line, y-down, layout coords */
     double         *line_asc;      /* ascent                                  */
     double         *line_h;        /* ascent + descent + leading              */
+    double         *line_x;        /* left of each line: > 0 when centred     */
     size_t          n_lines;
 
     double          total_w;
@@ -275,18 +276,6 @@ on_text_layout_new(const on_text_content_t *content,
         CFAttributedStringSetAttribute(ms, CFRangeMake(0, cf_len),
                                        kCTFontAttributeName, sf);
         CFRelease(sf);
-    }
-
-    /* Centering. */
-    if (style->centered && cf_len > 0) {
-        CTParagraphStyleSetting s_center = {
-            kCTParagraphStyleSpecifierAlignment, sizeof(CTTextAlignment),
-            &(CTTextAlignment){ kCTTextAlignmentCenter }
-        };
-        CTParagraphStyleRef ps = CTParagraphStyleCreate(&s_center, 1);
-        CFAttributedStringSetAttribute(ms, CFRangeMake(0, cf_len),
-                                       kCTParagraphStyleAttributeName, ps);
-        CFRelease(ps);
     }
 
     /* Run-level inline format flags (not applied in code/plain mode). */
@@ -441,6 +430,7 @@ on_text_layout_new(const on_text_content_t *content,
     L->line_y         = malloc(cap * sizeof *L->line_y);
     L->line_asc       = malloc(cap * sizeof *L->line_asc);
     L->line_h         = malloc(cap * sizeof *L->line_h);
+    L->line_x         = malloc(cap * sizeof *L->line_x);
 
     double y_top = 0.0, max_w = 0.0;
     while (pos <= cf_len) {
@@ -452,6 +442,7 @@ on_text_layout_new(const on_text_content_t *content,
             L->line_y          = realloc(L->line_y, cap * sizeof *L->line_y);
             L->line_asc        = realloc(L->line_asc, cap * sizeof *L->line_asc);
             L->line_h          = realloc(L->line_h, cap * sizeof *L->line_h);
+            L->line_x          = realloc(L->line_x, cap * sizeof *L->line_x);
         }
         size_t idx = L->n_lines;
         L->line_cf_start[idx]   = pos;
@@ -468,8 +459,11 @@ on_text_layout_new(const on_text_content_t *content,
             count = remaining;
         }
         if (count <= 0 || pos >= cf_len) {
-            if (L->n_lines == 0) {
-                /* Empty string: one empty line with font metrics. */
+            /* Empty text, or text ending in a newline (a table cell): one
+             * more, empty line with the font's metrics, for the caret. */
+            bool trailing_newline = cf_len > 0 &&
+                CFStringGetCharacterAtIndex(L->cf_str, cf_len - 1) == '\n';
+            if (L->n_lines == 0 || trailing_newline) {
                 CTFontRef ef = get_font(style->font_size, style->scale,
                                         style->mono, bold_base);
                 double asc  = CTFontGetAscent(ef);
@@ -477,6 +471,7 @@ on_text_layout_new(const on_text_content_t *content,
                 double lead = CTFontGetLeading(ef);
                 CFRelease(ef);
                 L->line_y[idx]  = y_top;
+                L->line_x[idx]  = style->centered && style->width > 0 ? style->width / 2.0 : 0.0;
                 L->line_asc[idx]= asc;
                 L->line_h[idx]  = ceil(asc + desc + lead);
                 L->lines[idx]   = NULL;
@@ -493,6 +488,10 @@ on_text_layout_new(const on_text_content_t *content,
 
         L->lines[idx]  = line;
         L->line_y[idx] = y_top;
+        /* A centred line is drawn, measured and hit at its flush offset
+         * (trailing whitespace hangs outside the centring). */
+        L->line_x[idx] = style->centered && style->width > 0
+            ? (double)CTLineGetPenOffsetForFlush(line, 0.5, style->width) : 0.0;
         L->line_asc[idx] = (double)asc;
         L->line_h[idx]   = lh;
         L->n_lines++;
@@ -519,7 +518,7 @@ on_text_layout_new(const on_text_content_t *content,
                 /* box size: use the delegate metrics we stored */
                 const on_text_box_t *bx = &content->boxes[b];
                 on_rect_t r = {
-                    .x = (double)xo,
+                    .x = L->line_x[li] + (double)xo,
                     .y = L->line_y[li],
                     .w = bx->width,
                     .h = bx->height,
@@ -551,6 +550,7 @@ on_text_layout_free(on_text_layout_t *layout)
     free(layout->line_y);
     free(layout->line_asc);
     free(layout->line_h);
+    free(layout->line_x);
     free(layout->box_rects);
     free(layout->box_cf_offsets);
     free(layout->strikes);
@@ -603,7 +603,7 @@ on_text_layout_line(const on_text_layout_t *layout, size_t line,
             CGFloat asc, desc, lead;
             lw = CTLineGetTypographicBounds(layout->lines[line], &asc, &desc, &lead);
         }
-        rect->x = 0.0;
+        rect->x = layout->line_x[line];
         rect->y = layout->line_y[line];
         rect->w = lw;
         rect->h = lh;
@@ -637,7 +637,7 @@ on_text_layout_cursor_rect(const on_text_layout_t *layout, size_t byte,
         x_off = (double)CTLineGetOffsetForStringIndex(layout->lines[li],
                                                        cf_off, NULL);
     }
-    out->x = x_off;
+    out->x = layout->line_x[li] + x_off;
     out->y = layout->line_y[li];
     out->h = layout->line_h[li];
 }
@@ -658,7 +658,7 @@ on_text_layout_index_at(const on_text_layout_t *layout, double x, double y)
     if (!layout->lines[li])
         return layout->line_byte_start[li];
 
-    CGPoint pt = { (CGFloat)x, (CGFloat)layout->line_asc[li] };
+    CGPoint pt = { (CGFloat)(x - layout->line_x[li]), (CGFloat)layout->line_asc[li] };
     CFIndex idx = CTLineGetStringIndexForPosition(layout->lines[li], pt);
     if (idx < 0) idx = 0;
     if (idx > (CFIndex)CFStringGetLength(layout->cf_str))
@@ -796,7 +796,17 @@ on_text_layout_range_rects(const on_text_layout_t *layout,
     CFIndex ce = (CFIndex)on_utf16_from_utf8(layout->utf8, span.start + span.len);
     size_t count = 0;
     for (size_t li = 0; li < layout->n_lines; li++) {
-        if (!layout->lines[li]) continue;
+        if (!layout->lines[li]) {
+            /* An empty line inside the range: a zero-width rectangle (the
+             * caller draws a marker so the line shows as selected). */
+            if (layout->line_cf_start[li] >= cs && layout->line_cf_start[li] < ce) {
+                if (count < max)
+                    rects[count] = (on_rect_t){ layout->line_x[li], layout->line_y[li],
+                                                0.0, layout->line_h[li] };
+                count++;
+            }
+            continue;
+        }
         CFRange lr = CTLineGetStringRange(layout->lines[li]);
         CFIndex ls = lr.location, le = lr.location + lr.length;
         if (ce <= ls || cs >= le) continue; /* no overlap */
@@ -808,7 +818,7 @@ on_text_layout_range_rects(const on_text_layout_t *layout,
         if (xB < xA) { CGFloat t = xA; xA = xB; xB = t; }
         if (count < max) {
             rects[count] = (on_rect_t){
-                .x = (double)xA,
+                .x = layout->line_x[li] + (double)xA,
                 .y = layout->line_y[li],
                 .w = (double)(xB - xA),
                 .h = layout->line_h[li],
@@ -851,7 +861,7 @@ on_text_layout_draw(const on_text_layout_t *layout, CGContextRef ctx,
         /* Draw the line: flip y for CoreText, then restore. */
         CGContextSaveGState(ctx);
         CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
-        CGContextTranslateCTM(ctx, x, baseline);
+        CGContextTranslateCTM(ctx, x + layout->line_x[li], baseline);
         CGContextScaleCTM(ctx, 1.0, -1.0);
         CGContextSetTextPosition(ctx, 0.0, 0.0);
         CTLineDraw(layout->lines[li], ctx);
@@ -872,7 +882,7 @@ on_text_layout_draw(const on_text_layout_t *layout, CGContextRef ctx,
                 layout->lines[li], rs, NULL);
             CGFloat xb = (CGFloat)CTLineGetOffsetForStringIndex(
                 layout->lines[li], re, NULL);
-            on_paint_line(ctx, x + xa, mid_y, x + xb, mid_y,
+            on_paint_line(ctx, x + layout->line_x[li] + xa, mid_y, x + layout->line_x[li] + xb, mid_y,
                           sp->color, 1.0);
         }
     }

@@ -1,0 +1,27 @@
+# #tags: a space (or Return, a click, a move) ends the "#word" and styles
+# it as a tag; Escape leaves it plain; a '#' inside a word or in code is
+# just a character.
+text Title
+key Return
+text see #work here
+tag 1 4 1
+tag 1 8 1
+tag 1 9 0
+tag 1 0 0
+key Return
+text plain #home
+key Escape
+text  and more
+tag 2 6 0
+key Return
+text a#b c
+tag 3 1 0
+key Return
+para code
+text #code x
+tag 4 0 0
+key Return
+para body
+text #end
+key Return
+tag 5 0 1

@@ -17,6 +17,11 @@
  *   command <selector>           — a key binding's command, as AppKit sends
  *                                  it (e.g. deleteToEndOfParagraph:)
  *   click <x> <y> [n] [mods…]    — on_note_view_feed_click, view coordinates
+ *   marked <text>                — the input method's marked text
+ *   commit <text> [<loc> <len>]  — the input method commits text, replacing
+ *                                  a UTF-16 range of the caret's text
+ *                                  (\n escapes; "-" for no text)
+ *   unmark                       — the input method commits its marked text
  *   context <x> <y>              — a secondary click: the context menu
  *   menu <action>                — choose the context menu's item with that
  *                                  action (e.g. table_row_add:)
@@ -34,6 +39,8 @@
  *   check <index> <kind> <text>  — assert block content
  *   caret <block> <offset>       — assert caret position
  *   checked <block> <0|1>        — assert a task block's tick
+ *   tag <block> <offset> <0|1>   — assert the character at a byte offset is
+ *                                  (or is not) part of a #tag
  *   table-size <block> <r> <c>   — assert a table's rows and columns
  *   clipboard <text>             — assert the pasteboard's text (\n escapes)
  *   where / print                — print the caret / document (debug aid)
@@ -373,6 +380,25 @@ run_script(const char *path, NotesNoteView *view)
         } else if (!strcmp(cmd, "command")) {
             [view doCommandBySelector:NSSelectorFromString(@(arg))];
 
+        } else if (!strcmp(cmd, "marked")) {
+            NSString *marked = @(arg);
+            [(id<NSTextInputClient>)view setMarkedText:marked
+                                         selectedRange:NSMakeRange(marked.length, 0)
+                                      replacementRange:NSMakeRange(NSNotFound, 0)];
+
+        } else if (!strcmp(cmd, "commit")) {
+            char  *tok  = strtok(arg, " ");
+            gchar *text = g_strcompress(tok && strcmp(tok, "-") ? tok : "");
+            char  *loc  = strtok(NULL, " ");
+            char  *len  = strtok(NULL, " ");
+            NSRange range = loc && len ? NSMakeRange((NSUInteger)atoi(loc), (NSUInteger)atoi(len))
+                                       : NSMakeRange(NSNotFound, 0);
+            [(id<NSTextInputClient>)view insertText:@(text) replacementRange:range];
+            g_free(text);
+
+        } else if (!strcmp(cmd, "unmark")) {
+            [(id<NSTextInputClient>)view unmarkText];
+
         } else if (!strcmp(cmd, "context")) {
             char  *tok = strtok(arg, " ");
             double x   = tok ? atof(tok) : 0;
@@ -393,6 +419,19 @@ run_script(const char *path, NotesNoteView *view)
             char label[256];
             snprintf(label, sizeof label, "%s:%d checked %u %d", path, line_num, idx, want);
             check(b != NULL && b->kind == ON_BLOCK_CHECK && !b->checked == !want, label);
+
+        } else if (!strcmp(cmd, "tag")) {
+            char *tok = strtok(arg, " ");
+            guint idx = tok ? (guint)atoi(tok) : 0;
+            tok = strtok(NULL, " ");
+            gsize off = tok ? (gsize)atoi(tok) : 0;
+            tok = strtok(NULL, " ");
+            gboolean want = tok ? atoi(tok) != 0 : FALSE;
+            const OnBlock *b = idx < on_document_n_blocks(doc) ? on_document_block(doc, idx) : NULL;
+            gboolean have = b && b->text && (on_text_flags_at(b->text, off) & ON_FMT_TAG) != 0;
+            char label[256];
+            snprintf(label, sizeof label, "%s:%d tag %u %zu %d", path, line_num, idx, off, want);
+            check(b != NULL && !have == !want, label);
 
         } else if (!strcmp(cmd, "table-size")) {
             char *tok = strtok(arg, " ");

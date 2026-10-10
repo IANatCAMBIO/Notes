@@ -17,6 +17,8 @@
 
 #import "library_notes.h"
 #import "library_commands.h"
+#import "library_sidebar.h"
+#import "activation.h"
 #import "editor_window.h"
 #import "look.h"
 #import "ui_util.h"
@@ -164,122 +166,6 @@ build_records(GList *notes)
     on_db_note_list_free(notes);
     return arr;
 }
-
-/* ── Activation: Enter or double-click opens ────────────────────────────── */
-
-/*
- * is_activate_key — is this key event Return or keypad Enter (no Command,
- * Option or Control)?
- *
- * Inputs:
- *   event — a key-down event
- *
- * Output: YES for an activating key.
- */
-static BOOL
-is_activate_key(NSEvent *event)
-{
-    NSEventModifierFlags mods = event.modifierFlags &
-        (NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagControl);
-    NSString *chars = event.charactersIgnoringModifiers;
-    if (mods != 0 || chars.length != 1) return NO;
-    unichar c = [chars characterAtIndex:0];
-    return c == '\r' || c == NSEnterCharacter;
-}
-
-/*
- * NotesActivatingTable — a table whose Return/Enter key sends its
- * doubleAction, as a double-click does; activated_rows tells the two apart.
- */
-@interface NotesActivatingTable : NSTableView
-@property (nonatomic, readonly) BOOL by_key;   /* YES while Return/Enter sends */
-@end
-
-@implementation NotesActivatingTable
-
-/*
- * keyDown: — Return or Enter with a selection sends the doubleAction;
- * every other key goes to NSTableView.
- *
- * Inputs:
- *   event — the key event
- */
-- (void)
-keyDown:(NSEvent *)event
-{
-    if (is_activate_key(event) && self.selectedRowIndexes.count > 0 && self.doubleAction) {
-        _by_key = YES;
-        [self sendAction:self.doubleAction to:self.target];
-        _by_key = NO;
-        return;
-    }
-    [super keyDown:event];
-}
-
-@end
-
-/*
- * activated_rows — the rows a table's doubleAction applies to: the
- * double-clicked row, or the selection when Return/Enter sent it.
- *
- * Inputs:
- *   table — the table that sent the action
- *
- * Output: the row indexes; empty for a double-click on no row.
- */
-static NSIndexSet *
-activated_rows(NotesActivatingTable *table)
-{
-    if (table.by_key) return table.selectedRowIndexes;
-    if (table.clickedRow >= 0) return [NSIndexSet indexSetWithIndex:(NSUInteger)table.clickedRow];
-    return [NSIndexSet indexSet];         /* a double-click on empty space */
-}
-
-/*
- * NotesActivatingGrid — a collection view that reports a double-click on
- * an item, and Return/Enter on the selection, to activate_handler.
- */
-@interface NotesActivatingGrid : NSCollectionView
-@property (nonatomic, copy) void (^activate_handler)(NSSet<NSIndexPath *> *paths);
-@end
-
-@implementation NotesActivatingGrid
-
-/*
- * mouseDown: — NSCollectionView selects; a second click on an item then
- * activates it.
- *
- * Inputs:
- *   event — the mouse event
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    [super mouseDown:event];
-    if (event.clickCount != 2 || !self.activate_handler) return;
-    NSPoint      at   = [self convertPoint:event.locationInWindow fromView:nil];
-    NSIndexPath *path = [self indexPathForItemAtPoint:at];
-    if (path) self.activate_handler([NSSet setWithObject:path]);
-}
-
-/*
- * keyDown: — Return or Enter activates the selection; every other key
- * goes to NSCollectionView.
- *
- * Inputs:
- *   event — the key event
- */
-- (void)
-keyDown:(NSEvent *)event
-{
-    if (is_activate_key(event) && self.selectionIndexPaths.count > 0 && self.activate_handler) {
-        self.activate_handler(self.selectionIndexPaths);
-        return;
-    }
-    [super keyDown:event];
-}
-
-@end
 
 /* ── Notes list (NSTableView) ───────────────────────────────────────────── */
 
@@ -619,13 +505,13 @@ make_list_cell
  * Enter): open the activated notes in the editor.
  *
  * Inputs:
- *   sender — the table (unused: activated_rows reads _table)
+ *   sender — the table (unused: on_activated_rows reads _table)
  */
 - (void)
 open_activated:(id)sender
 {
     (void)sender;
-    [activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+    [on_activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         (void)stop;
         if (idx < self->_records.count && self->_lib.app->open_note)
             self->_lib.app->open_note(self->_lib.app, self->_records[idx].note_id);
@@ -1016,9 +902,6 @@ reload
     NSTextField *due_lbl  = (NSTextField *) [cell viewWithTag:3];
 
     check.state = rec.done ? NSControlStateValueOn : NSControlStateValueOff;
-    check.tag   = 1;
-    /* Store uid in the button's objectValue for the toggle handler. */
-    check.objectValue = @(rec.uid);
 
     text_lbl.stringValue = rec.text;
     if (rec.due > 0) {
@@ -1081,20 +964,24 @@ make_action_cell
 }
 
 /*
- * toggle_action: — checkbox toggled: flip the item's done state.
+ * toggle_action: — a row's checkbox was clicked: write the item's done
+ * state (task row first, then its line), re-render that one row, and
+ * refresh the sidebar when it shows the section's open count.
  *
  * Inputs:
- *   sender — the NSButton checkbox; objectValue is the item's uid
- *
- * Output: none.
+ *   sender — the checkbox; its row in the table says which item
  */
 - (void)
 toggle_action:(NSButton *)sender
 {
-    gint64 uid  = [sender.objectValue longLongValue];
-    gboolean on = sender.state == NSControlStateValueOn;
-    on_action_edit_set_done(_lib.app, uid, on);
-    [self reload];
+    NSInteger row = [_table rowForView:sender];
+    if (row < 0 || (NSUInteger)row >= _records.count) return;
+    NotesActionRecord *rec = _records[(NSUInteger)row];
+    rec.done = sender.state == NSControlStateValueOn;
+    on_action_edit_set_done(_lib.app, rec.uid, rec.done);
+    [_table reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row]
+                      columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    if (_lib.app->sidebar_counts) on_library_sidebar_refresh(_lib);
 }
 
 /*
@@ -1102,13 +989,13 @@ toggle_action:(NSButton *)sender
  * Enter): open each activated item's note with the caret on the item.
  *
  * Inputs:
- *   sender — the table (unused: activated_rows reads _table)
+ *   sender — the table (unused: on_activated_rows reads _table)
  */
 - (void)
 open_activated:(id)sender
 {
     (void)sender;
-    [activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+    [on_activated_rows(_table) enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         (void)stop;
         if (idx >= self->_records.count) return;
         NotesActionRecord *rec = self->_records[idx];
@@ -1422,46 +1309,53 @@ validate_note_open(id target, id item)
 }
 
 /*
- * run_delete_note — move selected notes to Trash.
+ * run_delete_note — "delete-note": move the selected notes to the Trash
+ * (their editors closed first), or, in the Trash view, delete them
+ * permanently after one confirmation.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — the menu item
- *
- * Output: none.
+ *   sender — the menu item (unused)
  */
 static void
 run_delete_note(id target, id sender)
 {
-    (void)sender;
     NotesLibrary *lib = target;
     NSArray<NSNumber *> *ids = on_library_notes_selected_ids(lib);
-    if (!ids.count) return;
-
-    NSUInteger n = ids.count;
-    gint64 *buf = malloc(sizeof(gint64) * n);
-    for (NSUInteger i = 0; i < n; i++)
-        buf[i] = ids[i].longLongValue;
-    on_db_notes_trash(lib.app->db, buf, n);
-    free(buf);
-    on_library_refresh_all(lib);
+    if (ids.count == 0) return;
+    if (on_library_in_trash_view(lib)) {
+        on_library_delete_notes(lib, ids);
+        return;
+    }
+    GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
+    for (NSNumber *n in ids) {
+        gint64 nid = n.longLongValue;
+        g_array_append_val(note_ids, nid);
+    }
+    if (on_library_trash_notes(lib, (const gint64 *)note_ids->data, note_ids->len))
+        on_library_refresh_all(lib);
+    g_array_free(note_ids, TRUE);
 }
 
 /*
- * validate_delete_note — enabled when notes are selected and not in the Trash view.
+ * validate_delete_note — notes are selected and no text field in the
+ * library is being typed in (⌘⌫ there means "delete to the start of the
+ * line", and a menu key equivalent would otherwise win over the field);
+ * the item says "Delete Permanently" in the Trash view.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   item   — the menu item
+ *   item   — the menu or toolbar item
  *
- * Output: YES when deletable notes are selected.
+ * Output: YES to enable it.
  */
 static BOOL
 validate_delete_note(id target, id item)
 {
-    (void)item;
     NotesLibrary *lib = target;
-    if (on_library_in_trash_view(lib)) return NO;
+    on_command_item_update(item, on_library_in_trash_view(lib) ? @"Delete Permanently" : nil,
+                           nil, NO);
+    if ([lib.window.firstResponder isKindOfClass:NSText.class]) return NO;
     return on_library_notes_selected_ids(lib).count > 0;
 }
 

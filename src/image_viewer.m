@@ -51,6 +51,7 @@ static const NSInteger tag_nav_next     = 5;
 @property (nonatomic, strong) NSString  *action_label;
 @property (nonatomic, strong) NSString  *action_tip;
 @property (nonatomic, strong) NSTimer   *resize_timer;
+@property (nonatomic, strong) id         frame_observer; /* over's frame changes */
 @property (nonatomic, weak)   NSImageView   *image_view;
 @property (nonatomic, weak)   NSTextField   *caption_view;
 @property (nonatomic, weak)   NSButton      *action_button;
@@ -101,6 +102,15 @@ drawRect:(NSRect)dirty
     on_color_t c = on_look_pick(on_look_viewer_backdrop, on_ui_is_dark(self));
     [[NSColor colorWithRed:c.r green:c.g blue:c.b alpha:c.a] setFill];
     NSRectFill(self.bounds);
+}
+
+/*
+ * dealloc — stop following the covered view's frame.
+ */
+- (void)
+dealloc
+{
+    if (_frame_observer) [NSNotificationCenter.defaultCenter removeObserver:_frame_observer];
 }
 
 /*
@@ -371,10 +381,22 @@ NotesImageViewer *
 on_image_viewer_new(NSView *over, NSString *action_label, NSString *action_tip)
 {
     NotesImageViewer *viewer = [[NotesImageViewer alloc] initWithFrame:over.bounds];
-    viewer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     viewer.hidden           = YES;
     viewer.idx              = -1;
     [over addSubview:viewer];
+
+    /* Cover `over` whatever its size.  Autoresizing is not enough: `over`
+     * may be laid out by constraints after this, from a zero frame, and an
+     * NSScrollView tiles its own parts without resizing other subviews. */
+    over.postsFrameChangedNotifications = YES;
+    __weak NotesImageViewer *wv = viewer;
+    __weak NSView           *wo = over;
+    viewer.frame_observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSViewFrameDidChangeNotification object:over queue:nil
+                usingBlock:^(NSNotification *note) {
+        (void)note;
+        if (wv && wo) wv.frame = wo.bounds;
+    }];
     [viewer build_subviews_label:action_label tip:action_tip];
     return viewer;
 }
@@ -385,7 +407,8 @@ on_image_viewer_new(NSView *over, NSString *action_label, NSString *action_tip)
 void
 on_image_viewer_open(NotesImageViewer *viewer, NSInteger index)
 {
-    viewer.idx = index;
+    viewer.idx   = index;
+    viewer.frame = viewer.superview.bounds;
     [viewer load_image_at:index];
     [viewer layout_chrome];
     [viewer update_nav];

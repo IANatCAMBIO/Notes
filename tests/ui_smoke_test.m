@@ -34,9 +34,11 @@
 #include "check.h"
 
 #import "editor_window.h"
+#import "image_viewer.h"
 #import "library_ai.h"
 #import "library_commands.h"
 #import "library_notes.h"
+#import "library_sidebar.h"
 #import "library_state.h"
 #import "library_window.h"
 #import "media_window.h"
@@ -265,7 +267,27 @@ return_key(NSWindow *window)
 }
 
 /*
- * new_note — a note with the given text, saved through THE save.
+ * new_note_in — a note in a folder with the given text, saved through
+ * THE save.
+ *
+ * Inputs:
+ *   folder_id — its folder (0 = the top level)
+ *   text      — its content, one block per line
+ *
+ * Output: the note's id.
+ */
+static gint64
+new_note_in(gint64 folder_id, const char *text)
+{
+    gint64      note_id = on_db_note_create(app.db, folder_id);
+    OnDocument *doc     = on_document_from_text(text);
+    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
+    on_document_free(doc);
+    return note_id;
+}
+
+/*
+ * new_note — a top-level note with the given text.
  *
  * Inputs:
  *   text — its content, one block per line
@@ -275,11 +297,7 @@ return_key(NSWindow *window)
 static gint64
 new_note(const char *text)
 {
-    gint64      note_id = on_db_note_create(app.db, 0);
-    OnDocument *doc     = on_document_from_text(text);
-    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
-    on_document_free(doc);
-    return note_id;
+    return new_note_in(0, text);
 }
 
 /*
@@ -642,12 +660,166 @@ test_editor_commands(void)
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
 
+        add_image(note_id);
+        on_editor_close_notes(&note_id, 1);
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        window = editor_window_titled(@"Commands note");
+        NotesImageViewer *viewer = (NotesImageViewer *)find_view(window.contentView,
+                                                                 NotesImageViewer.class, Nil);
+        NSScrollView *scroll = (NSScrollView *)viewer.superview;
+        on_image_viewer_open(viewer, 0);
+        NSImageView *big = (NSImageView *)find_view(viewer, NSImageView.class, Nil);
+        check(on_image_viewer_is_open(viewer) && NSEqualSizes(viewer.frame.size, scroll.bounds.size) &&
+              big.image.size.width > 64, "the editor's image viewer covers the note at full size");
+        on_image_viewer_close(viewer);
+
         NSRect area = window.screen.visibleFrame;
         check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_editor_screen_margin)) < 1.0,
               "a new editor opens at the bottom-right of the screen");
         on_editor_close_notes(&note_id, 1);
     }
     pump(0.2);
+}
+
+/*
+ * id_in — is a note or folder id in a GArray of gint64?  The array is
+ * freed.
+ *
+ * Inputs:
+ *   ids — the array (owned)
+ *   id  — the id
+ *
+ * Output: YES when present.
+ */
+static BOOL
+id_in(GArray *ids, gint64 id)
+{
+    BOOL found = NO;
+    for (guint i = 0; i < ids->len; i++) found = found || g_array_index(ids, gint64, i) == id;
+    g_array_free(ids, TRUE);
+    return found;
+}
+
+/*
+ * folder_under — is a folder a live child of a parent?
+ *
+ * Inputs:
+ *   parent_id — the parent (0 = the top level)
+ *   folder_id — the folder
+ *
+ * Output: YES when it is listed there.
+ */
+static BOOL
+folder_under(gint64 parent_id, gint64 folder_id)
+{
+    GList *folders = on_db_folder_list(app.db, parent_id);
+    BOOL   found   = NO;
+    for (GList *l = folders; l; l = l->next) found = found || ((OnFolder *)l->data)->id == folder_id;
+    on_db_folder_list_free(folders);
+    return found;
+}
+
+/*
+ * answer_panel — click a button of the tool panel on screen.
+ *
+ * Inputs:
+ *   title — the button's title
+ *
+ * Output: YES when such a button was found and clicked.
+ */
+static BOOL
+answer_panel(NSString *title)
+{
+    for (NSWindow *w in NSApp.windows) {
+        if (!w.visible || ![w isKindOfClass:NSPanel.class]) continue;
+        for (NSView *v in w.contentView.subviews) {
+            if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).title isEqualToString:title]) {
+                [(NSButton *)v performClick:nil];
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+/*
+ * test_trash — moving notes and folders to the Trash, restoring and
+ * deleting them, always closes the editors open on them first; a restored
+ * folder goes back where it was.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_trash(NotesLibrary *lib)
+{
+    gint64 parent = on_db_folder_create(app.db, 0, "Trash parent", 0, NULL);
+    gint64 folder = on_db_folder_create(app.db, parent, "Trash child", 0, NULL);
+    gint64 inside = new_note_in(folder, "Inside the folder\nbody");
+    gint64 loose  = new_note("Loose note\nbody");
+    on_library_refresh_all(lib);
+
+    /* A note with an open editor, moved to the Trash from the list. */
+    on_editor_window_open(&app, loose, NotesEditorRevealNone, 0, nil);
+    pump(0.2);
+    lib.sel_kind = on_sb_all;
+    lib.sel_id   = 0;
+    on_library_notes_refresh(lib);
+    pump(0.2);
+    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class,
+                                                  NSOutlineView.class);
+    NSInteger row = -1;
+    for (NSInteger r = 0; r < table.numberOfRows; r++) {
+        NSTableCellView *cell = [table viewAtColumn:0 row:r makeIfNecessary:YES];
+        if (label_with_text(cell, @"Loose note")) row = r;
+    }
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    NSSearchField *library_search = (NSSearchField *)find_view(lib.window.contentView.superview,
+                                                               NSSearchField.class, Nil);
+    if (!library_search) {
+        for (NSToolbarItem *ti in lib.window.toolbar.items) {
+            if ([ti.view isKindOfClass:NSSearchField.class]) library_search = (NSSearchField *)ti.view;
+        }
+    }
+    [lib.window makeFirstResponder:library_search];
+    check(library_search != nil && !on_library_validate_command(lib, command_item(@"delete-note")),
+          "⌘⌫ does not trash notes while the library's search field is being typed in");
+    [lib.window makeFirstResponder:table];
+    on_library_run_command(lib, command_item(@"delete-note"));
+    pump(0.2);
+    check(row >= 0 && id_in(on_db_trash_note_ids(app.db), loose) &&
+          editor_window_titled(@"Loose note") == nil,
+          "Move to Trash trashes the note and closes its open editor");
+
+    /* A folder with an open editor on one of its notes. */
+    on_editor_window_open(&app, inside, NotesEditorRevealNone, 0, nil);
+    pump(0.2);
+    on_library_sidebar_select(lib, on_sb_folder, folder);
+    lib.sel_name = @"Trash child";
+    on_library_run_command(lib, command_item(@"delete-folder"));
+    pump(0.2);
+    check(!folder_under(parent, folder) && editor_window_titled(@"Inside the folder") == nil &&
+          lib.sel_kind == on_sb_root,
+          "Delete Folder trashes it, closes its notes' editors and leaves the selection on Notes");
+
+    on_library_sidebar_select(lib, on_sb_trash_folder, folder);
+    lib.sel_name = @"Trash child";
+    on_library_run_command(lib, command_item(@"folder-restore"));
+    pump(0.2);
+    check(folder_under(parent, folder) && lib.sel_kind == on_sb_folder && lib.sel_id == folder,
+          "Restore Folder puts it back under its old parent and selects it");
+
+    /* Empty Trash, with the loose note's editor open again. */
+    on_editor_window_open(&app, loose, NotesEditorRevealNone, 0, nil);
+    pump(0.2);
+    on_library_run_command(lib, command_item(@"empty-trash"));
+    pump(0.2);
+    check(answer_panel(@"Empty Trash"), "Empty Trash asks first, in a tool panel");
+    pump(0.3);
+    check(!id_in(on_db_trash_note_ids(app.db), loose) && on_db_note_get(app.db, loose) == NULL &&
+          editor_window_titled(@"Loose note") == nil,
+          "and then deletes the Trash's notes, closing their editors");
 }
 
 /*
@@ -760,11 +932,37 @@ test_secondary_windows(NotesLibrary *lib)
             }
         }
         check(search_win != nil, "the search window opens via on_search_window_open");
+        pump(0.2);
+        check(search_win.windowController != nil, "its controller stays alive while it is open");
+        NSSearchField *query = (NSSearchField *)find_view(search_win.contentView, NSSearchField.class, Nil);
+        NSTableView   *hits  = (NSTableView *)find_view(search_win.contentView, NSTableView.class, Nil);
+        query.stringValue = @"Smoke";
+        [NSApp sendAction:query.action to:query.target from:query];
+        pump(1.0);
+        check(hits.numberOfRows > 0, "a query typed into it lists matching notes");
         weak_search = search_win;
         [search_win close];
     }
     pump(0.3);
     check(weak_search == nil, "closed search window is deallocated");
+
+    /* With every autorelease pool drained, an open search window still
+     * answers: something owns its controller besides the pool. */
+    {
+        __weak id weak_controller = nil;
+        __weak NSWindow *weak_win = nil;
+        @autoreleasepool {
+            on_search_window_open(lib, NO, nil);
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"Search Notes"]) weak_win = w;
+            }
+            weak_controller = weak_win.windowController;
+        }
+        pump(0.3);
+        check(weak_controller != nil, "an open search window's controller outlives the autorelease pool");
+        [weak_win close];
+        pump(0.2);
+    }
 
     /* A second search window can open concurrently. */
     @autoreleasepool {
@@ -783,6 +981,9 @@ test_secondary_windows(NotesLibrary *lib)
     pump(0.3);
 
     /* Media window ────────────────────────────────────────────────────── */
+    gint64 media_note = new_note("Media note");
+    add_image(media_note);
+    on_library_sidebar_select(lib, on_sb_all, 0);     /* the media scan covers the selection */
     __weak NSWindow *weak_media = nil;
     @autoreleasepool {
         NSMenuItem *media_item = [[NSMenuItem alloc] initWithTitle:@"Media"
@@ -800,6 +1001,27 @@ test_secondary_windows(NotesLibrary *lib)
             }
         }
         check(media_win != nil, "the media window opens on 'media' command");
+        pump(0.2);
+        check(media_win.windowController != nil, "its controller stays alive while it is open");
+
+        NSCollectionView *grid = (NSCollectionView *)find_view(media_win.contentView,
+                                                               NSCollectionView.class, Nil);
+        NSView *viewer = find_view(media_win.contentView, NotesImageViewer.class, Nil);
+        check(grid.selectable && [grid numberOfItemsInSection:0] > 0, "its thumbnails can be selected");
+        grid.selectionIndexPaths = [NSSet setWithObject:[NSIndexPath indexPathForItem:0 inSection:0]];
+        [grid keyDown:return_key(media_win)];
+        pump(0.2);
+        NSImageView *big = (NSImageView *)find_view(viewer, NSImageView.class, Nil);
+        check(on_image_viewer_is_open((NotesImageViewer *)viewer) &&
+              big.image.size.width > on_look_media_thumb,
+              "Return on a thumbnail opens the viewer at full size, not the thumbnail");
+        NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                                      modifierFlags:0 timestamp:0
+                                       windowNumber:media_win.windowNumber context:nil
+                                         characters:@"\033" charactersIgnoringModifiers:@"\033"
+                                          isARepeat:NO keyCode:53];
+        [media_win sendEvent:escape];
+        check(!on_image_viewer_is_open((NotesImageViewer *)viewer), "and Escape in the window closes it");
         weak_media = media_win;
         [media_win close];
     }
@@ -920,6 +1142,7 @@ main(void)
         test_editor();
         test_editor_commands();
         test_new_folder(lib);
+        test_trash(lib);
         test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);

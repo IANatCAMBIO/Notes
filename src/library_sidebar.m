@@ -489,27 +489,48 @@ add_folder_items(gint64 parent_id,
 }
 
 /*
- * expand_ancestors_of:in: — expand any items in `items` that contain
- * `target` as a descendant, so `target` becomes visible.
+ * path_to:in:into: — the chain of items from this level down to `target`'s
+ * parent, outermost first.
+ *
+ * Inputs:
+ *   target — the item to find
+ *   items  — the items at this level
+ *   into   — receives the ancestors, outermost first
+ *
+ * Output: YES when target was found under this level.
+ */
+- (BOOL)path_to:(SidebarItem *)target
+             in:(NSArray<SidebarItem *> *)items
+           into:(NSMutableArray<SidebarItem *> *)into
+{
+    for (SidebarItem *it in items) {
+        if (it == target) return YES;
+        if (it.children.count == 0) continue;
+        [into addObject:it];
+        if ([self path_to:target in:it.children into:into]) return YES;
+        [into removeLastObject];
+    }
+    return NO;
+}
+
+/*
+ * expand_ancestors_of:in: — expand every ancestor of `target`, outermost
+ * first (an item inside a collapsed parent cannot be expanded), so
+ * `target` gets a row.
  *
  * Inputs:
  *   target — the item to reveal
- *   items  — the items at this level
+ *   items  — the top-level items
  *
- * Output: YES when target was found under this level.
+ * Output: YES when target was found.
  */
 - (BOOL)expand_ancestors_of:(SidebarItem *)target
                          in:(NSArray<SidebarItem *> *)items
 {
-    for (SidebarItem *it in items) {
-        if (it == target) return YES;
-        if (it.children.count > 0 &&
-            [self expand_ancestors_of:target in:it.children]) {
-            [_outline expandItem:it];
-            return YES;
-        }
-    }
-    return NO;
+    NSMutableArray<SidebarItem *> *path = [NSMutableArray array];
+    if (![self path_to:target in:items into:path]) return NO;
+    for (SidebarItem *it in path) [_outline expandItem:it];
+    return YES;
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -771,22 +792,16 @@ objectValueForTableColumn:(NSTableColumn *)col
                         action:@selector(cmd_sort_subfolders:)
                  keyEquivalent:@""];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItemWithTitle:@"Delete Folder"
-                        action:@selector(cmd_delete_folder:)
-                 keyEquivalent:@""];
+        [menu addItem:on_command_menu_item(@"delete-folder")];
     } else if (it.kind == on_sb_trash_folder) {
-        [menu addItemWithTitle:@"Restore Folder"
-                        action:@selector(cmd_folder_restore:)
-                 keyEquivalent:@""];
-        [menu addItemWithTitle:@"Delete Permanently"
-                        action:@selector(cmd_delete_folder:)
-                 keyEquivalent:@""];
+        [menu addItem:on_command_menu_item(@"folder-restore")];
+        [menu addItem:on_command_menu_item(@"delete-folder")];
     } else if (it.kind == on_sb_trash) {
-        [menu addItemWithTitle:@"Empty Trash…"
-                        action:@selector(cmd_empty_trash:)
-                 keyEquivalent:@""];
+        [menu addItem:on_command_menu_item(@"empty-trash")];
     }
-    for (NSMenuItem *mi in menu.itemArray) mi.target = self;
+    for (NSMenuItem *mi in menu.itemArray) {
+        if (mi.action != @selector(run_command:)) mi.target = self;   /* commands go up the chain */
+    }
     return menu.numberOfItems > 0 ? menu : nil;
 }
 
@@ -843,55 +858,6 @@ objectValueForTableColumn:(NSTableColumn *)col
     if (!it || it.kind != on_sb_folder) return;
     on_db_folder_sort_children(_lib.app->db, it.ident);
     on_library_refresh_all(_lib);
-}
-
-- (void)cmd_delete_folder:(id)sender
-{
-    (void)sender;
-    NSInteger row = _outline.selectedRow;
-    SidebarItem *it = (row >= 0) ? [_outline itemAtRow:row] : nil;
-    if (!it) return;
-    if (it.kind == on_sb_trash_folder) {
-        on_ui_confirm(
-            [NSString stringWithFormat:@"Delete “%@” permanently?", it.raw_name],
-            @"This cannot be undone.", @"Delete",
-            _lib.window, ^(BOOL ok) {
-                if (!ok) return;
-                on_db_folder_delete(self.lib.app->db, it.ident);
-                on_library_refresh_all(self.lib);
-            });
-    } else {
-        on_ui_confirm(
-            [NSString stringWithFormat:@"Move “%@” to Trash?", it.raw_name],
-            nil, @"Move to Trash",
-            _lib.window, ^(BOOL ok) {
-                if (!ok) return;
-                on_db_folder_trash(self.lib.app->db, it.ident);
-                on_library_refresh_all(self.lib);
-            });
-    }
-}
-
-- (void)cmd_folder_restore:(id)sender
-{
-    (void)sender;
-    NSInteger row = _outline.selectedRow;
-    SidebarItem *it = (row >= 0) ? [_outline itemAtRow:row] : nil;
-    if (!it || it.kind != on_sb_trash_folder) return;
-    on_db_folder_move(_lib.app->db, it.ident, 0);
-    on_library_refresh_all(_lib);
-}
-
-- (void)cmd_empty_trash:(id)sender
-{
-    (void)sender;
-    on_ui_confirm(@"Permanently delete everything in the Trash?",
-                  @"This cannot be undone.", @"Empty Trash",
-                  _lib.window, ^(BOOL ok) {
-        if (!ok) return;
-        on_db_trash_empty(self.lib.app->db);
-        on_library_refresh_all(self.lib);
-    });
 }
 
 /* ── Drag source (folder rows) ──────────────────────────────────────────── */

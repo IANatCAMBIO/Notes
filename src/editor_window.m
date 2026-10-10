@@ -22,6 +22,7 @@
 #import "editor_window.h"
 #import "commands.h"
 #import "image_viewer.h"
+#import "library_state.h"
 #import "note_view.h"
 #import "ui_util.h"
 
@@ -137,35 +138,6 @@ update_path:(NSString *)path note_id:(NSString *)note_id dirty:(BOOL)dirty
     self.dot_label.stringValue  = @"●";
     self.dot_label.textColor    = dirty ? NSColor.systemRedColor : NSColor.systemGreenColor;
     self.dot_label.toolTip      = dirty ? @"Unsaved changes" : @"Saved";
-}
-
-@end
-
-/* ── The window ─────────────────────────────────────────────────────────── */
-
-/*
- * NotesEditorFrame — the editor's NSWindow.  It offers every key-down to
- * key_filter BEFORE the first responder sees it: the image viewer claims
- * keys off the note view that keeps the focus while a picture is up (GTK:
- * a capture-phase key controller on the window).
- */
-@interface NotesEditorFrame : NSWindow
-@property (nonatomic, copy) BOOL (^key_filter)(NSEvent *event);
-@end
-
-@implementation NotesEditorFrame
-
-/*
- * sendEvent: — a key-down the filter takes goes no further.
- *
- * Inputs:
- *   event — any event for the window
- */
-- (void)
-sendEvent:(NSEvent *)event
-{
-    if (event.type == NSEventTypeKeyDown && self.key_filter && self.key_filter(event)) return;
-    [super sendEvent:event];
 }
 
 @end
@@ -599,7 +571,7 @@ init_with_app:(OnApp *)app
     on_app_config_get_size("editor_win_w", "editor_win_h", &win_w, &win_h);
     NSRect frame = NSMakeRect(0, 0, win_w, win_h);
 
-    NotesEditorFrame *window = [[NotesEditorFrame alloc]
+    NotesKeyFilterWindow *window = [[NotesKeyFilterWindow alloc]
         initWithContentRect:frame
                   styleMask:NSWindowStyleMaskTitled |
                              NSWindowStyleMaskClosable |
@@ -656,11 +628,7 @@ init_with_app:(OnApp *)app
 - (void)
 place_window
 {
-    NSWindow *library = nil;
-    for (NSWindow *w in NSApp.windows) {
-        if (w.visible && ![w isKindOfClass:NotesEditorFrame.class] && w.toolbar != nil) library = w;
-    }
-    NSScreen *screen = library.screen ?: NSScreen.mainScreen;
+    NSScreen *screen = on_library().window.screen ?: NSScreen.mainScreen;
     if (!screen) return;
     NSRect area  = screen.visibleFrame;
     NSRect frame = self.window.frame;
@@ -1164,7 +1132,7 @@ windowWillClose:(NSNotification *)note
     self.note_view.edited_handler          = nil;
     self.note_view.inline_flags_handler    = nil;
     self.note_view.image_activated_handler = nil;
-    ((NotesEditorFrame *)self.window).key_filter = nil;
+    ((NotesKeyFilterWindow *)self.window).key_filter = nil;
 
     OnDocument *doc = on_note_view_document(self.note_view);
     if (on_note_edit_is_blank(doc)) {

@@ -199,6 +199,32 @@ void on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt,
  */
 BOOL on_ui_open_image_external(NSData *png);
 
+/* ── Window lifetime ────────────────────────────────────────────────────── */
+
+/*
+ * NotesKeyFilterWindow — a window that offers every key-down to key_filter
+ * BEFORE the first responder sees it; a key the filter takes goes no
+ * further.  For the image viewer, which claims keys off a view that keeps
+ * the focus while a picture is up (GTK: a capture-phase key controller on
+ * the window).
+ */
+@interface NotesKeyFilterWindow : NSWindow
+@property (nonatomic, copy) BOOL (^key_filter)(NSEvent *event);
+@end
+
+/*
+ * on_ui_keep_until_closed — own a window controller until its window
+ * closes.  For windows that may be open several at a time and that nothing
+ * else holds (search, media): an NSWindow does not keep its controller
+ * alive, so without an owner the controller — the window's delegate, data
+ * source and target — is freed as soon as it is made.  Released on the
+ * main queue just after the window's windowWillClose: notifications.
+ *
+ * Inputs:
+ *   controller — the controller, its window already made
+ */
+void on_ui_keep_until_closed(NSWindowController *controller);
+
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*

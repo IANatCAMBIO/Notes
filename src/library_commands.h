@@ -53,3 +53,14 @@ BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
  * Output: YES when the database move succeeded.
  */
 BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name);
+
+/*
+ * on_library_delete_notes — the Trash view's delete: ask once ("This cannot
+ * be undone."), then close the notes' editors and delete them permanently,
+ * and refresh the library.
+ *
+ * Inputs:
+ *   lib — the library
+ *   ids — the notes (NSNumber note ids); nothing happens for none
+ */
+void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);

@@ -3,8 +3,10 @@
  *
  * Shows every embedded image across the notes the library is currently
  * listing, as a flow grid of thumbnails decoded at on_look_media_thumb ×
- * on_look_media_thumb points.  Clicking a thumbnail opens NotesImageViewer
- * over the grid; the viewer's action link opens the source note in an
+ * on_look_media_thumb points.  Clicking a thumbnail (or Return on the
+ * selected one) opens NotesImageViewer over the grid, with the image
+ * decoded afresh at the panel's size; the viewer takes the window's keys
+ * first while it is up, and its action link opens the source note in an
  * editor.
  *
  * The scan runs on the main thread at open time: for each note returned by
@@ -18,6 +20,7 @@
 
 #import "media_window.h"
 
+#import "activation.h"
 #import "image_viewer.h"
 #import "look.h"
 #import "ui_util.h"
@@ -67,13 +70,13 @@ loadView
 /* ── Window controller ──────────────────────────────────────────────────── */
 
 @interface NotesMediaWindow : NSWindowController
-    <NSWindowDelegate, NSCollectionViewDelegate, NSCollectionViewDataSource>
+    <NSWindowDelegate, NSCollectionViewDataSource>
 - (instancetype)initWithLibrary:(NotesLibrary *)lib;
 @end
 
 @implementation NotesMediaWindow {
     NotesLibrary        *_lib;
-    NSCollectionView    *_collection;
+    NotesActivatingGrid *_collection;
     NSTextField         *_status;
     NotesImageViewer    *_viewer;
 
@@ -81,7 +84,8 @@ loadView
     media_entry_t       *_entries;     /* malloc'd, freed in dealloc */
     NSUInteger           _count;
 
-    /* Per-entry thumbnail cache (index → NSImage or NSNull) */
+    /* Per-entry grid thumbnail cache (index → NSImage or NSNull); the
+     * viewer's full-size images are never cached here. */
     NSMutableArray      *_thumb_cache;
 }
 
@@ -96,7 +100,7 @@ loadView
 - (instancetype)
 initWithLibrary:(NotesLibrary *)lib
 {
-    NSWindow *win = [[NSWindow alloc]
+    NotesKeyFilterWindow *win = [[NotesKeyFilterWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, on_look_media_w, on_look_media_h)
                   styleMask:(NSWindowStyleMaskTitled |
                              NSWindowStyleMaskClosable |
@@ -117,6 +121,14 @@ initWithLibrary:(NotesLibrary *)lib
 
     [self scan_library];
     [self build_ui];
+
+    __weak NotesMediaWindow *ws = self;
+    win.key_filter = ^BOOL(NSEvent *event) {
+        NotesMediaWindow *s = ws;
+        if (!s || !on_image_viewer_is_open(s->_viewer)) return NO;
+        on_image_viewer_key_down(s->_viewer, event);
+        return YES;                  /* modal: the grid behind sees no key */
+    };
 
     [win makeKeyAndOrderFront:nil];
     return self;
@@ -208,10 +220,17 @@ build_ui
     layout.minimumLineSpacing = 4;
     layout.sectionInset = NSEdgeInsetsMake(8, 8, 8, 8);
 
-    _collection = [[NSCollectionView alloc] init];
+    _collection = [[NotesActivatingGrid alloc] init];
     _collection.collectionViewLayout = layout;
-    _collection.dataSource = self;
-    _collection.delegate   = self;
+    _collection.dataSource      = self;
+    _collection.selectable      = YES;
+    _collection.activate_clicks = 1;     /* one click opens, as in GTK */
+    __weak NotesMediaWindow *ws = self;
+    _collection.activate_handler = ^(NSSet<NSIndexPath *> *paths) {
+        NotesMediaWindow *s = ws;
+        NSIndexPath *path = paths.anyObject;
+        if (s && path) on_image_viewer_open(s->_viewer, path.item);
+    };
     [_collection registerClass:[NotesMediaItem class]
             forItemWithIdentifier:kMediaItemID];
 
@@ -246,19 +265,18 @@ build_ui
     _viewer = on_image_viewer_new(scroll, @"Show in source note",
                                   @"Open the note this image is from");
 
-    __weak typeof(self) weak_self = self;
     _viewer.count_handler = ^NSInteger {
-        NotesMediaWindow *s = weak_self;
+        NotesMediaWindow *s = ws;
         return s ? (NSInteger)s->_count : 0;
     };
     _viewer.image_handler = ^NSImage *(NSInteger idx, NSSize box) {
-        return [weak_self image_at:(NSUInteger)idx box:box];
+        return [ws decode_at:(NSUInteger)idx box:box];
     };
     _viewer.caption_handler = ^NSString *(NSInteger idx) {
-        return [weak_self caption_at:(NSUInteger)idx];
+        return [ws caption_at:(NSUInteger)idx];
     };
     _viewer.action_handler = ^(NSInteger idx) {
-        [weak_self open_source_note_at:(NSUInteger)idx];
+        [ws open_source_note_at:(NSUInteger)idx];
     };
 }
 
@@ -280,47 +298,54 @@ status_text
 /* ── Image helpers ──────────────────────────────────────────────────────── */
 
 /*
- * image_at:box: — decode the image at index, sized to fit box.
- *
- * Checks the thumb cache first; on a miss decodes from the DB blob.
- * nil-safe: returns nil if the entry is gone or decoding fails.
+ * decode_at:box: — decode one image from its note's stored blob, capped
+ * at a box at the window's backing scale.  Nothing is cached.
  *
  * Inputs:
  *   idx — the flat entry index
- *   box — the bounding box in points (for capped decode)
+ *   box — the bounding box in points
  *
- * Output: decoded NSImage or nil.
+ * Output: the image, or nil when the entry is gone or does not decode.
  */
 - (NSImage *)
-image_at:(NSUInteger)idx
-      box:(NSSize)box
+decode_at:(NSUInteger)idx box:(NSSize)box
 {
-    if (idx >= _count) return nil;
-
-    /* Check cache */
-    id cached = _thumb_cache[idx];
-    if (![cached isKindOfClass:[NSNull class]]) return cached;
-
-    /* Decode */
     OnApp *app = _lib.app;
-    if (!app || !app->db) return nil;
+    if (idx >= _count || !app || !app->db) return nil;
 
     media_entry_t *e = &_entries[idx];
     gsize len = 0;
     guint8 *blob = on_db_note_load(app->db, e->note_id, &len);
-    if (!blob) { _thumb_cache[idx] = [NSNull null]; return nil; }
-
-    GBytes *png = on_note_image_nth_png(blob, (gsize)len, e->ordinal);
+    if (!blob) return nil;
+    GBytes *png = on_note_image_nth_png(blob, len, e->ordinal);
     g_free(blob);
-    if (!png) { _thumb_cache[idx] = [NSNull null]; return nil; }
+    if (!png) return nil;
 
     gsize plen = 0;
     gconstpointer pdata = g_bytes_get_data(png, &plen);
-    NSImage *img = on_ui_thumbnail((const uint8_t *)pdata, (size_t)plen,
-                                   box.width, box.height, 1.0);
+    NSImage *img = on_ui_thumbnail((const uint8_t *)pdata, (size_t)plen, box.width, box.height,
+                                   self.window.backingScaleFactor ?: 1.0);
     g_bytes_unref(png);
+    return img;
+}
 
-    _thumb_cache[idx] = img ?: [NSNull null];
+/*
+ * thumbnail_at: — the grid's thumbnail of one image, decoded once.
+ *
+ * Inputs:
+ *   idx — the flat entry index
+ *
+ * Output: the image, or nil when it does not decode.
+ */
+- (NSImage *)
+thumbnail_at:(NSUInteger)idx
+{
+    if (idx >= _count) return nil;
+    id cached = _thumb_cache[idx];
+    if (![cached isKindOfClass:NSNull.class]) return cached;
+    CGFloat  thumb = (CGFloat)on_look_media_thumb;
+    NSImage *img   = [self decode_at:idx box:NSMakeSize(thumb, thumb)];
+    if (img) _thumb_cache[idx] = img;
     return img;
 }
 
@@ -390,30 +415,8 @@ collectionView:(NSCollectionView *)cv
 {
     NotesMediaItem *cell = (NotesMediaItem *)[cv makeItemWithIdentifier:kMediaItemID
                                                            forIndexPath:indexPath];
-    NSUInteger idx = indexPath.item;
-    CGFloat thumb = (CGFloat)on_look_media_thumb;
-    NSImage *img = [self image_at:idx box:NSMakeSize(thumb, thumb)];
-    cell.imageView.image = img;
+    cell.imageView.image = [self thumbnail_at:(NSUInteger)indexPath.item];
     return cell;
-}
-
-/* ── NSCollectionViewDelegate ───────────────────────────────────────────── */
-
-/*
- * collectionView:didSelectItemsAtIndexPaths: — open the viewer on click.
- *
- * Inputs:
- *   cv         — the collection view
- *   indexPaths — the selected item (one)
- */
-- (void)
-collectionView:(NSCollectionView *)cv
-    didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths
-{
-    (void)cv;
-    NSIndexPath *path = indexPaths.anyObject;
-    if (!path) return;
-    on_image_viewer_open(_viewer, (NSInteger)path.item);
 }
 
 /* ── NSWindowDelegate ───────────────────────────────────────────────────── */
@@ -445,7 +448,7 @@ static void
 run_media(id target, id sender)
 {
     (void)sender;
-    (void)[[NotesMediaWindow alloc] initWithLibrary:target];
+    on_ui_keep_until_closed([[NotesMediaWindow alloc] initWithLibrary:target]);
 }
 
 /*

@@ -20,6 +20,7 @@
  */
 
 #import "search_window.h"
+#import "ui_util.h"
 
 #import "look.h"
 
@@ -509,8 +510,8 @@ on_search_install(NotesLibrary *lib)
 void
 on_search_window_open(NotesLibrary *lib, BOOL scope_to_selection, NSString *query)
 {
-    /* Each call creates an independent window. */
-    (void)[[NotesSearchWindow alloc] initWithLibrary:lib
-                                    scopeToSelection:scope_to_selection
-                                               query:query];
+    /* Each call creates an independent window, owned until it closes. */
+    on_ui_keep_until_closed([[NotesSearchWindow alloc] initWithLibrary:lib
+                                                      scopeToSelection:scope_to_selection
+                                                                 query:query]);
 }

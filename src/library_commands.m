@@ -217,6 +217,130 @@ run_export_md(id target, id sender)
     run_export(lib, lib.window, ON_EXPORT_MARKDOWN);
 }
 
+/*
+ * close_editors_for_ids — close (each saving first) the editors of notes
+ * held in a GArray of gint64, as on_db_folder_note_ids and
+ * on_db_trash_note_ids return them; the array is freed.
+ *
+ * Inputs:
+ *   ids — the note ids (owned: freed here)
+ */
+static void
+close_editors_for_ids(GArray *ids)
+{
+    on_editor_close_notes((const gint64 *)ids->data, ids->len);
+    g_array_free(ids, TRUE);
+}
+
+/*
+ * run_delete_folder — "delete-folder": the selected folder (with its
+ * subtree) goes to the Trash, no question asked — it can be restored; a
+ * folder already in the Trash is deleted permanently after one
+ * confirmation.  Editors on its notes are closed first either way.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu or toolbar item (unused)
+ */
+static void
+run_delete_folder(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    if (lib.sel_kind == on_sb_folder) {
+        if (on_library_trash_folder(lib, lib.sel_id, lib.sel_name)) on_library_refresh_all(lib);
+        return;
+    }
+    if (lib.sel_kind != on_sb_trash_folder) return;
+    gint64 folder_id = lib.sel_id;
+    on_ui_confirm(@"Permanently delete this folder and everything inside it?", nil, @"Delete",
+                  lib.window, ^(BOOL confirmed) {
+        if (!confirmed) return;
+        close_editors_for_ids(on_db_folder_note_ids(lib.app->db, folder_id));
+        on_db_folder_delete(lib.app->db, folder_id);
+        if (lib.sel_kind == on_sb_trash_folder && lib.sel_id == folder_id)
+            on_library_sidebar_select(lib, on_sb_trash, 0);
+        on_library_refresh_all(lib);
+    });
+}
+
+/*
+ * validate_delete_folder — a folder, or a folder in the Trash, is selected;
+ * for the latter the item says "Delete Permanently".
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the menu or toolbar item
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_delete_folder(id target, id item)
+{
+    NotesLibrary *lib = target;
+    on_command_item_update(item, lib.sel_kind == on_sb_trash_folder ? @"Delete Permanently" : nil,
+                           nil, NO);
+    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_trash_folder;
+}
+
+/*
+ * run_folder_restore — "folder-restore": the selected trashed folder (with
+ * its subtree) goes back where it was deleted from; the selection follows.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (unused)
+ */
+static void
+run_folder_restore(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    if (lib.sel_kind != on_sb_trash_folder) return;
+    gint64 folder_id = lib.sel_id;
+    if (!on_db_folder_restore(lib.app->db, folder_id)) return;
+    on_app_status(lib.app, "Folder “%s” restored", lib.sel_name.UTF8String);
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_folder, folder_id);
+}
+
+/*
+ * validate_folder_restore — a folder in the Trash is selected.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_folder_restore(id target, id item)
+{
+    return ((NotesLibrary *)target).sel_kind == on_sb_trash_folder;
+}
+
+/*
+ * run_empty_trash — "empty-trash": after one confirmation, close the
+ * editors of every note the purge takes (trashed folders' notes too) and
+ * delete everything in the Trash.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (unused)
+ */
+static void
+run_empty_trash(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    on_ui_confirm(@"Permanently delete everything in the Trash?", nil, @"Empty Trash",
+                  lib.window, ^(BOOL confirmed) {
+        if (!confirmed) return;
+        close_editors_for_ids(on_db_trash_note_ids(lib.app->db));
+        if (!on_db_trash_empty(lib.app->db)) return;
+        on_app_status(lib.app, "Trash emptied");
+        if (on_library_in_trash_view(lib)) on_library_sidebar_select(lib, on_sb_trash, 0);
+        on_library_refresh_all(lib);
+    });
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const on_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
@@ -225,6 +349,9 @@ static const on_command_handler_t handlers[] = {
     { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },
+    { @"delete-folder",  run_delete_folder,  validate_delete_folder  },
+    { @"folder-restore", run_folder_restore, validate_folder_restore },
+    { @"empty-trash",    run_empty_trash,    NULL                    },
 };
 
 /*
@@ -264,4 +391,28 @@ on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name)
         on_library_sidebar_select(lib, on_sb_root, 0);
     }
     return YES;
+}
+
+/*
+ * on_library_delete_notes — see library_commands.h.
+ */
+void
+on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids)
+{
+    if (ids.count == 0) return;
+    NSString *question = ids.count == 1
+        ? @"Permanently delete this note?"
+        : [NSString stringWithFormat:@"Permanently delete these %lu notes?", (unsigned long)ids.count];
+    on_ui_confirm(question, nil, @"Delete", lib.window, ^(BOOL confirmed) {
+        if (!confirmed) return;
+        GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
+        for (NSNumber *n in ids) {
+            gint64 nid = n.longLongValue;
+            g_array_append_val(note_ids, nid);
+        }
+        on_editor_close_notes((const gint64 *)note_ids->data, note_ids->len);
+        on_db_notes_delete(lib.app->db, (const gint64 *)note_ids->data, note_ids->len);
+        g_array_free(note_ids, TRUE);
+        on_library_refresh_all(lib);
+    });
 }

@@ -10,6 +10,13 @@ Severity: **H** = noticed in normal use, **M** = noticed sometimes, **L** = cosm
 
 ## Done (2026-10-10)
 
+Step 1 — data loss and dead windows:
+- [x] H Image viewer (editor and media) stayed at zero size: an NSScrollView does not autoresize extra subviews; it now follows the covered view's frame
+- [x] M Programmatic sidebar selection of a nested folder failed: ancestors were expanded innermost first
+- [x] M ⌘⌫ (and every Move to Trash) is off while a library text field is being typed in
+
+Earlier:
+
 - [x] H Double-click / Return opens a note: list, grid, Action Items (grid was not even selectable)
 - [x] H Editor: ordinary title bar, format bar and status bar in the body (no NSToolbar / titlebar accessory)
 - [x] H No native dialogs: tool panels (`tool_panel.h`) for every alert; New Folder in a tool panel
@@ -54,10 +61,10 @@ Severity: **H** = noticed in normal use, **M** = noticed sometimes, **L** = cosm
 
 ## Notes list / grid / Action Items (library_notes.m)
 
-- [ ] H Action Items checkbox: objectValue overwrites state; toggle sends uid 0/1 — wrong item edited
+- [x] H Action Items checkbox: objectValue overwrites state; toggle sends uid 0/1 — wrong item edited
 - [ ] H Endless thumbnail reload loop for notes without images; no in-flight tracking
 - [ ] H Selection/scroll restore by index not id; navigation keeps old selection, no scroll reset
-- [ ] H Delete bypasses on_library_trash_notes (editors left open, no status); no permanent delete in Trash
+- [x] H Delete bypasses on_library_trash_notes (editors left open, no status); no permanent delete in Trash
 - [ ] H No context menu (Open, Pin/Unpin, Export, Move to Trash; Trash: Open, Restore, Delete Permanently)
 - [ ] H toggle-done has no handler; completed items always listed
 - [ ] H Action Items: four sortable columns (Done, Context, Action, Due), `action_columns` persistence, strike-through when done
@@ -79,12 +86,12 @@ Severity: **H** = noticed in normal use, **M** = noticed sometimes, **L** = cosm
 - [ ] H Context menu never appears (`outlineView:menuForEvent:` is not a delegate method)
 - [ ] H "Notes" root row cannot be selected (treated as a header); start selection should be root
 - [ ] H Note drops never work (private pasteboard type); no drops on root/Trash; folder onto Trash
-- [ ] H Folder commands without handlers: delete-folder, folder-info, folder-restore, sort-subfolders, empty-trash
+- [ ] H Folder commands without handlers: folder-info, sort-subfolders (delete-folder, folder-restore, empty-trash done)
 - [ ] H Folder prompt lacks emoji and AI mode (New Folder, Folder Info share one tool panel in GTK)
 - [ ] H Fit-to-content never runs (`_split` never set)
-- [ ] H Restore Folder moves to top level (should be on_db_folder_restore)
-- [ ] H Trash folder: wrong confirm ("cannot be undone"), editors left open, wrong selection
-- [ ] H Permanent delete / Empty Trash leave editors open; no status
+- [x] H Restore Folder moves to top level (should be on_db_folder_restore)
+- [x] H Trash folder: wrong confirm ("cannot be undone"), editors left open, wrong selection
+- [x] H Permanent delete / Empty Trash leave editors open; no status
 - [ ] M Search Here… missing from menus; root menu; menus should be built from commands
 - [ ] M New Subfolder creates "New Folder" immediately instead of prompting
 - [ ] M Folder reorder before/after; between-row drops; drag trashed folders out to restore; drop status messages
@@ -98,7 +105,7 @@ Severity: **H** = noticed in normal use, **M** = noticed sometimes, **L** = cosm
 - [ ] M open-db: no .db filter, no same-db no-op, failure not reported
 - [ ] M search / find ignore the selected folder or tag as default scope
 - [ ] M App-scope commands do not reopen a closed library window
-- [ ] M ⌘⌫ may trash notes while typing in a field (verify)
+- [x] M ⌘⌫ may trash notes while typing in a field (verify)
 - [ ] M Second instance should raise the running one
 - [ ] L About details; toolbar labels/tooltips/separator; AI button hidden when AI off; window title; status fade
 
@@ -113,17 +120,17 @@ Severity: **H** = noticed in normal use, **M** = noticed sometimes, **L** = cosm
 
 ## Search window (search_window.m)
 
-- [ ] H Window controller not retained (ARC): typing probably does nothing; job callback may use freed memory
+- [x] H Window controller not retained (ARC): typing probably does nothing; job callback may use freed memory
 - [ ] H Case-sensitive and regex options missing
 - [ ] M Search on Enter/Search button, not as-you-type; highlight term from the parsed query; Return opens; default scope; empty query; size persistence
 - [ ] L Status line, title, column, placeholder
 
 ## Media window (media_window.m)
 
-- [ ] H Window controller not retained
-- [ ] H Thumbnails not selectable — click does nothing
-- [ ] H Viewer shows the 144 px thumbnail, not the image
-- [ ] M Synchronous scan on the main thread, no cap; captions/tooltips; viewer caption; viewer keys; size persistence
+- [x] H Window controller not retained
+- [x] H Thumbnails not selectable — click does nothing
+- [x] H Viewer shows the 144 px thumbnail, not the image
+- [ ] M Synchronous scan on the main thread, no cap; captions/tooltips; viewer caption; size persistence (viewer keys done)
 - [ ] L Title/status scope; blank cells; Retina scale
 
 ## AI summary (library_ai.m)

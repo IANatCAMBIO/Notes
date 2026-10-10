@@ -197,6 +197,47 @@ on_ui_open_image_external(NSData *png)
     return ok;
 }
 
+@implementation NotesKeyFilterWindow
+
+/*
+ * sendEvent: — a key-down the filter takes goes no further.
+ *
+ * Inputs:
+ *   event — any event for the window
+ */
+- (void)
+sendEvent:(NSEvent *)event
+{
+    if (event.type == NSEventTypeKeyDown && self.key_filter && self.key_filter(event)) return;
+    [super sendEvent:event];
+}
+
+@end
+
+/* Controllers on_ui_keep_until_closed owns, until their windows close. */
+static NSMutableSet<NSWindowController *> *kept_controllers;
+
+/*
+ * on_ui_keep_until_closed — own a controller until its window closes.
+ * Inputs/output are documented in ui_util.h.
+ */
+void
+on_ui_keep_until_closed(NSWindowController *controller)
+{
+    if (!kept_controllers) kept_controllers = [NSMutableSet set];
+    [kept_controllers addObject:controller];
+    __block id observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowWillCloseNotification object:controller.window queue:nil
+                usingBlock:^(NSNotification *note) {
+        [NSNotificationCenter.defaultCenter removeObserver:observer];
+        observer = nil;
+        /* Not now: the window's own windowWillClose: may still be due. */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [kept_controllers removeObject:controller];
+        });
+    }];
+}
+
 /*
  * on_ui_pick_path — open or save panel.
  * Inputs/output are documented in ui_util.h.

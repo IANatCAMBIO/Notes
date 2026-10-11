@@ -22,8 +22,9 @@
 # ~/.config/notes and ~/.local/share/notes; its socket lives in ~/.cache.
 # The user's real database is reachable through those.  So the reference is
 # handled like this, and the script stops if any step does not hold:
-#   - it is built from this repository's own `main` branch, exported with
-#     `git archive` into a scratch folder that is deleted as soon as the
+#   - it is built from this repository's last GTK commit (GTK_COMMIT below,
+#     pinned: once the AppKit port is merged, `main` builds no GTK binary),
+#     exported with `git archive` into a scratch folder that is deleted as soon as the
 #     binary is linked (no checkout of, or dependence on, the user's real
 #     notes tree, whose notes.ini names the real database — and no GTK
 #     Makefile left lying around, whose `install` target replaces the
@@ -69,12 +70,15 @@ if ! "$PKGCONF" --exists gtk4 2>/dev/null; then
 fi
 
 # ── The reference binary ────────────────────────────────────────────────────
-# Built once per commit of `main`: dev/gtk_ref/commit records which.
-WANT=$(git -C "$ROOT" rev-parse main) || die "this repository has no main branch"
+# The last commit of the GTK build ("Remove the v5 migration…"), the base the
+# AppKit port branched from.  Built once: dev/gtk_ref/commit records it.
+GTK_COMMIT=51ec5a4d5169fcf4283925ba01f0fc642f3cca0b
+WANT=$(git -C "$ROOT" rev-parse --verify --quiet "$GTK_COMMIT^{commit}") ||
+    die "this repository does not have the GTK reference commit $GTK_COMMIT"
 if [ ! -f "$REF/notes" ] || [ "$(cat "$REF/commit" 2>/dev/null)" != "$WANT" ]; then
     BUILD="$ROOT/dev/gtk_build"
     rm -rf "$BUILD" "$REF" && mkdir -p "$BUILD" "$REF"
-    git -C "$ROOT" archive "$WANT" | tar -x -C "$BUILD" || die "cannot export main"
+    git -C "$ROOT" archive "$WANT" | tar -x -C "$BUILD" || die "cannot export the GTK reference commit"
     if ! PATH="$(dirname "$PKGCONF"):$PATH" make -C "$BUILD" notes >"$ROOT/dev/gtk_build.log" 2>&1; then
         rm -rf "$BUILD"
         die "the GTK reference did not build (see dev/gtk_build.log)"

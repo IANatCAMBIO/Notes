@@ -118,8 +118,9 @@ Each test runs with `NOTES_DATA_DIR` set to its own folder under
 `dev/test/`; `tests/check.h` refuses to run without it.
 
 **The golden test and the GTK reference binary.**  `tests/cli_golden.sh`
-exports this repository's own `main` branch with `git archive` into a
-scratch folder, builds the GTK app there, keeps only the binary — at
+exports this repository's last GTK commit (pinned in the script as
+`GTK_COMMIT`, so it keeps working once the port is merged into `main`) with
+`git archive` into a scratch folder, builds the GTK app there, keeps only the binary — at
 `dev/gtk_ref/notes`, without its execute bit — and deletes the scratch
 folder (so no GTK Makefile, whose `install` target replaces the installed
 GTK app, is left around).  The binary only ever runs as a *copy* inside a

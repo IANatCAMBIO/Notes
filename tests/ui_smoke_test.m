@@ -2053,6 +2053,25 @@ test_notes_pane(NotesLibrary *lib)
           [done_cell.textField.attributedStringValue attribute:NSStrikethroughStyleAttributeName atIndex:0
                                                 effectiveRange:NULL] == nil,
           "ticking an item strikes it through while completed items are shown");
+    {
+        /* The line is the label's most-inked pixel row: it should sit
+         * half the x-height above the baseline (the label is flipped). */
+        NSTextField      *label = done_cell.textField;
+        NSBitmapImageRep *rep   = [label bitmapImageRepForCachingDisplayInRect:label.bounds];
+        [label cacheDisplayInRect:label.bounds toBitmapImageRep:rep];
+        CGFloat   scale = rep.pixelsHigh / NSHeight(label.bounds);
+        NSInteger best = -1, best_n = 0;
+        for (NSInteger y = 0; y < rep.pixelsHigh; y++) {
+            NSInteger n = 0;
+            for (NSInteger x = 0; x < rep.pixelsWide; x++) n += [rep colorAtX:x y:y].alphaComponent > 0.5;
+            if (n > best_n) { best_n = n; best = y; }
+        }
+        NSFont *font = [label.attributedStringValue attribute:NSFontAttributeName atIndex:0
+                                               effectiveRange:NULL] ?: label.font;
+        CGFloat want = label.firstBaselineOffsetFromTop - font.xHeight / 2.0;
+        check(best >= 0 && fabs((best + 0.5) / scale - want) <= 1.0,
+              "a completed item's strike runs through the middle of its lowercase letters");
+    }
     check(save_snapshots(lib.window, @"library-actions"), "Action Items snapshots written");
     on_library_run_command(lib, command_item(@"toggle-done"));
     pump(0.1);

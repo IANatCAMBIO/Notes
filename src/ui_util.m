@@ -394,7 +394,7 @@ drawRect:(NSRect)dirty
     [super drawRect:dirty];
     NSAttributedString *text  = self.attributedStringValue;
     NSRect              title = [self.cell titleRectForBounds:self.bounds];
-    CGFloat             y     = NSHeight(self.bounds) - self.firstBaselineOffsetFromTop;   /* y up */
+    CGFloat             y     = self.firstBaselineOffsetFromTop;   /* a text field is flipped: y down */
     [text enumerateAttribute:on_ui_strike_key inRange:NSMakeRange(0, text.length) options:0
                   usingBlock:^(id value, NSRange range, BOOL *stop) {
         if (value == nil) return;
@@ -404,7 +404,7 @@ drawRect:(NSRect)dirty
         CGFloat  x0   = NSMinX(title) + [text attributedSubstringFromRange:NSMakeRange(0, range.location)].size.width;
         CGFloat  x1   = MIN(NSMinX(title) + [text attributedSubstringFromRange:
                                              NSMakeRange(0, NSMaxRange(range))].size.width, NSMaxX(title));
-        CGFloat  ly   = round(y + font.xHeight / 2.0) + 0.5;     /* on the pixel row */
+        CGFloat  ly   = round(y - font.xHeight / 2.0) + 0.5;     /* on the pixel row */
         if (x1 <= x0) return;
         [ink setStroke];
         NSBezierPath *line = [NSBezierPath bezierPath];

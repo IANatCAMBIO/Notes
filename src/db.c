@@ -212,6 +212,23 @@ exec_simple(OnDatabase *db, const char *sql)
 }
 
 /* ---------------------------------------------------------------------------
+ * txn_end() — finish a transaction begun with WRITE_TXN: COMMIT when all of
+ * it succeeded, ROLLBACK otherwise.
+ *   db — open database, inside the transaction.
+ *   ok — whether every step in it succeeded.
+ * Returns TRUE only when the transaction committed.
+ * ------------------------------------------------------------------------- */
+static gboolean
+txn_end(OnDatabase *db, gboolean ok)
+{
+    if (ok)
+        ok = exec_simple(db, "COMMIT");
+    if (!ok)
+        exec_simple(db, "ROLLBACK");
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * prepare() — wrap sqlite3_prepare_v2 with error logging.
  *   db  — open database.
  *   sql — single SQL statement with '?' placeholders.
@@ -1113,10 +1130,8 @@ bulk_ids(OnDatabase *db, const char *sql,
         return FALSE;
 
     sqlite3_stmt *stmt = prepare(db, sql);
-    if (stmt == NULL) {
-        exec_simple(db, "ROLLBACK");
-        return FALSE;
-    }
+    if (stmt == NULL)
+        return txn_end(db, FALSE);
 
     gboolean ok = TRUE;                  /* set FALSE on first failure      */
     for (gsize i = 0; i < n && ok; i++) {
@@ -1131,11 +1146,7 @@ bulk_ids(OnDatabase *db, const char *sql,
 
     if (ok && after_sql != NULL)
         ok = exec_simple(db, after_sql);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return txn_end(db, ok);
 }
 
 /* bind_id_only() — BulkBind for statements whose only parameter is the id.  */
@@ -1215,19 +1226,8 @@ on_db_folder_sort_children(OnDatabase *db, gint64 parent_id)
 gboolean
 on_db_folder_delete(OnDatabase *db, gint64 id)
 {
-    if (!exec_simple(db, WRITE_TXN))
-        return FALSE;
-    sqlite3_stmt *stmt = prepare(db, "DELETE FROM folders WHERE id=?");
-    if (stmt != NULL)
-        sqlite3_bind_int64(stmt, 1, id);
-    gboolean ok = stmt_done(db, stmt);
-    if (ok)
-        ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return bulk_ids(db, "DELETE FROM folders WHERE id=?", &id, 1,
+                    bind_id_only, NULL, PRUNE_ORPHAN_TAGS_SQL);
 }
 
 /* Column list shared by every folder query, matching run_folder_query()'s
@@ -1807,11 +1807,7 @@ on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
     if (ok)
         ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
 
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return txn_end(db, ok);
 }
 
 GList *
@@ -1891,7 +1887,7 @@ on_db_action_uid_alloc(OnDatabase *db)
         return 0;
     gint64 uid = action_uid_alloc(db);
     if (own_txn)
-        exec_simple(db, uid != 0 ? "COMMIT" : "ROLLBACK");
+        txn_end(db, uid != 0);
     return uid;
 }
 
@@ -2129,11 +2125,7 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
     }
     g_hash_table_destroy(kept);
 
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return txn_end(db, ok);
 }
 
 gboolean
@@ -2457,11 +2449,7 @@ on_db_trash_empty(OnDatabase *db)
             "folder_id IN (SELECT id FROM trash_folder_ids)") &&
         exec_simple(db, "DELETE FROM folders WHERE trashed=1") &&
         exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    return txn_end(db, ok);
 }
 
 /* =========================================================================

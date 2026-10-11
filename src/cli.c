@@ -320,6 +320,16 @@ document_append_text(OnDocument *doc, const gchar *text)
 }
 
 /* ---------------------------------------------------------------------------
+ * tag_arg() — a tag name as typed, with or without its leading '#'.
+ * Returns the name without it (a pointer into `name`).
+ * ------------------------------------------------------------------------- */
+static const gchar *
+tag_arg(const gchar *name)
+{
+    return *name == '#' ? name + 1 : name;
+}
+
+/* ---------------------------------------------------------------------------
  * tag_name_valid() — TRUE when `name` is a non-empty run of the characters
  * a #tag token may contain (on_document_tag_char).
  * ------------------------------------------------------------------------- */
@@ -366,9 +376,7 @@ cmd_list_tags(OnDatabase *db)
 static int
 cmd_delete_tag(OnDatabase *db, const gchar *name)
 {
-    /* Accept the name with or without the leading '#'.                     */
-    if (*name == '#')
-        name++;
+    name = tag_arg(name);
     gint64 id = on_db_tag_find(db, name);
     if (id == 0) {
         fprintf(stderr, "error: no such tag: %s\n", name);
@@ -391,9 +399,7 @@ static GHashTable *cli_paths_for(OnDatabase *db, gboolean want_path);
 static int
 cmd_tag_notes(OnDatabase *db, const gchar *name)
 {
-    /* Accept the name with or without the leading '#'.                     */
-    if (*name == '#')
-        name++;
+    name = tag_arg(name);
     gint64 id = on_db_tag_find(db, name);
     if (id == 0) {
         fprintf(stderr, "error: no such tag: %s\n", name);
@@ -1358,9 +1364,7 @@ cmd_note_tags(OnDatabase *db, const gchar *id_str)
 static int
 cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
 {
-    /* Accept the name with or without the leading '#'.                     */
-    if (*name == '#')
-        name++;
+    name = tag_arg(name);
     if (!tag_name_valid(name)) {
         fprintf(stderr, "error: bad tag name: %s (letters, digits, "
                         "'_' and '-' only)\n", name);
@@ -1432,8 +1436,7 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
 static int
 cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
 {
-    if (*name == '#')
-        name++;
+    name = tag_arg(name);
     OnNoteMeta *meta = note_from_arg(db, id_str);
     if (meta == NULL)
         return 2;
@@ -2440,104 +2443,122 @@ cli_gui_command(const gchar *remote_cmd, void (*set_pending)(void),
     return (r == ON_IPC_OK) ? 0 : 2;
 }
 
+/* ===========================================================================
+ * THE VERBS — every command the dispatchers above route, and what the rest
+ * of the CLI must know about each: whether it writes the database (the
+ * running app then brings its editors and windows up to date), whether it
+ * prints records (and so takes --json — everywhere else "--json" is
+ * ordinary text: a note whose content is the literal "--json" must survive
+ * `note new`), and whether a last argument of "-" means stdin.  One list:
+ * a verb added to a dispatcher is added here.
+ * =========================================================================== */
+typedef struct {
+    const char *noun;                /* "note", …; NULL for a flat command  */
+    const char *verb;                /* "new", …; a flat command's name     */
+    gboolean    mutates;             /* writes the database                 */
+    gboolean    json;                /* prints records: takes --json        */
+    gboolean    stdin_arg;           /* "-" as its last argument is stdin   */
+} cli_verb_t;
+
+static const cli_verb_t cli_verbs[] = {
+    { "tag",    "list",         FALSE, TRUE,  FALSE },
+    { "tag",    "notes",        FALSE, TRUE,  FALSE },
+    { "tag",    "delete",       TRUE,  FALSE, FALSE },
+    { "folder", "list",         FALSE, TRUE,  FALSE },
+    { "folder", "info",         FALSE, TRUE,  FALSE },
+    { "folder", "add",          TRUE,  FALSE, FALSE },
+    { "folder", "rename",       TRUE,  FALSE, FALSE },
+    { "folder", "move",         TRUE,  FALSE, FALSE },
+    { "folder", "emoji",        TRUE,  FALSE, FALSE },
+    { "folder", "ai-mode",      TRUE,  FALSE, FALSE },
+    { "folder", "sort",         TRUE,  FALSE, FALSE },
+    { "folder", "restore",      TRUE,  FALSE, FALSE },
+    { "folder", "delete",       TRUE,  FALSE, FALSE },
+    { "action", "list",         FALSE, TRUE,  FALSE },
+    { "action", "show",         FALSE, TRUE,  FALSE },
+    { "action", "done",         TRUE,  FALSE, FALSE },
+    { "action", "undone",       TRUE,  FALSE, FALSE },
+    { "action", "due",          TRUE,  FALSE, FALSE },
+    { "action", "text",         TRUE,  FALSE, TRUE  },
+    { "trash",  "list",         FALSE, TRUE,  FALSE },
+    { "trash",  "empty",        TRUE,  FALSE, FALSE },
+    { "note",   "list",         FALSE, TRUE,  FALSE },
+    { "note",   "cat",          FALSE, TRUE,  FALSE },
+    { "note",   "info",         FALSE, TRUE,  FALSE },
+    { "note",   "tags",         FALSE, TRUE,  FALSE },
+    { "note",   "images",       FALSE, TRUE,  FALSE },
+    { "note",   "image",        FALSE, FALSE, FALSE },
+    { "note",   "new",          TRUE,  FALSE, TRUE  },
+    { "note",   "append",       TRUE,  FALSE, TRUE  },
+    { "note",   "set",          TRUE,  FALSE, TRUE  },
+    { "note",   "delete",       TRUE,  FALSE, FALSE },
+    { "note",   "restore",      TRUE,  FALSE, FALSE },
+    { "note",   "move",         TRUE,  FALSE, FALSE },
+    { "note",   "tag",          TRUE,  FALSE, FALSE },
+    { "note",   "untag",        TRUE,  FALSE, FALSE },
+    { "note",   "pin",          TRUE,  FALSE, FALSE },
+    { "note",   "unpin",        TRUE,  FALSE, FALSE },
+    { "note",   "add-image",    TRUE,  FALSE, FALSE },
+    { "note",   "set-modified", TRUE,  FALSE, FALSE },
+    { NULL,     "stats",        FALSE, TRUE,  FALSE },
+    { NULL,     "search",       FALSE, TRUE,  FALSE },
+    { NULL,     "backup",       FALSE, FALSE, FALSE },
+    { NULL,     "export-md",    FALSE, FALSE, FALSE },
+    { NULL,     "export-html",  FALSE, FALSE, FALSE },
+};
+#define CLI_VERB_COUNT (sizeof cli_verbs / sizeof cli_verbs[0])
+
+/* ---------------------------------------------------------------------------
+ * cli_verb_find() — the table row of an invocation.
+ *   argc, argv — the full program arguments (argv[1] is the command).
+ * Returns the row, or NULL for anything the table does not list.
+ * ------------------------------------------------------------------------- */
+static const cli_verb_t *
+cli_verb_find(int argc, char **argv)
+{
+    const char *cmd  = argc >= 2 ? argv[1] : NULL;
+    const char *verb = argc >= 3 ? argv[2] : NULL;
+    for (size_t i = 0; cmd != NULL && i < CLI_VERB_COUNT; i++) {
+        const cli_verb_t *v = &cli_verbs[i];
+        if (v->noun == NULL ? g_strcmp0(v->verb, cmd) == 0
+                            : g_strcmp0(v->noun, cmd) == 0 && g_strcmp0(v->verb, verb) == 0)
+            return v;
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * cli_is_command() — does the table know `cmd`, as a noun (needing a verb)
+ * or as a flat command?
+ *   noun — receives TRUE for a noun group (may be NULL).
+ * ------------------------------------------------------------------------- */
+static gboolean
+cli_is_command(const char *cmd, gboolean *noun)
+{
+    for (size_t i = 0; i < CLI_VERB_COUNT; i++) {
+        const cli_verb_t *v = &cli_verbs[i];
+        if (g_strcmp0(v->noun != NULL ? v->noun : v->verb, cmd) == 0) {
+            if (noun != NULL)
+                *noun = v->noun != NULL;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 gboolean
 on_cli_command_reads_stdin(int argc, char **argv)
 {
-    /* "note new … -", "note append ID -", "note set ID -" and
-     * "action text ID -": a content argument of "-" consumes stdin.        */
-    if (argc < 4 || g_strcmp0(argv[argc - 1], "-") != 0)
-        return FALSE;
-    const char *verb = argv[2];
-    if (g_strcmp0(argv[1], "action") == 0)
-        return g_strcmp0(verb, "text") == 0;
-    if (g_strcmp0(argv[1], "note") != 0)
-        return FALSE;
-    return g_strcmp0(verb, "new") == 0 ||
-           g_strcmp0(verb, "append") == 0 ||
-           g_strcmp0(verb, "set") == 0;
+    const cli_verb_t *v = cli_verb_find(argc, argv);
+    return v != NULL && v->stdin_arg && argc >= 4 &&
+           g_strcmp0(argv[argc - 1], "-") == 0;
 }
 
 gboolean
 on_cli_command_mutates(int argc, char **argv)
 {
-    if (argc < 2)
-        return FALSE;
-    const char *cmd  = argv[1];
-    const char *verb = (argc >= 3) ? argv[2] : "";
-    if (g_strcmp0(cmd, "tag") == 0)
-        return g_strcmp0(verb, "delete") == 0;
-    if (g_strcmp0(cmd, "folder") == 0)
-        return g_strcmp0(verb, "add") == 0 ||
-               g_strcmp0(verb, "delete") == 0 ||
-               g_strcmp0(verb, "rename") == 0 ||
-               g_strcmp0(verb, "move") == 0 ||
-               g_strcmp0(verb, "emoji") == 0 ||
-               g_strcmp0(verb, "ai-mode") == 0 ||
-               g_strcmp0(verb, "sort") == 0 ||
-               g_strcmp0(verb, "restore") == 0;
-    if (g_strcmp0(cmd, "trash") == 0)
-        return g_strcmp0(verb, "empty") == 0;
-    if (g_strcmp0(cmd, "action") == 0)
-        return g_strcmp0(verb, "done") == 0 ||
-               g_strcmp0(verb, "undone") == 0 ||
-               g_strcmp0(verb, "due") == 0 ||
-               g_strcmp0(verb, "text") == 0;   /* "show" is read-only       */
-    if (g_strcmp0(cmd, "note") == 0)
-        return g_strcmp0(verb, "new") == 0 ||
-               g_strcmp0(verb, "append") == 0 ||
-               g_strcmp0(verb, "set") == 0 ||
-               g_strcmp0(verb, "delete") == 0 ||
-               g_strcmp0(verb, "restore") == 0 ||
-               g_strcmp0(verb, "move") == 0 ||
-               g_strcmp0(verb, "tag") == 0 ||
-               g_strcmp0(verb, "untag") == 0 ||
-               g_strcmp0(verb, "add-image") == 0 ||
-               g_strcmp0(verb, "set-modified") == 0 ||
-               g_strcmp0(verb, "pin") == 0 ||
-               g_strcmp0(verb, "unpin") == 0;
-    return FALSE;         /* search / backup / export-* are read-only       */
-}
-
-/* ---------------------------------------------------------------------------
- * cli_is_noun() — is `cmd` one of the noun groups that take a verb?  Both
- * the entry point (deciding whether to handle the command at all) and the
- * dispatcher (rejecting a bare noun) ask this, and used to spell out the
- * same four comparisons.
- * ------------------------------------------------------------------------- */
-static gboolean
-cli_is_noun(const char *cmd)
-{
-    return g_strcmp0(cmd, "tag")    == 0 ||
-           g_strcmp0(cmd, "folder") == 0 ||
-           g_strcmp0(cmd, "note")   == 0 ||
-           g_strcmp0(cmd, "action") == 0 ||
-           g_strcmp0(cmd, "trash")  == 0;
-}
-
-/* ---------------------------------------------------------------------------
- * cli_json_capable() — does this command take --json?  Only the commands
- * that PRINT records do; everywhere else "--json" is ordinary text (a note
- * whose content is the literal "--json" must survive `note new`), so the
- * flag is recognised here and nowhere else.
- * ------------------------------------------------------------------------- */
-static gboolean
-cli_json_capable(const char *cmd, const char *verb)
-{
-    if (g_strcmp0(cmd, "note") == 0)
-        return g_strcmp0(verb, "list") == 0 ||
-               g_strcmp0(verb, "info") == 0 ||
-               g_strcmp0(verb, "cat") == 0 ||
-               g_strcmp0(verb, "tags") == 0 ||
-               g_strcmp0(verb, "images") == 0;
-    if (g_strcmp0(cmd, "folder") == 0)
-        return g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "info") == 0;
-    if (g_strcmp0(cmd, "tag") == 0)
-        return g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "notes") == 0;
-    if (g_strcmp0(cmd, "action") == 0)
-        return g_strcmp0(verb, "list") == 0 || g_strcmp0(verb, "show") == 0;
-    if (g_strcmp0(cmd, "trash") == 0)
-        return g_strcmp0(verb, "list") == 0;
-    return g_strcmp0(cmd, "search") == 0 || g_strcmp0(cmd, "stats") == 0;
+    const cli_verb_t *v = cli_verb_find(argc, argv);
+    return v != NULL && v->mutates;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2553,7 +2574,8 @@ cli_json_take(char **argv, int *argc)
     /* Assign, never OR: inside a GUI instance serving remote CLI calls the
      * flag outlives the command that set it.                               */
     cli_json = FALSE;
-    if (!cli_json_capable(argv[1], (*argc >= 3) ? argv[2] : ""))
+    const cli_verb_t *v = cli_verb_find(*argc, argv);
+    if (v == NULL || !v->json)
         return;
     for (int i = 2; i < *argc; i++) {
         if (g_strcmp0(argv[i], "--json") != 0)
@@ -2594,7 +2616,9 @@ cli_dispatch_verbs(OnApp *app, int argc, char **argv)
     const char *cmd = argv[1];       /* the noun/flat command               */
 
     /* Noun groups need a verb.                                             */
-    if (cli_is_noun(cmd) && argc < 3)
+    gboolean noun = FALSE;
+    cli_is_command(cmd, &noun);
+    if (noun && argc < 3)
         return usage(stderr);
 
     if (g_strcmp0(cmd, "tag") == 0)
@@ -2659,12 +2683,7 @@ on_cli_run(int argc, char **argv)
     /* Anything that is not a known noun/command is not ours: -1 hands it
      * back to main(), which decides (the command-line tool reports an
      * unknown command; the app ignores launch arguments it does not know). */
-    gboolean is_flat = g_strcmp0(cmd, "search") == 0 ||
-                       g_strcmp0(cmd, "stats") == 0 ||
-                       g_strcmp0(cmd, "backup") == 0 ||
-                       g_strcmp0(cmd, "export-md") == 0 ||
-                       g_strcmp0(cmd, "export-html") == 0;
-    if (!cli_is_noun(cmd) && !is_flat)
+    if (!cli_is_command(cmd, NULL))
         return -1;
 
     /* Route every data command through a running instance when one exists,

@@ -50,18 +50,6 @@ extern NSPasteboardType const on_pasteboard_type_rows;
 BOOL on_ui_is_dark(NSView *view);
 
 /*
- * on_ui_fixed_color — one appearance's colour (on_look_pick's answer) as an
- * sRGB NSColor, for drawing whose appearance is already decided (an
- * off-screen card rendered for light or dark).
- *
- * Inputs:
- *   c — the colour
- *
- * Output: the colour.
- */
-NSColor *on_ui_fixed_color(on_color_t c);
-
-/*
  * on_ui_color — a look.h colour as an NSColor that follows the appearance
  * it is drawn under.
  *

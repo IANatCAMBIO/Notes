@@ -60,9 +60,6 @@ static const gint card_text_chars = 300;
 /* A card's first image is decoded at most this many pixels on a side. */
 static const int card_decode_px = 512;
 
-/* How long one thumbnail slice may run before yielding (seconds). */
-static const double thumb_slice_s = 0.040;
-
 /* A card's padding around the thumbnail, and its title's height (2 lines). */
 static const CGFloat card_pad     = 6.0;
 static const CGFloat card_title_h = 34.0;
@@ -386,10 +383,10 @@ card_body(const OnDocument *doc)
  * the card colour with a 1 pt border, its first image (decoded capped at
  * card_decode_px) fitted into the top, never enlarged, then its body text,
  * small and grey, clipped to the card (GTK render_note_thumb).  Rendered
- * once into a bitmap at the screen's scale.
+ * once into a bitmap at the screen's scale.  Runs on a worker.
  *
  * Inputs:
- *   db      — the database (main thread)
+ *   db      — the worker's own connection
  *   note_id — the note
  *   dark    — render for a dark appearance
  *   scale   — the backing scale factor
@@ -411,16 +408,19 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
     NSString *body = doc ? card_body(doc) : @"";
     on_document_free(doc);
 
-    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
-        initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)(sz * scale) pixelsHigh:(NSInteger)(sz * scale)
-                   bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
-                  colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
-    rep.size = NSMakeSize(sz, sz);
-    [NSGraphicsContext saveGraphicsState];
-    CGContextRef ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep].CGContext;
-    CGContextTranslateCTM(ctx, 0, sz);            /* y down, as the GTK drawing */
-    CGContextScaleCTM(ctx, 1, -1);
-    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:YES];
+    /* Core Graphics and Core Text only: this runs on a worker, and AppKit's
+     * drawing state (NSGraphicsContext, NSString drawing) is not for one.
+     * The bitmap's own y-up coordinates throughout.                         */
+    size_t          px  = (size_t)ceil(sz * scale);
+    CGColorSpaceRef cs  = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef    ctx = CGBitmapContextCreate(NULL, px, px, 8, 0, cs,
+                                                    (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (ctx == NULL) {
+        CGImageRelease(img);
+        return nil;
+    }
+    CGContextScaleCTM(ctx, scale, scale);
 
     on_color_t bg = on_look_pick(on_look_card, dark), bd = on_look_pick(on_look_card_border, dark);
     CGContextSetRGBFillColor(ctx, bg.r, bg.g, bg.b, bg.a);
@@ -429,33 +429,45 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
     CGContextSetLineWidth(ctx, 1);
     CGContextStrokeRect(ctx, CGRectMake(0.5, 0.5, sz - 1, sz - 1));
 
-    CGFloat y = card_pad;
+    CGFloat top = card_pad;          /* used from the card's top edge down */
     if (img) {
         CGFloat iw = CGImageGetWidth(img), ih = CGImageGetHeight(img);
         CGFloat k  = MIN(MIN(on_look_thumb_image_w / iw, on_look_thumb_image_h / ih), 1.0);
         CGFloat dw = iw * k, dh = ih * k;
-        CGContextSaveGState(ctx);
-        CGContextTranslateCTM(ctx, (sz - dw) / 2.0, y + dh);
-        CGContextScaleCTM(ctx, 1, -1);                /* images draw y-up */
         CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
-        CGContextDrawImage(ctx, CGRectMake(0, 0, dw, dh), img);
-        CGContextRestoreGState(ctx);
+        CGContextDrawImage(ctx, CGRectMake((sz - dw) / 2.0, sz - top - dh, dw, dh), img);
         CGImageRelease(img);
-        y += dh + 4;
+        top += dh + 4;
     }
 
-    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
-    para.lineBreakMode = NSLineBreakByWordWrapping;
-    on_color_t tc  = on_look_pick(on_look_card_text, dark);
-    NSRect     box = NSMakeRect(card_pad, y, sz - 2 * card_pad, sz - y - card_pad);
-    CGContextClipToRect(ctx, box);
-    [body drawWithRect:box options:NSStringDrawingUsesLineFragmentOrigin
-            attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:on_look_thumb_text_font],
-                          NSForegroundColorAttributeName: on_ui_fixed_color(tc),
-                          NSParagraphStyleAttributeName: para }];
-    [NSGraphicsContext restoreGraphicsState];
+    CGFloat text_h = sz - top - card_pad;
+    if (text_h > 0 && body.length > 0) {
+        on_color_t tc    = on_look_pick(on_look_card_text, dark);
+        CTFontRef  font  = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, on_look_thumb_text_font, NULL);
+        CGColorRef color = CGColorCreateSRGB(tc.r, tc.g, tc.b, tc.a);
+        NSAttributedString *text = [[NSAttributedString alloc] initWithString:body attributes:@{
+            (__bridge id)kCTFontAttributeName:            (__bridge id)font,
+            (__bridge id)kCTForegroundColorAttributeName: (__bridge id)color,
+        }];
+        CTFramesetterRef setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)text);
+        CGPathRef        box    = CGPathCreateWithRect(CGRectMake(card_pad, card_pad, sz - 2 * card_pad, text_h), NULL);
+        CTFrameRef       frame  = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), box, NULL);
+        CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+        CTFrameDraw(frame, ctx);       /* only the lines that fit the box */
+        CFRelease(frame);
+        CGPathRelease(box);
+        CFRelease(setter);
+        CGColorRelease(color);
+        CFRelease(font);
+    }
 
-    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(sz, sz)];
+    CGImageRef out = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (out == NULL) return nil;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:out];
+    CGImageRelease(out);
+    rep.size = NSMakeSize(sz, sz);
+    NSImage *image = [[NSImage alloc] initWithSize:rep.size];
     [image addRepresentation:rep];
     return image;
 }
@@ -603,7 +615,8 @@ setSelected:(BOOL)selected
 @property (nonatomic, assign) BOOL          shown_any;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NotesCardEntry *> *cards;
 @property (nonatomic, strong) NSMutableOrderedSet<NSNumber *> *card_queue;
-@property (nonatomic, assign) BOOL          card_fill_scheduled;
+@property (nonatomic, assign) BOOL          card_busy;     /* a worker is rendering */
+@property (nonatomic, assign) NSUInteger    card_gen;      /* bumped by a refresh */
 @end
 
 /* The pane of the (one) library window. */
@@ -910,6 +923,7 @@ refresh
     NSPoint origin = keep ? scroll.contentView.bounds.origin : NSZeroPoint;
 
     [self.card_queue removeAllObjects];
+    self.card_gen++;                 /* cards in flight are for the old listing */
     if (mode == on_library_view_actions) {
         [self load_actions];
         self.lib.populating++;
@@ -992,48 +1006,69 @@ queue_cards
 }
 
 /*
- * schedule_cards — make sure a fill slice is coming while cards are
- * queued.
+ * schedule_cards — render the queued cards on a worker (GTK
+ * thumb_fill_idle, off the main thread as §7 asks): one batch at a time,
+ * over the worker's own connection; each card is handed to its item as it
+ * is done, and what was queued meanwhile goes in the next batch.  Cards
+ * of an older listing (card_gen) or for a grid no longer showing are
+ * dropped.
  */
 - (void)
 schedule_cards
 {
-    if (self.card_fill_scheduled || self.card_queue.count == 0) return;
-    self.card_fill_scheduled = YES;
-    __weak NotesNotesPane *ws = self;
-    dispatch_async(dispatch_get_main_queue(), ^{ [ws fill_cards]; });
-}
-
-/*
- * fill_cards — render queued cards for one slice (thumb_slice_s), hand
- * each to its item, and come back for the rest (GTK thumb_fill_idle).
- * Stops when the grid is no longer showing.
- */
-- (void)
-fill_cards
-{
-    self.card_fill_scheduled = NO;
+    if (self.card_busy || self.card_queue.count == 0) return;
     if (on_library_view(self.lib) != on_library_view_grid) {
         [self.card_queue removeAllObjects];
         return;
     }
-    CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
-    BOOL    dark  = on_ui_is_dark(self.grid);
-    CGFloat scale = self.grid.window.backingScaleFactor ?: 2.0;
-    while (self.card_queue.count > 0 && CFAbsoluteTimeGetCurrent() - start < thumb_slice_s) {
-        NSNumber *nid = self.card_queue.firstObject;
-        [self.card_queue removeObjectAtIndex:0];
-        NSUInteger i = [self index_of_note:nid.longLongValue];
-        if (i == NSNotFound) continue;
-        NotesCardEntry *e = [[NotesCardEntry alloc] init];
-        e.updated_at = self.records[i].updated_at;
-        e.dark       = dark;
-        e.image      = render_card(self.lib.app->db, nid.longLongValue, dark, scale);
-        self.cards[nid] = e;
-        NSCollectionViewItem *item = [self.grid itemAtIndexPath:[NSIndexPath indexPathForItem:(NSInteger)i inSection:0]];
-        ((NotesCardView *)item.view).thumb.image = e.image;
-    }
-    [self schedule_cards];
+    NSArray<NSNumber *> *batch = [self.card_queue.array copy];   /* .array is a live view */
+    [self.card_queue removeAllObjects];
+    self.card_busy = YES;
+    BOOL        dark  = on_ui_is_dark(self.grid);
+    CGFloat     scale = self.grid.window.backingScaleFactor ?: 2.0;
+    NSUInteger  gen   = self.card_gen;
+    NSString   *path  = @(self.lib.app->db->path);
+    __weak NotesNotesPane *ws = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        OnDatabase *db = on_db_open(path.fileSystemRepresentation);
+        for (NSNumber *nid in batch) {
+            @autoreleasepool {
+                NSImage *image = db ? render_card(db, nid.longLongValue, dark, scale) : nil;
+                dispatch_async(dispatch_get_main_queue(), ^{ [ws card_done:nid image:image dark:dark gen:gen]; });
+            }
+        }
+        on_db_close(db);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NotesNotesPane *s = ws;
+            if (!s) return;
+            s.card_busy = NO;
+            [s schedule_cards];
+        });
+    });
+}
+
+/*
+ * card_done:image:dark:gen: — a card came back from the worker: keep it
+ * and show it, unless the listing has changed since it was asked for.
+ *
+ * Inputs:
+ *   nid   — the note
+ *   image — its card; nil when it could not be rendered
+ *   dark  — the appearance it was rendered for
+ *   gen   — card_gen when it was asked for
+ */
+- (void)
+card_done:(NSNumber *)nid image:(NSImage *)image dark:(BOOL)dark gen:(NSUInteger)gen
+{
+    NSUInteger i = gen == self.card_gen ? [self index_of_note:nid.longLongValue] : NSNotFound;
+    if (i == NSNotFound || image == nil) return;
+    NotesCardEntry *e = [[NotesCardEntry alloc] init];
+    e.updated_at = self.records[i].updated_at;
+    e.dark       = dark;
+    e.image      = image;
+    self.cards[nid] = e;
+    NSCollectionViewItem *item = [self.grid itemAtIndexPath:[NSIndexPath indexPathForItem:(NSInteger)i inSection:0]];
+    ((NotesCardView *)item.view).thumb.image = e.image;
 }
 
 /* ── Opening ──────────────────────────────────────────────────────────── */

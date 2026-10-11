@@ -24,11 +24,15 @@ on_ui_is_dark(NSView *view)
 }
 
 /*
- * on_ui_fixed_color — one appearance's colour as an NSColor.
- * Inputs/output are documented in ui_util.h.
+ * fixed_color — one appearance's colour as an sRGB NSColor.
+ *
+ * Inputs:
+ *   c — the colour
+ *
+ * Output: the colour.
  */
-NSColor *
-on_ui_fixed_color(on_color_t c)
+static NSColor *
+fixed_color(on_color_t c)
 {
     return [NSColor colorWithSRGBRed:c.r green:c.g blue:c.b alpha:c.a];
 }
@@ -40,8 +44,8 @@ on_ui_fixed_color(on_color_t c)
 NSColor *
 on_ui_color(on_look_color_t color)
 {
-    NSColor *light = on_ui_fixed_color(color.light);
-    NSColor *dark  = on_ui_fixed_color(color.dark);
+    NSColor *light = fixed_color(color.light);
+    NSColor *dark  = fixed_color(color.dark);
     return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
         NSAppearanceName match = [appearance
             bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];

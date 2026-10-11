@@ -19,3 +19,9 @@ commit した
 check 1 para した
 commit 下 0 2
 check 1 para 下
+# Committed text of several lines (dictation's "new paragraph", Writing
+# Tools) goes in as lines — at the start of a line, with a #tag in it.
+key Return
+commit one\ntwo\040#x
+check 2 para one
+check 3 para two #x

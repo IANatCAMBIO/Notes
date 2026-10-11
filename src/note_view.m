@@ -698,12 +698,12 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
         OnPos c = v.caret;
         c.offset += n;
         v.caret = c;
+        tag_capture_consider(v, text, n);
+        /* Sentence enders cap a typing group. */
+        if (memchr(text, '.', n) || memchr(text, '?', n))
+            if (++v.sentences >= max_sentences) typing_end(v);
     }
     v.anchor = v.caret;
-    tag_capture_consider(v, text, n);
-    /* Sentence enders cap a typing group. */
-    if (memchr(text, '.', n) || memchr(text, '?', n))
-        if (++v.sentences >= max_sentences) typing_end(v);
     after_edit(v);
 }
 
@@ -2422,7 +2422,7 @@ input_select:(NSRange)range
  * insertText:replacementRange: — committed text, typed or from the input
  * method.  The replacement range (an accent replacing the letter before
  * it, a reconversion) becomes the selection the text replaces; a committed
- * newline is Return.
+ * newline is Return, and text of several lines goes in as lines.
  *
  * Inputs:
  *   string           — NSString or NSAttributedString
@@ -2440,7 +2440,17 @@ insertText:(id)string replacementRange:(NSRange)replacementRange
         return;
     }
     const char *u8 = text.UTF8String;
-    if (u8 != NULL && *u8 != '\0') insert_typed(self, u8, strlen(u8));
+    if (u8 == NULL || *u8 == '\0') return;
+    if (strpbrk(u8, "\r\n") != NULL || strstr(u8, "\xe2\x80\xa9") != NULL ||
+        strstr(u8, ON_OBJ_CHAR) != NULL) {
+        /* Several lines at once (dictation, Writing Tools): a line of
+         * text cannot hold them, so they go in as a plain paste does.   */
+        OnDocument *frag = on_document_from_text(u8);
+        paste_fragment(self, frag, YES);
+        on_document_free(frag);
+        return;
+    }
+    insert_typed(self, u8, strlen(u8));
 }
 
 /*

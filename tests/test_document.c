@@ -1225,6 +1225,21 @@ test_ops_join_undo_uid(void)
     on_document_free(d);
 }
 
+/* The undo log keeps the newest 1000 steps: a long session does not grow
+ * it without end, and what is kept still undoes cleanly.                   */
+static void
+test_undo_bounded(void)
+{
+    OnDocument *d = on_document_from_text("x");
+    for (gint i = 0; i < 1100; i++)
+        g_assert_true(on_document_insert_text(d, at(0, 1), "y", 1, 0));
+    g_assert_cmpuint(on_document_undo_depth(d), ==, 1000);
+    while (on_document_undo(d))
+        assert_valid(d);
+    g_assert_cmpuint(strlen(block_text(d, 0)), ==, 101);
+    on_document_free(d);
+}
+
 /* Random operations, invariants checked after each; then undo everything
  * back to the start and redo everything back to the end, byte for byte.   */
 static void
@@ -1934,6 +1949,7 @@ main(int argc, char **argv)
     g_test_add_func("/ops/groups", test_ops_groups);
     g_test_add_func("/ops/join-undo-uid", test_ops_join_undo_uid);
     g_test_add_func("/ops/fuzz", test_ops_fuzz);
+    g_test_add_func("/ops/undo-bounded", test_undo_bounded);
     g_test_add_func("/derived/title", test_title);
     g_test_add_func("/derived/from-text", test_from_text);
     g_test_add_func("/derived/collect-tags", test_collect_tags);

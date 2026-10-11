@@ -333,6 +333,7 @@ windowWillClose:(NSNotification *)note
 {
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
+    on_library_notes_closed();
     library_window    = nil;         /* may release self: last */
 }
 

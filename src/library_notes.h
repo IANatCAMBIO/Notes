@@ -25,6 +25,12 @@ void on_library_notes_install(NotesLibrary *lib);
 NSView *on_library_notes_new(NotesLibrary *lib);
 
 /*
+ * on_library_notes_closed — the library window has closed: let go of its
+ * pane, with the grid's rendered cards.  Called by library_window.m.
+ */
+void on_library_notes_closed(void);
+
+/*
  * on_library_notes_refresh — list the notes of the current selection
  * afresh (or the action items).  Selected notes stay selected where they
  * are still listed; the scroll position is kept when the selection is the

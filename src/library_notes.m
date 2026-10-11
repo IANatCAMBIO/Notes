@@ -821,6 +821,12 @@ load_records:(BOOL)previews
     if (texts) g_hash_table_destroy(texts);
     self.records = records;
     [self sort_records];
+
+    /* Cards are kept for the notes listed, no more (~300 KB each).        */
+    NSMutableSet<NSNumber *> *listed = [NSMutableSet setWithCapacity:records.count];
+    for (NotesNoteRecord *r in records) [listed addObject:@(r.note_id)];
+    for (NSNumber *nid in self.cards.allKeys)
+        if (![listed containsObject:nid]) [self.cards removeObjectForKey:nid];
 }
 
 /*
@@ -1910,6 +1916,16 @@ void
 on_library_notes_install(NotesLibrary *lib)
 {
     on_library_add_commands(notes_handlers, sizeof notes_handlers / sizeof notes_handlers[0]);
+}
+
+/*
+ * on_library_notes_closed — see library_notes.h.
+ */
+void
+on_library_notes_closed(void)
+{
+    notes_pane.card_gen++;           /* cards in flight have nowhere to go */
+    notes_pane = nil;
 }
 
 /*

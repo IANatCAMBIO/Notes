@@ -317,6 +317,25 @@ on_block_free(OnBlock *b)
     g_free(b);
 }
 
+/* block_forget_pixels() — drop a block's view caches (its decoded image and
+ * its inline images'): a block leaving the document for the undo log keeps
+ * its bytes, not its pixels, which a redo decodes again.                    */
+static void
+block_forget_pixels(OnBlock *b)
+{
+    if (b->pixels_free != NULL)
+        b->pixels_free(b->pixels);
+    b->pixels      = NULL;
+    b->pixels_free = NULL;
+    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++) {
+        OnInlineImage *img = &g_array_index(b->text->images, OnInlineImage, k);
+        if (img->pixels_free != NULL)
+            img->pixels_free(img->pixels);
+        img->pixels      = NULL;
+        img->pixels_free = NULL;
+    }
+}
+
 OnBlock *
 on_block_copy(const OnBlock *b)
 {
@@ -1626,6 +1645,7 @@ apply_op(OnDocument *d, Op *op)
         inv = op_new(OP_INSERT_BLOCK);
         inv->pos.block = i;
         inv->block = g_ptr_array_steal_index(d->blocks, i);
+        block_forget_pixels(inv->block);
         if (inv->block->text != NULL &&
             runs_carry(inv->block->text->runs, ON_FMT_TAG))
             d->tags_modified = TRUE;
@@ -1725,6 +1745,20 @@ on_document_last_change(const OnDocument *d)
     return d->last_change;
 }
 
+/* How many undo steps a document keeps: past this the oldest goes.  The
+ * log otherwise grows for as long as the note is open.                      */
+#define UNDO_MAX_STEPS 1000
+
+/* push_undo() — a finished group onto the undo log, keeping it to
+ * UNDO_MAX_STEPS.                                                           */
+static void
+push_undo(OnDocument *d, GPtrArray *group)
+{
+    g_ptr_array_add(d->undo_stack, group);
+    if (d->undo_stack->len > UNDO_MAX_STEPS)
+        g_ptr_array_remove_index(d->undo_stack, 0);
+}
+
 /* ---------------------------------------------------------------------------
  * do_op() — apply a public operation and log its inverse.
  * ------------------------------------------------------------------------- */
@@ -1737,7 +1771,7 @@ do_op(OnDocument *d, Op *op)
         d->open_group = g_ptr_array_new_with_free_func((GDestroyNotify)op_free);
     g_ptr_array_add(d->open_group, inv);
     if (d->group_depth == 0) {
-        g_ptr_array_add(d->undo_stack, d->open_group);
+        push_undo(d, d->open_group);
         d->open_group = NULL;
     }
     g_ptr_array_set_size(d->redo_stack, 0);
@@ -2319,7 +2353,7 @@ on_document_end_group(OnDocument *d)
     if (d->group_depth == 0)
         return;
     if (--d->group_depth == 0 && d->open_group != NULL) {
-        g_ptr_array_add(d->undo_stack, d->open_group);
+        push_undo(d, d->open_group);
         d->open_group = NULL;
     }
 }
@@ -2346,7 +2380,7 @@ on_document_undo(OnDocument *d)
     d->group_depth = 0;              /* an open typing group ends here      */
     on_document_end_group(d);
     if (d->open_group != NULL) {     /* depth was already 0: flush anyway  */
-        g_ptr_array_add(d->undo_stack, d->open_group);
+        push_undo(d, d->open_group);
         d->open_group = NULL;
     }
     return step(d, d->undo_stack, d->redo_stack);

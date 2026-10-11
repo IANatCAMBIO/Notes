@@ -153,8 +153,9 @@ search_worker(void *data)
         h->id   = m->id;
         h->path = g_strdup_printf("%s/%s", folder != NULL ? folder : "",
                                   m->title);
-        h->when = g_date_time_format(dt, SEARCH_TIME_FORMAT);
-        g_date_time_unref(dt);
+        h->when = dt != NULL ? g_date_time_format(dt, SEARCH_TIME_FORMAT)
+                             : g_strdup("?");
+        if (dt != NULL) g_date_time_unref(dt);
         g_ptr_array_add(job->hits, h);
     }
     if (bodies != NULL) {

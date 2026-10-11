@@ -1719,6 +1719,8 @@ test_action_rewrites(void)
     g_assert_true(on_document_action_due(d, 0, 0));
     g_assert_cmpstr(block_text(d, 3), ==, "!  first item");
     assert_valid(d);
+    g_assert_false(on_document_action_due(d, 0, G_MAXINT64));
+    g_assert_cmpstr(block_text(d, 3), ==, "!  first item");
 
     /* Text: only the item text changes; the '!' and spacing survive, the
      * strike state carries over.                                           */

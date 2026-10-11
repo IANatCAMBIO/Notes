@@ -2681,20 +2681,26 @@ on_document_action_due(OnDocument *d, gint ord, gint64 due)
     OnText *t = on_document_block(d, i)->text;
     gsize start, end;                /* the item text                       */
     gboolean struck = action_text_span(t, &start, &end);
+    gchar *suffix = NULL;            /* the new " due …", none for 0        */
+    if (due != 0) {
+        /* A time GLib cannot represent (a row written by another program)
+         * is refused before anything changes.                              */
+        GDateTime *dt = g_date_time_new_from_unix_local(due);
+        if (dt == NULL)
+            return FALSE;
+        suffix = g_date_time_format(dt, " due %Y-%m-%d");
+        g_date_time_unref(dt);
+    }
 
     on_document_begin_group(d);
     /* Everything after the text goes: old suffix, its spacing.             */
     OnPos pos = { i, -1, end };
     if (t->text->len > end)
         on_document_delete_text(d, pos, t->text->len - end);
-    if (due != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(due);
-        gchar *suffix = g_date_time_format(dt, " due %Y-%m-%d");
-        g_date_time_unref(dt);
+    if (suffix != NULL)
         on_document_insert_text(d, pos, suffix, strlen(suffix),
                                 struck ? ON_FMT_STRIKE : 0);
-        g_free(suffix);
-    }
+    g_free(suffix);
     on_document_end_group(d);
     return TRUE;
 }

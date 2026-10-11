@@ -99,6 +99,8 @@ static gchar *
 cli_time_str(gint64 unix_ts, gboolean date_only)
 {
     GDateTime *dt = g_date_time_new_from_unix_local(unix_ts);
+    if (dt == NULL)
+        return g_strdup("?");        /* outside what GLib can represent     */
     gchar *out = g_date_time_format(dt, date_only ? "%Y-%m-%d"
                                                   : "%Y-%m-%d %H:%M");
     g_date_time_unref(dt);

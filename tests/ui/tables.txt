@@ -1,0 +1,27 @@
+# Reshaping a table renumbers its cells: the caret goes to the clicked
+# cell's row and column, at its start — never to a cell index or byte
+# offset of the old grid, which may not exist (reading text past its end).
+text First line here
+key Return
+table
+table-size 1 3 3
+click 30 80
+caret 1 0
+text hello world
+caret 1 11
+context 60 80
+menu table_col_add:
+table-size 1 3 4
+caret 1 0
+text X
+caret 1 1
+context 30 80
+menu table_row_remove:
+table-size 1 2 4
+caret 1 0
+context 30 80
+menu table_col_remove:
+table-size 1 2 3
+caret 1 0
+text Y
+caret 1 1

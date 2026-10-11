@@ -505,8 +505,9 @@ access_offset(const OnDocument *doc, OnPos p)
 }
 
 /*
- * after_edit — call after every mutation: resize the view, scroll to the
- * caret, fire the edited handler, reset the blink.
+ * after_edit — call after every mutation: clamp the caret and anchor,
+ * resize the view, scroll to the caret, fire the edited handler, reset the
+ * blink.
  *
  * Inputs:
  *   v — the view
@@ -516,6 +517,10 @@ access_offset(const OnDocument *doc, OnPos p)
 static void
 after_edit(NotesNoteView *v)
 {
+    /* Every position the view holds is valid after an edit: the layout
+     * reads text at the caret's byte offset with no other bound.          */
+    v.caret  = clamp_pos(v.doc, v.caret);
+    v.anchor = clamp_pos(v.doc, v.anchor);
     on_doc_layout_set_width(v.layout, layout_width(v));
     refresh_hits(v);                    /* matches move with the edit */
     fit_height(v);
@@ -2237,6 +2242,7 @@ table_reshape:(SEL)command
     gint r = cell / b->cols, c = cell % b->cols;
     typing_end(self);
     gboolean did;
+    gboolean table_kept = YES;
     if (command == @selector(table_row_add:))         did = on_document_table_insert_row(_doc, _ctx_hit.block, r + 1);
     else if (command == @selector(table_row_remove:)) did = on_document_table_remove_row(_doc, _ctx_hit.block, r);
     else if (command == @selector(table_col_add:))    did = on_document_table_insert_col(_doc, _ctx_hit.block, c + 1);
@@ -2245,8 +2251,18 @@ table_reshape:(SEL)command
         OnPos a = { _ctx_hit.block, -1, 0 }, e = { _ctx_hit.block, -1, 1 }, out;
         did = on_document_delete_range(_doc, a, e, &out);
         if (did) _caret = _anchor = clamp_pos(_doc, out);
+        table_kept = NO;
     }
-    if (did) after_edit(self);
+    if (!did) return;
+    if (table_kept) {
+        /* The cells were renumbered: the caret goes to the clicked cell's
+         * row and column in the new grid (or the nearest one left), at its
+         * start — an index or offset from the old grid may not exist.     */
+        b = on_document_block(_doc, _ctx_hit.block);
+        gint row = MIN(r, b->rows - 1), col = MIN(c, b->cols - 1);
+        _caret = _anchor = clamp_pos(_doc, (OnPos){ _ctx_hit.block, row * b->cols + col, 0 });
+    }
+    after_edit(self);
 }
 
 /*

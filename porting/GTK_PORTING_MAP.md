@@ -329,10 +329,10 @@ cell. `validate()` (806-824) lays out every stale block and re-sums y —
 eager, no lazy heights (measured 18 ms for the 615-block worst case per
 BLOCK_MODEL.md; not re-measured by me).
 
-**Text measurement on `main` is Pango** (pango 1.57 via `PangoLayout`,
+**Text measurement on `gtk4` is Pango** (pango 1.57 via `PangoLayout`,
 HarfBuzz shaping, CoreText font backend on macOS through pangocairo), drawn
 with `gtk_snapshot_append_layout`, and main.c:477 forces
-`GSK_RENDERER=cairo` on macOS. There is **no FreeType code on main**. The
+`GSK_RENDERER=cairo` on macOS. There is **no FreeType code on `gtk4`**. The
 remote branch `origin/freetype-rendering` (c49e425, 2026-07-28) is a stale
 GTK3-era branch forked at `6ea13bc` (v3.3.7): a 56-line change adding a
 `use_freetype` ini key that swaps `pango_cairo_font_map` between

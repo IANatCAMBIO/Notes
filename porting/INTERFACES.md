@@ -50,7 +50,7 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    `GList *`, `g_free`) — that is fine, adding GLib containers or main-loop
    calls to UI code is not.  **Nothing pumps a GLib main loop**: `g_idle_add`,
    `g_timeout_add`, `g_thread` hand-backs never fire.  Use `main_service.h`.
-6. Work on branch `appkit`; no remotes, no pushes.
+6. Work on branch `main` (the GTK build is on `gtk4`); no remotes, no pushes.
 
 ---------------------------------------------------------------------------
 

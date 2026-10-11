@@ -156,7 +156,7 @@ keeps the first block's kind because nothing else is possible.
 
 **List prefixes and checkbox characters are not in the text.**  The
 serializer re-emits them (below) so every other reader of BNBF — export,
-`body_text`, `note cat`, the GTK3 build on `main` — sees the same bytes it
+`body_text`, `note cat`, the GTK build on `gtk4` — sees the same bytes it
 always did.  A numbered item's number is its position in the run of
 consecutive `ON_BLOCK_NUMBER` blocks: renumbering is what the layout
 prints, not a pass over the text.
@@ -290,7 +290,7 @@ host learns "edited" from the view.
 ## BNBF ⇄ document — `src/serialize.[ch]`
 
 The public contract of the FORMAT does not change.  Version stays 5;
-readers on `main` keep reading what this branch writes.  What changes is
+readers on `gtk4` keep reading what this tree writes.  What changes is
 that `on_note_serialize` / `on_note_deserialize` take an `OnDocument`, and
 the buffer-walking half of serialize.c (`on_buffer_walk`, `on_flags_at_iter`,
 `OnFlagRun`, the anchor object-data accessors, `on_buffer_ensure_tags`) is
@@ -591,7 +591,7 @@ CLI's GTK initialisation are gone.
   exporter got wrong** — it read a line's style off its first character,
   which for a loaded task line is the untagged checkbox anchor, so every
   `- [ ]` came out as a plain paragraph with a leading space (the same
-  code is on `main`).  Export of the whole library: 35 s → 2 s, because
+  code is on `gtk4`).  Export of the whole library: 35 s → 2 s, because
   nothing is decoded.
 - **`cli.c`**: `note new/append/set/tag/untag/add-image` build or edit an
   `OnDocument` through the operations; `action done/due/text` go through

@@ -153,16 +153,14 @@ build_with_title:(NSString *)window_title
     hero.translatesAutoresizingMaskIntoConstraints = NO;
     [cv addSubview:hero];
 
-    NSImageView *icon = [[NSImageView alloc] init];
     NSImage *sym = symbol ? [NSImage imageWithSystemSymbolName:symbol
                                       accessibilityDescription:nil] : nil;
-    if (sym) {
-        icon.image = [sym imageWithSymbolConfiguration:
+    NSImageView *icon = on_ui_image_view(
+        [sym imageWithSymbolConfiguration:
             [NSImageSymbolConfiguration configurationWithPointSize:on_look_tool_icon
-                                                            weight:NSFontWeightMedium]];
-    }
+                                                            weight:NSFontWeightMedium]],
+        on_look_tool_icon, on_look_tool_icon);
     icon.contentTintColor = NSColor.whiteColor;
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
     [hero addSubview:icon];
 
     NSTextField *title = [NSTextField labelWithString:hero_title];
@@ -189,8 +187,6 @@ build_with_title:(NSString *)window_title
 
         [icon.leadingAnchor  constraintEqualToAnchor:hero.leadingAnchor constant:on_look_tool_hero_pad],
         [icon.centerYAnchor  constraintEqualToAnchor:hero.centerYAnchor],
-        [icon.widthAnchor    constraintEqualToConstant:on_look_tool_icon],
-        [icon.heightAnchor   constraintEqualToConstant:on_look_tool_icon],
 
         [title.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
         [title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-on_look_tool_hero_pad],

@@ -1657,11 +1657,18 @@ collectionView:(NSCollectionView *)cv pasteboardWriterForItemAtIndexPath:(NSInde
 /*
  * cards_appearance_changed — a card's appearance changed: queue the cards
  * that were rendered for the other one (a no-op unless the grid shows).
+ * Every card on screen says so at once; one pass, after them, serves all.
  */
 static void
 cards_appearance_changed(void)
 {
-    if (notes_pane && on_library_view(notes_pane.lib) == on_library_view_grid) [notes_pane queue_cards];
+    static BOOL pending;             /* a pass is already coming            */
+    if (pending) return;
+    pending = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        pending = NO;
+        if (notes_pane && on_library_view(notes_pane.lib) == on_library_view_grid) [notes_pane queue_cards];
+    });
 }
 
 /* ── Commands ───────────────────────────────────────────────────────────── */

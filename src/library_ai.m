@@ -28,7 +28,9 @@
 #include "db.h"
 #include "serialize.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 
 /* How often the status-bar throbber moves (seconds). */
 static const double throbber_s = 0.12;
@@ -102,6 +104,41 @@ build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *i
 
 /* The pane of the (one) library window. */
 static __weak NotesAIPane *ai_pane;
+
+/*
+ * read_until_exit — a command's output: everything it writes until the end
+ * of the stream, or, once it has exited, whatever is still buffered (a
+ * child it left in the background may hold the pipe open, and the end
+ * would never come).
+ *
+ * Inputs:
+ *   fd   — the read end of the command's stdout/stderr pipe
+ *   task — the command
+ *
+ * Output: the bytes.
+ */
+static NSData *
+read_until_exit(int fd, NSTask *task)
+{
+    NSMutableData *out = [NSMutableData data];
+    char           buf[16384];
+    for (;;) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        int ready = poll(&p, 1, 200);
+        if (ready > 0) {
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n > 0) {
+                [out appendBytes:buf length:(NSUInteger)n];
+                continue;
+            }
+            if (n < 0 && errno == EINTR) continue;
+            break;                   /* the end of the stream, or an error   */
+        }
+        if (ready < 0 && errno != EINTR) break;
+        if (ready == 0 && !task.isRunning) break;   /* exited, nothing left */
+    }
+    return out;
+}
 
 @implementation NotesAIPane
 
@@ -293,7 +330,7 @@ run_command:(NSString *)command input:(NSString *)input
             [in.fileHandleForWriting writeData:bytes error:NULL];   /* while stdout drains */
             [in.fileHandleForWriting closeFile];
         });
-        NSData *result = [out.fileHandleForReading readDataToEndOfFileAndReturnError:NULL];
+        NSData *result = read_until_exit(out.fileHandleForReading.fileDescriptor, task);
         [task waitUntilExit];
         dispatch_async(dispatch_get_main_queue(), ^{ [ws finished:task output:result]; });
     });

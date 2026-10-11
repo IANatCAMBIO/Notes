@@ -297,6 +297,13 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
             r->error = "bad TABLE record";
             return FALSE;
         }
+        /* Every cell takes at least its 4-byte length: a header promising
+         * more cells than the blob can hold is refused before a million
+         * empty cells are made for it.                                     */
+        if ((guint64)rows * cols * 4 > r->len - r->pos) {
+            r->error = "truncated TABLE cell";
+            return FALSE;
+        }
         OnTable *t = table_new((gint)rows, (gint)cols);
         t->header = (tflags & TABLE_FLAG_HEADER) != 0;
         for (guint32 i = 0; i < rows * cols; i++) {

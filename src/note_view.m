@@ -1020,7 +1020,7 @@ copy_selection(NotesNoteView *v)
     NSData *data = [NSData dataWithBytesNoCopy:blob length:n freeWhenDone:NO];
     [pb setData:data forType:on_pasteboard_type_fragment];
     [pb setString:@(text) forType:NSPasteboardTypeString];
-    free(blob);
+    g_free(blob);                       /* on_document_to_bnbf: g_free */
     g_free(text);
 }
 

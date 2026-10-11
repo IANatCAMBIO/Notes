@@ -281,6 +281,33 @@ on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt, NSArray<U
 }
 
 /*
+ * on_ui_label_cell — a vertically centred text cell.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSTableCellView *
+on_ui_label_cell(NSTableView *table, NSString *ident)
+{
+    NSTableCellView *cell = [table makeViewWithIdentifier:ident owner:nil];
+    if (cell) return cell;
+    cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
+    cell.identifier = ident;
+    NSTextField *label = [NSTextField labelWithString:@""];
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.font = [NSFont systemFontOfSize:on_look_cell_font];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [cell addSubview:label];
+    cell.textField = label;
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:4],
+        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
+        [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
+    ]];
+    return cell;
+}
+
+/*
  * on_ui_toolbar_search_field — toolbar search field without a focus ring.
  * Inputs/output are documented in ui_util.h.
  */

@@ -1992,8 +1992,11 @@ test_secondary_windows(NotesLibrary *lib)
         check(search(@"") && [status.stringValue isEqualToString:@"Type something to search for."],
               "an empty query asks for one");
         search(@"smoke -nothingmatchesthis");
-        NSTextField *first = hits.numberOfRows > 0 ? [hits viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
-        NSString    *title = first.stringValue.lastPathComponent;
+        NSTableCellView *first = hits.numberOfRows > 0 ? [hits viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
+        NSString        *title = first.textField.stringValue.lastPathComponent;
+        [first layoutSubtreeIfNeeded];
+        check(first != nil && fabs(NSMidY(first.textField.frame) - NSMidY(first.bounds)) < 1.0,
+              "a result's text is centred vertically in its row");
         [hits selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [search_win makeFirstResponder:query];
         [search_win makeFirstResponder:hits];

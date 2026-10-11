@@ -656,38 +656,6 @@ scroll_for(NSView *doc)
 }
 
 /*
- * label_cell — a reusable text cell of a table.
- *
- * Inputs:
- *   table — the table
- *   ident — the cell's reuse identifier
- *
- * Output: the cell (its textField set).
- */
-static NSTableCellView *
-label_cell(NSTableView *table, NSString *ident)
-{
-    NSTableCellView *cell = [table makeViewWithIdentifier:ident owner:nil];
-    if (cell) return cell;
-    cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
-    cell.identifier = ident;
-    NSTextField *label = [NSTextField labelWithString:@""];
-    label.lineBreakMode = NSLineBreakByTruncatingTail;
-    label.font = [NSFont systemFontOfSize:on_look_cell_font];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [cell addSubview:label];
-    cell.textField = label;
-    [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:4],
-        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
-        [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
-    ]];
-    return cell;
-}
-
-/*
  * struck — text in the cell font, struck through when an item is done.
  *
  * Inputs:
@@ -1448,7 +1416,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
     if (table == self.list) {
         NotesNoteRecord *r = self.records[(NSUInteger)row];
         if ([key isEqualToString:@"title"]) return [self title_cell:r];
-        NSTableCellView *cell = label_cell(table, key);
+        NSTableCellView *cell = on_ui_label_cell(table, key);
         cell.textField.stringValue = [key isEqualToString:@"path"]     ? r.path
                                    : [key isEqualToString:@"modified"] ? r.modified : r.created;
         return cell;
@@ -1463,7 +1431,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         check.state = r.done ? NSControlStateValueOn : NSControlStateValueOff;
         return check;
     }
-    NSTableCellView *cell = label_cell(table, key);
+    NSTableCellView *cell = on_ui_label_cell(table, key);
     NSString *text   = [key isEqualToString:@"context"] ? r.context
                      : [key isEqualToString:@"action"]  ? r.text : due_text(r.due);
     NSColor  *colour = [key isEqualToString:@"due"] && r.due ? due_colour(r.due) : nil;

@@ -345,14 +345,9 @@ numberOfRowsInTableView:(NSTableView *)table
 - (NSView *)
 tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
-    NSTextField *cell = [table makeViewWithIdentifier:column.identifier owner:nil];
-    if (cell == nil) {
-        cell = [NSTextField labelWithString:@""];
-        cell.identifier    = column.identifier;
-        cell.lineBreakMode = NSLineBreakByTruncatingTail;
-    }
-    NotesSearchHit *h = self.hits[(NSUInteger)row];
-    cell.stringValue = [column.identifier isEqualToString:@"path"] ? h.path : h.when;
+    NSTableCellView *cell = on_ui_label_cell(table, column.identifier);
+    NotesSearchHit  *h    = self.hits[(NSUInteger)row];
+    cell.textField.stringValue = [column.identifier isEqualToString:@"path"] ? h.path : h.when;
     return cell;
 }
 

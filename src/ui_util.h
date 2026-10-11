@@ -229,6 +229,19 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
+ * on_ui_label_cell — a table's reusable one-line text cell: a label in the
+ * cell font, truncated at the tail, centred vertically in its row.  (A
+ * bare NSTextField returned as a cell sits at the top of the row.)
+ *
+ * Inputs:
+ *   table — the table
+ *   ident — the cell's reuse identifier (the column's, usually)
+ *
+ * Output: the cell; its textField is the label.
+ */
+NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
+
+/*
  * NotesFlippedView — a plain container whose y grows downward: the
  * document view of a scroll view whose content should start at the top
  * (a scroll view shows a non-flipped document's BOTTOM first).

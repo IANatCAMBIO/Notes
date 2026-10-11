@@ -212,6 +212,21 @@ isFlipped
 
 @end
 
+/*
+ * filter_takes — does a window's key filter take this event?
+ *
+ * Inputs:
+ *   filter — the window's key_filter, or nil
+ *   event  — any event for the window
+ *
+ * Output: YES for a key-down the filter took; it goes no further.
+ */
+static BOOL
+filter_takes(BOOL (^filter)(NSEvent *event), NSEvent *event)
+{
+    return event.type == NSEventTypeKeyDown && filter != nil && filter(event);
+}
+
 @implementation NotesKeyFilterWindow
 
 /*
@@ -223,7 +238,24 @@ isFlipped
 - (void)
 sendEvent:(NSEvent *)event
 {
-    if (event.type == NSEventTypeKeyDown && self.key_filter && self.key_filter(event)) return;
+    if (filter_takes(self.key_filter, event)) return;
+    [super sendEvent:event];
+}
+
+@end
+
+@implementation NotesKeyFilterPanel
+
+/*
+ * sendEvent: — a key-down the filter takes goes no further.
+ *
+ * Inputs:
+ *   event — any event for the panel
+ */
+- (void)
+sendEvent:(NSEvent *)event
+{
+    if (filter_takes(self.key_filter, event)) return;
     [super sendEvent:event];
 }
 

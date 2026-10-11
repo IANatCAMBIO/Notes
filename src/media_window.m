@@ -146,11 +146,16 @@ init_with_lib:(NotesLibrary *)lib
 {
     gint w = (gint)on_look_media_w, h = (gint)on_look_media_h;
     on_app_config_get_size("media_win_w", "media_win_h", &w, &h);
-    NotesKeyFilterWindow *win = [[NotesKeyFilterWindow alloc]
+    /* A tool window, as Search is: the utility title bar; it does not
+     * float, so the note "Show in source note" opens comes in front of
+     * it, and it stays up when the app is inactive. */
+    NotesKeyFilterPanel *win = [[NotesKeyFilterPanel alloc]
         initWithContentRect:NSMakeRect(0, 0, w, h)
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                            NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow
                     backing:NSBackingStoreBuffered defer:NO];
+    win.floatingPanel      = NO;
+    win.hidesOnDeactivate  = NO;
     win.releasedWhenClosed = NO;
     win.contentMinSize     = NSMakeSize(300, 200);
     if (!(self = [super initWithWindow:win])) return nil;

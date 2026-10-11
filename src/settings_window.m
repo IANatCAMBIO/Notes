@@ -39,6 +39,9 @@ static const CGFloat text_w = 340.0;
 static const CGFloat indent    = 12.0;
 static const CGFloat sub_inset = 24.0;
 
+/* How much wider than its content the window opens, for breathing room. */
+static const CGFloat extra_w = 20.0;
+
 /* The custom prompt editor's height. */
 static const CGFloat prompt_h = 72.0;
 
@@ -151,7 +154,8 @@ note_text(NSString *text)
 }
 
 /*
- * small_label — a small plain label (the health plate's values).
+ * small_label — a plain label of the health plate (plate_type sets its
+ * size).
  *
  * Inputs:
  *   text — the text
@@ -161,9 +165,25 @@ note_text(NSString *text)
 static NSTextField *
 small_label(NSString *text)
 {
-    NSTextField *label = [NSTextField labelWithString:text];
-    label.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    return label;
+    return [NSTextField labelWithString:text];
+}
+
+/*
+ * plate_type — the health plate's text at the status bars' size
+ * (on_look_status_font), the SHA-256 in monospace.  Applied after the
+ * window's on_ui_use_ui_font, which would make it 11 pt.
+ *
+ * Inputs:
+ *   root — the plate's grid, or a view inside it
+ */
+static void
+plate_type(NSView *root)
+{
+    if ([root isKindOfClass:NSButton.class])
+        ((NSButton *)root).font = [NSFont monospacedSystemFontOfSize:on_look_status_font weight:NSFontWeightRegular];
+    else if ([root isKindOfClass:NSTextField.class])
+        ((NSTextField *)root).font = [NSFont systemFontOfSize:on_look_status_font];
+    for (NSView *v in root.subviews) plate_type(v);
 }
 
 /*
@@ -279,6 +299,7 @@ shares_fate(NSString *dir, NSString *other)
 @property (nonatomic, strong) NSTextView   *ai_prompt;
 @property (nonatomic, strong) NSStackView  *ai_sub;
 @property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
+@property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
 @property (nonatomic, strong) NSStackView  *backup_buttons;
 - (void)refresh_db;
 @end
@@ -348,6 +369,7 @@ init_with_lib:(NotesLibrary *)lib
         [v.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-stack.edgeInsets.right].active = YES;
 
     on_ui_use_ui_font(stack);
+    plate_type(self.plate_grid);
     NSSize fit = stack.fittingSize;
     NotesFlippedView *doc = [[NotesFlippedView alloc] initWithFrame:NSZeroRect];
     doc.translatesAutoresizingMaskIntoConstraints   = NO;
@@ -370,7 +392,7 @@ init_with_lib:(NotesLibrary *)lib
     panel.contentView = scroll;
     CGFloat bar = fit.height > on_look_settings_max_h
                 ? [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:NSScrollerStyleLegacy] : 0;
-    [panel setContentSize:NSMakeSize(fit.width + bar, MIN(fit.height, on_look_settings_max_h))];
+    [panel setContentSize:NSMakeSize(fit.width + extra_w + bar, MIN(fit.height, on_look_settings_max_h))];
     [panel center];
 
     [self refresh_db];
@@ -473,7 +495,6 @@ add_database:(NSMutableArray<NSView *> *)rows
     self.health = small_label(@"");
     self.health.identifier = @"health";
     self.db_path = [NSTextField wrappingLabelWithString:@""];
-    self.db_path.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     self.db_path.selectable = YES;
     self.db_path.preferredMaxLayoutWidth = text_w - 120;
     self.db_data = small_label(@"");
@@ -481,7 +502,6 @@ add_database:(NSMutableArray<NSView *> *)rows
     self.db_size = small_label(@"");
     self.sha = [NSButton buttonWithTitle:@"—" target:self action:@selector(copy_sha:)];
     self.sha.bordered = NO;
-    self.sha.font = [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightRegular];
 
     NSArray<NSArray<NSView *> *> *cells = @[
         @[small_label(@"Health:"),           row(@[self.led, self.health])],
@@ -490,7 +510,7 @@ add_database:(NSMutableArray<NSView *> *)rows
         @[small_label(@"Size on disk:"),     self.db_size],
         @[small_label(@"SHA-256:"),          self.sha],
     ];
-    NSGridView *grid = [NSGridView gridViewWithViews:cells];
+    NSGridView *grid = self.plate_grid = [NSGridView gridViewWithViews:cells];
     grid.rowSpacing    = 2;
     grid.columnSpacing = 8;
     grid.rowAlignment  = NSGridRowAlignmentFirstBaseline;

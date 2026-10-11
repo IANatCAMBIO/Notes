@@ -59,7 +59,7 @@ on_look_pick(on_look_color_t color, bool dark)
  * (on_look_sidebar_font) and a note's text in the editor (on_look_font_size
  * and its headings).                                                      */
 static const double on_look_ui_font          = 11.0;
-static const double on_look_status_font      = 9.0;    /* the status bars (on_ui_status_label)  */
+static const double on_look_status_font      = 9.0;    /* the status bars, Settings' health plate */
 
 /* ── The note editor ──────────────────────────────────────────────────────── */
 

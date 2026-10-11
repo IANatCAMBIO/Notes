@@ -1973,6 +1973,14 @@ test_secondary_windows(NotesLibrary *lib)
         NSRect  path_in_plate = [path convertRect:path.bounds toView:plate];
         check(plate != nil && path != nil && NSContainsRect(plate.bounds, path_in_plate),
               "the database plate holds its lines");
+        NSStackView *column = (NSStackView *)find_view(root, NSStackView.class, Nil);
+        check(((NSTextField *)path).font.pointSize == on_look_status_font &&
+              label_with_text(plate, @"Health:").font.pointSize == on_look_status_font &&
+              button_titled(root, @"Update").font.pointSize == on_look_ui_font,
+              "the database plate's text is 9 pt, like the status bars; its Update button is not");
+        check(fabs(NSWidth(root.frame) - column.fittingSize.width - 20) < 1 ||
+              NSWidth(root.frame) - column.fittingSize.width > 20,
+              "Settings opens 20 pt wider than its content");
         NSScrollView *settings_scroll = (NSScrollView *)root;
         check(settings_scroll.documentView.flipped && NSMinY(settings_scroll.documentVisibleRect) < 1 &&
               label_with_text(root, @"Appearance") != nil &&

@@ -102,8 +102,7 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
 
 /*
  * init_with_lib:scoped: — build the window, a tool window with the small
- * title bar, at the last search window's size; the query field has the
- * focus.
+ * title bar, at its minimum size; the query field has the focus.
  *
  * Inputs:
  *   lib    — the library
@@ -114,12 +113,11 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
 - (instancetype)
 init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
 {
-    gint w = (gint)on_look_search_w, h = (gint)on_look_search_h;
-    on_app_config_get_size("search_win_w", "search_win_h", &w, &h);
     /* A tool window: the small utility title bar, as Settings and the
      * tool panels have it.  It does not float, so an editor opened from a
      * result comes in front of it; it stays up when the app is inactive. */
-    NSPanel *win = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
+    NSSize   min = NSMakeSize(on_look_search_w, on_look_search_h);
+    NSPanel *win = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, min.width, min.height)
                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                         NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow
                                                 backing:NSBackingStoreBuffered defer:NO];
@@ -127,7 +125,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     win.floatingPanel      = NO;
     win.hidesOnDeactivate  = NO;
     win.releasedWhenClosed = NO;
-    win.contentMinSize     = NSMakeSize(400, 260);
+    win.contentMinSize     = min;      /* and it opens at that size, every time */
     if (!(self = [super initWithWindow:win])) return nil;
     _lib  = lib;
     _hits = @[];
@@ -362,8 +360,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 /* ── Window ────────────────────────────────────────────────────────────── */
 
 /*
- * windowWillClose: — abandon the search, and remember the size for the
- * next search window.
+ * windowWillClose: — abandon the search.
  *
  * Inputs:
  *   note — the notification (unused)
@@ -372,8 +369,6 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 windowWillClose:(NSNotification *)note
 {
     [self cancel_job];
-    NSSize size = self.window.contentView.frame.size;
-    on_app_config_set_size("search_win_w", "search_win_h", (gint)size.width, (gint)size.height);
 }
 
 @end

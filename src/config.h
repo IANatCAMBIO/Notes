@@ -133,7 +133,7 @@ void on_app_config_set(const gchar *key, const gchar *value);
  * on_app_config_get_size() — read a persisted window size from two keys.
  *
  * Inputs:
- *   key_w, key_h — the two keys (e.g. "search_win_w"/"search_win_h")
+ *   key_w, key_h — the two keys (e.g. "media_win_w"/"media_win_h")
  *   w, h         — in/out: the caller's defaults
  *
  * Output: *w and *h are replaced only when BOTH keys are present and both

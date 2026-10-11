@@ -2348,10 +2348,7 @@ test_secondary_windows(NotesLibrary *lib)
         [search_win close];
     }
     pump(0.3);
-    gint saved_w = 0, saved_h = 0;
-    on_app_config_get_size("search_win_w", "search_win_h", &saved_w, &saved_h);
-    check(weak_search == nil && saved_w == 612 && saved_h == 333,
-          "closed search window is deallocated and its size kept for the next one");
+    check(weak_search == nil, "closed search window is deallocated");
 
     /* Search Here and Find start on the selection when it is a folder. */
     @autoreleasepool {
@@ -2366,6 +2363,10 @@ test_secondary_windows(NotesLibrary *lib)
         NSWindow *scoped_win = nil;
         for (NSWindow *w in NSApp.windows)
             if (w.visible && [w.title isEqualToString:@"Search Notes"]) scoped_win = w;
+        check(NSEqualSizes(scoped_win.contentView.frame.size,
+                           NSMakeSize(on_look_search_w, on_look_search_h)) &&
+              NSEqualSizes(scoped_win.contentMinSize, NSMakeSize(on_look_search_w, on_look_search_h)),
+              "a search window opens at its minimum size, whatever size the last one was");
         NSView      *root   = scoped_win.contentView;
         NSTextField *query  = (NSTextField *)view_with_identifier(root, @"search-query");
         NSTextField *status = (NSTextField *)view_with_identifier(root, @"search-status");

@@ -337,6 +337,54 @@ on_ui_use_ui_font(NSView *root)
     for (NSView *v in root.subviews) on_ui_use_ui_font(v);
 }
 
+NSAttributedStringKey const on_ui_strike_key = @"notes.strike";
+
+/*
+ * NotesCellLabel — the label of an on_ui_label_cell: an ordinary label
+ * that also strikes through its text carrying on_ui_strike_key.
+ */
+@interface NotesCellLabel : NSTextField
+@end
+
+@implementation NotesCellLabel
+
+/*
+ * drawRect: — the text, then a 1 pt line through each struck range, half
+ * the x-height above the baseline, in the range's colour; a truncated
+ * range stops at the label's edge.
+ *
+ * Inputs:
+ *   dirty — the area to draw
+ */
+- (void)
+drawRect:(NSRect)dirty
+{
+    [super drawRect:dirty];
+    NSAttributedString *text  = self.attributedStringValue;
+    NSRect              title = [self.cell titleRectForBounds:self.bounds];
+    CGFloat             y     = NSHeight(self.bounds) - self.firstBaselineOffsetFromTop;   /* y up */
+    [text enumerateAttribute:on_ui_strike_key inRange:NSMakeRange(0, text.length) options:0
+                  usingBlock:^(id value, NSRange range, BOOL *stop) {
+        if (value == nil) return;
+        NSFont  *font = [text attribute:NSFontAttributeName atIndex:range.location effectiveRange:NULL] ?: self.font;
+        NSColor *ink  = [text attribute:NSForegroundColorAttributeName atIndex:range.location effectiveRange:NULL]
+                        ?: self.textColor;
+        CGFloat  x0   = NSMinX(title) + [text attributedSubstringFromRange:NSMakeRange(0, range.location)].size.width;
+        CGFloat  x1   = MIN(NSMinX(title) + [text attributedSubstringFromRange:
+                                             NSMakeRange(0, NSMaxRange(range))].size.width, NSMaxX(title));
+        CGFloat  ly   = round(y + font.xHeight / 2.0) + 0.5;     /* on the pixel row */
+        if (x1 <= x0) return;
+        [ink setStroke];
+        NSBezierPath *line = [NSBezierPath bezierPath];
+        line.lineWidth = 1.0;
+        [line moveToPoint:NSMakePoint(x0, ly)];
+        [line lineToPoint:NSMakePoint(x1, ly)];
+        [line stroke];
+    }];
+}
+
+@end
+
 /*
  * on_ui_label_cell — a vertically centred text cell.
  * Inputs/output are documented in ui_util.h.
@@ -348,7 +396,7 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
     if (cell) return cell;
     cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
     cell.identifier = ident;
-    NSTextField *label = [NSTextField labelWithString:@""];
+    NSTextField *label = [NotesCellLabel labelWithString:@""];
     label.lineBreakMode = NSLineBreakByTruncatingTail;
     label.font = [NSFont systemFontOfSize:on_look_ui_font];
     label.translatesAutoresizingMaskIntoConstraints = NO;

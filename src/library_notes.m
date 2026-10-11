@@ -656,7 +656,8 @@ scroll_for(NSView *doc)
 }
 
 /*
- * struck — text in the cell font, struck through when an item is done.
+ * struck — text in the cell font, struck through when an item is done
+ * (on_ui_strike_key: the cell draws the line where the editor does).
  *
  * Inputs:
  *   text   — the text
@@ -672,7 +673,7 @@ struck(NSString *text, BOOL done, NSColor *colour)
         NSFontAttributeName:            [NSFont systemFontOfSize:on_look_ui_font],
         NSForegroundColorAttributeName: colour ?: NSColor.labelColor,
     }];
-    if (done) attrs[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
+    if (done) attrs[on_ui_strike_key] = @YES;
     return [[NSAttributedString alloc] initWithString:text ?: @"" attributes:attrs];
 }
 

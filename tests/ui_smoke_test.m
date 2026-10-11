@@ -1830,9 +1830,12 @@ test_notes_pane(NotesLibrary *lib)
     NSTableCellView *done_cell = [table viewAtColumn:[table columnWithIdentifier:@"action"] row:a_row
                                      makeIfNecessary:YES];
     check(app.show_done_actions && a_row >= 0 &&
+          [done_cell.textField.attributedStringValue attribute:on_ui_strike_key atIndex:0
+                                                effectiveRange:NULL] != nil &&
           [done_cell.textField.attributedStringValue attribute:NSStrikethroughStyleAttributeName atIndex:0
-                                                effectiveRange:NULL] != nil,
+                                                effectiveRange:NULL] == nil,
           "ticking an item strikes it through while completed items are shown");
+    check(save_snapshots(lib.window, @"library-actions"), "Action Items snapshots written");
     on_library_run_command(lib, command_item(@"toggle-done"));
     pump(0.1);
     table = pane_table(lib);

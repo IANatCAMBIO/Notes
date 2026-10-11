@@ -447,7 +447,7 @@ refresh_hits(NotesNoteView *v)
     size_t n = 0;
     OnDocHit *hits = compute_hits(v.doc, v.find_text, &n);
     on_doc_layout_set_hits(v.layout, hits, n);
-    g_free(hits);
+    free(hits);
 }
 
 /* ── Accessibility text ──────────────────────────────────────────────────── */
@@ -1133,10 +1133,10 @@ paste(NotesNoteView *v)
  *   block  — its block
  *   cell   — its cell, or -1
  *   needle — what to find (UTF-8, not empty)
- *   hits   — the GArray of OnDocHit to append to
+ *   hits   — the OnDocHit records to append to
  */
 static void
-find_in_text(const OnText *t, guint block, gint cell, const char *needle, GArray *hits)
+find_in_text(const OnText *t, guint block, gint cell, const char *needle, NSMutableData *hits)
 {
     glong     nlen   = g_utf8_strlen(needle, -1);
     gunichar *nchars = g_utf8_to_ucs4_fast(needle, -1, NULL);
@@ -1149,7 +1149,7 @@ find_in_text(const OnText *t, guint block, gint cell, const char *needle, GArray
         if (k == nlen) {
             OnDocHit h = { .block = block, .cell = cell,
                            .start = (gsize)(p - t->text->str), .len = (gsize)(q - p) };
-            g_array_append_val(hits, h);
+            [hits appendBytes:&h length:sizeof h];
         }
     }
     g_free(nchars);
@@ -1164,7 +1164,7 @@ find_in_text(const OnText *t, guint block, gint cell, const char *needle, GArray
  *   needle — what to find; nil or empty finds nothing
  *   n_out  — receives the count
  *
- * Output: the hits (g_free), or NULL for none.
+ * Output: the hits (free()), or NULL for none.
  */
 static OnDocHit *
 compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
@@ -1172,7 +1172,7 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
     *n_out = 0;
     const char *n8 = needle.UTF8String;
     if (n8 == NULL || *n8 == '\0') return NULL;
-    GArray *hits = g_array_new(FALSE, FALSE, sizeof(OnDocHit));
+    NSMutableData *hits = [NSMutableData data];
     for (guint i = 0; i < on_document_n_blocks(doc); i++) {
         const OnBlock *b = on_document_block(doc, i);
         if (b->text != NULL) {
@@ -1182,8 +1182,11 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
                 find_in_text(g_ptr_array_index(b->cells, c), i, (gint)c, n8, hits);
         }
     }
-    *n_out = hits->len;
-    return (OnDocHit *)g_array_free(hits, FALSE);
+    *n_out = hits.length / sizeof(OnDocHit);
+    if (*n_out == 0) return NULL;
+    OnDocHit *out = malloc(hits.length);
+    memcpy(out, hits.bytes, hits.length);
+    return out;
 }
 
 /* ── #tag capture and the suggestion list ───────────────────────────────── */
@@ -1277,18 +1280,16 @@ tag_popup_update(NotesNoteView *v)
         tag_capture_end(v, NO);
         return;
     }
-    OnText *t       = on_document_text_at(v.doc, s);
-    gchar  *typed   = g_strndup(t->text->str + s.offset + 1, e.offset - s.offset - 1);
-    gchar  *typed_f = g_utf8_casefold(typed, -1);
+    OnText   *t     = on_document_text_at(v.doc, s);
+    NSString *typed = [[NSString alloc] initWithBytes:t->text->str + s.offset + 1
+                                               length:e.offset - s.offset - 1
+                                             encoding:NSUTF8StringEncoding] ?: @"";
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (GList *l = v.tag_choices; l != NULL && names.count < on_look_tag_popup_max; l = l->next) {
-        const OnTag *tag    = l->data;
-        gchar       *name_f = g_utf8_casefold(tag->name, -1);
-        if (g_str_has_prefix(name_f, typed_f)) [names addObject:@(tag->name)];
-        g_free(name_f);
+        NSString *name = @(((const OnTag *)l->data)->name);
+        if ([name rangeOfString:typed options:NSCaseInsensitiveSearch | NSAnchoredSearch].location == 0)
+            [names addObject:name];
     }
-    g_free(typed_f);
-    g_free(typed);
     on_rect_t r;
     on_doc_layout_caret_rect(v.layout, s, &r);
     if (v.tag_popup == nil) {
@@ -1589,14 +1590,13 @@ copy_code_run(NotesNoteView *v, guint block)
 {
     guint first, count;
     on_doc_layout_code_run(v.layout, block, &first, &count);
-    GString *text = g_string_new(NULL);
+    NSMutableString *text = [NSMutableString string];
     for (guint i = first; i < first + count; i++) {
-        if (i > first) g_string_append_c(text, '\n');
-        g_string_append(text, on_document_block(v.doc, i)->text->text->str);
+        if (i > first) [text appendString:@"\n"];
+        [text appendString:@(on_document_block(v.doc, i)->text->text->str)];
     }
     [v.pasteboard clearContents];
-    [v.pasteboard setString:@(text->str) forType:NSPasteboardTypeString];
-    g_string_free(text, TRUE);
+    [v.pasteboard setString:text forType:NSPasteboardTypeString];
     if (v.app) on_app_status(v.app, "Code copied");
 }
 
@@ -2946,7 +2946,7 @@ on_note_view_find_step(NotesNoteView *view, NSString *text, BOOL forward)
     if (!text || text.length == 0) return;
     size_t n;
     OnDocHit *hits = compute_hits(view.doc, text, &n);
-    if (n == 0) { g_free(hits); return; }
+    if (n == 0) return;
     /* Forward: the first hit starting at or after the selection's end (the
      * caret when nothing is selected); back: the last one starting before
      * the selection's start — so a selected hit is stepped off, not found
@@ -2964,7 +2964,7 @@ on_note_view_find_step(NotesNoteView *view, NSString *text, BOOL forward)
     OnPos b = { h->block, h->cell, h->start + h->len };
     view.anchor = a;
     set_caret(view, b, YES);
-    g_free(hits);
+    free(hits);
     scroll_to_caret(view);
 }
 

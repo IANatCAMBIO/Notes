@@ -1,6 +1,8 @@
 #import <Cocoa/Cocoa.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <glib.h>
+
 #include "look.h"
 
 /*
@@ -329,3 +331,15 @@ NSString *on_ui_format_bytes(int64_t bytes);
  * Output: the text.
  */
 NSString *on_ui_format_time(int64_t unix_time);
+
+/*
+ * on_ui_ids — note or folder ids held as NSNumbers (a selection, a drag),
+ * as the plain array the core's calls take.
+ *
+ * Inputs:
+ *   ids — the ids
+ *
+ * Output: a new array of ids.count ids, in order (free() it); NULL when
+ *         ids is empty.
+ */
+gint64 *on_ui_ids(NSArray<NSNumber *> *ids);

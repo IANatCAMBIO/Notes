@@ -201,6 +201,18 @@ void on_app_status(OnApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 gchar *on_app_location_text(OnApp *app, const gchar *location);
 
 /* ---------------------------------------------------------------------------
+ * on_app_folder_location() — a folder's location as a status bar shows it:
+ * "/Folder/Sub" ("/" for the top level) through on_app_location_text.
+ *
+ * Inputs:
+ *   app       — the application context, its database open
+ *   folder_id — the folder; 0 for the top level
+ *
+ * Output: a new string; g_free it.
+ * ------------------------------------------------------------------------- */
+gchar *on_app_folder_location(OnApp *app, gint64 folder_id);
+
+/* ---------------------------------------------------------------------------
  * on_app_db_health_start() — THE integrity check of a freshly opened
  * database: launch and File > Open Database File… both run it, every time,
  * with no switch (a check that can be skipped can only report a silence

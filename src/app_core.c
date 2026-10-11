@@ -86,6 +86,20 @@ on_app_location_text(OnApp *app, const gchar *location)
 }
 
 /*
+ * on_app_folder_location — see app_core.h.
+ */
+gchar *
+on_app_folder_location(OnApp *app, gint64 folder_id)
+{
+    gchar *folder   = on_db_folder_path(app->db, folder_id);
+    gchar *location = g_strconcat("/", folder, NULL);
+    gchar *text     = on_app_location_text(app, location);
+    g_free(location);
+    g_free(folder);
+    return text;
+}
+
+/*
  * db_health_done — the async health pass landed: report it.
  *
  * Inputs:

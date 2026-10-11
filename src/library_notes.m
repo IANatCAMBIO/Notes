@@ -181,18 +181,17 @@ due_colour(gint64 due)
 static NSString *
 preview_line(const gchar *body)
 {
-    const gchar *pos = body ? strchr(body, '\n') : NULL;
-    while (pos != NULL && *pos != '\0') {
-        pos++;
-        const gchar *eol  = strchr(pos, '\n');
-        gchar       *line = eol ? g_strndup(pos, (gsize)(eol - pos)) : g_strdup(pos);
-        g_strstrip(line);
-        NSString *found = *line ? @(line) : nil;
-        g_free(line);
-        if (found) return found;
-        pos = eol;
-    }
-    return nil;
+    __block NSString *found = nil;
+    __block BOOL      title = YES;   /* the first line is the title: skipped */
+    [(body ? @(body) : @"") enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!title && trimmed.length > 0) {
+            found = trimmed;
+            *stop = YES;
+        }
+        title = NO;
+    }];
+    return found;
 }
 
 /*
@@ -1764,14 +1763,9 @@ run_delete_note(id target, id sender)
         on_library_delete_notes(lib, ids);
         return;
     }
-    GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
-    for (NSNumber *n in ids) {
-        gint64 nid = n.longLongValue;
-        g_array_append_val(note_ids, nid);
-    }
-    if (on_library_trash_notes(lib, (const gint64 *)(void *)note_ids->data, note_ids->len))
-        on_library_refresh_all(lib);
-    g_array_free(note_ids, TRUE);
+    gint64 *note_ids = on_ui_ids(ids);
+    if (on_library_trash_notes(lib, note_ids, ids.count)) on_library_refresh_all(lib);
+    free(note_ids);
 }
 
 /*

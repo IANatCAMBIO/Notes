@@ -469,16 +469,17 @@ run_export_md(id target, id sender)
  * Inputs:
  *   lib     — the library (its window centres the panel)
  *   ids     — the note ids (owned: freed here)
+ *   stopped — the panel's title: what did not happen
  *
  * Output: YES when every such editor closed; NO when one is still open,
  * and the caller must leave the notes alone.
  */
 static BOOL
-close_editors_for_ids(NotesLibrary *lib, GArray *ids)
+close_editors_for_ids(NotesLibrary *lib, GArray *ids, NSString *stopped)
 {
     BOOL ok = on_editor_close_notes((const gint64 *)ids->data, ids->len);
     g_array_free(ids, TRUE);
-    if (!ok) on_editor_report_unsaved(@"Nothing was deleted", lib.window);
+    if (!ok) on_editor_report_unsaved(stopped, lib.window);
     return ok;
 }
 
@@ -551,7 +552,8 @@ run_delete_folder(id target, id sender)
             on_library_refresh_all(lib);
             return;
         }
-        if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id))) return;
+        if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id),
+                                   @"Nothing was deleted")) return;
         on_db_folder_delete(lib.app->db, folder_id);
         if (lib.sel_kind == on_sb_trash_folder && lib.sel_id == folder_id)
             on_library_sidebar_select(lib, on_sb_trash, 0);
@@ -627,7 +629,7 @@ run_empty_trash(id target, id sender)
 {
     NotesLibrary *lib = target;
     confirm_permanent(lib, @"Permanently delete everything in the Trash?", @"Empty Trash", ^{
-        if (!close_editors_for_ids(lib, on_db_trash_note_ids(lib.app->db))) return;
+        if (!close_editors_for_ids(lib, on_db_trash_note_ids(lib.app->db), @"Nothing was deleted")) return;
         if (!on_db_trash_empty(lib.app->db)) return;
         on_app_status(lib.app, "Trash emptied");
         if (on_library_in_trash_view(lib)) on_library_sidebar_select(lib, on_sb_trash, 0);
@@ -718,13 +720,9 @@ on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n)
 BOOL
 on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name)
 {
-    GArray *note_ids = on_db_folder_note_ids(lib.app->db, folder_id);
-    BOOL    closed   = on_editor_close_notes((const gint64 *)note_ids->data, note_ids->len);
-    g_array_free(note_ids, TRUE);
-    if (!closed) {
-        on_editor_report_unsaved(@"Nothing was moved to the Trash", lib.window);
+    if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id),
+                               @"Nothing was moved to the Trash"))
         return NO;
-    }
     if (!on_db_folder_trash(lib.app->db, folder_id)) return NO;
     on_app_status(lib.app, "Folder “%s” moved to Trash", name.UTF8String);
     if (lib.sel_kind == on_sb_folder && lib.sel_id == folder_id) {
@@ -746,17 +744,16 @@ on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids)
     confirm_permanent(lib, question, @"Delete", ^{
         /* Only what is still in the Trash: a note restored while the
          * question was up is not deleted.                                  */
-        GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
-        for (NSNumber *n in ids) {
-            gint64 nid = n.longLongValue;
-            if (on_db_note_is_trashed(lib.app->db, nid)) g_array_append_val(note_ids, nid);
-        }
-        if (on_editor_close_notes((const gint64 *)note_ids->data, note_ids->len)) {
-            on_db_notes_delete(lib.app->db, (const gint64 *)note_ids->data, note_ids->len);
+        gint64 *note_ids = on_ui_ids(ids);
+        size_t  n        = 0;
+        for (NSUInteger i = 0; i < ids.count; i++)
+            if (on_db_note_is_trashed(lib.app->db, note_ids[i])) note_ids[n++] = note_ids[i];
+        if (on_editor_close_notes(note_ids, n)) {
+            on_db_notes_delete(lib.app->db, note_ids, n);
         } else {
             on_editor_report_unsaved(@"Nothing was deleted", lib.window);
         }
-        g_array_free(note_ids, TRUE);
+        free(note_ids);
         on_library_refresh_all(lib);
     });
 }

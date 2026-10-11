@@ -867,18 +867,19 @@ static BOOL
 folder_move_beside(OnDatabase *db, gint64 folder_id, gint64 parent, gint64 anchor_id, BOOL after)
 {
     if (!on_db_folder_move(db, folder_id, parent)) return NO;
-    GArray *order = g_array_new(FALSE, FALSE, sizeof(gint64));
     GList  *sibs  = on_db_folder_list(db, parent);
+    gint64 *order = malloc((g_list_length(sibs) + 1) * sizeof *order);
+    size_t  n     = 0;
     for (GList *l = sibs; l != NULL; l = l->next) {
         const OnFolder *f = l->data;
         if (f->id == folder_id) continue;
-        if (f->id == anchor_id && !after) g_array_append_val(order, folder_id);
-        g_array_append_val(order, f->id);
-        if (f->id == anchor_id && after) g_array_append_val(order, folder_id);
+        if (f->id == anchor_id && !after) order[n++] = folder_id;
+        order[n++] = f->id;
+        if (f->id == anchor_id && after) order[n++] = folder_id;
     }
     on_db_folder_list_free(sibs);
-    gboolean ok = on_db_folder_reorder(db, (const gint64 *)order->data, order->len);
-    g_array_free(order, TRUE);
+    gboolean ok = on_db_folder_reorder(db, order, n);
+    free(order);
     return ok;
 }
 
@@ -908,20 +909,17 @@ outlineView:(NSOutlineView *)outline acceptDrop:(id<NSDraggingInfo>)info item:(i
     BOOL ok;
 
     if (plan.kind == on_drag_notes) {
-        GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
-        for (NSNumber *n in ids) {
-            gint64 nid = n.longLongValue;
-            g_array_append_val(note_ids, nid);
-        }
+        gint64 *note_ids = on_ui_ids(ids);
+        size_t  n        = ids.count;
         if (plan.target.kind == on_sb_trash) {
-            ok = on_library_trash_notes(lib, (const gint64 *)note_ids->data, note_ids->len);
+            ok = on_library_trash_notes(lib, note_ids, n);
         } else {
-            ok = on_db_notes_move(db, (const gint64 *)note_ids->data, note_ids->len,
+            ok = on_db_notes_move(db, note_ids, n,
                                   plan.target.kind == on_sb_folder ? plan.target.ident : 0);
-            if (ok) on_app_status(lib.app, "Moved %u note%s to “%s”", note_ids->len,
-                                  note_ids->len == 1 ? "" : "s", plan.target.raw_name.UTF8String);
+            if (ok) on_app_status(lib.app, "Moved %zu note%s to “%s”", n,
+                                  n == 1 ? "" : "s", plan.target.raw_name.UTF8String);
         }
-        g_array_free(note_ids, TRUE);
+        free(note_ids);
     } else {
         on_sb_kind_t src_kind = plan.kind == on_drag_folder ? on_sb_folder : on_sb_trash_folder;
         gint64       src_id   = ids.firstObject.longLongValue;

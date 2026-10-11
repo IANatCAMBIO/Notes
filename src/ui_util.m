@@ -461,3 +461,16 @@ on_ui_format_time(int64_t unix_time)
     if (unix_time == 0) return @"—";
     return [fmt stringFromDate:[NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)unix_time]];
 }
+
+/*
+ * on_ui_ids — NSNumber ids as a plain array.
+ * Inputs/output are documented in ui_util.h.
+ */
+gint64 *
+on_ui_ids(NSArray<NSNumber *> *ids)
+{
+    if (ids.count == 0) return NULL;
+    gint64 *out = malloc(ids.count * sizeof *out);
+    for (NSUInteger i = 0; i < ids.count; i++) out[i] = ids[i].longLongValue;
+    return out;
+}

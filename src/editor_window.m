@@ -1132,13 +1132,9 @@ update_status
     NSString   *path = @"";
     OnNoteMeta *meta = on_db_note_get(app->db, self.note_id);
     if (meta != NULL) {
-        gchar *folder   = on_db_folder_path(app->db, meta->folder_id);
-        gchar *location = g_strdup_printf("/%s", folder);
-        gchar *full     = on_app_location_text(app, location);
+        gchar *full = on_app_folder_location(app, meta->folder_id);
         path = @(full);
         g_free(full);
-        g_free(location);
-        g_free(folder);
         on_db_note_meta_free(meta);
     }
     NSString *note_id = app->statusbar_note_id

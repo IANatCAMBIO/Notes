@@ -122,10 +122,10 @@ on_library_location_text(NotesLibrary *lib)
     switch (lib.sel_kind) {
     case on_sb_root:
     case on_sb_folder: {
-        gchar *path = on_db_folder_path(lib.app->db, lib.sel_id);
-        location    = [@"/" stringByAppendingString:@(path)];
-        g_free(path);
-        break;
+        gchar    *full = on_app_folder_location(lib.app, lib.sel_id);
+        NSString *text = @(full);
+        g_free(full);
+        return text;
     }
     case on_sb_trash_folder:
         location = [@"Trash/" stringByAppendingString:lib.sel_name ?: @""];

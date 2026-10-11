@@ -245,6 +245,19 @@ on_app_config_get_size(const gchar *key_w, const gchar *key_h,
 }
 
 /*
+ * on_app_config_set_size — see config.h.
+ */
+void
+on_app_config_set_size(const gchar *key_w, const gchar *key_h, gint w, gint h)
+{
+    gchar num[24];
+    g_snprintf(num, sizeof num, "%d", w);
+    on_app_config_set(key_w, num);
+    g_snprintf(num, sizeof num, "%d", h);
+    on_app_config_set(key_h, num);
+}
+
+/*
  * on_app_config_load_db_dir — see config.h.
  */
 gchar *

@@ -51,8 +51,9 @@ typedef struct {
     NotesCommandScope              scope;
     NSString * __unsafe_unretained icon;    /* icons/<icon>.png for a toolbar item;
                                                nil = not a toolbar command            */
-    NSString * __unsafe_unretained tip;     /* the toolbar item's tooltip, saying what
-                                               it does (GTK's); nil = the title       */
+    NSString * __unsafe_unretained tip;     /* the tooltip of its toolbar item or
+                                               format-bar button, saying what it does
+                                               (GTK's); nil = the title               */
 } on_command_t;
 
 /* One command's implementation, in the module that owns it.
@@ -80,6 +81,17 @@ typedef struct {
  * Output: a new menu item.
  */
 NSMenuItem *on_command_menu_item(NSString *ident);
+
+/*
+ * on_command_tip — the hover help of a control that runs a command (a
+ * toolbar item, a format-bar button): its tip, else its title.
+ *
+ * Inputs:
+ *   ident — the command's identifier (must be in the table)
+ *
+ * Output: the text.
+ */
+NSString *on_command_tip(NSString *ident);
 
 /*
  * on_command_toolbar_item — a toolbar item for a command: its icon at the

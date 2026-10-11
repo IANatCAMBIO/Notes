@@ -235,10 +235,9 @@ indented(NSView *view, CGFloat inset)
 static NSString *
 health_stamp(gint64 when)
 {
-    NSDate          *date = [NSDate dateWithTimeIntervalSince1970:(double)when];
-    NSDateFormatter *f    = [[NSDateFormatter alloc] init];
-    f.dateFormat = [NSCalendar.currentCalendar isDateInToday:date] ? @"HH:mm 'today'" : @"MMM d 'at' HH:mm";
-    return [f stringFromDate:date];
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:(double)when];
+    return on_ui_format_date(when, [NSCalendar.currentCalendar isDateInToday:date]
+                                   ? @"HH:mm 'today'" : @"MMM d 'at' HH:mm");
 }
 
 /*
@@ -363,11 +362,8 @@ init_with_lib:(NotesLibrary *)lib
     scroll.hasVerticalScroller = YES;
     scroll.autohidesScrollers  = YES;
     scroll.drawsBackground     = NO;
+    on_ui_pin_edges(stack, doc);
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor      constraintEqualToAnchor:doc.topAnchor],
-        [stack.bottomAnchor   constraintEqualToAnchor:doc.bottomAnchor],
-        [stack.leadingAnchor  constraintEqualToAnchor:doc.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:doc.trailingAnchor],
         [doc.topAnchor        constraintEqualToAnchor:scroll.contentView.topAnchor],
         [doc.leadingAnchor    constraintEqualToAnchor:scroll.contentView.leadingAnchor],
         [doc.trailingAnchor   constraintEqualToAnchor:scroll.contentView.trailingAnchor],

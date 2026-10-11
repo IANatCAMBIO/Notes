@@ -35,7 +35,7 @@ typedef struct {
     gint64  id;                      /* the note, for opening it             */
     gchar  *path;                    /* "Folder/Sub/Title"; "/Title" for a
                                         note in the root                     */
-    gchar  *when;                    /* formatted modified time              */
+    gint64  updated_at;              /* modified, UNIX time                  */
 } on_search_hit_t;
 
 typedef struct on_search_job_t on_search_job_t;

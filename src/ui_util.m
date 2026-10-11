@@ -24,15 +24,11 @@ on_ui_is_dark(NSView *view)
 }
 
 /*
- * ns_color — one on_color_t as an NSColor.
- *
- * Inputs:
- *   c — the colour
- *
- * Output: an sRGB NSColor.
+ * on_ui_fixed_color — one appearance's colour as an NSColor.
+ * Inputs/output are documented in ui_util.h.
  */
-static NSColor *
-ns_color(on_color_t c)
+NSColor *
+on_ui_fixed_color(on_color_t c)
 {
     return [NSColor colorWithSRGBRed:c.r green:c.g blue:c.b alpha:c.a];
 }
@@ -44,8 +40,8 @@ ns_color(on_color_t c)
 NSColor *
 on_ui_color(on_look_color_t color)
 {
-    NSColor *light = ns_color(color.light);
-    NSColor *dark  = ns_color(color.dark);
+    NSColor *light = on_ui_fixed_color(color.light);
+    NSColor *dark  = on_ui_fixed_color(color.dark);
     return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
         NSAppearanceName match = [appearance
             bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
@@ -444,21 +440,29 @@ on_ui_format_bytes(int64_t bytes)
     return [fmt stringFromByteCount:bytes];
 }
 
+NSString *const on_ui_date_list = @"MMM d, yyyy HH:mm";
+NSString *const on_ui_date_day  = @"MMM d, yyyy";
+NSString *const on_ui_date_iso  = @"yyyy-MM-dd";
+
 /*
- * on_ui_format_time — date and time via one shared formatter.
+ * on_ui_format_date — a date via the shared formatter for its pattern.
  * Inputs/output are documented in ui_util.h.
  */
 NSString *
-on_ui_format_time(int64_t unix_time)
+on_ui_format_date(int64_t unix_time, NSString *format)
 {
-    static NSDateFormatter *fmt;
+    static NSMutableDictionary<NSString *, NSDateFormatter *> *formatters;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        fmt = [[NSDateFormatter alloc] init];
-        fmt.dateStyle = NSDateFormatterMediumStyle;
-        fmt.timeStyle = NSDateFormatterShortStyle;
-    });
-    if (unix_time == 0) return @"—";
+    dispatch_once(&once, ^{ formatters = [NSMutableDictionary dictionary]; });
+    NSDateFormatter *fmt;
+    @synchronized (formatters) {
+        fmt = formatters[format];
+        if (fmt == nil) {
+            fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = format;
+            formatters[format] = fmt;
+        }
+    }
     return [fmt stringFromDate:[NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)unix_time]];
 }
 
@@ -473,4 +477,29 @@ on_ui_ids(NSArray<NSNumber *> *ids)
     gint64 *out = malloc(ids.count * sizeof *out);
     for (NSUInteger i = 0; i < ids.count; i++) out[i] = ids[i].longLongValue;
     return out;
+}
+
+/*
+ * on_ui_select_radio — one radio of a group on.
+ * Inputs/output are documented in ui_util.h.
+ */
+void
+on_ui_select_radio(NSArray<NSButton *> *group, NSButton *chosen)
+{
+    for (NSButton *b in group) b.state = b == chosen ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+/*
+ * on_ui_pin_edges — four edges on another view's.
+ * Inputs/output are documented in ui_util.h.
+ */
+void
+on_ui_pin_edges(NSView *view, NSView *to)
+{
+    [NSLayoutConstraint activateConstraints:@[
+        [view.topAnchor      constraintEqualToAnchor:to.topAnchor],
+        [view.bottomAnchor   constraintEqualToAnchor:to.bottomAnchor],
+        [view.leadingAnchor  constraintEqualToAnchor:to.leadingAnchor],
+        [view.trailingAnchor constraintEqualToAnchor:to.trailingAnchor],
+    ]];
 }

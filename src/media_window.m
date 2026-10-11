@@ -241,11 +241,8 @@ build
     column.translatesAutoresizingMaskIntoConstraints = NO;
     NSView *content = self.window.contentView;
     [content addSubview:column];
+    on_ui_pin_edges(column, content);
     [NSLayoutConstraint activateConstraints:@[
-        [column.topAnchor      constraintEqualToAnchor:content.topAnchor],
-        [column.bottomAnchor   constraintEqualToAnchor:content.bottomAnchor],
-        [column.leadingAnchor  constraintEqualToAnchor:content.leadingAnchor],
-        [column.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [scroll.widthAnchor    constraintEqualToAnchor:column.widthAnchor constant:-16],
         [status_row.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-16],
     ]];
@@ -503,8 +500,7 @@ windowWillClose:(NSNotification *)note
     self.scanning = NO;
     on_image_viewer_close(self.viewer);
     NSSize size = self.window.contentView.frame.size;
-    on_app_config_set("media_win_w", @((int)size.width).stringValue.UTF8String);
-    on_app_config_set("media_win_h", @((int)size.height).stringValue.UTF8String);
+    on_app_config_set_size("media_win_w", "media_win_h", (gint)size.width, (gint)size.height);
 }
 
 @end

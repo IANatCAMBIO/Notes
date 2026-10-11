@@ -321,8 +321,7 @@ document_append_text(OnDocument *doc, const gchar *text)
 
 /* ---------------------------------------------------------------------------
  * tag_name_valid() — TRUE when `name` is a non-empty run of the characters
- * a #tag token may contain (the editor's tag_capture_span rule: letters,
- * digits, '_', '-').
+ * a #tag token may contain (on_document_tag_char).
  * ------------------------------------------------------------------------- */
 static gboolean
 tag_name_valid(const gchar *name)
@@ -330,8 +329,7 @@ tag_name_valid(const gchar *name)
     if (name == NULL || *name == '\0')
         return FALSE;
     for (const gchar *p = name; *p != '\0'; p = g_utf8_next_char(p)) {
-        gunichar c = g_utf8_get_char(p);
-        if (!(g_unichar_isalnum(c) || c == '_' || c == '-'))
+        if (!on_document_tag_char(g_utf8_get_char(p)))
             return FALSE;
     }
     return TRUE;

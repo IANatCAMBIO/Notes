@@ -469,8 +469,7 @@ layout_block(OnDocLayout *L, size_t i)
 
     /* Text block. */
     double indent = 0.0;
-    if (blk->kind == ON_BLOCK_BULLET || blk->kind == ON_BLOCK_NUMBER ||
-        blk->kind == ON_BLOCK_CHECK)
+    if (on_block_kind_is_list(blk->kind))
         indent = LIST_INDENT;
     else if (blk->kind == ON_BLOCK_CODE)
         indent = L->style.code_numbers ? CODE_INSET_NUM : CODE_INSET;

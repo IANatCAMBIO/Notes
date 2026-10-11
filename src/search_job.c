@@ -19,8 +19,6 @@
  * column to inspect a handful of notes (a folder- or tag-scoped search).    */
 #define SEARCH_BULK_TEXT_MIN 64
 
-/* strftime-style format of a hit's modified time ("Jun 3, 2026 14:05").    */
-#define SEARCH_TIME_FORMAT "%b %e, %Y %H:%M"
 
 /* ---------------------------------------------------------------------------
  * on_search_job_t — everything one search needs, snapshotted on the main
@@ -61,7 +59,6 @@ search_hit_free(gpointer data)
 {
     on_search_hit_t *h = data;
     g_free(h->path);
-    g_free(h->when);
     g_free(h);
 }
 
@@ -147,15 +144,12 @@ search_worker(void *data)
             continue;
         }
 
-        const gchar *folder = g_hash_table_lookup(paths, &m->folder_id);
-        GDateTime   *dt     = g_date_time_new_from_unix_local(m->updated_at);
+        const gchar     *folder = g_hash_table_lookup(paths, &m->folder_id);
         on_search_hit_t *h      = g_new0(on_search_hit_t, 1);
-        h->id   = m->id;
-        h->path = g_strdup_printf("%s/%s", folder != NULL ? folder : "",
-                                  m->title);
-        h->when = dt != NULL ? g_date_time_format(dt, SEARCH_TIME_FORMAT)
-                             : g_strdup("?");
-        if (dt != NULL) g_date_time_unref(dt);
+        h->id         = m->id;
+        h->path       = g_strdup_printf("%s/%s", folder != NULL ? folder : "",
+                                        m->title);
+        h->updated_at = m->updated_at;
         g_ptr_array_add(job->hits, h);
     }
     if (bodies != NULL) {

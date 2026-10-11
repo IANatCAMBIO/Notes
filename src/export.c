@@ -284,10 +284,8 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
 
         /* Blocks (lists, code) persist across lines; close the open one
          * when the kind changes.                                           */
-        gboolean is_block = (b->kind == ON_BLOCK_CODE ||
-                             b->kind == ON_BLOCK_BULLET ||
-                             b->kind == ON_BLOCK_NUMBER ||
-                             b->kind == ON_BLOCK_CHECK);
+        gboolean is_block = b->kind == ON_BLOCK_CODE ||
+                            on_block_kind_is_list(b->kind);
         if (open != ON_BLOCK_PARA && (!is_block || b->kind != open)) {
             close_block(ctx, open);
             open = ON_BLOCK_PARA;

@@ -733,9 +733,7 @@ enter_pressed(NotesNoteView *v)
         OnPos np = { at, -1, 0 };
         v.caret = v.anchor = np;
     } else {
-        BOOL list = b->kind == ON_BLOCK_BULLET || b->kind == ON_BLOCK_NUMBER ||
-                    b->kind == ON_BLOCK_CHECK;
-        if (list && b->text->text->len == 0) {
+        if (on_block_kind_is_list(b->kind) && b->text->text->len == 0) {
             /* Enter on empty item ends the list. */
             on_document_set_kind(v.doc, p.block, ON_BLOCK_PARA);
         } else {
@@ -802,9 +800,7 @@ delete_key(NotesNoteView *v, OnDocMove how)
 
     OnText *t = caret_text(v);
     if (backward && p.offset == 0 && p.cell < 0) {
-        BOOL list = b->kind == ON_BLOCK_BULLET || b->kind == ON_BLOCK_NUMBER ||
-                    b->kind == ON_BLOCK_CHECK;
-        if (list) {
+        if (on_block_kind_is_list(b->kind)) {
             on_document_set_kind(v.doc, p.block, ON_BLOCK_PARA);
         } else if (p.block > 0) {
             const OnBlock *prev = on_document_block(v.doc, p.block - 1);
@@ -1201,20 +1197,6 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
  */
 
 /*
- * is_tag_char — can this character continue a tag's word?
- *
- * Inputs:
- *   c — a code point
- *
- * Output: YES for letters, digits, '_' and '-'.
- */
-static BOOL
-is_tag_char(gunichar c)
-{
-    return g_unichar_isalnum(c) || c == '_' || c == '-';
-}
-
-/*
  * tag_span — the capture's "#word" span.
  *
  * Inputs:
@@ -1233,7 +1215,7 @@ tag_span(NotesNoteView *v, OnPos *start, OnPos *end)
     *start = v.tag_start;
     *end   = *start;
     const gchar *p = t->text->str + start->offset + 1;
-    while (*p != '\0' && is_tag_char(g_utf8_get_char(p))) p = g_utf8_next_char(p);
+    while (*p != '\0' && on_document_tag_char(g_utf8_get_char(p))) p = g_utf8_next_char(p);
     end->offset = (gsize)(p - t->text->str);
     return YES;
 }
@@ -1356,7 +1338,7 @@ tag_capture_consider(NotesNoteView *v, const char *text, size_t n)
         gunichar c  = g_utf8_get_char(p);
         gsize    at = start + (gsize)(p - text);
         if (v.tag_capturing) {
-            if (!is_tag_char(c)) tag_capture_end(v, YES);
+            if (!on_document_tag_char(c)) tag_capture_end(v, YES);
             continue;
         }
         if (c != '#') continue;
@@ -1661,6 +1643,28 @@ press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
 }
 
 /*
+ * context_image_index — which image of its block the context menu is on.
+ *
+ * Inputs:
+ *   v — the view
+ *
+ * Output: -1 for an image block, the inline image's index in its line's
+ *         images otherwise; -2 when there is no such image (any more).
+ */
+static gint
+context_image_index(NotesNoteView *v)
+{
+    OnDocHitResult hit = v.ctx_hit;
+    OnBlock *b = on_document_block(v.doc, hit.block);
+    if (b == NULL) return -2;
+    if (!hit.inline_image) return -1;
+    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++)
+        if (g_array_index(b->text->images, OnInlineImage, k).offset == hit.pos.offset)
+            return (gint)k;
+    return -2;
+}
+
+/*
  * context_image_width — the stored display width of the image the context
  * menu is on (0 = the default thumbnail size).
  *
@@ -1672,15 +1676,10 @@ press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
 static guint32
 context_image_width(NotesNoteView *v)
 {
-    OnDocHitResult hit = v.ctx_hit;
-    OnBlock *b = on_document_block(v.doc, hit.block);
-    if (b == NULL) return 0;
-    if (!hit.inline_image) return b->display_width;
-    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++) {
-        const OnInlineImage *img = &g_array_index(b->text->images, OnInlineImage, k);
-        if (img->offset == hit.pos.offset) return img->display_width;
-    }
-    return 0;
+    gint     k = context_image_index(v);
+    OnBlock *b = on_document_block(v.doc, v.ctx_hit.block);
+    if (k == -1) return b->display_width;
+    return k >= 0 ? g_array_index(b->text->images, OnInlineImage, k).display_width : 0;
 }
 
 /*
@@ -2175,11 +2174,7 @@ image_copy:(id)sender
 - (void)
 image_open:(id)sender
 {
-    GBytes *png = on_note_view_image_png(self, _ctx_hit.image_ord);
-    if (png == NULL) return;
-    gsize n;
-    const void *bytes = g_bytes_get_data(png, &n);
-    on_ui_open_image_external([NSData dataWithBytes:bytes length:n]);
+    on_note_view_image_open(self, _ctx_hit.image_ord);
 }
 
 /*
@@ -2191,14 +2186,8 @@ image_open:(id)sender
 - (void)
 set_context_image_width:(guint32)width
 {
-    gint inline_ord = -1;
-    if (_ctx_hit.inline_image) {
-        OnBlock *b = on_document_block(_doc, _ctx_hit.block);
-        for (guint k = 0; b != NULL && b->text != NULL && k < b->text->images->len; k++)
-            if (g_array_index(b->text->images, OnInlineImage, k).offset == _ctx_hit.pos.offset)
-                inline_ord = (gint)k;
-        if (inline_ord < 0) return;
-    }
+    gint inline_ord = context_image_index(self);
+    if (inline_ord < -1) return;
     typing_end(self);
     if (on_document_set_image_width(_doc, _ctx_hit.block, inline_ord, width)) after_edit(self);
 }
@@ -2880,12 +2869,8 @@ on_note_view_insert_table(NotesNoteView *view)
 void
 on_note_view_insert_date(NotesNoteView *view)
 {
-    time_t now = time(NULL);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    char buf[16];
-    strftime(buf, sizeof buf, "%Y-%m-%d", &tm);
-    insert_typed(view, buf, strlen(buf));
+    const char *day = on_ui_format_date(time(NULL), on_ui_date_iso).UTF8String;
+    insert_typed(view, day, strlen(day));
 }
 
 /*
@@ -3075,6 +3060,19 @@ on_note_view_image_png(NotesNoteView *view, NSInteger ordinal)
 }
 
 /*
+ * on_note_view_image_open — see note_view.h.
+ */
+BOOL
+on_note_view_image_open(NotesNoteView *view, NSInteger ordinal)
+{
+    GBytes *png = on_note_view_image_png(view, ordinal);
+    if (png == NULL) return NO;
+    gsize n;
+    const void *bytes = g_bytes_get_data(png, &n);
+    return on_ui_open_image_external([NSData dataWithBytes:bytes length:n]);
+}
+
+/*
  * on_note_view_image_reveal — see note_view.h.
  */
 BOOL
@@ -3203,26 +3201,13 @@ on_note_view_feed_key(NotesNoteView *view, on_key_t key, uint32_t character,
         }
     }
 
-    /* A printable character, typed: encode as UTF-8. */
-    char buf[8] = { 0 };
-    if (character < 0x80) {
-        buf[0] = (char)character;
-    } else if (character < 0x800) {
-        buf[0] = (char)(0xC0 | (character >> 6));
-        buf[1] = (char)(0x80 | (character & 0x3F));
-    } else if (character < 0x10000) {
-        buf[0] = (char)(0xE0 | (character >> 12));
-        buf[1] = (char)(0x80 | ((character >> 6) & 0x3F));
-        buf[2] = (char)(0x80 | (character & 0x3F));
-    } else {
-        buf[0] = (char)(0xF0 | (character >> 18));
-        buf[1] = (char)(0x80 | ((character >> 12) & 0x3F));
-        buf[2] = (char)(0x80 | ((character >> 6) & 0x3F));
-        buf[3] = (char)(0x80 | (character & 0x3F));
-    }
-    size_t n = strlen(buf);
+    /* A printable character, typed: as UTF-8. */
+    uint32_t    le  = NSSwapHostIntToLittle(character);
+    const char *u8  = [[NSString alloc] initWithBytes:&le length:sizeof le
+                                             encoding:NSUTF32LittleEndianStringEncoding].UTF8String;
+    size_t      n   = u8 != NULL ? strlen(u8) : 0;
     if (n == 0) return NO;
-    insert_typed(view, buf, n);
+    insert_typed(view, u8, n);
     return YES;
 }
 

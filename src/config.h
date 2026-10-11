@@ -143,6 +143,19 @@ void on_app_config_get_size(const gchar *key_w, const gchar *key_h,
                             gint *w, gint *h);
 
 /* ---------------------------------------------------------------------------
+ * on_app_config_set_size() — persist a window size into two keys, as
+ * on_app_config_get_size reads it back.
+ *
+ * Inputs:
+ *   key_w, key_h — the two keys
+ *   w, h         — the size in points
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_app_config_set_size(const gchar *key_w, const gchar *key_h,
+                            gint w, gint h);
+
+/* ---------------------------------------------------------------------------
  * on_app_config_load_db_dir() — the custom database directory (`db_dir`).
  *
  * Output: a new string (g_free it), or NULL when the default location (the

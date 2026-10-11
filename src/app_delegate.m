@@ -96,7 +96,7 @@ run_about(id target, id sender)
     NSDate   *built = stamp ? [[[NSISO8601DateFormatter alloc] init] dateFromString:stamp] : nil;
     if (built) {
         options[NSAboutPanelOptionApplicationVersion] = [@"built " stringByAppendingString:
-            on_ui_format_time((int64_t)built.timeIntervalSince1970)];
+            on_ui_format_date((int64_t)built.timeIntervalSince1970, on_ui_date_list)];
     }
     [NSApp orderFrontStandardAboutPanelWithOptions:options];
 }

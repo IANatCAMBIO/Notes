@@ -103,7 +103,7 @@ hook_quicknote(OnApp *app)
 - (void)
 mode_clicked:(NSButton *)sender
 {
-    for (NSButton *b in self.modes) b.state = b == sender ? NSControlStateValueOn : NSControlStateValueOff;
+    on_ui_select_radio(self.modes, sender);
 }
 
 /*
@@ -220,8 +220,9 @@ prompt_for_folder(NotesLibrary *lib, NSString *title, NSString *symbol,
     NotesToolPanel *panel = [NotesToolPanel
         panel_with_title:title hero_title:title
                 subtitle:@"A folder's emoji shows before its name in the sidebar."
-                  symbol:symbol content:f.view primary_title:@"OK"
-         primary_handler:^NSString * {
+                  symbol:symbol content:f.view buttons:@[@"OK", @"Cancel"]
+                 handler:^NSString *(NSInteger index) {
+        if (index != 0) return nil;                  /* Cancel */
         NSString *trimmed = [f.name.stringValue stringByTrimmingCharactersInSet:space];
         if (trimmed.length == 0) return @"The folder needs a name.";
         return done(trimmed, [f ai_mode], [f.emoji.stringValue stringByTrimmingCharactersInSet:space]);

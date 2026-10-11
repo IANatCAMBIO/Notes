@@ -111,26 +111,6 @@ static const CGFloat card_title_h = 34.0;
 /* ── Text helpers ──────────────────────────────────────────────────────── */
 
 /*
- * list_time_text — a time as the list shows it, "Jun 3, 2026 14:05"
- * (GTK LIST_TIME_FORMAT).  One shared formatter.
- *
- * Inputs:
- *   t — UNIX time
- *
- * Output: the text.
- */
-static NSString *
-list_time_text(gint64 t)
-{
-    static NSDateFormatter *f;
-    if (!f) {
-        f = [[NSDateFormatter alloc] init];
-        f.dateFormat = @"MMM d, yyyy HH:mm";
-    }
-    return [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:(double)t]];
-}
-
-/*
  * due_text — a due date as Action Items shows it, "Jun 3, 2026".
  *
  * Inputs:
@@ -141,12 +121,7 @@ list_time_text(gint64 t)
 static NSString *
 due_text(gint64 due)
 {
-    static NSDateFormatter *f;
-    if (!f) {
-        f = [[NSDateFormatter alloc] init];
-        f.dateFormat = @"MMM d, yyyy";
-    }
-    return due ? [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:(double)due]] : @"";
+    return due ? on_ui_format_date(due, on_ui_date_day) : @"";
 }
 
 /*
@@ -476,8 +451,7 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
     CGContextClipToRect(ctx, box);
     [body drawWithRect:box options:NSStringDrawingUsesLineFragmentOrigin
             attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:on_look_thumb_text_font],
-                          NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:tc.r green:tc.g
-                                                                               blue:tc.b alpha:tc.a],
+                          NSForegroundColorAttributeName: on_ui_fixed_color(tc),
                           NSParagraphStyleAttributeName: para }];
     [NSGraphicsContext restoreGraphicsState];
 
@@ -770,12 +744,7 @@ show_view:(NSScrollView *)scroll
     if (old == scroll) return;
     [old removeFromSuperview];
     [self.view addSubview:scroll];
-    [NSLayoutConstraint activateConstraints:@[
-        [scroll.topAnchor      constraintEqualToAnchor:self.view.topAnchor],
-        [scroll.bottomAnchor   constraintEqualToAnchor:self.view.bottomAnchor],
-        [scroll.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor],
-        [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    ]];
+    on_ui_pin_edges(scroll, self.view);
 }
 
 /* ── Populating ────────────────────────────────────────────────────────── */
@@ -827,8 +796,8 @@ load_records:(BOOL)previews
         r.title      = @(m->title ?: "");
         r.updated_at = m->updated_at;
         r.created_at = m->created_at;
-        r.modified   = list_time_text(m->updated_at);
-        r.created    = list_time_text(m->created_at);
+        r.modified   = on_ui_format_date(m->updated_at, on_ui_date_list);
+        r.created    = on_ui_format_date(m->created_at, on_ui_date_list);
         const gchar *path = m->folder_id ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
         r.path    = [@"/" stringByAppendingString:path ? @(path) : @""];
         r.preview = texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil;
@@ -982,7 +951,7 @@ refresh_note:(gint64)note_id
     NotesNoteRecord *r = self.records[i];
     r.title      = @(m->title ?: "");
     r.updated_at = m->updated_at;
-    r.modified   = list_time_text(m->updated_at);
+    r.modified   = on_ui_format_date(m->updated_at, on_ui_date_list);
     on_db_note_meta_free(m);
     if (mode == on_library_view_list && self.lib.app->comfortable_list) {
         gchar *body = on_db_note_body_text(self.lib.app->db, note_id);

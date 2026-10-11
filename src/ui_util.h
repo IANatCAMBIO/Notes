@@ -50,6 +50,18 @@ extern NSPasteboardType const on_pasteboard_type_rows;
 BOOL on_ui_is_dark(NSView *view);
 
 /*
+ * on_ui_fixed_color — one appearance's colour (on_look_pick's answer) as an
+ * sRGB NSColor, for drawing whose appearance is already decided (an
+ * off-screen card rendered for light or dark).
+ *
+ * Inputs:
+ *   c — the colour
+ *
+ * Output: the colour.
+ */
+NSColor *on_ui_fixed_color(on_color_t c);
+
+/*
  * on_ui_color — a look.h colour as an NSColor that follows the appearance
  * it is drawn under.
  *
@@ -320,17 +332,23 @@ NSSearchField *on_ui_toolbar_search_field(NSString *placeholder, CGFloat width);
  */
 NSString *on_ui_format_bytes(int64_t bytes);
 
+/* The dates the app shows, as NSDateFormatter patterns.                     */
+extern NSString *const on_ui_date_list;   /* "Jun 3, 2026 14:05": notes, hits  */
+extern NSString *const on_ui_date_day;    /* "Jun 3, 2026": due dates          */
+extern NSString *const on_ui_date_iso;    /* "2026-06-03": typed, AI prompt    */
+
 /*
- * on_ui_format_time — a UNIX time as a medium date and a short time in the
- * user's locale ("3 Oct 2026 at 14:05").  One shared formatter: never one
- * per table cell.  Thread-safe.
+ * on_ui_format_date — a UNIX time in local time, in a date pattern (one of
+ * the above, or another).  One shared formatter per pattern: never one per
+ * table cell.  Thread-safe.
  *
  * Inputs:
- *   unix_time — seconds since the epoch; 0 yields "—"
+ *   unix_time — seconds since the epoch
+ *   format    — the NSDateFormatter pattern
  *
  * Output: the text.
  */
-NSString *on_ui_format_time(int64_t unix_time);
+NSString *on_ui_format_date(int64_t unix_time, NSString *format);
 
 /*
  * on_ui_ids — note or folder ids held as NSNumbers (a selection, a drag),
@@ -343,3 +361,24 @@ NSString *on_ui_format_time(int64_t unix_time);
  *         ids is empty.
  */
 gint64 *on_ui_ids(NSArray<NSNumber *> *ids);
+
+/*
+ * on_ui_select_radio — make radio buttons act as one group: the chosen one
+ * on, the others off.
+ *
+ * Inputs:
+ *   group  — the group's buttons
+ *   chosen — the one clicked
+ */
+void on_ui_select_radio(NSArray<NSButton *> *group, NSButton *chosen);
+
+/*
+ * on_ui_pin_edges — lay a view over another: its four edges on that view's
+ * (constraints activated).
+ *
+ * Inputs:
+ *   view — the view to place, already in `to`'s view hierarchy and with
+ *          translatesAutoresizingMaskIntoConstraints NO
+ *   to   — the view whose edges it takes
+ */
+void on_ui_pin_edges(NSView *view, NSView *to);

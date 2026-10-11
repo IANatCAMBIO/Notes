@@ -89,7 +89,7 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
         NotesSearchHit *h = [[NotesSearchHit alloc] init];
         h.note_id = hits[i]->id;
         h.path    = @(hits[i]->path ?: "");
-        h.when    = @(hits[i]->when ?: "");
+        h.when    = on_ui_format_date(hits[i]->updated_at, on_ui_date_list);
         [rows addObject:h];
     }
     s.hits = rows;
@@ -204,11 +204,8 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     [column setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     NSView *content = win.contentView;
     [content addSubview:column];
+    on_ui_pin_edges(column, content);
     [NSLayoutConstraint activateConstraints:@[
-        [column.topAnchor        constraintEqualToAnchor:content.topAnchor],
-        [column.bottomAnchor     constraintEqualToAnchor:content.bottomAnchor],
-        [column.leadingAnchor    constraintEqualToAnchor:content.leadingAnchor],
-        [column.trailingAnchor   constraintEqualToAnchor:content.trailingAnchor],
         [query_row.widthAnchor   constraintEqualToAnchor:column.widthAnchor constant:-20],
         [scroll.widthAnchor      constraintEqualToAnchor:column.widthAnchor constant:-20],
         [self.status.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-20],
@@ -300,8 +297,7 @@ search_clicked:(id)sender
 - (void)
 scope_clicked:(NSButton *)sender
 {
-    self.scope_all.state       = sender == self.scope_all ? NSControlStateValueOn : NSControlStateValueOff;
-    self.scope_selection.state = sender == self.scope_selection ? NSControlStateValueOn : NSControlStateValueOff;
+    on_ui_select_radio(@[self.scope_all, self.scope_selection], sender);
 }
 
 /*
@@ -377,8 +373,7 @@ windowWillClose:(NSNotification *)note
 {
     [self cancel_job];
     NSSize size = self.window.contentView.frame.size;
-    on_app_config_set("search_win_w", @((int)size.width).stringValue.UTF8String);
-    on_app_config_set("search_win_h", @((int)size.height).stringValue.UTF8String);
+    on_app_config_set_size("search_win_w", "search_win_h", (gint)size.width, (gint)size.height);
 }
 
 @end

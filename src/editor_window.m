@@ -127,15 +127,15 @@ update_path:(NSString *)path note_id:(NSString *)note_id dirty:(BOOL)dirty
  * Inputs:
  *   symbol  — SF Symbols name; nil = show `face` as text
  *   face    — the text label when there is no symbol
- *   ident   — the command (commands.h) it runs
- *   tooltip — hover help
+ *   ident   — the command (commands.h) it runs; its tip is the hover help
  *   toggle  — YES for an on/off button (the inline styles)
  *
  * Output: the button, with a fixed height.
  */
 static NSButton *
-format_button(NSString *symbol, NSString *face, NSString *ident, NSString *tooltip, BOOL toggle)
+format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
 {
+    NSString *tooltip = on_command_tip(ident);
     NSButton *b = [NSButton buttonWithTitle:face target:nil action:@selector(run_command:)];
     b.identifier = ident;
     b.bezelStyle = NSBezelStyleRecessed;
@@ -729,8 +729,8 @@ build_format_bar
 
     NSStackView *find = [NSStackView stackViewWithViews:@[
         field,
-        format_button(@"chevron.up",   @"", @"find-previous", @"Previous match", NO),
-        format_button(@"chevron.down", @"", @"find-next",     @"Next match (Return)", NO),
+        format_button(@"chevron.up",   @"", @"find-previous", NO),
+        format_button(@"chevron.down", @"", @"find-next",     NO),
     ]];
     find.spacing = on_look_format_gap;
     find.translatesAutoresizingMaskIntoConstraints = NO;
@@ -759,14 +759,14 @@ rebuild_format_groups
 {
     [self.format_groups removeFromSuperview];
 
-    NSButton *bold      = format_button(@"bold",          @"", @"inline-bold",      @"Bold",          YES);
-    NSButton *italic    = format_button(@"italic",        @"", @"inline-italic",    @"Italic",        YES);
-    NSButton *underline = format_button(@"underline",     @"", @"inline-underline", @"Underline",     YES);
-    NSButton *strike    = format_button(@"strikethrough", @"", @"inline-strike",    @"Strikethrough", YES);
+    NSButton *bold      = format_button(@"bold",          @"", @"inline-bold",      YES);
+    NSButton *italic    = format_button(@"italic",        @"", @"inline-italic",    YES);
+    NSButton *underline = format_button(@"underline",     @"", @"inline-underline", YES);
+    NSButton *strike    = format_button(@"strikethrough", @"", @"inline-strike",    YES);
     self.inline_buttons = @[bold, italic, underline, strike];
 
     NSMutableArray<NSView *> *views = [NSMutableArray arrayWithArray:self.inline_buttons];
-    [views addObject:format_button(@"curlybraces", @"", @"para-code", @"Code block", NO)];
+    [views addObject:format_button(@"curlybraces", @"", @"para-code", NO)];
     [views addObject:group_separator()];
     if (self.app->compact_editor_toolbar) {
         [views addObject:format_menu(@"Aa", @"Styles — paragraph style: heading or body text",
@@ -775,14 +775,13 @@ rebuild_format_groups
         [views addObject:format_menu(@"≡", @"Lists — bullets, numbers, or task checkboxes",
                                      @[@"para-bullet", @"para-number", @"para-check"])];
     } else {
-        [views addObject:format_button(nil, @"H1",   @"para-h1",   @"Heading 1",       NO)];
-        [views addObject:format_button(nil, @"H2",   @"para-h2",   @"Heading 2",       NO)];
-        [views addObject:format_button(nil, @"Body", @"para-body", @"Plain body text", NO)];
+        [views addObject:format_button(nil, @"H1",   @"para-h1",   NO)];
+        [views addObject:format_button(nil, @"H2",   @"para-h2",   NO)];
+        [views addObject:format_button(nil, @"Body", @"para-body", NO)];
         [views addObject:group_separator()];
-        [views addObject:format_button(@"list.bullet", @"", @"para-bullet", @"Bulleted list", NO)];
-        [views addObject:format_button(@"list.number", @"", @"para-number", @"Numbered list", NO)];
-        [views addObject:format_button(@"checklist",   @"", @"para-check",
-                                       @"Task list with checkboxes (click a box to toggle)", NO)];
+        [views addObject:format_button(@"list.bullet", @"", @"para-bullet", NO)];
+        [views addObject:format_button(@"list.number", @"", @"para-number", NO)];
+        [views addObject:format_button(@"checklist",   @"", @"para-check",  NO)];
     }
     [views addObject:group_separator()];
     [views addObject:format_menu(@"+", @"Insert an image, a table, an emoji, or today's date at the cursor",
@@ -844,11 +843,7 @@ build_image_viewer
     };
     viewer.action_handler = ^(NSInteger idx) {
         NotesEditorWindow *s = ws;
-        GBytes *png = s ? on_note_view_image_png(s.note_view, idx) : NULL;
-        if (!png) return;
-        gsize n;
-        const void *bytes = g_bytes_get_data(png, &n);
-        on_ui_open_image_external([NSData dataWithBytes:bytes length:n]);
+        if (s) on_note_view_image_open(s.note_view, idx);
     };
     self.image_viewer = viewer;
 }

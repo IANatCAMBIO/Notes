@@ -45,25 +45,6 @@ static NSString * const prompt_plain   = @"Respond in plain text only. Do not us
                                           "bold, italics, or bullet symbols.\n\n";
 
 /*
- * day_text — a date as the prompt gives it, "2026-06-03".
- *
- * Inputs:
- *   t — UNIX time
- *
- * Output: the text.
- */
-static NSString *
-day_text(gint64 t)
-{
-    static NSDateFormatter *f;
-    if (!f) {
-        f = [[NSDateFormatter alloc] init];
-        f.dateFormat = @"yyyy-MM-dd";
-    }
-    return [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:(double)t]];
-}
-
-/*
  * build_prompt — the text sent to the AI command: the mode's header, the
  * plain-text instruction, then each note with its date, body and action
  * items.
@@ -90,7 +71,7 @@ build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *i
         OnNoteMeta *m = on_db_note_get(db, n.longLongValue);
         if (m == NULL) continue;
         found++;
-        [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", day_text(m->updated_at)];
+        [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", on_ui_format_date(m->updated_at, on_ui_date_iso)];
         on_db_note_meta_free(m);
         gchar *body = on_note_text_cached(db, n.longLongValue);   /* fills an empty cache */
         [p appendString:body && *body ? [@(body) stringByAppendingString:@"\n"] : @"(empty note)\n"];
@@ -100,7 +81,7 @@ build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *i
         for (GList *l = items; l != NULL; l = l->next) {
             const OnActionItem *it = l->data;
             [p appendFormat:@"  %@ %@", it->done ? @"[done]" : @"[    ]", @(it->text ? it->text : "")];
-            if (it->due) [p appendFormat:@" (due %@)", day_text(it->due)];
+            if (it->due) [p appendFormat:@" (due %@)", on_ui_format_date(it->due, on_ui_date_iso)];
             [p appendString:@"\n"];
         }
         on_db_action_list_free(items);

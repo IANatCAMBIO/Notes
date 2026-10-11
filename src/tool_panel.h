@@ -15,45 +15,24 @@
 @interface NotesToolPanel : NSObject
 
 /*
- * panel_with_title:hero_title:subtitle:symbol:content:primary_title:primary_handler: —
- * build a panel that asks for something: the caller's controls above
- * Cancel and a primary button.  show_over: displays it; it keeps itself
- * alive while it is on screen.
- *
- * Inputs:
- *   window_title    — title bar text
- *   hero_title      — bold line in the hero strip
- *   subtitle        — second line in the hero strip; problems show there too
- *   symbol          — SF Symbols name for the hero icon; may be nil
- *   content         — the controls, sized by their own fittingSize (fixed
- *                     widths and heights); not retained after close
- *   primary_title   — the default button's label, e.g. @"Create"
- *   primary_handler — called when the primary button is clicked; returns
- *                     nil to accept (the panel closes) or a one-line problem
- *                     to show in the hero strip (the panel stays open)
- *
- * Output: the panel, not yet shown.
- */
-+ (instancetype)panel_with_title:(NSString *)window_title
-                      hero_title:(NSString *)hero_title
-                        subtitle:(NSString *)subtitle
-                          symbol:(NSString *)symbol
-                         content:(NSView *)content
-                   primary_title:(NSString *)primary_title
-                 primary_handler:(NSString *(^)(void))primary_handler;
-
-/*
  * panel_with_title:hero_title:subtitle:symbol:content:buttons:handler: —
- * build a panel with the caller's controls and any buttons (the due-date
- * panel's Set / Clear / Cancel).
+ * build a panel that asks for something: the caller's controls above its
+ * buttons (a folder's OK / Cancel, the due date's Set / Clear / Cancel).
+ * show_over: displays it; it keeps itself alive while it is on screen.
  *
  * Inputs:
- *   window_title, hero_title, subtitle, symbol, content — as above
- *   buttons — button labels, at least one: [0] is the default (Return) and
- *             sits rightmost, the rest follow to its left
- *   handler — called with the index of the clicked button; returns nil to
- *             close the panel or a one-line problem to show (the panel
- *             stays open)
+ *   window_title — title bar text
+ *   hero_title   — bold line in the hero strip
+ *   subtitle     — second line in the hero strip; problems show there too
+ *   symbol       — SF Symbols name for the hero icon; may be nil
+ *   content      — the controls, sized by their own fittingSize (fixed
+ *                  widths and heights); not retained after close
+ *   buttons      — button labels, at least one: [0] is the default (Return)
+ *                  and sits rightmost, the rest follow to its left
+ *   handler      — called with the index of the clicked button (not when
+ *                  the panel is dismissed); returns nil to close the panel
+ *                  or a one-line problem to show in the hero strip (the
+ *                  panel stays open)
  *
  * Output: the panel, not yet shown.
  */

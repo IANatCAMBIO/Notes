@@ -283,26 +283,6 @@ button_clicked:(NSButton *)sender
 }
 
 /*
- * panel_with_title:… — see tool_panel.h.
- */
-+ (instancetype)
-panel_with_title:(NSString *)window_title
-      hero_title:(NSString *)hero_title
-        subtitle:(NSString *)subtitle
-          symbol:(NSString *)symbol
-         content:(NSView *)content
-   primary_title:(NSString *)primary_title
- primary_handler:(NSString *(^)(void))primary_handler
-{
-    return [self build_with_title:window_title hero_title:hero_title subtitle:subtitle
-                           symbol:symbol content:content
-                    button_titles:@[primary_title, @"Cancel"]
-                   button_handler:^NSString *(NSInteger index) {
-        return index == 0 && primary_handler ? primary_handler() : nil;
-    }];
-}
-
-/*
  * panel_with_title:…:buttons:handler: — see tool_panel.h.
  */
 + (instancetype)

@@ -219,6 +219,13 @@ on_block_kind_is_text(OnBlockKind kind)
     return kind != ON_BLOCK_IMAGE && kind != ON_BLOCK_TABLE;
 }
 
+gboolean
+on_block_kind_is_list(OnBlockKind kind)
+{
+    return kind == ON_BLOCK_BULLET || kind == ON_BLOCK_NUMBER ||
+           kind == ON_BLOCK_CHECK;
+}
+
 guint32
 on_block_kind_para_flag(OnBlockKind kind)
 {
@@ -2501,6 +2508,12 @@ on_document_title(const OnDocument *d, const gchar *fallback, glong max_chars)
         return cut;
     }
     return title;
+}
+
+gboolean
+on_document_tag_char(gunichar c)
+{
+    return g_unichar_isalnum(c) || c == '_' || c == '-';
 }
 
 GList *

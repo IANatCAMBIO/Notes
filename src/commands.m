@@ -72,8 +72,10 @@ static const on_command_t commands[] = {
     { @"find",             @"Find…",                   @"f", cmd,       win, nil, nil },
 
     /* ── Window scope, editor ── */
-    { @"find-next",        @"Find Next",               @"g", cmd,       win, nil, nil },
-    { @"find-previous",    @"Find Previous",           @"g", cmd_shift, win, nil, nil },
+    { @"find-next",        @"Find Next",               @"g", cmd,       win, nil,
+      @"Next match (Return)" },
+    { @"find-previous",    @"Find Previous",           @"g", cmd_shift, win, nil,
+      @"Previous match" },
     { @"find-selection",   @"Use Selection for Find",  @"e", cmd,       win, nil, nil },
     { @"inline-bold",      @"Bold",                    @"b", cmd,       win, nil, nil },
     { @"inline-italic",    @"Italic",                  @"i", cmd,       win, nil, nil },
@@ -81,10 +83,12 @@ static const on_command_t commands[] = {
     { @"inline-strike",    @"Strikethrough",           @"x", cmd_shift, win, nil, nil },
     { @"para-h1",          @"Heading 1",               @"",  0,         win, nil, nil },
     { @"para-h2",          @"Heading 2",               @"",  0,         win, nil, nil },
-    { @"para-body",        @"Body",                    @"",  0,         win, nil, nil },
+    { @"para-body",        @"Body",                    @"",  0,         win, nil,
+      @"Plain body text" },
     { @"para-bullet",      @"Bulleted List",           @"",  0,         win, nil, nil },
     { @"para-number",      @"Numbered List",           @"",  0,         win, nil, nil },
-    { @"para-check",       @"Task List",               @"",  0,         win, nil, nil },
+    { @"para-check",       @"Task List",               @"",  0,         win, nil,
+      @"Task list with checkboxes (click a box to toggle)" },
     { @"para-code",        @"Code Block",              @"m", cmd_shift, win, nil, nil },
     { @"insert-image",     @"Image…",                  @"",  0,         win, nil, nil },
     { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil, nil },
@@ -153,6 +157,17 @@ on_command_menu_item(NSString *ident)
 }
 
 /*
+ * on_command_tip — see commands.h.
+ */
+NSString *
+on_command_tip(NSString *ident)
+{
+    const on_command_t *command = command_find(ident);
+    NSCAssert(command != NULL, @"unknown command %@", ident);
+    return command->tip ?: command->title;
+}
+
+/*
  * on_command_toolbar_item — toolbar item from the table.
  * Inputs/output are documented in commands.h.
  */
@@ -165,7 +180,7 @@ on_command_toolbar_item(NSString *ident)
     SEL action = command_action(command, &target);
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
     item.label    = command->title;
-    item.toolTip  = command->tip ?: command->title;
+    item.toolTip  = on_command_tip(ident);
     item.image    = on_ui_icon(command->icon, on_look_toolbar_icon);
     item.target   = target;
     item.action   = action;

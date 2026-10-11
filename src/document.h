@@ -176,6 +176,9 @@ OnBlock *on_block_copy(const OnBlock *b);
 /* on_block_kind_is_text() — PARA/H1/H2/BULLET/NUMBER/CHECK/CODE.          */
 gboolean on_block_kind_is_text(OnBlockKind kind);
 
+/* on_block_kind_is_list() — BULLET/NUMBER/CHECK: a list line.             */
+gboolean on_block_kind_is_list(OnBlockKind kind);
+
 /* on_block_cell() — a table's cell (row r, column c); NULL out of range.  */
 OnText *on_block_cell(const OnBlock *b, gint r, gint c);
 
@@ -477,6 +480,13 @@ gchar *on_document_title(const OnDocument *d, const gchar *fallback,
  * it) is dropped.  Never NULL.
  * ------------------------------------------------------------------------- */
 OnDocument *on_document_from_text(const gchar *text);
+
+/* ---------------------------------------------------------------------------
+ * on_document_tag_char() — THE rule for a #tag's word: can this character
+ * be part of it?  Letters, digits, '_' and '-'.  The editor's tag capture
+ * and the CLI's tag names both follow it.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_tag_char(gunichar c);
 
 /* ---------------------------------------------------------------------------
  * on_document_collect_tags() — the distinct #tag names in the note (runs

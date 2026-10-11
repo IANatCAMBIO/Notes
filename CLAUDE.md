@@ -28,7 +28,7 @@ data, code style, verification.
   authorisation prompt on the owner's screen and hang.  Use `make ui-check`
   (in-process ownership, heap and image checks; snapshots in
   `dev/snapshots`).
-- Branch `main` (the GTK build is on `gtk4`); remote `origin` is `IANatCAMBIO/orange_notes` — push only when asked.
+- Branch `main` (the GTK build is on `gtk4`); remote `origin` is `IANatCAMBIO/Notes` — push only when asked.
 - No header bars, no native dialogs: ordinary title bars (only the library
   has an `NSToolbar`, expanded style); every message or question is a tool
   panel (`src/tool_panel.h`), never `NSAlert` or a sheet.  Details:

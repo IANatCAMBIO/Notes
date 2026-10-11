@@ -26,8 +26,10 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    Notes app is installed and probably running on the real database.  Off
    limits: `~/Library/Mobile Documents/com~apple~CloudDocs/Notes/`,
    `~/.local/share/notes/`, `~/.config/notes/`, `~/.cache/notes-*.sock`,
-   `~/Applications/Notes.app`, and the sibling repositories `../notes`,
-   `../tasks`, `../files` (read-only references; never build or run there).
+   `~/Applications/Notes.app`, the GTK build's `notes` binary, `notes.ini`
+   and `dist/` left at the repo root (ignored; `notes.ini` points at the
+   real notes), and the sibling repositories `../tasks`, `../files`
+   (read-only references; never build or run there).
    Never run a GTK `notes` binary except through `tests/cli_golden.sh`,
    which sandboxes it.
 2. **Every run uses test data.**  `make run`, `make seed`, `make test` set

@@ -6,5 +6,11 @@ NotesAppKit.app/
 # make run, make test): never the user's real data directory
 dev/
 
+# The GTK build's binary, its live config (db_dir is the owner's real
+# notes) and bundle, left in the tree from the gtk4 branch: never commit
+/notes
+/notes.ini
+dist/
+
 # macOS noise
 .DS_Store

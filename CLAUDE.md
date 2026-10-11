@@ -14,9 +14,10 @@ data, code style, verification.
 - NEVER touch the owner's live data, not even to read:
   `~/Library/Mobile Documents/com~apple~CloudDocs/Notes/`,
   `~/.local/share/notes/`, `~/.config/notes/`, `~/.cache/notes-*.sock`,
-  `~/Applications/Notes.app`, the sibling repos `../notes`, `../tasks`,
-  `../files`.  Never run a GTK `notes` binary (only `make golden` does, in
-  a sandbox).
+  `~/Applications/Notes.app`, the GTK build's `notes` binary, `notes.ini`
+  and `dist/` left at the repo root (ignored; `notes.ini` points at the
+  real notes), the sibling repos `../tasks`, `../files`.  Never run a GTK
+  `notes` binary (only `make golden` does, in a sandbox).
 - Every run uses test data: `make run`, `make seed`, `make test`.  By hand:
   `NOTES_DATA_DIR=$PWD/dev/data NotesAppKit.app/Contents/MacOS/notes …`.
 - Do not change `document.c`, `bnbf.c`, `db.c` behaviour.  The CLI's output

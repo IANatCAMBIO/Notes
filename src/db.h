@@ -614,7 +614,7 @@ GList *on_db_note_list_trashed(OnDatabase *db);
 
 /* TRUE when note `id` is in the Trash — either flagged itself or sitting
  * inside a trashed folder's subtree (the same rule every visible listing
- * filters on).  A missing note reads as not trashed.                        */
+ * filters on).  A missing note reads as trashed: nothing visible to keep. */
 gboolean on_db_note_is_trashed(OnDatabase *db, gint64 id);
 
 /* Number of items directly in the Trash: trashed notes + trashed folders. */

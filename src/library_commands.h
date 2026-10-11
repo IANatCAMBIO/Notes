@@ -58,8 +58,9 @@ BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name
 
 /*
  * on_library_delete_notes — the Trash view's delete: ask once ("This cannot
- * be undone."), then close the notes' editors and delete them permanently,
- * and refresh the library.
+ * be undone."), then close the notes' editors and delete permanently those
+ * still in the Trash (none if the database was switched meanwhile), and
+ * refresh the library.
  *
  * Inputs:
  *   lib — the library

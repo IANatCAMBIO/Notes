@@ -933,6 +933,31 @@ answer_panel(NSString *title)
 }
 
 /*
+ * select_note_row — select the notes list's row with this title.
+ *
+ * Inputs:
+ *   lib   — the library
+ *   title — the note's title
+ *
+ * Output: the row selected, or -1 when no row has that title.
+ */
+static NSInteger
+select_note_row(NotesLibrary *lib, NSString *title)
+{
+    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class,
+                                                  NSOutlineView.class);
+    NSInteger row = -1;
+    for (NSInteger r = 0; r < table.numberOfRows; r++) {
+        NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:r
+                                       makeIfNecessary:YES];
+        if (label_with_text(cell, title)) row = r;
+    }
+    if (row >= 0) [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    [lib.window makeFirstResponder:table];
+    return row;
+}
+
+/*
  * test_trash — moving notes and folders to the Trash, restoring and
  * deleting them, always closes the editors open on them first; a restored
  * folder goes back where it was.
@@ -956,15 +981,7 @@ test_trash(NotesLibrary *lib)
     lib.sel_id   = 0;
     on_library_notes_refresh(lib);
     pump(0.2);
-    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class,
-                                                  NSOutlineView.class);
-    NSInteger row = -1;
-    for (NSInteger r = 0; r < table.numberOfRows; r++) {
-        NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:r
-                                       makeIfNecessary:YES];
-        if (label_with_text(cell, @"Loose note")) row = r;
-    }
-    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    NSInteger row = select_note_row(lib, @"Loose note");
     NSSearchField *library_search = (NSSearchField *)find_view(lib.window.contentView.superview,
                                                                NSSearchField.class, Nil);
     if (!library_search) {
@@ -975,7 +992,7 @@ test_trash(NotesLibrary *lib)
     [lib.window makeFirstResponder:library_search];
     check(library_search != nil && !on_library_validate_command(lib, command_item(@"delete-note")),
           "⌘⌫ does not trash notes while the library's search field is being typed in");
-    [lib.window makeFirstResponder:table];
+    select_note_row(lib, @"Loose note");
     on_library_run_command(lib, command_item(@"delete-note"));
     pump(0.2);
     check(row >= 0 && id_in(on_db_trash_note_ids(app.db), loose) &&
@@ -1010,6 +1027,39 @@ test_trash(NotesLibrary *lib)
     check(!id_in(on_db_trash_note_ids(app.db), loose) && on_db_note_get(app.db, loose) == NULL &&
           editor_window_titled(@"Loose note") == nil,
           "and then deletes the Trash's notes, closing their editors");
+
+    /* The question is not modal: what was restored while it was up is not
+     * deleted when it is answered.                                         */
+    gint64 saved = new_note("Restored meanwhile\nbody");
+    on_db_notes_trash(app.db, &saved, 1);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    on_library_sidebar_select(lib, on_sb_trash, 0);
+    on_library_notes_refresh(lib);
+    pump(0.2);
+    check(select_note_row(lib, @"Restored meanwhile") >= 0, "a trashed note is listed in the Trash");
+    on_library_run_command(lib, command_item(@"delete-note"));
+    pump(0.2);
+    on_db_note_restore(app.db, saved);
+    check(answer_panel(@"Delete"), "Delete in the Trash asks first");
+    pump(0.2);
+    OnNoteMeta *kept = on_db_note_get(app.db, saved);
+    check(kept != NULL && !on_db_note_is_trashed(app.db, saved),
+          "a note restored while the question was up is not deleted");
+    on_db_note_meta_free(kept);
+
+    on_db_folder_trash(app.db, folder);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    on_library_sidebar_select(lib, on_sb_trash_folder, folder);
+    lib.sel_name = @"Trash child";
+    on_library_run_command(lib, command_item(@"delete-folder"));
+    pump(0.2);
+    on_db_folder_restore(app.db, folder);
+    check(answer_panel(@"Delete"), "Delete of a trashed folder asks first");
+    pump(0.2);
+    check(folder_under(parent, folder),
+          "a folder restored while the question was up is not deleted");
 }
 
 /*

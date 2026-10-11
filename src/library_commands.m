@@ -468,6 +468,50 @@ close_editors_for_ids(NotesLibrary *lib, GArray *ids)
 }
 
 /*
+ * confirm_permanent — ask before a permanent deletion; the handler runs only
+ * if the user confirms AND the database the question was about is still
+ * the one open (the panel is not modal: File ▸ Open Database can switch it
+ * underneath, and ids mean nothing in another file).  The handler must
+ * itself re-check that what it deletes is still in the Trash.
+ *
+ * Inputs:
+ *   lib      — the library
+ *   question — the panel's headline
+ *   action   — the confirming button's title
+ *   handler  — the deletion
+ */
+static void
+confirm_permanent(NotesLibrary *lib, NSString *question, NSString *action, void (^handler)(void))
+{
+    NSString *path = @(lib.app->db->path);
+    on_ui_confirm(question, nil, action, lib.window, ^(BOOL confirmed) {
+        if (!confirmed || lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return;
+        handler();
+    });
+}
+
+/*
+ * folder_in_trash — whether a folder sits directly in the Trash now.
+ *
+ * Inputs:
+ *   db        — the database
+ *   folder_id — the folder
+ *
+ * Output: YES when it is one of the Trash's folders.
+ */
+static BOOL
+folder_in_trash(OnDatabase *db, gint64 folder_id)
+{
+    GList *trashed = on_db_folder_list_trashed(db);
+    BOOL   found   = NO;
+    for (GList *l = trashed; l != NULL && !found; l = l->next) {
+        found = ((OnFolder *)l->data)->id == folder_id;
+    }
+    on_db_folder_list_free(trashed);
+    return found;
+}
+
+/*
  * run_delete_folder — "delete-folder": the selected folder (with its
  * subtree) goes to the Trash, no question asked — it can be restored; a
  * folder already in the Trash is deleted permanently after one
@@ -487,9 +531,11 @@ run_delete_folder(id target, id sender)
     }
     if (lib.sel_kind != on_sb_trash_folder) return;
     gint64 folder_id = lib.sel_id;
-    on_ui_confirm(@"Permanently delete this folder and everything inside it?", nil, @"Delete",
-                  lib.window, ^(BOOL confirmed) {
-        if (!confirmed) return;
+    confirm_permanent(lib, @"Permanently delete this folder and everything inside it?", @"Delete", ^{
+        if (!folder_in_trash(lib.app->db, folder_id)) {      /* restored meanwhile */
+            on_library_refresh_all(lib);
+            return;
+        }
         if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id))) return;
         on_db_folder_delete(lib.app->db, folder_id);
         if (lib.sel_kind == on_sb_trash_folder && lib.sel_id == folder_id)
@@ -565,9 +611,7 @@ static void
 run_empty_trash(id target, id sender)
 {
     NotesLibrary *lib = target;
-    on_ui_confirm(@"Permanently delete everything in the Trash?", nil, @"Empty Trash",
-                  lib.window, ^(BOOL confirmed) {
-        if (!confirmed) return;
+    confirm_permanent(lib, @"Permanently delete everything in the Trash?", @"Empty Trash", ^{
         if (!close_editors_for_ids(lib, on_db_trash_note_ids(lib.app->db))) return;
         if (!on_db_trash_empty(lib.app->db)) return;
         on_app_status(lib.app, "Trash emptied");
@@ -684,12 +728,13 @@ on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids)
     NSString *question = ids.count == 1
         ? @"Permanently delete this note?"
         : [NSString stringWithFormat:@"Permanently delete these %lu notes?", (unsigned long)ids.count];
-    on_ui_confirm(question, nil, @"Delete", lib.window, ^(BOOL confirmed) {
-        if (!confirmed) return;
+    confirm_permanent(lib, question, @"Delete", ^{
+        /* Only what is still in the Trash: a note restored while the
+         * question was up is not deleted.                                  */
         GArray *note_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)ids.count);
         for (NSNumber *n in ids) {
             gint64 nid = n.longLongValue;
-            g_array_append_val(note_ids, nid);
+            if (on_db_note_is_trashed(lib.app->db, nid)) g_array_append_val(note_ids, nid);
         }
         if (on_editor_close_notes((const gint64 *)note_ids->data, note_ids->len)) {
             on_db_notes_delete(lib.app->db, (const gint64 *)note_ids->data, note_ids->len);

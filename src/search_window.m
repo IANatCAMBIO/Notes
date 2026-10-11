@@ -253,7 +253,7 @@ run_search
     OnQuery *parsed = on_query_new(text.UTF8String, self.case_sensitive.state == NSControlStateValueOn,
                                    self.regex.state == NSControlStateValueOn, &err);
     if (parsed == NULL) {
-        self.status.stringValue = [NSString stringWithFormat:@"Bad pattern: %s", err ? err->message : "?"];
+        self.status.stringValue = [NSString stringWithFormat:@"Bad pattern: %@", @(err ? err->message : "?")];
         g_clear_error(&err);
         return;
     }

@@ -26,6 +26,7 @@
 #include "app_core.h"
 #include "commands.h"
 #include "db.h"
+#include "serialize.h"
 
 #include <fcntl.h>
 
@@ -80,7 +81,7 @@ build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *i
 {
     NSMutableString *p = [NSMutableString string];
     if (mode == ON_AI_MODE_PROJECT)     [p appendString:prompt_project];
-    else if (mode == ON_AI_MODE_CUSTOM) [p appendFormat:@"%s\n\n", app->ai_custom_prompt];
+    else if (mode == ON_AI_MODE_CUSTOM) [p appendFormat:@"%@\n\n", @(app->ai_custom_prompt ? app->ai_custom_prompt : "")];
     else                                [p appendString:prompt_normal];
     [p appendString:prompt_plain];
     [p appendString:@"=== Notes ===\n\n"];
@@ -91,14 +92,14 @@ build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *i
         found++;
         [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", day_text(m->updated_at)];
         on_db_note_meta_free(m);
-        gchar *body = on_db_note_body_text(db, n.longLongValue);
+        gchar *body = on_note_text_cached(db, n.longLongValue);   /* fills an empty cache */
         [p appendString:body && *body ? [@(body) stringByAppendingString:@"\n"] : @"(empty note)\n"];
         g_free(body);
         GList *items = on_db_action_list_for_note(db, n.longLongValue);
         if (items) [p appendString:@"\nAction items:\n"];
         for (GList *l = items; l != NULL; l = l->next) {
             const OnActionItem *it = l->data;
-            [p appendFormat:@"  %@ %s", it->done ? @"[done]" : @"[    ]", it->text];
+            [p appendFormat:@"  %@ %@", it->done ? @"[done]" : @"[    ]", @(it->text ? it->text : "")];
             if (it->due) [p appendFormat:@" (due %@)", day_text(it->due)];
             [p appendString:@"\n"];
         }

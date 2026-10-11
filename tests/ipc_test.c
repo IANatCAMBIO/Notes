@@ -269,7 +269,7 @@ static void
 test_wire_format(void)
 {
     /* Protocol B first, on a fresh database, so the ids are known.         */
-    const char *run_folder = "RUN\n3\n6\nfolder3\nadd9\nIpcFolder0\n";
+    const char *run_folder = "RUN\n3\n6\nfolder3\nadd9\nIpcFolder0\n1\n.";
     const char *want       = "0\n24\nfolder IpcFolder (id 1)\n0\n";
     char reply[4096];
     long before = changed_count();
@@ -278,13 +278,13 @@ test_wire_format(void)
           "RUN: <rc>\\n<len>\\n<stdout><len>\\n<stderr>, byte for byte");
     check(changed_count() == before + 1, "a mutating command fires notify_notes_changed in the server");
 
-    const char *run_stdin = "RUN\n3\n4\nnote3\nnew1\n-16\nFrom stdin\n\nbody";
+    const char *run_stdin = "RUN\n3\n4\nnote3\nnew1\n-16\nFrom stdin\n\nbody1\n.";
     n = raw_exchange(run_stdin, strlen(run_stdin), reply, sizeof reply);
     check(n > 0 && strcmp(reply, "0\n18\nnote 1\tFrom stdin\n0\n") == 0,
           "RUN ships stdin to the command");
 
     before = changed_count();
-    const char *run_usage = "RUN\n1\n3\ntag0\n";
+    const char *run_usage = "RUN\n1\n3\ntag0\n1\n.";
     n = raw_exchange(run_usage, strlen(run_usage), reply, sizeof reply);
     check(n > 4 && strncmp(reply, "1\n0\n", 4) == 0 && strstr(reply, "Usage: notes") != NULL,
           "a usage error comes back as exit 1 with the text on stderr");
@@ -336,6 +336,17 @@ test_real_cli(const char *data_dir)
     rc = run_cli("note cat 1", out, sizeof out);
     check(rc == 0 && strcmp(out, "From stdin\n\nbody\n") == 0, "a read returns the note's text");
 
+    /* A relative path is the CLI's directory, not the app's.               */
+    char elsewhere[PATH_MAX];
+    snprintf(elsewhere, sizeof elsewhere, "%s/elsewhere", data_dir);
+    mkdir(elsewhere, 0700);
+    check(chdir(elsewhere) == 0, "the CLI runs from another directory");
+    rc = run_cli("backup relative.db", out, sizeof out);
+    check(chdir(data_dir) == 0, "and the test returns");
+    struct stat sb;
+    check(rc == 0 && stat("elsewhere/relative.db", &sb) == 0 && stat("relative.db", &sb) != 0,
+          "a relative path names a file in the CLI's directory, not the app's");
+
     rc = run_cli("frobnicate", out, sizeof out);
     check(rc == 1 && strstr(out, "unknown command: frobnicate") != NULL,
           "an unknown command is exit 1, and starts nothing");
@@ -374,7 +385,7 @@ main(int argc, char **argv)
           "no socket file: ON_IPC_NO_SERVER");
     char    *argv_stats[] = { "notes", "stats", NULL };
     gboolean ran = TRUE;
-    check(on_ipc_try_remote_run(2, argv_stats, &ran) == 0 && !ran,
+    check(on_ipc_try_remote_run(2, argv_stats, NULL, &ran) == 0 && !ran,
           "no socket file: the data command is not run remotely");
 
     pid_t server = start_server(self);

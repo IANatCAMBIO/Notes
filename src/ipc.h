@@ -27,14 +27,15 @@
  * or the question cannot be answered, the client REFUSES: a wrong guess
  * would put a second writer on the database behind a live app's back.
  *
- * WIRE FORMAT (unchanged from the GTK build).
+ * WIRE FORMAT (the GTK build's, plus the working directory in RUN).
  *   Protocol A, one line each way:
  *     request   quicknote | open <path>
  *     response  OK <message>\n | ERR <message>\n
  *     <path> is a numeric note id or "Folder/Sub/Title" (exact title).
  *   Protocol B, a delegated data command:
  *     request   RUN\n <nargs>\n then per argument <len>\n<bytes>,
- *               then stdin as <len>\n<bytes>
+ *               then stdin as <len>\n<bytes>, then the client's working
+ *               directory as <len>\n<bytes>
  *     response  <exit code>\n <len>\n<stdout bytes> <len>\n<stderr bytes>
  *   Limits: 256 arguments, 64 KiB per line, 64 MiB per blob; 10 s per
  *   socket operation, except the client's wait for a RUN response, which
@@ -84,17 +85,23 @@ OnIpcResult on_ipc_try_remote(const gchar *command, gchar **reply_out);
  * on_ipc_try_remote_run() — CLIENT: ask a running app to execute a data
  * command (protocol B) and copy its captured stdout/stderr to ours.
  *
+ * Relative paths in the arguments mean this process's working directory,
+ * which is sent along.
+ *
  * Inputs:
  *   argc, argv — the full program arguments (argv[1] is the command)
+ *   stdin_data — the command's "-" content, already read; NULL for none
  *   ran        — receives TRUE when the caller must NOT run the command
  *                itself: the app ran it, or the socket could not be tried
  *                (an error has been printed)
  *
- * Output: the command's exit code when *ran is TRUE (2 when the response
- *         could not be read, or the socket could not be tried); 0 with
- *         *ran FALSE when no app is listening, so the caller runs headless.
+ * Output: the command's exit code when *ran is TRUE (2, with a message,
+ *         when the response could not be read whole, or the socket could
+ *         not be tried); 0 with *ran FALSE when no app is listening, so the
+ *         caller runs headless.
  * ------------------------------------------------------------------------- */
-int on_ipc_try_remote_run(int argc, char **argv, gboolean *ran);
+int on_ipc_try_remote_run(int argc, char **argv, const gchar *stdin_data,
+                          gboolean *ran);
 
 /* ---------------------------------------------------------------------------
  * on_ipc_run_command() — run one data command inside the running app, as
@@ -107,14 +114,16 @@ int on_ipc_try_remote_run(int argc, char **argv, gboolean *ran);
  *   app        — the application context, its database open
  *   argc, argv — the full program arguments (argv[1] is the command)
  *   stdin_data — the text a "-" argument reads; NULL for none
+ *   cwd        — the directory relative paths mean (the CLI's), the app's
+ *                own restored afterwards; NULL to stay where the app is
  *   out_text   — receives the captured stdout (g_free it; may be NULL)
  *   err_text   — receives the captured stderr (g_free it; may be NULL)
  *
  * Output: the command's exit code; 2 when it was refused or not run.
  * ------------------------------------------------------------------------- */
 int on_ipc_run_command(OnApp *app, int argc, char **argv,
-                       const gchar *stdin_data, gchar **out_text,
-                       gchar **err_text);
+                       const gchar *stdin_data, const gchar *cwd,
+                       gchar **out_text, gchar **err_text);
 
 /* ---------------------------------------------------------------------------
  * on_ipc_set_pending_quicknote() / on_ipc_set_pending_open() — record a GUI

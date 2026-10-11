@@ -646,20 +646,43 @@ ipc_capture_run(OnApp *app, int argc, char **argv, const gchar *stdin_data,
  */
 int
 on_ipc_run_command(OnApp *app, int argc, char **argv, const gchar *stdin_data,
-                   gchar **out_text, gchar **err_text)
+                   const gchar *cwd, gchar **out_text, gchar **err_text)
 {
     gboolean mutates = on_cli_command_mutates(argc, argv);
+
+    /* A relative path argument means the CLI's directory, not the app's:
+     * the command runs there (synchronously, on this thread; the workers
+     * only ever use absolute paths) and the app's is restored after.       */
+    int here = -1;                   /* the app's own working directory      */
+    if (cwd != NULL) {
+        here = open(".", O_RDONLY | O_CLOEXEC);
+        if (here < 0 || chdir(cwd) != 0) {
+            if (here >= 0) close(here);
+            *out_text = NULL;
+            *err_text = g_strdup_printf("error: cannot work in %s: %s\n",
+                                        cwd, strerror(errno));
+            return 2;
+        }
+    }
 
     /* Open editors and the command must not overwrite each other: the
      * editors save first, so the command reads the current text, and catch
      * up afterwards, so no autosave writes a stale copy back.              */
+    int rc;                          /* the command's exit code              */
     if (mutates && app->save_editors != NULL && !app->save_editors(app)) {
         *out_text = NULL;
         *err_text = g_strdup("error: an open note could not be saved; "
                              "nothing was changed\n");
-        return 2;
+        rc = 2;
+    } else {
+        rc = ipc_capture_run(app, argc, argv, stdin_data, out_text, err_text);
     }
-    int rc = ipc_capture_run(app, argc, argv, stdin_data, out_text, err_text);
+    if (here >= 0) {
+        if (fchdir(here) != 0)
+            g_warning("ipc: cannot return to the app's working directory: %s",
+                      strerror(errno));
+        close(here);
+    }
 
     /* Let the running app reflect a change the command just made.          */
     if (mutates && app->reload_editors != NULL) {
@@ -707,6 +730,8 @@ ipc_handle_run(OnApp *app, int fd)
 
     gssize slen = bad ? -1 : stream_read_uint_line(fd);
     gchar *stdin_data = (slen >= 0) ? stream_read_blob(fd, (gsize)slen) : NULL;
+    gssize clen = stdin_data != NULL ? stream_read_uint_line(fd) : -1;
+    gchar *cwd  = (clen >= 0) ? stream_read_blob(fd, (gsize)clen) : NULL;
 
     if (!bad && slen >= 0 && stdin_data == NULL) {
         /* The stdin blob is too large or unreadable: answer with an error
@@ -717,12 +742,12 @@ ipc_handle_run(OnApp *app, int fd)
         stream_write_all(fd, "2\n", 2);
         stream_write_blob(fd, "", 0);
         stream_write_blob(fd, errmsg, strlen(errmsg));
-    } else if (!bad && stdin_data != NULL) {
+    } else if (!bad && stdin_data != NULL && cwd != NULL) {
         int argc = (int)nargs + 1;
         const gchar *sd = on_cli_command_reads_stdin(argc, argv)
                           ? stdin_data : NULL;
         gchar *out_text = NULL, *err_text = NULL;
-        int rc = on_ipc_run_command(app, argc, argv, sd, &out_text, &err_text);
+        int rc = on_ipc_run_command(app, argc, argv, sd, cwd, &out_text, &err_text);
 
         gchar *rc_line = g_strdup_printf("%d\n", rc);
         stream_write_all(fd, rc_line, strlen(rc_line));
@@ -735,6 +760,7 @@ ipc_handle_run(OnApp *app, int fd)
         g_free(err_text);
     }
 
+    g_free(cwd);
     g_free(stdin_data);
     g_strfreev(argv);
 }
@@ -1012,7 +1038,8 @@ on_ipc_try_remote(const gchar *command, gchar **reply_out)
  * on_ipc_try_remote_run — see ipc.h.
  */
 int
-on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
+on_ipc_try_remote_run(int argc, char **argv, const gchar *stdin_data,
+                      gboolean *ran)
 {
     *ran = FALSE;
     gboolean no_server;
@@ -1029,12 +1056,11 @@ on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
         return 2;
     }
 
-    /* Slurp our stdin only for the commands that consume it — the app
-     * cannot read this process's file descriptor.                          */
-    gchar *stdin_data = on_cli_command_reads_stdin(argc, argv)
-                        ? on_app_read_stream(stdin, FALSE) : g_strdup("");
-
-    /* Request frame: "RUN", the word count, each word, then stdin.         */
+    /* Request frame: "RUN", the word count, each word, stdin (read by the
+     * caller before connecting: a slow pipe must not hold the app, whose
+     * main thread serves this socket), then our working directory.        */
+    if (stdin_data == NULL) stdin_data = "";
+    gchar *cwd = g_get_current_dir();
     stream_write_all(fd, "RUN\n", 4);
     gchar *count = g_strdup_printf("%d\n", argc - 1);
     stream_write_all(fd, count, strlen(count));
@@ -1043,7 +1069,8 @@ on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
         stream_write_blob(fd, argv[i], strlen(argv[i]));
     }
     stream_write_blob(fd, stdin_data, strlen(stdin_data));
-    g_free(stdin_data);
+    stream_write_blob(fd, cwd, strlen(cwd));
+    g_free(cwd);
 
     /* The command may take as long as it takes (a full export): only the
      * connect and the request above are timeout-guarded.                   */
@@ -1062,6 +1089,12 @@ on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
     if (etext != NULL && elen > 0) {
         fwrite(etext, 1, (size_t)elen, stderr);
     }
+    gboolean whole = rc >= 0 && otext != NULL && etext != NULL;
+    if (!whole) {
+        /* Never the exit code of a reply cut short: output a pipeline
+         * would take for the whole of it may be missing.                   */
+        fprintf(stderr, "error: the app's reply could not be read\n");
+    }
     fflush(stdout);
     fflush(stderr);
 
@@ -1070,5 +1103,5 @@ on_ipc_try_remote_run(int argc, char **argv, gboolean *ran)
     close(fd);
 
     *ran = TRUE;
-    return (rc < 0) ? 2 : (int)rc;   /* decode failure -> generic error      */
+    return whole ? (int)rc : 2;
 }

@@ -527,7 +527,7 @@ run_remote(const char **args)
     char  *argv[16] = { "notes" };
     for (const char **a = args; *a != NULL && argc < 15; a++) argv[argc++] = (char *)*a;
     gchar *out = NULL, *err = NULL;
-    int    rc  = on_ipc_run_command(&app, argc, argv, NULL, &out, &err);
+    int    rc  = on_ipc_run_command(&app, argc, argv, NULL, NULL, &out, &err);
     g_free(out);
     g_free(err);
     return rc;

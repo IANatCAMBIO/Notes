@@ -2669,16 +2669,24 @@ on_cli_run(int argc, char **argv)
     /* Route every data command through a running instance when one exists,
      * so a single process owns the database connection and the GUI refreshes
      * live.  With no instance, run headless against our own connection.      */
+    /* A "-" content argument is read first, whole: either way runs from
+     * the text, and a slow pipe never holds a running app's socket.        */
+    gchar *stdin_data = on_cli_command_reads_stdin(argc, argv)
+                        ? on_app_read_stream(stdin, FALSE) : NULL;
     gboolean ran = FALSE;            /* did a running instance handle it?    */
-    int rc = on_ipc_try_remote_run(argc, argv, &ran);
-    if (ran)
-        return rc;
-
-    OnApp app = { 0 };               /* headless context: the database only */
-    app.db = cli_open_db();
-    if (app.db == NULL)
-        return 2;
-    rc = on_cli_dispatch(&app, argc, argv);
-    on_db_close(app.db);
+    int rc = on_ipc_try_remote_run(argc, argv, stdin_data, &ran);
+    if (!ran) {
+        OnApp app = { 0 };           /* headless context: the database only */
+        app.db = cli_open_db();
+        if (app.db == NULL) {
+            rc = 2;
+        } else {
+            on_cli_set_stdin_data(stdin_data);
+            rc = on_cli_dispatch(&app, argc, argv);
+            on_cli_set_stdin_data(NULL);
+            on_db_close(app.db);
+        }
+    }
+    g_free(stdin_data);
     return rc;
 }

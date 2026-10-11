@@ -1697,6 +1697,21 @@ test_action_rewrites(void)
                      ==, ON_FMT_STRIKE);
     assert_valid(d);
 
+    /* A rename that cannot be carried out changes nothing: the old text is
+     * never deleted ahead of an insert that fails, and a line never stops
+     * being an item (or loses its text to a due date) by a rename.         */
+    guint depth = on_document_undo_depth(d);
+    g_assert_false(on_document_action_text(d, 0, "pay \xef\xbf\xbc rent"));
+    g_assert_false(on_document_action_text(d, 0, "two\nlines"));
+    g_assert_false(on_document_action_text(d, 0, ""));
+    g_assert_false(on_document_action_text(d, 1, "due 2026-01-01"));
+    g_assert_cmpstr(block_text(d, 3), ==, "!  renamed due 2027-03-04");
+    g_assert_cmpstr(block_text(d, 5), ==, "! still done");
+    g_assert_cmpuint(on_document_undo_depth(d), ==, depth);
+    g_assert_true(on_document_action_text(d, 0, "  spaced  "));
+    g_assert_cmpstr(block_text(d, 3), ==, "!  spaced due 2027-03-04");
+    assert_valid(d);
+
     /* Every rewrite was one undo step.                                     */
     while (on_document_undo(d))
         assert_valid(d);

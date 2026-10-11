@@ -2672,17 +2672,42 @@ gboolean
 on_document_action_text(OnDocument *d, gint ord, const gchar *text)
 {
     guint i = action_block(d, ord);
-    if (i == G_MAXUINT)
+    gsize n = text != NULL ? strlen(text) : 0;
+    if (i == G_MAXUINT || n == 0 || !g_utf8_validate_len(text, (gssize)n, NULL) ||
+        memchr(text, '\n', n) != NULL || strstr(text, ON_OBJ_CHAR) != NULL)
         return FALSE;
     OnText *t = on_document_block(d, i)->text;
     gsize start, end;                /* the item text                       */
     gboolean struck = action_text_span(t, &start, &end);
+    if (g_strstr_len(t->text->str + start, (gssize)(end - start), ON_OBJ_CHAR) != NULL)
+        return FALSE;                /* an inline image would be deleted    */
+
+    /* The line as it will read: it must still be an item, and its text
+     * must read back as `text` less its outer spaces (a new text of
+     * "due 2026-01-01" would turn into the due date of an empty item).
+     * Checked before anything is deleted: a refused rename changes
+     * nothing.                                                             */
+    OnText *line = on_text_new();
+    on_text_append(line, t->text->str, start, 0);
+    on_text_append(line, text, n, 0);
+    on_text_append(line, t->text->str + end, t->text->len - end, 0);
+    gsize s2, e2;                    /* the new line's item text            */
+    action_text_span(line, &s2, &e2);
+    gsize lead = 0, tail = n;        /* `text` without its outer spaces     */
+    while (lead < tail && g_ascii_isspace((guchar)text[lead])) lead++;
+    while (tail > lead && g_ascii_isspace((guchar)text[tail - 1])) tail--;
+    gboolean same = action_rest_real(line->text->str + 1) && tail > lead &&
+                    e2 - s2 == tail - lead &&
+                    memcmp(line->text->str + s2, text + lead, tail - lead) == 0;
+    on_text_free(line);
+    if (!same)
+        return FALSE;
 
     on_document_begin_group(d);
     OnPos pos = { i, -1, start };
     if (end > start)
         on_document_delete_text(d, pos, end - start);
-    on_document_insert_text(d, pos, text, strlen(text),
+    on_document_insert_text(d, pos, text + lead, tail - lead,
                             struck ? ON_FMT_STRIKE : 0);
     on_document_end_group(d);
     return TRUE;

@@ -521,8 +521,11 @@ gboolean on_document_action_due(OnDocument *d, gint ord, gint64 due);
 
 /* on_document_action_text() — replace the item TEXT, keeping the '!'
  * prefix, the line's own spacing and any trailing "due <date>"; the new
- * text is given the old text's strike state explicitly.  `text` must be
- * non-blank and newline-free (callers validate — see cli.c).             */
+ * text (less its outer spaces) is given the old text's strike state.  Refused (FALSE,
+ * the document unchanged) when `text` is empty, not UTF-8, holds a newline
+ * or U+FFFC, would not read back as itself less its outer spaces (it ends
+ * in what parses as a due date), would leave the line no longer an item,
+ * or when the old text holds an inline image.             */
 gboolean on_document_action_text(OnDocument *d, gint ord,
                                  const gchar *text);
 

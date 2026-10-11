@@ -1140,8 +1140,14 @@ toggle_action:(NSButton *)sender
     NSInteger row = [self.actions rowForView:sender];
     if (row < 0 || (NSUInteger)row >= self.action_records.count) return;
     NotesActionRecord *r = self.action_records[(NSUInteger)row];
-    r.done = sender.state == NSControlStateValueOn;
-    on_action_edit_set_done(self.lib.app, r.uid, r.done);
+    BOOL done = sender.state == NSControlStateValueOn;
+    if (!on_action_edit_set_done(self.lib.app, r.uid, done)) {
+        /* Nothing was written: show what the database holds.           */
+        on_app_status(self.lib.app, "Could not save the action item");
+        on_library_notes_refresh(self.lib);
+        return;
+    }
+    r.done = done;
     NSIndexSet *rows = [NSIndexSet indexSetWithIndex:(NSUInteger)row];
     if (r.done && !self.lib.app->show_done_actions) {
         NSMutableArray *left = [self.action_records mutableCopy];
@@ -1187,9 +1193,7 @@ ask_due:(NotesActionRecord *)r
         if (index == 0)
             due = (gint64)[NSCalendar.currentCalendar startOfDayForDate:picker.dateValue].timeIntervalSince1970;
         if (!on_action_edit_set_due(s.lib.app, r.uid, due)) return @"The due date could not be saved.";
-        r.due = due;
-        [s sort_actions];
-        [s.actions reloadData];
+        on_library_notes_refresh(s.lib);   /* the list may have changed while the panel was up */
         return nil;
     }];
     [panel show_over:self.lib.window];

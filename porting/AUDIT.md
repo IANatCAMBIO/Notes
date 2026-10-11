@@ -116,7 +116,7 @@ Earlier:
 
 ## Shell, menus, commands (app_delegate, library_window, library_commands)
 
-- [ ] H note-export-html / note-export-md have no handler — handlers added and enabled in the note menu (step 4); not yet driven by a test (the folder picker)
+- [x] H note-export-html / note-export-md have no handler — handlers added and enabled in the note menu; everything after the folder picker is on_library_export, which the UI test drives (selected note as Markdown, all notes as HTML, the notice)
 - [x] H Status bar location never follows navigation
 - [x] M open-db: no .db filter, no same-db no-op, failure not reported — fixed; not driven by a test (it starts in the system file picker)
 - [x] M search / find ignore the selected folder or tag as default scope

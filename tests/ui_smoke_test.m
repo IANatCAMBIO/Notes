@@ -1677,6 +1677,28 @@ test_notes_pane(NotesLibrary *lib)
     check(kind == on_drag_notes && dragged.count == 2, "dragging two rows drags both notes");
     [pb releaseGlobally];
 
+    /* Export: the selected note, then every note, into a folder (the
+     * folder picker before it is the system's and is not driven here). */
+    NSString *out = [@(check_data_dir()) stringByAppendingPathComponent:@"export-md"];
+    [NSFileManager.defaultManager removeItemAtPath:out error:nil];
+    [NSFileManager.defaultManager createDirectoryAtPath:out withIntermediateDirectories:YES attributes:nil error:nil];
+    NSArray<NSNumber *> *chosen = on_library_notes_selected_ids(lib);
+    gint written = on_library_export(lib, ON_EXPORT_MARKDOWN, chosen, out);
+    NSArray<NSString *> *files = [NSFileManager.defaultManager subpathsOfDirectoryAtPath:out error:nil];
+    BOOL alpha_md = NO;
+    for (NSString *f in files) alpha_md |= [f.lastPathComponent hasPrefix:@"alpha"] && [f hasSuffix:@".md"];
+    check(chosen.count == 1 && written == 1 && alpha_md && answer_panel(@"OK"),
+          "Export as Markdown writes the selected note and says so in a tool panel");
+    NSString *all = [@(check_data_dir()) stringByAppendingPathComponent:@"export-html"];
+    [NSFileManager.defaultManager removeItemAtPath:all error:nil];
+    [NSFileManager.defaultManager createDirectoryAtPath:all withIntermediateDirectories:YES attributes:nil error:nil];
+    written = on_library_export(lib, ON_EXPORT_HTML, nil, all);
+    NSUInteger html = 0;
+    for (NSString *f in [NSFileManager.defaultManager subpathsOfDirectoryAtPath:all error:nil])
+        html += [f hasSuffix:@".html"];
+    check(written > 1 && html >= (NSUInteger)written && answer_panel(@"OK"),
+          "Export All as HTML writes every note");
+
     /* Navigation drops the selection. */
     on_library_sidebar_select(lib, on_sb_all, 0);
     pump(0.1);

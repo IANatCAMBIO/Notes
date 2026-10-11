@@ -372,9 +372,31 @@ run_open_db(id target, id sender)
 }
 
 /*
- * run_export — pick a destination folder and export notes there: the ones
- * given, or every note.  A notice reports how many were written or what
- * failed.
+ * on_library_export — see library_commands.h.
+ */
+gint
+on_library_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids, NSString *dir)
+{
+    gchar *err = NULL;
+    gint   n   = 0;
+    if (ids == nil) {
+        n = on_export_all(lib.app, dir.UTF8String, format, &err);
+    } else {
+        for (NSNumber *nid in ids)
+            if (on_export_note(lib.app, nid.longLongValue, dir.UTF8String, format)) n++;
+    }
+    if (n >= 0)
+        on_ui_show_notice([NSString stringWithFormat:@"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
+                          [NSString stringWithFormat:@"Files written to:\n%@", dir], lib.window, nil);
+    else
+        on_ui_show_notice(@"Export failed", err ? @(err) : @"An unknown error occurred.", lib.window, nil);
+    g_free(err);
+    return n;
+}
+
+/*
+ * run_export — pick a destination folder, then export notes there
+ * (on_library_export): the ones given, or every note.
  *
  * Inputs:
  *   lib    — the library
@@ -384,27 +406,11 @@ run_open_db(id target, id sender)
 static void
 run_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids)
 {
-    NSWindow *win = lib.window;
     on_ui_pick_path(NotesPickFolder,
                     format == ON_EXPORT_HTML ? @"Choose Export Folder for HTML"
                                              : @"Choose Export Folder for Markdown",
                     @"Export", nil, nil, ^(NSString *path) {
-        if (!path) return;
-        gchar *err = NULL;
-        gint   n   = 0;
-        if (ids == nil) {
-            n = on_export_all(lib.app, path.UTF8String, format, &err);
-        } else {
-            for (NSNumber *nid in ids)
-                if (on_export_note(lib.app, nid.longLongValue, path.UTF8String, format)) n++;
-        }
-        if (n >= 0) {
-            on_ui_show_notice([NSString stringWithFormat:@"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
-                              [NSString stringWithFormat:@"Files written to:\n%@", path], win, nil);
-        } else {
-            on_ui_show_notice(@"Export failed", err ? @(err) : @"An unknown error occurred.", win, nil);
-        }
-        g_free(err);
+        if (path) on_library_export(lib, format, ids, path);
     });
 }
 

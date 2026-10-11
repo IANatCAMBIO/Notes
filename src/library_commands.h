@@ -2,15 +2,15 @@
 
 #import "library_state.h"
 
+#include "export.h"
+
 /*
  * library_commands — the library's commands that have no view of their own
- * (work package E): new note and folder, the folder sheet, trash / delete /
- * restore / empty, pin, sort, export, Open Database File.
+ * (work package E): new note and folder, the folder tool panel, trash /
+ * delete / restore / empty, sort, export, Open Database File.
  *
- * STATUS: partly real.  New Note, Quick Note and the two trash functions
- * are implemented; the rest of the commands are still to be written from
- * porting/gtk_reference/src/library_window.c ("commands" sections) and are
- * disabled until they are.  This header is FROZEN.
+ * The specification is porting/gtk_reference/src/library_window.c (its
+ * "commands" sections).  This header is FROZEN; functions may be added.
  */
 
 /*
@@ -64,3 +64,18 @@ BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name
  *   ids — the notes (NSNumber note ids); nothing happens for none
  */
 void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);
+
+/*
+ * on_library_export — export notes into a folder already chosen: the ones
+ * given, or every note; a notice says how many were written, or what
+ * failed.  The export commands call it once the folder picker returns.
+ *
+ * Inputs:
+ *   lib    — the library (its window is where the notice shows)
+ *   format — ON_EXPORT_HTML or ON_EXPORT_MARKDOWN
+ *   ids    — the notes (NSNumber ids), or nil for all of them
+ *   dir    — the destination folder
+ *
+ * Output: how many notes were written, or -1 when the export failed.
+ */
+gint on_library_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids, NSString *dir);

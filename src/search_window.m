@@ -56,6 +56,7 @@
 @property (nonatomic, strong) NotesActivatingTable *results;
 @property (nonatomic, strong) NSTextField          *status;
 @property (nonatomic, strong) NSArray<NotesSearchHit *> *hits;
+@property (nonatomic, copy)   NSString             *hits_db;      /* the database they are ids in */
 @property (nonatomic, copy)   NSString             *highlight;    /* the parsed query's term */
 @property (nonatomic, copy)   NSString             *scope_desc;   /* " in “name”", or nil */
 @property (nonatomic, assign) on_search_job_t      *job;          /* in flight, or NULL */
@@ -242,7 +243,8 @@ cancel_job
 run_search
 {
     [self cancel_job];
-    self.hits = @[];
+    self.hits    = @[];
+    self.hits_db = @(self.lib.app->db->path);
     [self.results reloadData];
     NSString *text = self.query.stringValue;
     if (text.length == 0) {
@@ -304,7 +306,8 @@ scope_clicked:(NSButton *)sender
 
 /*
  * open_results: — a double-click or Return on results: open each note
- * with the query's term highlighted.
+ * with the query's term highlighted.  Results from a database no longer
+ * open are ids of another file: they are cleared instead.
  *
  * Inputs:
  *   sender — the table (unused)
@@ -312,6 +315,13 @@ scope_clicked:(NSButton *)sender
 - (void)
 open_results:(id)sender
 {
+    if (![self.hits_db isEqualToString:@(self.lib.app->db->path)]) {
+        [self cancel_job];
+        self.hits = @[];
+        [self.results reloadData];
+        self.status.stringValue = @"Another database is open now. Search again.";
+        return;
+    }
     [on_activated_rows(self.results) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
         if (i < self.hits.count)
             on_editor_window_open(self.lib.app, self.hits[i].note_id, NotesEditorRevealNone, 0, self.highlight);

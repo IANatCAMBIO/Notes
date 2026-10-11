@@ -239,6 +239,7 @@ separator(void)
                                                          the note is gone, or
                                                          the user chose to   */
 @property (nonatomic, assign) BOOL    sync_actions;   /* action line touched */
+@property (nonatomic, assign) BOOL    sync_tags;      /* tag links to write  */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
 
 - (BOOL)save;
@@ -1045,11 +1046,17 @@ save
     }
     self.sync_actions = NO;
 
-    BOOL tags_changed = on_note_view_take_tags_modified(self.note_view);
+    if (on_note_view_take_tags_modified(self.note_view)) self.sync_tags = YES;
+    BOOL tags_changed = self.sync_tags;
     if (tags_changed) {
-        GList *tags = on_document_collect_tags(doc);
-        on_db_note_set_tags(app->db, self.note_id, tags);
+        GList   *tags = on_document_collect_tags(doc);
+        gboolean ok   = on_db_note_set_tags(app->db, self.note_id, tags);
         g_list_free_full(tags, g_free);
+        if (!ok) {                     /* kept pending: the retry writes them */
+            on_app_status(app, "Could not save the tags of note %" G_GINT64_FORMAT, self.note_id);
+            return NO;
+        }
+        self.sync_tags = NO;
     }
     self.dirty = NO;
 

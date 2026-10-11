@@ -187,8 +187,8 @@ init_with_lib:(NotesLibrary *)lib
 }
 
 /*
- * build — the grid, the viewer over it, and the status line with its
- * spinner.
+ * build — the grid, the viewer over it, and the status bar with the
+ * scan's spinner.
  */
 - (void)
 build
@@ -216,31 +216,41 @@ build
     scroll.hasVerticalScroller = YES;
     scroll.autohidesScrollers  = YES;
 
+    /* The status bar, as the library's and the editors': a rule, then the
+     * status line left and the scan's spinner right in the band below it. */
+    NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
+    rule.boxType = NSBoxSeparator;
+    NSView *content = self.window.contentView;
+    for (NSView *view in @[scroll, rule]) {
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:view];
+    }
+    NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
+    [content addLayoutGuide:band];
+    self.status = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
+    self.status.identifier = @"media-status";
     self.spinner = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
     self.spinner.style       = NSProgressIndicatorStyleSpinning;
-    self.spinner.controlSize = NSControlSizeSmall;
-    self.status = [NSTextField labelWithString:@""];
-    self.status.identifier    = @"media-status";
-    self.status.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                          forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *status_row = [NSStackView stackViewWithViews:@[self.spinner, self.status]];
-    status_row.spacing = 6;
-
-    NSStackView *column = [NSStackView stackViewWithViews:@[scroll, status_row]];
-    column.orientation = NSUserInterfaceLayoutOrientationVertical;
-    column.alignment   = NSLayoutAttributeLeading;
-    column.spacing     = 6;
-    column.edgeInsets  = NSEdgeInsetsMake(8, 8, 8, 8);
-    column.translatesAutoresizingMaskIntoConstraints = NO;
-    NSView *content = self.window.contentView;
-    [content addSubview:column];
-    on_ui_pin_edges(column, content);
+    self.spinner.controlSize = NSControlSizeMini;
+    self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:self.spinner];
+    CGFloat inset = on_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.widthAnchor    constraintEqualToAnchor:column.widthAnchor constant:-16],
-        [status_row.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-16],
+        [scroll.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-on_look_status_h],
+        [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
+        [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+        [self.status.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],
+        [self.spinner.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-inset],
+        [self.spinner.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
+        [self.spinner.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.status.trailingAnchor
+                                                                constant:inset],
     ]];
-    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
 
     self.viewer = on_image_viewer_new(scroll, @"Show in source note",
                                       @"Open the note this image is in, scrolled to the image");

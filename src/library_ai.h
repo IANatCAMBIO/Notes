@@ -10,7 +10,6 @@
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * STATUS: library_ai.m is a STUB for work package H that registers nothing.
  * The specification is porting/gtk_reference/src/library_window.c, the AI
  * section.  This header is FROZEN.
  */

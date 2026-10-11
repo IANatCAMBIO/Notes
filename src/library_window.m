@@ -151,14 +151,14 @@ init_with_library:(NotesLibrary *)lib
 - (void)
 build_content
 {
-    NSStackView *main_pane = [NSStackView stackViewWithViews:@[
-        on_library_notes_new(self.lib), on_library_ai_pane_new(self.lib),
-    ]];
-    main_pane.orientation = NSUserInterfaceLayoutOrientationVertical;
-    main_pane.spacing     = 0;
-    for (NSView *pane in main_pane.arrangedSubviews) {   /* panes span the full width */
-        [pane.widthAnchor constraintEqualToAnchor:main_pane.widthAnchor].active = YES;
-    }
+    /* The notes over the AI pane, with a divider between them; the AI pane
+     * is hidden — collapsed — until a summary is asked for. */
+    NSSplitView *main_pane = [[NSSplitView alloc] initWithFrame:NSZeroRect];
+    main_pane.vertical     = NO;
+    main_pane.dividerStyle = NSSplitViewDividerStyleThin;
+    [main_pane addArrangedSubview:on_library_notes_new(self.lib)];
+    [main_pane addArrangedSubview:on_library_ai_pane_new(self.lib)];
+    [main_pane setHoldingPriority:NSLayoutPriorityDefaultLow - 1 forSubviewAtIndex:0];
 
     self.split        = [[NSSplitViewController alloc] init];
     self.sidebar_item = pane_item(on_library_sidebar_new(self.lib), on_look_sidebar_min_w);

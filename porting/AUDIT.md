@@ -151,11 +151,11 @@ Earlier:
 
 ## AI summary (library_ai.m)
 
-- [ ] H Entire summary is a stub (placeholder text)
-- [ ] M Status throbber; re-run guard; Copy button; resizable pane
-- [ ] L Button hidden when AI off; panes never released
+- [x] H Entire summary is a stub (placeholder text)
+- [x] M Status throbber; re-run guard; Copy button; resizable pane
+- [x] L Button hidden when AI off; panes never released — the item is disabled, not hidden, while AI is off (NSToolbarItem.hidden needs macOS 15; the target is 14)
 
 ## Tests
 
-- [ ] H Heap check: ~45–70 KB per editor open/close cycle, on the old and new code alike (budget 48 KB) — a real leak to find, not a budget to raise
+- [ ] H Heap check: ~45–70 KB per editor open/close cycle, on the old and new code alike (budget 48 KB) — a real leak to find, not a budget to raise.  Reproducible lead (step 5): switching the LIBRARY window's appearance (window.appearance Aqua → DarkAqua → nil) late in the run — any save_snapshots(lib.window) after test_sidebar — raises editor-cycle growth from ~28 KB to ~66 KB; without it the check passes at ~28 KB
 - [ ] M `/ops/fuzz` fails about 1 run in 10 ("duplicate action uid") — core document model

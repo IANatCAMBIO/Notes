@@ -1537,6 +1537,9 @@ test_notes_pane(NotesLibrary *lib)
           "the last visible column cannot be hidden");
     [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Modified"].target
                  from:[header itemWithTitle:@"Modified"]];
+    NSRect modified_rect = [table rectOfColumn:[table columnWithIdentifier:@"modified"]];
+    check(NSContainsRect(table.enclosingScrollView.documentVisibleRect, modified_rect),
+          "a column shown again from the header menu is in view, not pushed off the edge");
 
     /* Sorting, and the one-row update on save. */
     table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES]];
@@ -2054,11 +2057,57 @@ test_secondary_windows(NotesLibrary *lib)
     check(weak_media == nil && media_w == 640 && media_h == 480,
           "closed media window is deallocated and its size kept");
 
-    /* AI pane ─────────────────────────────────────────────────────────── */
+    /* AI summary ──────────────────────────────────────────────────────── */
     @autoreleasepool {
-        NSView *pane = on_library_ai_pane_new(lib);
-        check(pane != nil, "on_library_ai_pane_new returns a view");
-        check(pane.hidden, "the AI pane starts hidden");
+        NSTextView *ai_text = (NSTextView *)view_with_identifier(lib.window.contentView, @"ai-text");
+        NSView     *ai_pane = ai_text.enclosingScrollView.superview;
+        check(ai_text != nil && ai_pane.hidden && [ai_pane.superview isKindOfClass:NSSplitView.class],
+              "the AI pane sits hidden under the notes, in a split");
+        gboolean ai_was = app.ai_enabled;
+        app.ai_enabled = FALSE;
+        check(!on_library_validate_command(lib, command_item(@"ai-summary")), "AI Summary is off while AI is");
+        app.ai_enabled = TRUE;
+        g_free(app.ai_command);
+        app.ai_command = NULL;
+        on_library_run_command(lib, command_item(@"ai-summary"));
+        check(!ai_pane.hidden && [ai_text.string hasPrefix:@"No AI command configured."],
+              "with no command it says where to set one");
+
+        app.ai_command = g_strdup("/bin/cat");
+        gint64 pane_folder = 0;
+        GList *folders = on_db_folder_list(app.db, 0);
+        for (GList *l = folders; l != NULL; l = l->next)
+            if (g_strcmp0(((OnFolder *)l->data)->name, "Pane") == 0) pane_folder = ((OnFolder *)l->data)->id;
+        on_db_folder_list_free(folders);
+        on_library_sidebar_select(lib, on_sb_folder, pane_folder);
+        pump(0.1);
+        on_library_run_command(lib, command_item(@"ai-summary"));
+        check([ai_text.string isEqualToString:@"Select one or more notes to summarize."],
+              "it summarises the selected notes, and asks for some");
+        NSTableView *list = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
+        [list selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] byExtendingSelection:NO];
+        on_library_run_command(lib, command_item(@"ai-summary"));
+        on_library_run_command(lib, command_item(@"ai-summary"));    /* ignored while running */
+        for (int i = 0; i < 60 && ai_text.string.length == 0; i++) pump(0.05);
+        NSString *summary = ai_text.string;
+        check([summary hasPrefix:@"Provide me a brief summary of these notes.\n\nRespond in plain text only."] &&
+              [summary containsString:@"=== Notes ===\n\n--- "] && [summary containsString:@"(modified "] &&
+              label_with_text(lib.window.contentView, @"Summary generation complete") != nil,
+              "the command gets the prompt and the notes on stdin, and its output fills the pane");
+        NSRange first = [summary rangeOfString:@"=== Notes ==="];
+        check(first.location != NSNotFound &&
+              [summary rangeOfString:@"=== Notes ===" options:0
+                               range:NSMakeRange(NSMaxRange(first), summary.length - NSMaxRange(first))].location == NSNotFound,
+              "a second request while one runs is ignored");
+        [button_titled(ai_pane, @"Copy") performClick:nil];
+        check([[NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString] isEqualToString:summary],
+              "Copy puts the summary on the clipboard");
+        [button_titled(ai_pane, @"✕") performClick:nil];
+        check(ai_pane.hidden, "✕ closes the pane");
+        g_free(app.ai_command);
+        app.ai_command = NULL;
+        app.ai_enabled = ai_was;
+        on_library_sidebar_select(lib, on_sb_root, 0);
     }
 }
 

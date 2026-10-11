@@ -1347,8 +1347,9 @@ menuNeedsUpdate:(NSMenu *)menu
 }
 
 /*
- * toggle_column: — a header menu item: show or hide its column and keep
- * the layout.
+ * toggle_column: — a header menu item: show or hide its column, fit the
+ * columns to the table again (a column shown at the end would otherwise
+ * sit past the edge), and keep the layout.
  *
  * Inputs:
  *   sender — the item (its object is the column)
@@ -1358,6 +1359,7 @@ toggle_column:(NSMenuItem *)sender
 {
     NSTableColumn *c = sender.representedObject;
     c.hidden = !c.hidden;
+    [c.tableView sizeToFit];
     persist_layout(c.tableView, c.tableView == self.list ? "list_columns" : "action_columns");
 }
 

@@ -6,6 +6,7 @@
 #include "db.h"
 #include "main_service.h"            /* the worker, its hand-back, the timer */
 
+#include <errno.h>
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,9 +15,17 @@
 
 /* Backup filenames: sortable, so lexical order IS chronological order and
  * the prune can pick victims without parsing dates or trusting mtimes on a
- * destination that may be a network mount.                                  */
+ * destination that may be a network mount.  The time in the name is UTC:
+ * local time goes back on a time-zone or daylight-saving change, and a new
+ * backup would then sort as the oldest and be pruned at once.               */
 #define BACKUP_PREFIX "notes-"
 #define BACKUP_SUFFIX ".db"
+
+/* A pass writes its copy under this suffix (which the rotation never
+ * matches) and renames it into place only once it is verified, so a pass
+ * cut short — the app quit, a crash — never leaves a file that looks like
+ * a backup.  The next pass deletes such leftovers.                          */
+#define BACKUP_PARTIAL ".partial"
 
 /* The ini key holding the source's identity at the last SUCCESSFUL backup
  * (see the header for why it lives in the ini and not the database).        */
@@ -229,6 +238,47 @@ same_file(const gchar *a, const gchar *b)
 }
 
 /* ---------------------------------------------------------------------------
+ * remove_with_journal — delete a database file and the rollback journal
+ * SQLite may have left beside it.
+ *
+ * Inputs:
+ *   path — the database file
+ */
+static void
+remove_with_journal(const gchar *path)
+{
+    gchar *journal = g_strconcat(path, "-journal", NULL);
+    g_unlink(path);
+    g_unlink(journal);
+    g_free(journal);
+}
+
+/* ---------------------------------------------------------------------------
+ * remove_partials — delete what passes cut short left in a destination: our
+ * own partial files (and their journals), nothing else.
+ *
+ * Inputs:
+ *   dir — the destination directory
+ */
+static void
+remove_partials(const gchar *dir)
+{
+    GDir *d = g_dir_open(dir, 0, NULL);
+    if (d == NULL)
+        return;
+    const gchar *name;               /* one directory entry                 */
+    while ((name = g_dir_read_name(d)) != NULL) {
+        if (g_str_has_prefix(name, BACKUP_PREFIX) &&
+            g_str_has_suffix(name, BACKUP_SUFFIX BACKUP_PARTIAL)) {
+            gchar *path = g_build_filename(dir, name, NULL);
+            remove_with_journal(path);
+            g_free(path);
+        }
+    }
+    g_dir_close(d);
+}
+
+/* ---------------------------------------------------------------------------
  * BackupJob — one pass, owned by the worker thread and released on the main
  * thread in backup_finish().
  *
@@ -296,12 +346,13 @@ backup_finish(void *data)
  * backup_thread — the pass itself, on its own SQLite connection.
  *
  * Order is deliberate and is the whole safety argument:
- *   1. copy the source into a fresh, uniquely named file;
+ *   1. copy the source into a fresh, uniquely named partial file;
  *   2. VERIFY it, and delete it again if it does not pass;
- *   3. hand the stamp back for the main thread to record;
- *   4. ONLY NOW prune the oldest beyond `keep`.
+ *   3. rename it to its backup name;
+ *   4. hand the stamp back for the main thread to record;
+ *   5. ONLY NOW prune the oldest beyond `keep`.
  *
- * Step 4 last is what keeps a run of failing backups from eating the good
+ * Step 5 last is what keeps a run of failing backups from eating the good
  * history that is already on disk.  (The "has anything changed?" test is
  * made on the MAIN thread, in on_backup_start, because the ini it reads is
  * main-thread state.)
@@ -328,7 +379,8 @@ backup_thread(void *data)
      * if two passes landed in the same second (a timer tick racing a manual
      * press), so a suffix is appended until the name is free — silently
      * overwriting an existing backup is exactly what this must never do.   */
-    GDateTime *now  = g_date_time_new_now_local();
+    remove_partials(job->dir);
+    GDateTime *now  = g_date_time_new_now_utc();
     gchar     *when = g_date_time_format(now, "%Y%m%d-%H%M%S");
     g_date_time_unref(now);
     gchar *dest = NULL;              /* the file this pass writes           */
@@ -343,11 +395,13 @@ backup_thread(void *data)
             break;
     }
     g_free(when);
+    gchar *partial = g_strconcat(dest, BACKUP_PARTIAL, NULL);
 
-    if (!on_db_backup_to(db, dest)) {
+    if (!on_db_backup_to(db, partial)) {
         job->message = g_strdup_printf("Backup to %s failed", dest);
         g_clear_pointer(&job->stamp, g_free);
-        g_unlink(dest);              /* a half-written file is not history  */
+        remove_with_journal(partial);   /* a half-written file is not history */
+        g_free(partial);
         g_free(dest);
         on_db_close(db);
         on_main_post(backup_finish, job);
@@ -359,18 +413,30 @@ backup_thread(void *data)
      * worse than no copy: it would sit in the rotation looking like history
      * and displace a good one.                                             */
     gchar *detail = NULL;            /* sqlite's words, when it fails       */
-    if (!on_db_verify_file(dest, &detail)) {
-        g_unlink(dest);
+    if (!on_db_verify_file(partial, &detail)) {
+        remove_with_journal(partial);
         job->message = g_strdup_printf(
             "Backup failed verification and was discarded: %s",
             detail != NULL ? detail : "?");
         g_free(detail);
         g_clear_pointer(&job->stamp, g_free);
+        g_free(partial);
         g_free(dest);
         on_main_post(backup_finish, job);
         return;
     }
     g_free(detail);
+    if (g_rename(partial, dest) != 0) {
+        job->message = g_strdup_printf("Backup to %s failed: %s", dest,
+                                       g_strerror(errno));
+        remove_with_journal(partial);
+        g_clear_pointer(&job->stamp, g_free);
+        g_free(partial);
+        g_free(dest);
+        on_main_post(backup_finish, job);
+        return;
+    }
+    g_free(partial);
 
     /* Prune — only now, and only our own files.  The database being backed
      * up may itself be one of them (a backup opened with File > Open

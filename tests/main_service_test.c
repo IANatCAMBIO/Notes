@@ -237,6 +237,10 @@ test_core_jobs(const char *data_dir)
     /* A backup pass: worker, verify, hand-back, status line.               */
     gchar *backups = g_build_filename(data_dir, "backup-out", NULL);
     g_mkdir_with_parents(backups, 0700);
+    gchar *leftover = g_build_filename(backups, "notes-19990101-000000.db.partial", NULL);
+    gchar *journal  = g_strconcat(leftover, "-journal", NULL);
+    g_file_set_contents(leftover, "cut short", -1, NULL);
+    g_file_set_contents(journal, "cut short", -1, NULL);
     on_app_config_set("backup_enabled", "1");
     on_app_config_set("backup_dir", backups);
     on_backup_start(&app, app.db->path);
@@ -253,9 +257,15 @@ test_core_jobs(const char *data_dir)
     const gchar *name = d != NULL ? g_dir_read_name(d) : NULL;
     check(name != NULL && g_str_has_prefix(name, "notes-") && g_str_has_suffix(name, ".db"),
           "the backup file exists in the chosen folder");
+    check(name != NULL && g_dir_read_name(d) == NULL,
+          "it is the only file there: no partial copy is left behind");
     if (d != NULL) {
         g_dir_close(d);
     }
+    check(!g_file_test(leftover, G_FILE_TEST_EXISTS) && !g_file_test(journal, G_FILE_TEST_EXISTS),
+          "a partial copy left by a pass cut short is removed by the next");
+    g_free(leftover);
+    g_free(journal);
     gchar *stamp = on_app_config_get("backup_source_stamp");
     check(stamp != NULL, "the source stamp was persisted on the main thread");
     g_free(stamp);

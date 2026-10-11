@@ -42,8 +42,8 @@
  *
  * What is NOT covered: SIGKILL, a crash or power loss can lose the edits
  * typed since the last autosave (at most the autosave delay), and a
- * backup pass in flight is abandoned (its unverified file is not counted
- * by the next pass's prune, which only ever runs after a verified copy).
+ * backup pass in flight is abandoned (it was writing a partial file, which
+ * the rotation never counts and the next pass deletes).
  *
  * Main thread only.
  * =========================================================================== */

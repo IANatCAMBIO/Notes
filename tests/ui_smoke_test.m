@@ -51,6 +51,7 @@
 #include "action_edit.h"
 #include "look.h"
 #include "app_lifecycle.h"
+#include "ipc.h"
 #include "serialize.h"
 
 #include <mach/mach.h>
@@ -483,6 +484,107 @@ test_editor(void)
     check(body != NULL && strstr(body, "Flushed by close-all") != NULL,
           "flush_editors saves every open editor before it returns");
     g_free(body);
+}
+
+/*
+ * run_remote — run a CLI command the way the app runs one for a remote
+ * CLI (on_ipc_run_command: editors saved before, caught up after).
+ *
+ * Inputs:
+ *   args — the words after the program name, NULL-terminated
+ *
+ * Output: the command's exit code.
+ */
+static int
+run_remote(const char **args)
+{
+    int    argc = 1;
+    char  *argv[16] = { "notes" };
+    for (const char **a = args; *a != NULL && argc < 15; a++) argv[argc++] = (char *)*a;
+    gchar *out = NULL, *err = NULL;
+    int    rc  = on_ipc_run_command(&app, argc, argv, NULL, &out, &err);
+    g_free(out);
+    g_free(err);
+    return rc;
+}
+
+/*
+ * editor_view — the note view of the editor window with this title.
+ *
+ * Inputs:
+ *   title — the window title
+ *
+ * Output: the view, or nil.
+ */
+static NotesNoteView *
+editor_view(NSString *title)
+{
+    NSWindow     *window = editor_window_titled(title);
+    NSScrollView *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+    return [scroll.documentView isKindOfClass:NotesNoteView.class] ? scroll.documentView : nil;
+}
+
+/*
+ * test_cli_with_open_editors — a CLI command that writes a note open in an
+ * editor: neither side overwrites the other.  The editor's unsaved typing
+ * reaches the database before the command reads it, the command's change
+ * reaches the editor, and a note deleted by the command closes its editor
+ * without being written again.
+ */
+static void
+test_cli_with_open_editors(void)
+{
+    gint64 note_id = new_note("Shared note\nfirst line");
+    gchar  id[32];
+    g_snprintf(id, sizeof id, "%" G_GINT64_FORMAT, note_id);
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NotesNoteView *view = editor_view(@"Shared note");
+        on_note_view_feed_click(view, 40, 40, 1, 0, NO);
+        on_note_view_feed_text(view, "typed ");
+        check(run_remote((const char *[]){ "note", "append", id, "from the CLI", NULL }) == 0,
+              "with the note open, note append succeeds");
+        gchar *plain = on_document_plain_text(on_note_view_document(editor_view(@"Shared note")));
+        check(strstr(plain, "typed ") != NULL && strstr(plain, "from the CLI") != NULL,
+              "the open editor shows the appended line and keeps its unsaved typing");
+        g_free(plain);
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.3);
+    gchar *body = on_note_text_cached(app.db, note_id);
+    check(body != NULL && strstr(body, "typed ") != NULL && strstr(body, "from the CLI") != NULL,
+          "closing the editor does not write a stale copy over the append");
+    g_free(body);
+
+    /* A blank note, open, filled by the CLI: closing it must not delete it. */
+    gint64 blank = on_db_note_create(app.db, 0);
+    g_snprintf(id, sizeof id, "%" G_GINT64_FORMAT, blank);
+    @autoreleasepool {
+        on_editor_window_open(&app, blank, NotesEditorRevealNone, 0, nil);
+        pump(0.2);
+        check(run_remote((const char *[]){ "note", "set", id, "Filled from the CLI", NULL }) == 0,
+              "note set fills a blank note that is open");
+        on_editor_close_notes(&blank, 1);
+    }
+    pump(0.2);
+    body = on_note_text_cached(app.db, blank);
+    check(body != NULL && strstr(body, "Filled from the CLI") != NULL,
+          "closing its editor keeps the note the CLI filled");
+    g_free(body);
+
+    /* Deleted by the CLI while open: the editor closes, nothing is written. */
+    @autoreleasepool {
+        on_editor_window_open(&app, blank, NotesEditorRevealNone, 0, nil);
+        pump(0.2);
+        check(run_remote((const char *[]){ "note", "delete", id, "--permanent", NULL }) == 0,
+              "note delete --permanent of an open note succeeds");
+        pump(0.2);
+        check(editor_window_titled(@"Filled from the CLI") == nil, "and its editor closes");
+    }
+    OnNoteMeta *meta = on_db_note_get(app.db, blank);
+    check(meta == NULL, "the deleted note stays deleted");
+    on_db_note_meta_free(meta);
 }
 
 /*
@@ -2488,6 +2590,7 @@ main(void)
 
         test_library(lib);
         test_editor();
+        test_cli_with_open_editors();
         test_editor_commands();
         test_inline_image();
         test_accessibility();

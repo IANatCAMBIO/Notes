@@ -4,9 +4,9 @@
  * WHY.  One process at a time may write the database.  While the app is
  * running, a command-line invocation therefore does not open the database
  * itself: it hands the command to the app over a Unix-domain socket, the
- * app runs it against its own connection — refreshing its windows, and
- * rewriting an open editor rather than the stored note — and ships the
- * output back.  Only when no app is listening does the command line open
+ * app runs it against its own connection — saving its open editors first
+ * and reloading any whose note the command rewrote, so neither overwrites
+ * the other — and ships the output back.  Only when no app is listening does the command line open
  * the database directly.  The socket both DETECTS a running app (connect
  * succeeds) and CARRIES the command to it.
  *
@@ -95,6 +95,26 @@ OnIpcResult on_ipc_try_remote(const gchar *command, gchar **reply_out);
  *         *ran FALSE when no app is listening, so the caller runs headless.
  * ------------------------------------------------------------------------- */
 int on_ipc_try_remote_run(int argc, char **argv, gboolean *ran);
+
+/* ---------------------------------------------------------------------------
+ * on_ipc_run_command() — run one data command inside the running app, as
+ * the server does for a remote CLI: a command that writes the database
+ * runs between app->save_editors (open editors save first; if one cannot,
+ * the command is refused) and app->reload_editors (editors catch up with
+ * what it wrote), then the windows refresh.  Main thread only.
+ *
+ * Inputs:
+ *   app        — the application context, its database open
+ *   argc, argv — the full program arguments (argv[1] is the command)
+ *   stdin_data — the text a "-" argument reads; NULL for none
+ *   out_text   — receives the captured stdout (g_free it; may be NULL)
+ *   err_text   — receives the captured stderr (g_free it; may be NULL)
+ *
+ * Output: the command's exit code; 2 when it was refused or not run.
+ * ------------------------------------------------------------------------- */
+int on_ipc_run_command(OnApp *app, int argc, char **argv,
+                       const gchar *stdin_data, gchar **out_text,
+                       gchar **err_text);
 
 /* ---------------------------------------------------------------------------
  * on_ipc_set_pending_quicknote() / on_ipc_set_pending_open() — record a GUI

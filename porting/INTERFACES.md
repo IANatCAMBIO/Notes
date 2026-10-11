@@ -652,10 +652,11 @@ only the `OnApp`).
    in effect: a current schema is not written on open).  A `notes` command
    run in the instant between an app taking the lock and a headless tool
    finishing can still overlap; the window is milliseconds.
-3. **`notes note delete` of a note that is open** leaves its editor open (as
-   in the GTK build); the next autosave writes to a trashed note.  E/D may
-   want `notify_notes_changed` to close editors of notes that no longer
-   exist.
+3. **A CLI command that writes a note open in an editor** (fixed).  The
+   app runs such a command through `on_ipc_run_command`: open editors save
+   first (`save_editors`; the command is refused if one cannot), then catch
+   up (`reload_editors`): an editor whose note was deleted closes without
+   saving, and one whose note was rewritten reloads it.
 4. **IPC commands run on the main thread** with a 10 s socket timeout; a
    long export blocks the UI for its duration (as in the GTK build).
 5. **Search semantics** still come from GLib (`GRegex`, `g_utf8_casefold`);

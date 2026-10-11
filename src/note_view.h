@@ -61,7 +61,8 @@
 /*
  * on_note_view_load_document — replace the note with a document, which the
  * view takes over (and frees with itself, or at the next load): caret to
- * the start, undo history cleared, nothing reported as an edit.
+ * the start, undo history cleared, nothing reported as an edit.  A view
+ * already in a window (a reload) lays the new document out at once.
  *
  * Inputs:
  *   view — the view

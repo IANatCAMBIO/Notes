@@ -2683,6 +2683,11 @@ on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
     on_document_take_tags_modified(doc);
     on_document_take_actions_modified(doc);
     if (view.find_text != nil) on_note_view_find(view, view.find_text);
+    if (view.window != nil) {           /* a reload: lay the new document out now */
+        on_doc_layout_set_width(view.layout, layout_width(view));
+        fit_height(view);
+        view.needsDisplay = YES;
+    }
 }
 
 /*

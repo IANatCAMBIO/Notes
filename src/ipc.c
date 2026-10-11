@@ -597,7 +597,8 @@ static char *ipc_bound_path = NULL;
  * to the remote CLI.  Safe because we run synchronously on the main thread (no
  * other code writes fd 1/2 during the window).
  *   out_text, err_text — receive the captured streams (owned).
- * Returns the command's exit code.
+ * Returns the command's exit code; 2, with nothing run, when the output
+ * could not be captured.
  * ------------------------------------------------------------------------- */
 static int
 ipc_capture_run(OnApp *app, int argc, char **argv, const gchar *stdin_data,
@@ -615,27 +616,61 @@ ipc_capture_run(OnApp *app, int argc, char **argv, const gchar *stdin_data,
 
     gboolean captured = saved_out >= 0 && saved_err >= 0 &&
                         fo != NULL && fe != NULL;
+    int rc = 2;                      /* the command's exit code             */
     if (captured) {
         dup2(fileno(fo), 1);
         dup2(fileno(fe), 2);
-    }
 
-    on_cli_set_stdin_data(stdin_data);
-    int rc = on_cli_dispatch(app, argc, argv);
-    on_cli_set_stdin_data(NULL);
+        on_cli_set_stdin_data(stdin_data);
+        rc = on_cli_dispatch(app, argc, argv);
+        on_cli_set_stdin_data(NULL);
 
-    if (captured) {
         fflush(stdout);
         fflush(stderr);
         dup2(saved_out, 1);
         dup2(saved_err, 2);
         *out_text = on_app_read_stream(fo, TRUE);
         *err_text = on_app_read_stream(fe, TRUE);
+    } else {
+        /* Output the client never sees is worse than no run at all: a
+         * pipeline would take the empty output for the note's text.        */
+        *err_text = g_strdup("error: the app could not capture the "
+                             "command's output; nothing was run\n");
     }
     if (saved_out >= 0) close(saved_out);
     if (saved_err >= 0) close(saved_err);
     if (fo != NULL) fclose(fo);
     if (fe != NULL) fclose(fe);
+    return rc;
+}
+
+/*
+ * on_ipc_run_command — see ipc.h.
+ */
+int
+on_ipc_run_command(OnApp *app, int argc, char **argv, const gchar *stdin_data,
+                   gchar **out_text, gchar **err_text)
+{
+    gboolean mutates = on_cli_command_mutates(argc, argv);
+
+    /* Open editors and the command must not overwrite each other: the
+     * editors save first, so the command reads the current text, and catch
+     * up afterwards, so no autosave writes a stale copy back.              */
+    if (mutates && app->save_editors != NULL && !app->save_editors(app)) {
+        *out_text = NULL;
+        *err_text = g_strdup("error: an open note could not be saved; "
+                             "nothing was changed\n");
+        return 2;
+    }
+    int rc = ipc_capture_run(app, argc, argv, stdin_data, out_text, err_text);
+
+    /* Let the running app reflect a change the command just made.          */
+    if (mutates && app->reload_editors != NULL) {
+        app->reload_editors(app);
+    }
+    if (mutates && app->notify_notes_changed != NULL) {
+        app->notify_notes_changed(app);
+    }
     return rc;
 }
 
@@ -690,13 +725,7 @@ ipc_handle_run(OnApp *app, int fd)
         const gchar *sd = on_cli_command_reads_stdin(argc, argv)
                           ? stdin_data : NULL;
         gchar *out_text = NULL, *err_text = NULL;
-        int rc = ipc_capture_run(app, argc, argv, sd, &out_text, &err_text);
-
-        /* Let the running app reflect a change the command just made.      */
-        if (on_cli_command_mutates(argc, argv) &&
-            app->notify_notes_changed != NULL) {
-            app->notify_notes_changed(app);
-        }
+        int rc = on_ipc_run_command(app, argc, argv, sd, &out_text, &err_text);
 
         gchar *rc_line = g_strdup_printf("%d\n", rc);
         stream_write_all(fd, rc_line, strlen(rc_line));

@@ -108,6 +108,16 @@
  *                    the editor redraws, clamps its caret and queues its
  *                    autosave.  Called by action_edit.c, only when it did
  *                    change the document.
+ *   save_editors   — every editor with unsaved edits saves NOW; the
+ *                    windows stay open.  Returns FALSE when a save failed.
+ *                    Called by ipc.c before a command that writes the
+ *                    database, so the command works on the current text.
+ *   reload_editors — every editor catches up with the database after an
+ *                    outside command wrote it: an editor whose note is gone
+ *                    closes without saving, an edit made through
+ *                    live_document is saved, and an editor whose note was
+ *                    rewritten reloads it.  Called by ipc.c after such a
+ *                    command.
  *   flush_editors  — close every editor window NOW, each one saving its
  *                    unsaved edits (or deleting its note if it was left
  *                    blank) before the call returns.  Called by
@@ -148,6 +158,8 @@ typedef struct OnApp {
     gint64      (*quicknote)(struct OnApp *app);
     OnDocument *(*live_document)(struct OnApp *app, gint64 note_id);
     void        (*live_edited)(struct OnApp *app, gint64 note_id);
+    gboolean    (*save_editors)(struct OnApp *app);
+    void        (*reload_editors)(struct OnApp *app);
     void        (*flush_editors)(struct OnApp *app);
 } OnApp;
 

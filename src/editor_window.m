@@ -235,11 +235,15 @@ separator(void)
 @property (nonatomic, strong) NSSearchField *search_field;
 
 @property (nonatomic, assign) BOOL    dirty;          /* unsaved edits       */
+@property (nonatomic, assign) BOOL    gone;           /* note deleted behind
+                                                         the editor: close
+                                                         without saving      */
 @property (nonatomic, assign) BOOL    sync_actions;   /* action line touched */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
 
-- (void)save;
+- (BOOL)save;
 - (void)update_status;
+- (void)reload_if_changed;
 @end
 
 /* ── Commands ───────────────────────────────────────────────────────────── */
@@ -1020,8 +1024,11 @@ queue_autosave
  * save — persist the note, its tag set when that changed, and tell the
  * library: the full refresh when a tag or a task row changed (the sidebar
  * shows them), the light one-note refresh otherwise.
+ *
+ * Output: YES when the note was written; NO when the save failed (the
+ * edits are still unsaved).
  */
-- (void)
+- (BOOL)
 save
 {
     OnApp      *app = self.app;
@@ -1033,7 +1040,7 @@ save
     if (!on_note_document_save(app->db, self.note_id, doc, self.sync_actions,
                                &actions_changed)) {
         on_app_status(app, "Could not save note %" G_GINT64_FORMAT, self.note_id);
-        return;
+        return NO;
     }
     self.sync_actions = NO;
 
@@ -1056,6 +1063,54 @@ save
     } else {
         if (app->notify_note_saved != NULL) app->notify_note_saved(app, self.note_id);
     }
+    return YES;
+}
+
+/*
+ * reload_if_changed — after an outside command wrote the database: an
+ * editor whose note is gone closes without saving; one holding an edit
+ * made through live_document saves it; one whose note was rewritten in
+ * the database (its stored blob is no longer the editor's document)
+ * reloads it, so the editor never writes a stale copy over the change.
+ */
+- (void)
+reload_if_changed
+{
+    OnApp      *app  = self.app;
+    OnNoteMeta *meta = on_db_note_get(app->db, self.note_id);
+    if (meta == NULL) {
+        self.gone = YES;
+        [self.window close];
+        return;
+    }
+    on_db_note_meta_free(meta);
+    if (self.dirty) {
+        [self.autosave_timer invalidate];
+        self.autosave_timer = nil;
+        [self save];
+        return;
+    }
+
+    guint8 *stored = NULL;
+    gsize   stored_len = 0;
+    if (!on_db_note_load(app->db, self.note_id, &stored, &stored_len)) return;
+    gsize   mine_len = 0;
+    guint8 *mine = on_document_to_bnbf(on_note_view_document(self.note_view), &mine_len);
+    BOOL same = stored_len == mine_len && memcmp(stored, mine, mine_len) == 0;
+    g_free(mine);
+    g_free(stored);
+    if (same) return;
+
+    OnDocument *doc = on_note_document_load(app->db, self.note_id);
+    if (doc == NULL) {                 /* now unreadable: leave it alone */
+        self.gone = YES;
+        [self.window close];
+        return;
+    }
+    [self load_content:doc];
+    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+    self.window.title = @(title);
+    g_free(title);
 }
 
 /*
@@ -1121,7 +1176,9 @@ windowWillClose:(NSNotification *)note
     ((NotesKeyFilterWindow *)self.window).key_filter = nil;
 
     OnDocument *doc = on_note_view_document(self.note_view);
-    if (on_note_edit_is_blank(doc)) {
+    if (self.gone) {
+        /* Deleted (or made unreadable) from outside: nothing to save to. */
+    } else if (on_note_edit_is_blank(doc)) {
         gint64 nid = self.note_id;
         on_db_notes_delete(app->db, &nid, 1);
         on_app_status(app, "Deleted empty note");
@@ -1287,6 +1344,43 @@ hook_live_edited(OnApp *app, gint64 note_id)
 }
 
 /*
+ * hook_save_editors — OnApp.save_editors: every editor with unsaved edits
+ * saves now; the windows stay open.
+ *
+ * Inputs:
+ *   app — the application context (unused)
+ *
+ * Output: FALSE when any save failed.
+ */
+static gboolean
+hook_save_editors(OnApp *app)
+{
+    gboolean ok = TRUE;
+    for (NotesEditorWindow *editor in editors.allValues) {
+        if (!editor.dirty) continue;
+        [editor.autosave_timer invalidate];
+        editor.autosave_timer = nil;
+        if (![editor save]) ok = FALSE;
+    }
+    return ok;
+}
+
+/*
+ * hook_reload_editors — OnApp.reload_editors: every editor catches up with
+ * a database an outside command just wrote (reload_if_changed).
+ *
+ * Inputs:
+ *   app — the application context (unused)
+ */
+static void
+hook_reload_editors(OnApp *app)
+{
+    for (NotesEditorWindow *editor in editors.allValues) {   /* a copy: closing edits editors */
+        [editor reload_if_changed];
+    }
+}
+
+/*
  * hook_flush_editors — OnApp.flush_editors: close every editor, each
  * saving first (the flush-on-quit contract).
  *
@@ -1305,9 +1399,11 @@ hook_flush_editors(OnApp *app)
 void
 on_editor_install(OnApp *app)
 {
-    editors            = [NSMutableDictionary dictionary];
-    app->open_note     = hook_open_note;
-    app->live_document = hook_live_document;
-    app->live_edited   = hook_live_edited;
-    app->flush_editors = hook_flush_editors;
+    editors             = [NSMutableDictionary dictionary];
+    app->open_note      = hook_open_note;
+    app->live_document  = hook_live_document;
+    app->live_edited    = hook_live_edited;
+    app->save_editors   = hook_save_editors;
+    app->reload_editors = hook_reload_editors;
+    app->flush_editors  = hook_flush_editors;
 }

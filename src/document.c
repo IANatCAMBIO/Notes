@@ -772,7 +772,14 @@ table_record(Loader *L, OnBnbfRecord *rec)
         OnText *t = g_ptr_array_index(b->cells, i);
         /* Cells may hold newlines; on_text_insert refuses them, so fill
          * the text and its single run directly.                            */
-        g_string_append(t->text, cell);
+        if (g_utf8_validate(cell, -1, NULL)) {
+            g_string_append(t->text, cell);
+        } else {
+            gchar *valid = g_utf8_make_valid(cell, -1);
+            g_string_append(t->text, valid);
+            g_free(valid);
+            L->rep->bad_utf8++;
+        }
         if (t->text->len > 0) {
             OnRun r = { t->text->len, 0 };
             g_array_append_val(t->runs, r);
@@ -854,9 +861,23 @@ line_break(const gchar *p, const gchar *end, gsize *brk)
 OnDocument *
 on_document_from_text(const gchar *text)
 {
+    /* Text from outside (a paste, a command line) may be anything: the
+     * model's is valid UTF-8, and holds U+FFFC only where an image is.     */
+    gchar   *valid = g_utf8_make_valid(text != NULL ? text : "", -1);
+    GString *clean = g_string_sized_new(strlen(valid));
+    for (const gchar *s = valid, *obj; *s != '\0'; s = obj + strlen(ON_OBJ_CHAR)) {
+        obj = strstr(s, ON_OBJ_CHAR);
+        if (obj == NULL) {
+            g_string_append(clean, s);
+            break;
+        }
+        g_string_append_len(clean, s, obj - s);
+    }
+    g_free(valid);
+
     OnDocument *d = doc_alloc();
-    const gchar *p   = (text != NULL) ? text : "";
-    const gchar *end = p + strlen(p);
+    const gchar *p   = clean->str;
+    const gchar *end = p + clean->len;
     while (TRUE) {
         gsize brk;
         const gchar *q = line_break(p, end, &brk);
@@ -867,6 +888,7 @@ on_document_from_text(const gchar *text)
             break;
         p = q + brk;
     }
+    g_string_free(clean, TRUE);
     return d;
 }
 
@@ -899,6 +921,13 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                 case ON_REC_TEXT: {
                     const gchar *p   = rec.text;
                     const gchar *end = rec.text + rec.n_text;
+                    gchar *valid = NULL;     /* a repaired copy, if needed */
+                    if (!g_utf8_validate_len(rec.text, rec.n_text, NULL)) {
+                        rep->bad_utf8++;
+                        valid = g_utf8_make_valid(rec.text, (gssize)rec.n_text);
+                        p     = valid;
+                        end   = valid + strlen(valid);
+                    }
                     if (rec.n_text == 0 && L.cur == NULL) {
                         /* A style-only record: the saver's way of keeping
                          * an EMPTY trailing heading/code line's kind.  */
@@ -916,6 +945,7 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                         line_end(&L, rec.flags);
                         p = q + brk;
                     }
+                    g_free(valid);
                     break;
                 }
                 case ON_REC_IMAGE: image_record(&L, &rec); break;
@@ -951,7 +981,8 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->check_no_tag == 0 && rep->check_no_box == 0 &&
            rep->split_check == 0 && rep->split_table == 0 &&
            rep->run_split == 0 && rep->cr_newlines == 0 &&
-           rep->action_dup == 0 && rep->action_stray == 0;
+           rep->action_dup == 0 && rep->action_stray == 0 &&
+           rep->bad_utf8 == 0;
 }
 
 /* ===========================================================================

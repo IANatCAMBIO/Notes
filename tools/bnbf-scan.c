@@ -135,7 +135,7 @@ report_add(OnDocLoadReport *sum, const OnDocLoadReport *r)
     ADD(number_renumbered); ADD(styled_prefix); ADD(check_no_space);
     ADD(check_no_tag); ADD(check_no_box); ADD(split_check);
     ADD(split_table); ADD(image_inline); ADD(run_split); ADD(cr_newlines);
-    ADD(old_version); ADD(action_dup); ADD(action_stray);
+    ADD(old_version); ADD(action_dup); ADD(action_stray); ADD(bad_utf8);
 #undef ADD
 }
 
@@ -273,7 +273,7 @@ main(int argc, char **argv)
             SAY(number_renumbered); SAY(styled_prefix); SAY(check_no_space);
             SAY(check_no_tag); SAY(check_no_box); SAY(split_check);
             SAY(split_table); SAY(run_split); SAY(cr_newlines);
-            SAY(old_version); SAY(action_dup); SAY(action_stray);
+            SAY(old_version); SAY(action_dup); SAY(action_stray); SAY(bad_utf8);
 #undef SAY
             printf("\n");
         } else {
@@ -301,13 +301,14 @@ main(int argc, char **argv)
            "  number_renumbered %u  styled_prefix %u  check_no_space %u\n"
            "  check_no_tag %u  check_no_box %u  split_check %u\n"
            "  split_table %u  run_split %u  cr_newlines %u  old_version %u"
-           "  action_dup %u  action_stray %u  (image_inline %u, exact)\n",
+           "  action_dup %u  action_stray %u  bad_utf8 %u"
+           "  (image_inline %u, exact)\n",
            sum.mixed_para, sum.unknown_flags, sum.bullet_no_prefix,
            sum.number_renumbered, sum.styled_prefix, sum.check_no_space,
            sum.check_no_tag, sum.check_no_box, sum.split_check,
            sum.split_table, sum.run_split, sum.cr_newlines,
            sum.old_version, sum.action_dup, sum.action_stray,
-           sum.image_inline);
+           sum.bad_utf8, sum.image_inline);
     printf("shape:\n"
            "  notes with images %u, inline images %u, tables %u, checks %u,"
            " code %u, styled newlines %u\n"

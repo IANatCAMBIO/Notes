@@ -1132,12 +1132,15 @@ test_accessibility(void)
 static void
 test_inline_image(void)
 {
-    gint64      note_id = new_note("Inline image\nbefore " ON_OBJ_CHAR " after");
+    gint64      note_id = new_note("Inline image\nbefore ");
     NSData     *png     = [NSData dataWithContentsOfURL:
         [NSBundle.mainBundle URLForResource:@"composition" withExtension:@"png"]];
     GBytes     *bytes   = g_bytes_new(png.bytes, png.length);
     OnDocument *doc     = on_note_document_load(app.db, note_id);
-    on_text_add_image(on_document_block(doc, 1)->text, strlen("before "), bytes, 0);
+    OnText     *line    = on_document_block(doc, 1)->text;
+    on_text_append(line, ON_OBJ_CHAR, strlen(ON_OBJ_CHAR), 0);
+    on_text_add_image(line, strlen("before "), bytes, 0);
+    on_text_append(line, " after", strlen(" after"), 0);
     on_note_document_save(app.db, note_id, doc, TRUE, NULL);
     on_document_free(doc);
     g_bytes_unref(bytes);

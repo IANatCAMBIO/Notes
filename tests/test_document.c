@@ -653,6 +653,33 @@ test_cr_newlines(void)
     g_bytes_unref(blob);
 }
 
+/* Text that is not UTF-8 (in a TEXT record or a table cell) is repaired
+ * on load — each bad sequence a U+FFFD — and counted: the model's text is
+ * always valid, whatever a blob or a pasted fragment holds.               */
+static void
+test_bad_utf8(void)
+{
+    const gchar *cells[] = { "ok", "b\xc3" };
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "a\xff\xf0\n");
+    blob_table(&b, FALSE, 1, 2, cells);
+    GBytes *blob = blob_end(&b);
+    gsize n;
+    const guint8 *data = g_bytes_get_data(blob, &n);
+    OnDocLoadReport rep;
+    OnDocument *d = on_document_from_bnbf(data, n, &rep);
+    g_assert_cmpuint(rep.bad_utf8, ==, 2);
+    g_assert_false(on_document_load_report_is_clean(&rep));
+    g_assert_true(g_utf8_validate(block_text(d, 0), -1, NULL));
+    g_assert_cmpstr(block_text(d, 0), ==, "a\xef\xbf\xbd\xef\xbf\xbd");
+    const OnText *cell = g_ptr_array_index(on_document_block(d, 1)->cells, 1);
+    g_assert_cmpstr(cell->text->str, ==, "b\xef\xbf\xbd");
+    assert_valid(d);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 static void
 test_unknown_flags(void)
 {
@@ -1433,6 +1460,14 @@ test_from_text(void)
     g_assert_cmpuint(on_document_n_blocks(d), ==, 1);
     assert_valid(d);
     on_document_free(d);
+
+    /* Pasted text holding U+FFFC (no image behind it) or bytes that are
+     * not UTF-8 still makes a valid document.                              */
+    d = on_document_from_text("pay \xef\xbf\xbc rent\n\xff end\xef\xbf\xbc");
+    g_assert_cmpstr(block_text(d, 0), ==, "pay  rent");
+    g_assert_cmpstr(block_text(d, 1), ==, "\xef\xbf\xbd end");
+    assert_valid(d);
+    on_document_free(d);
 }
 
 static void
@@ -1882,6 +1917,7 @@ main(int argc, char **argv)
     g_test_add_func("/document/run-merge", test_run_merge_across_blocks);
     g_test_add_func("/document/mixed-para", test_mixed_para);
     g_test_add_func("/document/cr-newlines", test_cr_newlines);
+    g_test_add_func("/document/bad-utf8", test_bad_utf8);
     g_test_add_func("/document/unknown-flags", test_unknown_flags);
     g_test_add_func("/document/malformed", test_malformed);
     g_test_add_func("/text/ops", test_text_ops);

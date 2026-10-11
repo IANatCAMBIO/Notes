@@ -238,6 +238,10 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *   action_stray   — an ACTION record mid-line, doubled, or on a line that
  *                    is not a real action line: kept on the block but not
  *                    written back
+ *   bad_utf8       — a TEXT record or table cell that was not valid UTF-8:
+ *                    each bad sequence becomes U+FFFD (the model's text is
+ *                    always UTF-8; the editor, the title and the search
+ *                    walk it as such)
  * `error` is the reader's message when the blob was malformed; the
  * document holds what parsed before that point.
  * ------------------------------------------------------------------------- */
@@ -248,6 +252,7 @@ typedef struct {
     guint split_table, image_inline;
     guint run_split, cr_newlines, old_version;
     guint action_dup, action_stray;
+    guint bad_utf8;
     const gchar *error;
 } OnDocLoadReport;
 
@@ -467,7 +472,9 @@ gchar *on_document_title(const OnDocument *d, const gchar *fallback,
 /* ---------------------------------------------------------------------------
  * on_document_from_text() — a document of PARA blocks, one per line of
  * `text` (broken like the loader breaks lines: "\n", "\r\n", "\r",
- * U+2029).  What `note new` and `note set` build.  Never NULL.
+ * U+2029).  What `note new` and `note set` build, and a plain-text paste.
+ * Invalid UTF-8 becomes U+FFFD and U+FFFC (an object with no image behind
+ * it) is dropped.  Never NULL.
  * ------------------------------------------------------------------------- */
 OnDocument *on_document_from_text(const gchar *text);
 

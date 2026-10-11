@@ -332,10 +332,49 @@ validate_sort_subfolders(id target, id item)
 }
 
 /*
- * run_open_db — "open-db": pick a .db file and switch to it, for this
- * session or as the new default (GTK on_open_db).  The file already open
- * needs nothing; a file that will not open is reported, and the previous
- * database stays open (on_app_switch_db).
+ * on_library_open_db — see library_commands.h.
+ */
+void
+on_library_open_db(NotesLibrary *lib, NSString *path)
+{
+    NSWindow *win = lib.window;
+    if ([path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
+        return;
+    /* The default is stored as a folder (db_dir) holding the fixed file
+     * name, as the CLI reads it: only a file of that name can be it.      */
+    BOOL can_default = [path.lastPathComponent isEqualToString:@ON_DB_FILENAME];
+    NSString *message = can_default
+        ? [NSString stringWithFormat:@"Open “%@” as your new default database, or for this session only?",
+                                     path.lastPathComponent]
+        : [NSString stringWithFormat:@"Open “%@” for this session only? Only a file named "
+                                     @ON_DB_FILENAME @" can be your default database.",
+                                     path.lastPathComponent];
+    NSArray<NSString *> *buttons = can_default ? @[@"Set as Default", @"Session Only", @"Cancel"]
+                                               : @[@"Session Only", @"Cancel"];
+    [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
+                         buttons:buttons
+                            over:win
+                         handler:^(NSInteger index) {
+        if (index < 0 || [buttons[(NSUInteger)index] isEqualToString:@"Cancel"]) return;
+        BOOL set_default = [buttons[(NSUInteger)index] isEqualToString:@"Set as Default"];
+        on_switch_result_t result = on_app_switch_db(lib.app, path.UTF8String, set_default);
+        if (result == ON_SWITCH_DONE) return;
+        if (result == ON_SWITCH_UNSAVED) {
+            on_editor_report_unsaved(@"Database not opened", win);
+            return;
+        }
+        if (lib.app->db == NULL) {              /* not even the old one reopened */
+            [NSApp terminate:nil];
+            return;
+        }
+        on_ui_show_notice(@"Database Error", [NSString stringWithFormat:@"Could not open:\n%@", path],
+                          win, nil);
+    }];
+}
+
+/*
+ * run_open_db — "open-db": pick a .db file and hand it to
+ * on_library_open_db (GTK on_open_db).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -345,34 +384,10 @@ static void
 run_open_db(id target, id sender)
 {
     NotesLibrary *lib = target;
-    NSWindow     *win = lib.window;
     UTType       *db  = [UTType typeWithFilenameExtension:@"db"];
     on_ui_pick_path(NotesPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil,
                     ^(NSString *path) {
-        if (path == nil ||
-            [path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
-            return;
-        NSString *message = [NSString stringWithFormat:
-                             @"Open “%@” as your new default database, or for this session only?",
-                             path.lastPathComponent];
-        [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
-                             buttons:@[@"Set as Default", @"Session Only", @"Cancel"]
-                                over:win
-                             handler:^(NSInteger index) {
-            if (index != 0 && index != 1) return;   /* Cancel, or dismissed */
-            on_switch_result_t result = on_app_switch_db(lib.app, path.UTF8String, index == 0);
-            if (result == ON_SWITCH_DONE) return;
-            if (result == ON_SWITCH_UNSAVED) {
-                on_editor_report_unsaved(@"Database not opened", win);
-                return;
-            }
-            if (lib.app->db == NULL) {              /* not even the old one reopened */
-                [NSApp terminate:nil];
-                return;
-            }
-            on_ui_show_notice(@"Database Error", [NSString stringWithFormat:@"Could not open:\n%@", path],
-                              win, nil);
-        }];
+        if (path != nil) on_library_open_db(lib, path);
     });
 }
 

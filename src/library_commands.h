@@ -69,6 +69,20 @@ BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name
 void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);
 
 /*
+ * on_library_open_db — switch to a database file already chosen: a tool
+ * panel asks whether for this session only or as the new default (offered
+ * only for a file named notes.db: the default is stored as its folder);
+ * a file that will not open is reported and the previous database stays
+ * open (on_app_switch_db).  The file already open needs nothing.  The
+ * Open Database command calls it once the file picker returns.
+ *
+ * Inputs:
+ *   lib  — the library (its window is where the panels show)
+ *   path — the database file
+ */
+void on_library_open_db(NotesLibrary *lib, NSString *path);
+
+/*
  * on_library_export — export notes into a folder already chosen: the ones
  * given, or every note; a notice says how many were written, or what
  * failed.  The export commands call it once the folder picker returns.

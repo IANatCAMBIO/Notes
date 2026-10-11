@@ -1028,6 +1028,17 @@ test_trash(NotesLibrary *lib)
           editor_window_titled(@"Loose note") == nil,
           "and then deletes the Trash's notes, closing their editors");
 
+    /* Only a file named notes.db can become the default database (the
+     * default is stored as its folder): any other is offered for this
+     * session only.                                                        */
+    on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"]);
+    pump(0.2);
+    check(!answer_panel(@"Set as Default") && answer_panel(@"Cancel"),
+          "a database not named notes.db is not offered as the default");
+    on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"other/notes.db"]);
+    pump(0.2);
+    check(answer_panel(@"Cancel"), "and one named notes.db is offered (cancelled here)");
+
     /* The question is not modal: what was restored while it was up is not
      * deleted when it is answered.                                         */
     gint64 saved = new_note("Restored meanwhile\nbody");

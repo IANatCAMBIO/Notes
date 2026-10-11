@@ -123,7 +123,7 @@ Earlier:
 - [x] M App-scope commands do not reopen a closed library window — the ones that act on the library (New Folder, the view and sidebar toggles, Media, AI Summary) open it first
 - [x] M ⌘⌫ may trash notes while typing in a field (verify)
 - [x] M Second instance should raise the running one — it activates the running copy and quits; not driven by a test (needs two processes).  A reopen Apple Event would also show a closed library, but may put an automation prompt on screen
-- [x] L About details; toolbar labels/tooltips/separator; AI button hidden when AI off; window title; status fade — About credits link camb.io and the BSD license (as Files, Tasks); toolbar tooltips are GTK's (commands.h gains an optional `tip`; the toolbar is icon-only, so labels never show); a space sets AI Summary apart; the AI item is disabled, not hidden (see the AI section); the title stays the app name, as Files and Tasks; the status message already clears after 4 s
+- [x] L About details; toolbar labels/tooltips/separator; AI button hidden when AI off; window title; status fade — About credits link camb.io and the BSD license (as Files, Tasks); toolbar tooltips are GTK's (commands.h gains an optional `tip`; the toolbar is icon-only, so labels never show); a space sets AI Summary apart; the AI item is removed while AI is off (see the AI section); the title stays the app name, as Files and Tasks; the status message already clears after 4 s
 
 ## Settings (settings_window.m)
 
@@ -153,7 +153,7 @@ Earlier:
 
 - [x] H Entire summary is a stub (placeholder text)
 - [x] M Status throbber; re-run guard; Copy button; resizable pane
-- [x] L Button hidden when AI off; panes never released — the item is disabled, not hidden, while AI is off (NSToolbarItem.hidden needs macOS 15; the target is 14)
+- [x] L Button hidden when AI off; panes never released — the item is removed from the toolbar while AI is off, and put back when it is turned on (NSToolbarItem.hidden needs macOS 15; the target is 14)
 
 ## Tests
 

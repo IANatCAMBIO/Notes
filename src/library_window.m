@@ -15,19 +15,26 @@ static NSToolbarItemIdentifier const search_item_ident = @"notes.search-field";
 
 /*
  * toolbar_idents — the toolbar, left to right: command identifiers
- * (commands.h), spaces and the search field.
+ * (commands.h), spaces and the search field.  AI Summary, and the space
+ * that sets it apart, are there only while AI features are enabled (GTK:
+ * the button is hidden, not just disabled).
+ *
+ * Inputs:
+ *   ai — YES to include AI Summary
  *
  * Output: the item identifiers.
  */
 static NSArray<NSToolbarItemIdentifier> *
-toolbar_idents(void)
+toolbar_idents(BOOL ai)
 {
-    return @[
+    NSArray<NSToolbarItemIdentifier> *head = @[
         @"new-folder", @"delete-folder", NSToolbarSpaceItemIdentifier,
         @"quicknote", @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
         @"toggle-sidebar", @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
-        NSToolbarSpaceItemIdentifier, @"ai-summary", NSToolbarFlexibleSpaceItemIdentifier, search_item_ident,
     ];
+    NSArray<NSToolbarItemIdentifier> *tail = @[NSToolbarFlexibleSpaceItemIdentifier, search_item_ident];
+    return [[head arrayByAddingObjectsFromArray:ai ? @[NSToolbarSpaceItemIdentifier, @"ai-summary"] : @[]]
+               arrayByAddingObjectsFromArray:tail];
 }
 
 @interface NotesLibraryWindow : NSWindowController <NSWindowDelegate, NSToolbarDelegate,
@@ -268,7 +275,7 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 - (NSArray<NSToolbarItemIdentifier> *)
 toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
 {
-    return toolbar_idents();
+    return toolbar_idents(YES);
 }
 
 /*
@@ -282,7 +289,7 @@ toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
 - (NSArray<NSToolbarItemIdentifier> *)
 toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar
 {
-    return toolbar_idents();
+    return toolbar_idents(self.lib.app->ai_enabled);
 }
 
 /*
@@ -429,6 +436,28 @@ on_library_window_show(NotesLibrary *lib)
 {
     if (!library_window) library_window = [[NotesLibraryWindow alloc] init_with_library:lib];
     [library_window showWindow:nil];
+}
+
+/*
+ * on_library_window_ai_changed — see library_window.h.  The toolbar gains
+ * or loses AI Summary and its space, at the place toolbar_idents gives
+ * them.
+ */
+void
+on_library_window_ai_changed(NotesLibrary *lib)
+{
+    NSToolbar *toolbar = library_window.window.toolbar;
+    if (toolbar == nil) return;
+    NSArray<NSString *> *idents = [toolbar.items valueForKey:@"itemIdentifier"];
+    NSUInteger at = [idents indexOfObject:@"ai-summary"];
+    if (lib.app->ai_enabled && at == NSNotFound) {
+        NSInteger flex = (NSInteger)[idents indexOfObject:NSToolbarFlexibleSpaceItemIdentifier];
+        [toolbar insertItemWithItemIdentifier:NSToolbarSpaceItemIdentifier atIndex:flex];
+        [toolbar insertItemWithItemIdentifier:@"ai-summary" atIndex:flex + 1];
+    } else if (!lib.app->ai_enabled && at != NSNotFound) {
+        [toolbar removeItemAtIndex:(NSInteger)at];
+        [toolbar removeItemAtIndex:(NSInteger)at - 1];              /* its space */
+    }
 }
 
 /*

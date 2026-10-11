@@ -46,3 +46,13 @@ void on_library_window_show(NotesLibrary *lib);
  *   lib — the library
  */
 void on_library_window_location_changed(NotesLibrary *lib);
+
+/*
+ * on_library_window_ai_changed — AI features were turned on or off: the
+ * toolbar shows AI Summary only while they are on.  Called by the AI
+ * module's OnApp.notify_ai_changed hook.
+ *
+ * Inputs:
+ *   lib — the library
+ */
+void on_library_window_ai_changed(NotesLibrary *lib);

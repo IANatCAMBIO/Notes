@@ -1883,20 +1883,39 @@ test_notes_pane(NotesLibrary *lib)
 static void
 test_shell(NotesLibrary *lib)
 {
-    NSToolbarItem *media = nil, *before_ai = nil, *previous = nil;
-    for (NSToolbarItem *item in lib.window.toolbar.items) {
+    NSToolbarItem *media = nil;
+    for (NSToolbarItem *item in lib.window.toolbar.items)
         if ([item.itemIdentifier isEqualToString:@"media"]) media = item;
-        if ([item.itemIdentifier isEqualToString:@"ai-summary"]) before_ai = previous;
-        previous = item;
-    }
     NSTextField *path_label = nil;
     for (NSView *v in lib.window.contentView.subviews)
         if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue hasPrefix:@"/"]) path_label = (NSTextField *)v;
     check(path_label != nil && status_text_centred(path_label),
           "the library's status text is 9 pt and centred in its bar");
-    check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"] &&
-          [before_ai.itemIdentifier isEqualToString:NSToolbarSpaceItemIdentifier],
-          "toolbar buttons have GTK's tooltips, and AI Summary sits apart");
+    check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"],
+          "toolbar buttons have GTK's tooltips");
+
+    /* AI Summary is in the toolbar only while AI features are on. */
+    NSArray<NSString *> *(^idents)(void) = ^NSArray<NSString *> *{
+        return [lib.window.toolbar.items valueForKey:@"itemIdentifier"];
+    };
+    gboolean ai_was = app.ai_enabled;
+    app.ai_enabled = FALSE;
+    app.notify_ai_changed(&app);
+    NSArray<NSString *> *off = idents();
+    check(![off containsObject:@"ai-summary"], "with AI off, the toolbar has no AI Summary button");
+    app.ai_enabled = TRUE;
+    app.notify_ai_changed(&app);
+    NSArray<NSString *> *on = idents();
+    NSUInteger ai_at = [on indexOfObject:@"ai-summary"];
+    check(ai_at != NSNotFound && on.count == off.count + 2 &&
+          [on[ai_at - 1] isEqualToString:NSToolbarSpaceItemIdentifier] &&
+          [on[ai_at + 1] isEqualToString:NSToolbarFlexibleSpaceItemIdentifier],
+          "turning AI on puts AI Summary back, set apart after Settings");
+    app.ai_enabled = FALSE;
+    app.notify_ai_changed(&app);
+    check([idents() isEqualToArray:off], "and turning it off again removes it and its space");
+    app.ai_enabled = ai_was;
+    app.notify_ai_changed(&app);
 
     gboolean shown = app.show_done_actions;
     [lib.window close];

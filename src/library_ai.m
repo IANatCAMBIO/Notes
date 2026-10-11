@@ -19,6 +19,7 @@
 #import "library_ai.h"
 
 #import "library_notes.h"
+#import "library_window.h"
 #import "look.h"
 #import "ui_util.h"
 
@@ -408,7 +409,8 @@ validate_ai_summary(id target, id item)
 
 /*
  * ai_changed — OnApp.notify_ai_changed: with AI turned off the pane goes
- * away; the toolbar item follows through its validation.
+ * away and so does the toolbar's AI Summary; turned on, the button is
+ * back.
  *
  * Inputs:
  *   app — the application context
@@ -417,7 +419,7 @@ static void
 ai_changed(OnApp *app)
 {
     if (!app->ai_enabled) ai_pane.hidden = YES;
-    [NSApp setWindowsNeedUpdate:YES];
+    on_library_window_ai_changed(on_library());
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */

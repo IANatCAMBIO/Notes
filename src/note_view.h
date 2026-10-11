@@ -192,8 +192,9 @@ NSString *on_note_view_selected_text(NotesNoteView *view);
  * on_note_count_images walks a blob in).
  *
  * on_note_view_image_count  — how many.
- * on_note_view_image        — the decoded image, borrowed (cached on its
- *                             block), or NULL.
+ * on_note_view_image_size   — its pixel dimensions, from the stored
+ *                             bytes' header (nothing decoded); NO when there
+ *                             is no such image or the header will not parse.
  * on_note_view_image_png    — its stored bytes, borrowed, or NULL.
  * on_note_view_image_open   — open it in the outside image viewer; NO when
  *                             there is no such image or it did not open.
@@ -201,7 +202,7 @@ NSString *on_note_view_selected_text(NotesNoteView *view);
  *                             when there is no such image.
  */
 NSInteger  on_note_view_image_count(NotesNoteView *view);
-CGImageRef on_note_view_image(NotesNoteView *view, NSInteger ordinal);
+BOOL       on_note_view_image_size(NotesNoteView *view, NSInteger ordinal, int *w, int *h);
 GBytes    *on_note_view_image_png(NotesNoteView *view, NSInteger ordinal);
 BOOL       on_note_view_image_open(NotesNoteView *view, NSInteger ordinal);
 BOOL       on_note_view_image_reveal(NotesNoteView *view, NSInteger ordinal);

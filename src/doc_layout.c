@@ -934,10 +934,26 @@ on_doc_layout_code_run(OnDocLayout *L, guint block, guint *first,
 }
 
 /*
- * on_doc_layout_image — see doc_layout.h.
+ * layout_image — the decoded image of an IMAGE block, or of an inline image
+ * of a text block, at the size it is drawn: decoded (image_io.h) to the
+ * pixels `r` covers in `ctx` (the screen's scale included), never more than
+ * the image has, and cached on the block (OnBlock.pixels, released with it).
+ * Drawn bigger later, it is decoded again; never at full size for a
+ * thumbnail.
+ *
+ * Inputs:
+ *   L          — the layout
+ *   block      — the block
+ *   inline_ord — -1 for an IMAGE block; else the index of the inline image
+ *                within the block's text
+ *   ctx        — the context it is about to be drawn in
+ *   r          — where, in points
+ *
+ * Output: the image, BORROWED (valid while the block lives and until the
+ *         next call for it), or NULL when the bytes will not decode.
  */
-CGImageRef
-on_doc_layout_image(OnDocLayout *L, guint block, gint inline_ord)
+static CGImageRef
+layout_image(OnDocLayout *L, guint block, gint inline_ord, CGContextRef ctx, on_rect_t r)
 {
     OnBlock *blk = on_document_block(L->doc, block);
     if (!blk) return NULL;
@@ -956,11 +972,19 @@ on_doc_layout_image(OnDocLayout *L, guint block, gint inline_ord)
         cache = &img->pixels;
         cfree = &img->pixels_free;
     }
-    if (*cache) return (CGImageRef)*cache;
     gsize n;
     const guint8 *d = g_bytes_get_data(png, &n);
-    CGImageRef img_ref = on_image_decode_capped(d, n, 0);
-    if (!img_ref) return NULL;
+    CGSize dev  = CGContextConvertSizeToDeviceSpace(ctx, CGSizeMake(r.w, r.h));
+    int    need = (int)ceil(fmax(fabs(dev.width), fabs(dev.height)));
+    int    sw, sh;                   /* the image's own size                 */
+    if (on_image_probe_size(d, n, &sw, &sh)) need = MIN(need, MAX(sw, sh));
+    CGImageRef cached = *cache;
+    if (cached != NULL &&
+        (int)MAX(CGImageGetWidth(cached), CGImageGetHeight(cached)) >= need)
+        return cached;
+    CGImageRef img_ref = on_image_decode_capped(d, n, MAX(need, 1));
+    if (!img_ref) return cached;
+    if (cached != NULL) (*cfree)(cached);
     *cache = img_ref;
     *cfree = (GDestroyNotify)CGImageRelease;
     return img_ref;
@@ -1449,7 +1473,7 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
 
         if (blk->kind == ON_BLOCK_IMAGE) {
             on_rect_t r = { b->x, b->y, b->w, b->img_h };
-            CGImageRef img = on_doc_layout_image(L, (guint)i, -1);
+            CGImageRef img = layout_image(L, (guint)i, -1, ctx, r);
             if (img)
                 on_paint_image(ctx, img, r);
             else
@@ -1573,7 +1597,7 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_rect_t br;
             on_text_layout_box_rect(b->layout, (size_t)k, &br);
             on_rect_t ir = { b->x + br.x, ty + br.y, br.w, br.h };
-            CGImageRef cg = on_doc_layout_image(L, (guint)i, (gint)k);
+            CGImageRef cg = layout_image(L, (guint)i, (gint)k, ctx, ir);
             if (cg) on_paint_image(ctx, cg, ir);
         }
         /* The "copy" word on the first block of a code run. */

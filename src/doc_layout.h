@@ -241,23 +241,6 @@ void on_doc_layout_word_at(OnDocLayout *layout, OnPos pos, OnPos *a, OnPos *b);
 void on_doc_layout_line_at(OnDocLayout *layout, OnPos pos, OnPos *a, OnPos *b);
 
 /* ---------------------------------------------------------------------------
- * on_doc_layout_image() — the decoded image of an IMAGE block, or of an
- * inline image of a text block.  Decoded on first use (image_io.h) and
- * cached on the block (OnBlock.pixels, released with it by CGImageRelease).
- *
- * Inputs:
- *   layout     — the layout
- *   block      — the block
- *   inline_ord — -1 for an IMAGE block; else the index of the inline image
- *                within the block's text
- *
- * Output: the image, BORROWED (do not release; valid while the block
- *         lives), or NULL when the bytes will not decode.
- * ------------------------------------------------------------------------- */
-CGImageRef on_doc_layout_image(OnDocLayout *layout, guint block,
-                               gint inline_ord);
-
-/* ---------------------------------------------------------------------------
  * on_doc_layout_code_run() — for a CODE block, the run of consecutive CODE
  * blocks it belongs to (what the "copy" word copies).
  *

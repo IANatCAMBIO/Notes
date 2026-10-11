@@ -397,7 +397,9 @@ blink_restart(NotesNoteView *v)
         NotesNoteView *sv = wv;
         if (!sv) { [t invalidate]; return; }
         sv.caret_on = !sv.caret_on;
-        sv.needsDisplay = YES;
+        on_rect_t r;                  /* a blink redraws the caret's line only */
+        on_doc_layout_caret_rect(sv.layout, sv.caret, &r);
+        [sv setNeedsDisplayInRect:NSInsetRect(NSMakeRect(r.x, r.y, r.w, r.h), -2, -2)];
     }];
     v.needsDisplay = YES;
 }
@@ -1708,9 +1710,10 @@ context_menu(NotesNoteView *v, double x, double y)
     if (hit.kind == ON_HIT_IMAGE) {
         [menu addItemWithTitle:@"Copy Image" action:@selector(image_copy:) keyEquivalent:@""];
         [menu addItemWithTitle:@"Open"       action:@selector(image_open:) keyEquivalent:@""];
-        CGImageRef image = on_note_view_image(v, hit.image_ord);
-        guint32    shown = context_image_width(v);
-        BOOL full = image != NULL && shown > 0 && shown >= CGImageGetWidth(image);
+        int     iw = 0, ih = 0;
+        guint32 shown = context_image_width(v);
+        BOOL full = on_note_view_image_size(v, hit.image_ord, &iw, &ih) && shown > 0 &&
+                    shown >= (guint32)iw;
         [menu addItemWithTitle:full ? @"Display as Thumbnail" : @"Display Full Size"
                         action:full ? @selector(image_thumbnail:) : @selector(image_full_size:)
                  keyEquivalent:@""];
@@ -2056,7 +2059,7 @@ mouseMoved:(NSEvent *)event
  * drawRect: — fill the page, then delegate to doc_layout.
  *
  * Inputs:
- *   dirty — the clip rectangle (the full bounds is redrawn)
+ *   dirty — the clip rectangle: only the blocks crossing it are drawn
  *
  * Output: none.
  */
@@ -2201,8 +2204,9 @@ set_context_image_width:(guint32)width
 - (void)
 image_full_size:(id)sender
 {
-    CGImageRef image = on_note_view_image(self, _ctx_hit.image_ord);
-    if (image) [self set_context_image_width:(guint32)CGImageGetWidth(image)];
+    int w = 0, h = 0;
+    if (on_note_view_image_size(self, _ctx_hit.image_ord, &w, &h))
+        [self set_context_image_width:(guint32)w];
 }
 
 - (void)
@@ -3040,14 +3044,16 @@ reveal_pos(NotesNoteView *v, OnPos p)
 }
 
 /*
- * on_note_view_image — see note_view.h.
+ * on_note_view_image_size — see note_view.h.
  */
-CGImageRef
-on_note_view_image(NotesNoteView *view, NSInteger ordinal)
+BOOL
+on_note_view_image_size(NotesNoteView *view, NSInteger ordinal, int *w, int *h)
 {
-    guint block;
-    gint  k;
-    return image_locate(view.doc, ordinal, &block, &k) ? on_doc_layout_image(view.layout, block, k) : NULL;
+    GBytes *png = on_note_view_image_png(view, ordinal);
+    if (png == NULL) return NO;
+    gsize n;
+    const guint8 *bytes = g_bytes_get_data(png, &n);
+    return on_image_probe_size(bytes, n, w, h);
 }
 
 /*

@@ -53,6 +53,7 @@
 #include "app_lifecycle.h"
 #include "ipc.h"
 #include "serialize.h"
+#include "image_io.h"
 
 #include <mach/mach.h>
 #include <objc/message.h>
@@ -1153,13 +1154,20 @@ test_inline_image(void)
         check(view.frame.size.height > on_look_image_thumb_h,
               "an inline image takes its thumbnail's room in the line");
         check(save_snapshots(window, @"inline-image"), "inline image snapshots written");
+        const OnInlineImage *shown = &g_array_index(
+            on_document_block(on_note_view_document(view), 1)->text->images, OnInlineImage, 0);
+        int src_w = 0;
+        on_image_probe_size(png.bytes, png.length, &src_w, NULL);
+        check(shown->pixels != NULL && (int)CGImageGetWidth(shown->pixels) < src_w,
+              "the editor decodes an image at the size it is drawn, not the file's");
         __block NSInteger opened = -1;
         void (^handler)(NSInteger) = view.image_activated_handler;
         view.image_activated_handler = ^(NSInteger ordinal) { opened = ordinal; };
         for (CGFloat x = 40; x < 400 && opened < 0; x += 20)
             on_note_view_feed_click(view, x, 120, 1, 0, NO);
         view.image_activated_handler = handler;
-        check(opened == 0 && on_note_view_image(view, 0) != NULL && on_note_view_image_png(view, 0) != NULL &&
+        int iw = 0, ih = 0;
+        check(opened == 0 && on_note_view_image_size(view, 0, &iw, &ih) && on_note_view_image_png(view, 0) != NULL &&
               on_note_view_image_reveal(view, 0) && on_note_view_caret(view).offset == strlen("before "),
               "a click on it opens it, and every image call finds it as image 0");
 

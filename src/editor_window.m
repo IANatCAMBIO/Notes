@@ -831,13 +831,13 @@ build_image_viewer
     };
     viewer.caption_handler = ^NSString *(NSInteger idx) {
         NotesEditorWindow *s = ws;
-        CGImageRef image = s ? on_note_view_image(s.note_view, idx) : NULL;
-        if (!image) return nil;
+        int w = 0, h = 0;
+        if (!s || !on_note_view_image_size(s.note_view, idx, &w, &h)) return nil;
         gchar *title = on_document_title(on_note_view_document(s.note_view),
                                          ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
         NSString *caption = [NSString stringWithFormat:@"%@ — image %ld of %ld — %zu × %zu",
                              @(title), (long)idx + 1, (long)on_note_view_image_count(s.note_view),
-                             CGImageGetWidth(image), CGImageGetHeight(image)];
+                             (size_t)w, (size_t)h];
         g_free(title);
         return caption;
     };

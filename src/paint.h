@@ -35,21 +35,6 @@ typedef struct {
 void on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color);
 
 /* ---------------------------------------------------------------------------
- * on_paint_stroke_rect() — outline a rectangle with a line drawn INSIDE its
- * edge, so a 1 pt border of a w x h box covers exactly that box.
- *
- * Inputs:
- *   ctx   — the context
- *   rect  — the box
- *   color — the line's colour
- *   width — the line's width
- *
- * Output: none.
- * ------------------------------------------------------------------------- */
-void on_paint_stroke_rect(CGContextRef ctx, on_rect_t rect, on_color_t color,
-                          double width);
-
-/* ---------------------------------------------------------------------------
  * on_paint_rounded_rect() — a rounded rectangle, filled and outlined (the
  * task checkbox).
  *

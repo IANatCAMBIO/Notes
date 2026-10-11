@@ -3,7 +3,7 @@
 #import "library_state.h"
 
 /*
- * library_window — the library window's frame (work package E): the
+ * library_window — the library window's frame: the
  * toolbar, the split between the sidebar and the notes pane, the AI pane
  * under the notes, and the status bar.  The panes themselves come from
  * their own modules (library_sidebar.h, library_notes.h, library_ai.h).

@@ -49,8 +49,9 @@ make seed && make run   # the app on dev/data
 - `src/` — flat, one module per `.h` + `.c`/`.m`.  Core C modules are listed
   in the Makefile's `CORE_SRCS`; everything else is the app.
 - `src/identity.h` — every name of this build, defined once.
-- `porting/gtk_reference/` — the GTK UI sources and the GTK-era docs: the
-  behavioural SPECIFICATION, not compiled, deleted at integration.  Its
+- The GTK build — the behavioural SPECIFICATION this port was written
+  from — is in git at its last commit, `51ec5a4` (`GTK_COMMIT` in
+  `tests/cli_golden.sh`): `git show 51ec5a4:src/note_view.c`.  Its
   `docs/CLAUDE.md` describes the GTK app, not this tree.
 - `porting/GTK_PORTING_MAP.md` — what the GTK app does, feature by feature.
 - `porting/FILES_PLAYBOOK.md` — how AppKit code is written here (the Files

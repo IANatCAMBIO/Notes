@@ -264,7 +264,8 @@ on_text_layout_new(const on_text_content_t *content,
     CFRelease(base_font);
 
     /* Text color. */
-    on_color_t text_color = on_look_pick(on_look_text, style->dark);
+    on_color_t text_color = on_look_pick(style->muted ? on_look_code_number : on_look_text,
+                                         style->dark);
     if (cf_len > 0)
         set_color_attr(ms, text_color, 0, cf_len);
 
@@ -296,17 +297,7 @@ on_text_layout_new(const on_text_content_t *content,
             }
             /* Italic. */
             if (r->flags & ON_FMT_ITALIC) {
-                CFIndex val = kCTFontItalicTrait;
-                CFNumberRef n = CFNumberCreate(NULL, kCFNumberCFIndexType, &val);
                 /* CoreText italic: use a proper italic variant of the font. */
-                CTFontRef cur_f = (CTFontRef)CFAttributedStringGetAttribute(
-                    ms, cs, kCTFontAttributeName, NULL);
-                if (!cur_f) {
-                    cur_f = get_font(style->font_size, style->scale,
-                                     style->mono, false);
-                    CFRelease(cur_f);
-                    cur_f = NULL;
-                }
                 CTFontSymbolicTraits want = kCTFontTraitItalic;
                 if (bold_base || (r->flags & ON_FMT_BOLD))
                     want |= kCTFontTraitBold;
@@ -319,7 +310,6 @@ on_text_layout_new(const on_text_content_t *content,
                     CFRelease(icopy);
                 }
                 CFRelease(ifont);
-                CFRelease(n);
             }
             /* Underline. */
             if (r->flags & ON_FMT_UNDERLINE) {

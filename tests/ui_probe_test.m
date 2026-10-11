@@ -7,7 +7,7 @@
  * probe interface: on_note_view_feed_key, on_note_view_feed_text,
  * on_note_view_feed_click.  The view copies and pastes through a private
  * pasteboard, never the user's clipboard.  The command set is the GTK
- * runner's (porting/gtk_reference/tests/ui_probe.c); an unknown command is
+ * runner's (the GTK build's tests/ui_probe.c); an unknown command is
  * a failure, and so is every failed expectation — the exit status says.
  *
  * Script format (see tests/ui/ — each .txt file):
@@ -39,8 +39,11 @@
  *   check <index> <kind> <text>  — assert block content
  *   caret <block> <offset>       — assert caret position
  *   checked <block> <0|1>        — assert a task block's tick
- *   tag <block> <offset> <0|1>   — assert the character at a byte offset is
- *                                  (or is not) part of a #tag
+ *   flag <block> <cell> <offset> <style> <0|1>
+ *                                — assert the character at a byte offset of
+ *                                  a block's text (cell -1) or a cell has
+ *                                  (or has not) a style: bold, italic,
+ *                                  underline, strike or tag
  *   table-size <block> <r> <c>   — assert a table's rows and columns
  *   clipboard <text>             — assert the pasteboard's text (\n escapes)
  *   where / print                — print the caret / document (debug aid)
@@ -136,7 +139,7 @@ para_flag(const char *s)
 }
 
 /*
- * inline_flag — the ON_FMT_* flag for a named inline style.
+ * inline_flag — the ON_FMT_* flag for a named inline style (or "tag").
  *
  * Inputs:
  *   s — style label
@@ -150,6 +153,7 @@ inline_flag(const char *s)
     if (!strcmp(s, "italic"))    return ON_FMT_ITALIC;
     if (!strcmp(s, "underline")) return ON_FMT_UNDERLINE;
     if (!strcmp(s, "strike"))    return ON_FMT_STRIKE;
+    if (!strcmp(s, "tag"))       return ON_FMT_TAG;
     return 0;
 }
 
@@ -420,18 +424,24 @@ run_script(const char *path, NotesNoteView *view)
             snprintf(label, sizeof label, "%s:%d checked %u %d", path, line_num, idx, want);
             check(b != NULL && b->kind == ON_BLOCK_CHECK && !b->checked == !want, label);
 
-        } else if (!strcmp(cmd, "tag")) {
+        } else if (!strcmp(cmd, "flag")) {
             char *tok = strtok(arg, " ");
             guint idx = tok ? (guint)atoi(tok) : 0;
             tok = strtok(NULL, " ");
+            gint cell = tok ? atoi(tok) : -1;
+            tok = strtok(NULL, " ");
             gsize off = tok ? (gsize)atoi(tok) : 0;
+            char *style = strtok(NULL, " ");
+            guint32 flag = style ? inline_flag(style) : 0;
             tok = strtok(NULL, " ");
             gboolean want = tok ? atoi(tok) != 0 : FALSE;
-            const OnBlock *b = idx < on_document_n_blocks(doc) ? on_document_block(doc, idx) : NULL;
-            gboolean have = b && b->text && (on_text_flags_at(b->text, off) & ON_FMT_TAG) != 0;
+            const OnText *t = idx < on_document_n_blocks(doc)
+                            ? on_document_text_at(doc, (OnPos){ idx, cell, 0 }) : NULL;
+            gboolean have = t && (on_text_flags_at(t, off) & flag) != 0;
             char label[256];
-            snprintf(label, sizeof label, "%s:%d tag %u %zu %d", path, line_num, idx, off, want);
-            check(b != NULL && !have == !want, label);
+            snprintf(label, sizeof label, "%s:%d flag %u %d %zu %s %d", path, line_num, idx, cell, off,
+                     style ? style : "?", want);
+            check(t != NULL && flag != 0 && !have == !want, label);
 
         } else if (!strcmp(cmd, "table-size")) {
             char *tok = strtok(arg, " ");

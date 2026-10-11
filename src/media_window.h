@@ -4,15 +4,14 @@
 
 /*
  * media_window — the media browser: every image in the notes the library is
- * listing, as thumbnails decoded at thumbnail size (on_note_image_nth with
- * a cap, never full size), with the shared image viewer.
+ * listing, as thumbnails decoded at thumbnail size (on_note_image_nth_png
+ * through on_ui_thumbnail, never full size), with the shared image viewer.
  *
  * The module registers its own commands with the library, so the menus and
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * The specification is porting/gtk_reference/src/media_window.c.  This
- * header is FROZEN.
+ * The specification is the GTK build's src/media_window.c.
  */
 
 /*

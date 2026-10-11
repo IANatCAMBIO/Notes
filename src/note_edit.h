@@ -6,7 +6,7 @@
  * Backspace (lists continue, an empty item ends its list, headings are one
  * line), the block and inline toggles, pasting, the #tag capture, find,
  * the typing undo group — lives in the note view (note_view.m), as it did
- * in the GTK widget (porting/gtk_reference/src/note_view.c).  There is ONE
+ * in the GTK widget (the GTK build's src/note_view.c).  There is ONE
  * implementation: the probe and the tests drive it through the view's
  * on_note_view_feed_* entry points, never a copy of it.
  *
@@ -53,7 +53,6 @@ typedef enum {
     on_mod_shift   = 1 << 0,
     on_mod_command = 1 << 1,         /* the scripts' "primary" and "meta"    */
     on_mod_option  = 1 << 2,         /* "alt": word movement on macOS        */
-    on_mod_control = 1 << 3,
 } on_mod_t;
 
 /* ---------------------------------------------------------------------------

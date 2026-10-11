@@ -8,9 +8,9 @@ runs and passes `make test` at every commit.**
 
 Read in this order: this file; `porting/GTK_PORTING_MAP.md` (what the GTK
 app does, section by section); `porting/FILES_PLAYBOOK.md` §1, §3, §5 (how
-AppKit code is written here); then your package's GTK source in
-`porting/gtk_reference/src/` — that code is the behavioural specification
-and is deleted when the port is integrated.
+AppKit code is written here); then the GTK source of what you are
+changing, in git at the last GTK commit (`git show 51ec5a4:src/<file>`) —
+that code is the behavioural specification.
 
 Contents: 1 hard rules · 2 layout of the tree · 3 the core you program
 against · 4 frozen headers · 5 packages, ownership, start order · 6 commands
@@ -86,7 +86,7 @@ tests/               *_test.c (core), *_test.m (UI), cli_golden.sh, check.h, ui/
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
 resources/           Info.plist
 icons/               PNG artwork, copied into Contents/Resources
-porting/             this file, the two research documents, gtk_reference/
+porting/             this file and the two research documents
 dev/                 (gitignored) data/, test/, snapshots/, golden/, gtk_ref/
 ```
 
@@ -107,7 +107,7 @@ Everything in map §2.3 is still there with the same signatures
 | `app.h` (GTK types in `OnApp`) | `app_core.h`: `OnApp` = db, db_dir, preference fields, backup state, **hooks** |
 | `on_app_config_init(argv0)`, ini beside the binary, `notes.ini.defaults` | `config.h`: `on_app_config_init()`, one data directory; no defaults file — defaults are the table in `app_core.c` |
 | `g_idle_add` / `g_timeout_add` / `g_thread_new` | `main_service.h`: `on_main_post`, `on_timer_add` / `on_timer_remove`, `on_worker_run` |
-| `GdkPixbuf`, `on_png_decode_capped`, `on_image_png_bytes`, `on_png_probe_size`, `gdk_pixbuf_new_from_file` | `image_io.h`: `on_image_decode_capped` → `CGImageRef` (+1), `on_image_png_encode`, `on_image_probe_size`, `on_image_file_to_png`; `on_note_image_nth` returns a `CGImageRef` (+1) |
+| `GdkPixbuf`, `on_png_decode_capped`, `on_image_png_bytes`, `on_png_probe_size`, `gdk_pixbuf_new_from_file` | `image_io.h`: `on_image_decode_capped` → `CGImageRef` (+1), `on_image_png_encode`, `on_image_probe_size`, `on_image_file_to_png`; `on_note_image_nth_png` gives one image's PNG bytes |
 | `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due/text` |
 | the search worker inside search_window.c, `OnSearchScope` | `search_job.h`: `on_search_job_start` / `_cancel`, `OnSearchScope` |
 | main.c's sequence, `on_app_switch_database`, quit by destroying windows | `app_lifecycle.h`: `on_app_db_path`, `on_app_open_db`, `on_app_start_services`, `on_app_switch_db`, `on_app_shutdown` |
@@ -228,7 +228,7 @@ Each header's file comment states its contract and its STATUS; each stub
 
 ## 5. Packages, file ownership, start order
 
-| Pkg | Scope | Files you own (replace / complete) | Specification (porting/gtk_reference/src) | Needs |
+| Pkg | Scope | Files you own (replace / complete) | Specification (the GTK build's src/) | Needs |
 |---|---|---|---|---|
 | **B** Text layout | CoreText backend; doc_layout in neutral form; painter | `text_layout.[ch]`, `doc_layout.[ch]`, `paint.[ch]` | `doc_layout.c` | image_io, look |
 | **C** Note view | the editor view, the lifted editing policy, the probe | `note_view.[hm]`, `note_edit.[ch]`, new `tests/ui_probe_test.m` (+ `tests/ui/*.txt`) | `note_view.c`, `tests/ui_probe.c` | doc_layout.h (stub is enough to start) |
@@ -404,7 +404,7 @@ Therefore:
 - bundled icons come from **`on_ui_icon(name, points)`** (decoded at
   points × scale via ImageIO; cached);
 - a note's image for a thumbnail comes from **`on_ui_thumbnail(bytes, n,
-  box_w, box_h, scale)`** or `on_note_image_nth(blob, len, ord, max_px)` —
+  box_w, box_h, scale)`** (the bytes from `on_note_image_nth_png`) —
   capped decode, on a worker.  Never hand a full-size `NSImage` to a small
   view, a table cell, a collection item, a menu item or a button;
 - the image viewer is the one place a full-size image is right; it drops it
@@ -583,7 +583,7 @@ make seed && make run                 # look at it, on dev/data
 make ui-check                         # the UI test alone; snapshots in dev/snapshots
 ```
 
-- `make test` = `build/test_document` (35 model tests, GLib only), every
+- `make test` = `build/test_document` (the model tests, GLib only), every
   `tests/*_test.c` against the core, every `tests/*_test.m` against the app
   objects (run from a small bundle so icons load), then `make golden`.
 - **`tests/ui_smoke_test.m`** builds the library window and editors
@@ -665,4 +665,3 @@ only the `OnApp`).
 6. **LSMinimumSystemVersion** is the macOS version MacPorts built GLib for
    (26.0 here), not 14.0, until GLib is gone; sources still compile against
    a 14.0 deployment target, so newer-API use is caught now.
-7. `icons/new.png` (2048 px, 2.1 MB) is bundled but unused.

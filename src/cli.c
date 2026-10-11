@@ -17,6 +17,7 @@
 #include "app_core.h"
 #include "db.h"
 #include "export.h"
+#include "image_io.h"                /* image files in and out            */
 #include "ipc.h"
 #include "search_query.h"
 #include "serialize.h"               /* on_note_document_load, extractors  */

@@ -1,7 +1,7 @@
 /*
- * settings_window.m — the Settings tool window (⌘,), work package H.
+ * settings_window.m — the Settings tool window (⌘,).
  *
- * Specification: porting/gtk_reference/src/settings_window.c.  One column,
+ * Specification: the GTK build's src/settings_window.c.  One column,
  * as the GTK window and the Files app's Preferences have it: Appearance,
  * Editor, Database (the health plate and the rotating backups) and AI
  * Features, scrolling once it is taller than on_look_settings_max_h.
@@ -131,7 +131,7 @@ static NSTextField *
 heading(NSString *text)
 {
     NSTextField *label = [NSTextField labelWithString:text];
-    label.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
+    label.font = [NSFont boldSystemFontOfSize:on_look_ui_font];
     return label;
 }
 
@@ -147,25 +147,9 @@ static NSTextField *
 note_text(NSString *text)
 {
     NSTextField *label = [NSTextField wrappingLabelWithString:text];
-    label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     label.textColor = NSColor.secondaryLabelColor;
     label.preferredMaxLayoutWidth = text_w;
     return label;
-}
-
-/*
- * small_label — a plain label of the health plate (plate_type sets its
- * size).
- *
- * Inputs:
- *   text — the text
- *
- * Output: the label.
- */
-static NSTextField *
-small_label(NSString *text)
-{
-    return [NSTextField labelWithString:text];
 }
 
 /*
@@ -202,7 +186,6 @@ small_button(NSString *title, id target, SEL action)
 {
     NSButton *button = [NSButton buttonWithTitle:title target:target action:action];
     button.controlSize = NSControlSizeSmall;
-    button.font        = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     return button;
 }
 
@@ -491,24 +474,24 @@ add_database:(NSMutableArray<NSView *> *)rows
     NSTextField *head = heading(@"Database");
     [rows addObject:head];
 
-    self.led    = small_label(led_unknown);
-    self.health = small_label(@"");
+    self.led    = [NSTextField labelWithString:led_unknown];
+    self.health = [NSTextField labelWithString:@""];
     self.health.identifier = @"health";
     self.db_path = [NSTextField wrappingLabelWithString:@""];
     self.db_path.selectable = YES;
     self.db_path.preferredMaxLayoutWidth = text_w - 120;
-    self.db_data = small_label(@"");
+    self.db_data = [NSTextField labelWithString:@""];
     self.db_data.identifier = @"data";
-    self.db_size = small_label(@"");
+    self.db_size = [NSTextField labelWithString:@""];
     self.sha = [NSButton buttonWithTitle:@"—" target:self action:@selector(copy_sha:)];
     self.sha.bordered = NO;
 
     NSArray<NSArray<NSView *> *> *cells = @[
-        @[small_label(@"Health:"),           row(@[self.led, self.health])],
-        @[small_label(@"Current database:"), self.db_path],
-        @[small_label(@"Data:"),             self.db_data],
-        @[small_label(@"Size on disk:"),     self.db_size],
-        @[small_label(@"SHA-256:"),          self.sha],
+        @[[NSTextField labelWithString:@"Health:"],           row(@[self.led, self.health])],
+        @[[NSTextField labelWithString:@"Current database:"], self.db_path],
+        @[[NSTextField labelWithString:@"Data:"],             self.db_data],
+        @[[NSTextField labelWithString:@"Size on disk:"],     self.db_size],
+        @[[NSTextField labelWithString:@"SHA-256:"],          self.sha],
     ];
     NSGridView *grid = self.plate_grid = [NSGridView gridViewWithViews:cells];
     grid.rowSpacing    = 2;
@@ -655,7 +638,7 @@ add_ai:(NSMutableArray<NSView *> *)rows
     self.ai_prompt = prompt_scroll.documentView;
     self.ai_prompt.identifier = @"ai-prompt";
     self.ai_prompt.string     = app->ai_custom_prompt ? @(app->ai_custom_prompt) : @"";
-    self.ai_prompt.font       = [NSFont systemFontOfSize:NSFont.systemFontSize];
+    self.ai_prompt.font       = [NSFont systemFontOfSize:on_look_ui_font];
     self.ai_prompt.richText   = NO;
     self.ai_prompt.textContainerInset = NSMakeSize(4, 4);
     self.ai_prompt.delegate   = self;

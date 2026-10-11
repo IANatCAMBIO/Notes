@@ -1,7 +1,7 @@
 /*
- * media_window.m — the media browser (work package H).
+ * media_window.m — the media browser.
  *
- * Specification: porting/gtk_reference/src/media_window.c.  Every image in
+ * Specification: the GTK build's src/media_window.c.  Every image in
  * the notes the library was listing when the window opened (a snapshot of
  * on_library_notes_for_selection), as a grid of square thumbnails with the
  * note's title under each, and the shared image viewer over the grid.

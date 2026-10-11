@@ -63,7 +63,6 @@ static const on_command_t commands[] = {
     { @"folder-restore",   @"Restore Folder",          @"",  0,         win, nil, nil },
     { @"sort-subfolders",  @"Sort Subfolders Alphabetically", @"", 0,   win, nil, nil },
     { @"search-here",      @"Search Here…",            @"",  0,         win, nil, nil },
-    { @"note-open",        @"Open",                    @"",  0,         win, nil, nil },
     { @"note-pin",         @"Pin",                     @"",  0,         win, nil, nil },
     { @"note-restore",     @"Restore",                 @"",  0,         win, nil, nil },
     { @"note-export-html", @"Export as HTML…",         @"",  0,         win, nil, nil },
@@ -95,11 +94,15 @@ static const on_command_t commands[] = {
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 
 /*
- * on_command_find — table lookup.
- * Inputs/output are documented in commands.h.
+ * command_find — a command's row.
+ *
+ * Inputs:
+ *   ident — the command's identifier
+ *
+ * Output: the row, or NULL for an unknown identifier.
  */
-const on_command_t *
-on_command_find(NSString *ident)
+static const on_command_t *
+command_find(NSString *ident)
 {
     for (size_t i = 0; i < COMMAND_COUNT; i++) {
         if ([commands[i].ident isEqualToString:ident]) return &commands[i];
@@ -136,7 +139,7 @@ command_action(const on_command_t *command, id *target)
 NSMenuItem *
 on_command_menu_item(NSString *ident)
 {
-    const on_command_t *command = on_command_find(ident);
+    const on_command_t *command = command_find(ident);
     NSCAssert(command != NULL, @"unknown command %@", ident);
     id  target = nil;
     SEL action = command_action(command, &target);
@@ -156,7 +159,7 @@ on_command_menu_item(NSString *ident)
 NSToolbarItem *
 on_command_toolbar_item(NSString *ident)
 {
-    const on_command_t *command = on_command_find(ident);
+    const on_command_t *command = command_find(ident);
     NSCAssert(command != NULL && command->icon != nil, @"no toolbar command %@", ident);
     id  target = nil;
     SEL action = command_action(command, &target);
@@ -190,7 +193,7 @@ on_command_ident(id item)
 void
 on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
 {
-    const on_command_t *command = on_command_find(on_command_ident(item));
+    const on_command_t *command = command_find(on_command_ident(item));
     if (command == NULL) return;
     NSString *shown = title ?: command->title;
     if ([item isKindOfClass:NSMenuItem.class]) {

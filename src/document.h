@@ -204,7 +204,7 @@ OnBlock *on_document_block(const OnDocument *d, guint i);
 /* on_document_check() — verify every invariant BLOCK_MODEL.md lists.
  * Returns TRUE when they hold; otherwise FALSE with the first failure
  * described in `why` (if given).  Cheap enough for tests to call after
- * every operation; the loader and saver call it in debug builds.         */
+ * every operation (the tests and bnbf-scan do).                           */
 gboolean on_document_check(const OnDocument *d, GString *why);
 
 /* ---------------------------------------------------------------------------
@@ -450,8 +450,8 @@ gboolean on_document_take_actions_modified(OnDocument *d);
 
 /* on_block_is_action() — a PARA/H1/H2 block whose text starts with '!'.
  * THE action-line contract: list and task lines start with their prefix,
- * code lines never count.  on_note_extract (serialize.c) derives the
- * action_items mirror through this same test.                            */
+ * code lines never count.  on_note_document_save (serialize.c) derives
+ * the note's task rows through this same test.                           */
 gboolean on_block_is_action(const OnBlock *b);
 
 /* Titles derived from a note's first line are cut to this many characters

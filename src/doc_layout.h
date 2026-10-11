@@ -22,11 +22,7 @@
  * This is the GTK build's doc_layout.h with its five toolkit types removed
  * (PangoContext, PangoAttrList, graphene_rect_t, GdkTexture, GtkSnapshot /
  * GdkRGBA); the functions and their meaning are otherwise unchanged, so
- * porting/gtk_reference/src/doc_layout.c is the specification.
- *
- * STATUS: doc_layout.c is a STUB for work package B, which brings the GTK
- * file back in neutral form over text_layout.h and paint.h.  This header
- * is FROZEN: the note view (package C) is written against it.
+ * the GTK build's src/doc_layout.c is the specification.
  * =========================================================================== */
 
 #ifndef ON_DOC_LAYOUT_H
@@ -96,17 +92,6 @@ void on_doc_layout_set_width(OnDocLayout *layout, double width);
  * ------------------------------------------------------------------------- */
 void on_doc_layout_set_style(OnDocLayout *layout,
                              const OnDocLayoutStyle *style);
-
-/* ---------------------------------------------------------------------------
- * on_doc_layout_set_document() — after a load: a new document, all stale.
- *
- * Inputs:
- *   layout — the layout
- *   doc    — the new document (not owned)
- *
- * Output: none.
- * ------------------------------------------------------------------------- */
-void on_doc_layout_set_document(OnDocLayout *layout, OnDocument *doc);
 
 /* ---------------------------------------------------------------------------
  * The document observer (OnDocumentObserver), relayed by the view so that

@@ -1,6 +1,6 @@
 # Notes AppKit — icons
 
-PNG artwork for the toolbar, drags and dialogs.  `make` copies every
+PNG artwork for the toolbar and the app icon.  `make` copies every
 `icons/*.png` into the bundle's `Contents/Resources`, and the app loads an
 icon by its file name with `on_ui_icon(name, points)` (`src/ui_util.h`),
 which decodes it **at the size it is drawn** — never at the file's full
@@ -35,17 +35,8 @@ keys that background out.  It rewrites in place and is safe to re-run.
 | `images.png`        | Media browser                                         |
 | `settings.png`      | Settings                                              |
 | `microchip.png`     | AI Summary                                            |
-| `copy.png`          | Code-block copy                                       |
-| `warning.png`       | Delete confirmations                                  |
-| `file.png`          | Drag image: one note                                  |
-| `documents.png`     | Drag image: two or more notes                         |
-| `folder.png`        | Drag image: a folder                                  |
-| `composition.png`   | The app icon (bundle icon, About panel, alerts)       |
+| `composition.png`   | The app icon (bundle icon, About panel)               |
 
 The two toggles take TWO files each because their icon names what a click
 will DO, not the state on screen.  Replace both or the button will look
 inconsistent halfway through a toggle.
-
-`new.png` (2048×2048) is not referenced by any code.  It is bundled only
-because everything in this folder is; remove it, or prep and name it for a
-role, when its purpose is decided.

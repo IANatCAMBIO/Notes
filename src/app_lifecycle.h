@@ -115,7 +115,7 @@ typedef enum {
  *   app         — the application context
  *   path        — the database file to open
  *   set_default — TRUE to persist its directory as `db_dir`; FALSE for
- *                 this session only (app->db_transient)
+ *                 this session only
  *
  * Output: ON_SWITCH_DONE when the app is now on `path` (the library has
  *         been told to refresh, the backup timer re-armed, the integrity

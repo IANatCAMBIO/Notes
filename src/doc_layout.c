@@ -1,6 +1,6 @@
 /* ===========================================================================
  * doc_layout.c — OnDocLayout: the geometry of an OnDocument on screen.
- * See doc_layout.h for the contract; porting/gtk_reference/src/doc_layout.c
+ * See doc_layout.h for the contract; the GTK build's src/doc_layout.c
  * is the behavioural specification.  Pango/GSK calls are replaced here with
  * text_layout.h (CoreText) and paint.h (CoreGraphics).
  * =========================================================================== */
@@ -32,7 +32,7 @@
 #define TABLE_PAD     ((double)on_look_table_pad)
 #define TABLE_COL_MAX ((double)on_look_table_col_max)
 #define TABLE_COL_MIN ((double)on_look_table_col_min)
-#define CHECK_SIZE    14.0
+#define CHECK_SIZE    ((double)on_look_checkbox_size)
 
 /* ── BL — one block's layout ────────────────────────────────────────────── */
 
@@ -189,9 +189,9 @@ image_fit(const OnDocLayout *L, int src_w, int src_h, guint32 display_width,
         want = (double)display_width < (double)src_w ? (double)display_width
                                                       : (double)src_w;
     } else {
-        want = (double)src_w < 200.0 ? (double)src_w : 200.0;
-        if (src_h > 0 && (double)src_h * want > 125.0 * (double)src_w)
-            want = (double)src_w * 125.0 / (double)src_h;
+        want = (double)src_w < on_look_image_thumb_w ? (double)src_w : on_look_image_thumb_w;
+        if (src_h > 0 && (double)src_h * want > on_look_image_thumb_h * (double)src_w)
+            want = (double)src_w * on_look_image_thumb_h / (double)src_h;
     }
     want = want > cw ? cw : (want < 1.0 ? 1.0 : want);
     *out_w = want;
@@ -763,26 +763,6 @@ on_doc_layout_set_style(OnDocLayout *L, const OnDocLayoutStyle *style)
 }
 
 /*
- * on_doc_layout_set_document — see doc_layout.h.
- */
-void
-on_doc_layout_set_document(OnDocLayout *L, OnDocument *doc)
-{
-    for (size_t k = 0; k < L->n_bl; k++) bl_clear_i(L, k);
-    L->doc = doc;
-    size_t n = (size_t)on_document_n_blocks(doc);
-    BL *nb = realloc(L->bl, (n + 1) * sizeof *L->bl);
-    if (nb) L->bl = nb;
-    for (size_t k = L->n_bl; k < n; k++) L->bl[k] = (BL){ 0 };
-    L->n_bl = n;
-    L->pre_on = false;
-    free(L->hits);
-    L->hits   = NULL;
-    L->n_hits = 0;
-    L->geometry_valid = false;
-}
-
-/*
  * on_doc_layout_block_changed — see doc_layout.h.
  */
 void
@@ -1080,7 +1060,6 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
     for (guint k = 0; k < blk->text->images->len; k++) {
         const OnInlineImage *img =
             &g_array_index(blk->text->images, OnInlineImage, k);
-        size_t cf_idx = idx_of(L, i, -1, img->offset);
         on_rect_t br;
         on_text_layout_box_rect(b->layout, (size_t)k, &br);
         if (x >= b->x + br.x && x < b->x + br.x + br.w &&
@@ -1091,7 +1070,6 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
             out->pos.offset   = img->offset;
             return;
         }
-        (void)cf_idx;
     }
 }
 
@@ -1532,8 +1510,8 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
                 on_text_content_t nc = { .text = num, .len = strlen(num) };
                 on_text_style_t ns = {
                     .font_size = L->font_size * 0.8,
-                    .scale = 1.0, .mono = true, .dark = L->style.dark,
-                    .width = 0.0
+                    .scale = 1.0, .mono = true, .muted = true,
+                    .dark = L->style.dark, .width = 0.0
                 };
                 on_text_layout_t *nl = on_text_layout_new(&nc, &ns);
                 double nw, nh;

@@ -70,16 +70,6 @@ typedef struct {
 } on_command_handler_t;
 
 /*
- * on_command_find — a command's row.
- *
- * Inputs:
- *   ident — the command's identifier
- *
- * Output: the row, or NULL for an unknown identifier.
- */
-const on_command_t *on_command_find(NSString *ident);
-
-/*
  * on_command_menu_item — a menu item for a command: title, shortcut,
  * target and action per its scope.  For the main menu and context menus
  * alike.

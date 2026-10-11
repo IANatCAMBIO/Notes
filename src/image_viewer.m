@@ -1,7 +1,7 @@
 /* ===========================================================================
- * image_viewer.m — the modal image viewer (work package D)
+ * image_viewer.m — the modal image viewer
  *
- * Specification: porting/gtk_reference/src/image_viewer.c.  One picture
+ * Specification: the GTK build's src/image_viewer.c.  One picture
  * shown big over its host view, on a dark backdrop:
  *
  *   ┌─────────────────────────────────────────────┐

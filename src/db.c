@@ -258,6 +258,10 @@ bind_id_or_null(sqlite3_stmt *stmt, int idx, gint64 id)
 static gboolean
 stmt_done(OnDatabase *db, sqlite3_stmt *stmt);      /* see stmt_finish below */
 
+/* The schema version, which on_db_open reads and writes: see below.         */
+static gint     user_version(OnDatabase *db);
+static gboolean set_user_version(OnDatabase *db, gint version);
+
 /* stmt_cache_finalize() — GDestroyNotify wrapper for sqlite3_finalize,
  * used as the value-destroy function of stmt_cache.                          */
 static void
@@ -487,7 +491,7 @@ on_db_open(const gchar *path_override)
      * needs one open with Notes 5.0.0 first.  A fresh file has no such
      * table and is stamped straight to 5.  The next one-time migration
      * is 6 or higher.                                                       */
-    if (on_db_user_version(db) < 5) {
+    if (user_version(db) < 5) {
         if (query_int64(db, "SELECT COUNT(*) FROM sqlite_master WHERE "
                             "type='table' AND name='action_items'", -1) > 0) {
             g_warning("db: %s predates Notes 5.0 (its action items are in "
@@ -496,7 +500,7 @@ on_db_open(const gchar *path_override)
             on_db_close(db);
             return NULL;
         }
-        on_db_set_user_version(db, 5);
+        set_user_version(db, 5);
     }
 
     /* The views reference migrated columns (and action_items_ctx the
@@ -2273,8 +2277,17 @@ on_db_action_list_free(GList *items)
 
 /* --- schema version (PRAGMA user_version) — gates one-time backfills ---- */
 
-gint
-on_db_user_version(OnDatabase *db)
+/*
+ * user_version — the schema version (PRAGMA user_version), which gates
+ * one-time backfills.
+ *
+ * Inputs:
+ *   db — open database
+ *
+ * Output: the version; 0 when unset.
+ */
+static gint
+user_version(OnDatabase *db)
 {
     sqlite3_stmt *stmt = prepare(db, "PRAGMA user_version");
     if (stmt == NULL)
@@ -2286,8 +2299,17 @@ on_db_user_version(OnDatabase *db)
     return v;
 }
 
-gboolean
-on_db_set_user_version(OnDatabase *db, gint version)
+/*
+ * set_user_version — record the schema version (PRAGMA user_version).
+ *
+ * Inputs:
+ *   db      — open database
+ *   version — the version
+ *
+ * Output: TRUE when it was written.
+ */
+static gboolean
+set_user_version(OnDatabase *db, gint version)
 {
     gchar *sql = g_strdup_printf("PRAGMA user_version=%d", version);
     gboolean ok = exec_simple(db, sql);

@@ -2124,14 +2124,8 @@ on_document_delete_range(OnDocument *d, OnPos a, OnPos b, OnPos *out)
 
     gboolean first_text = on_block_kind_is_text(first->kind);
     gboolean drop_first = !first_text && (a.offset == 0 || a.cell >= 0);
-    if (first_text) {
-        gsize len = first->text->text->len;
-        if (a.cell >= 0) {           /* cannot happen: text blocks have no
-                                        cells */
-        } else if (a.offset < len) {
-            on_document_delete_text(d, a, len - a.offset);
-        }
-    }
+    if (first_text && a.offset < first->text->text->len)  /* no cells */
+        on_document_delete_text(d, a, first->text->text->len - a.offset);
     if (drop_first) {
         remove_block_keeping_one(d, a.block);
         after.cell   = -1;

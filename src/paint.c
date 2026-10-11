@@ -29,18 +29,6 @@ on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color)
 }
 
 /*
- * on_paint_stroke_rect — see paint.h.
- */
-void
-on_paint_stroke_rect(CGContextRef ctx, on_rect_t rect, on_color_t color,
-                     double width)
-{
-    CGContextSetRGBStrokeColor(ctx, color.r, color.g, color.b, color.a);
-    CGContextStrokeRectWithWidth(
-        ctx, CGRectInset(cg_rect(rect), width / 2.0, width / 2.0), width);
-}
-
-/*
  * on_paint_rounded_rect — see paint.h.
  */
 void

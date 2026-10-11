@@ -1,9 +1,9 @@
 /*
- * library_notes.m — the library's notes pane (work package G): the notes
+ * library_notes.m — the library's notes pane: the notes
  * of the current selection as a list or a grid, and the Action Items list
  * that replaces them while that sidebar row is selected.
  *
- * Specification: porting/gtk_reference/src/library_window.c —
+ * Specification: the GTK build's src/library_window.c —
  * refresh_notes, render_note_thumb and the thumbnail fill, the column
  * layout, the per-note menu, refresh_actions and the due-date dialog.
  *
@@ -1746,36 +1746,6 @@ validate_toggle_done(id target, id item)
 }
 
 /*
- * run_note_open — "note-open": open the selected notes.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the item (unused)
- */
-static void
-run_note_open(id target, id sender)
-{
-    NotesLibrary *lib = target;
-    for (NSNumber *n in on_library_notes_selected_ids(lib))
-        if (lib.app->open_note) lib.app->open_note(lib.app, n.longLongValue);
-}
-
-/*
- * validate_some_selected — notes are selected.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   item   — the item (unused)
- *
- * Output: YES to enable it.
- */
-static BOOL
-validate_some_selected(id target, id item)
-{
-    return on_library_notes_selected_ids(target).count > 0;
-}
-
-/*
  * run_delete_note — "delete-note": move the selected notes to the Trash
  * (their editors closed first), or, in the Trash view, delete them
  * permanently after one confirmation.
@@ -1920,7 +1890,6 @@ static const on_command_handler_t notes_handlers[] = {
     { @"view-grid",    run_view_grid,    NULL                   },
     { @"toggle-view",  run_toggle_view,  validate_toggle_view   },
     { @"toggle-done",  run_toggle_done,  validate_toggle_done   },
-    { @"note-open",    run_note_open,    validate_some_selected },
     { @"delete-note",  run_delete_note,  validate_delete_note   },
     { @"note-restore", run_note_restore, validate_note_restore  },
     { @"note-pin",     run_note_pin,     validate_note_pin      },

@@ -19,12 +19,6 @@
  * from open to close; nothing else does.  An editor leaves the registry in
  * its windowWillClose:, after its final save, having removed its autosave
  * timer and cleared the view's handler blocks.
- *
- * STATUS: editor_window.m is a working STUB for work package D: the
- * registry, load, autosave, close and flush are real (the flush-on-quit
- * contract in app_lifecycle.h depends on them and can be tested today);
- * the toolbar, find field, status bar, placement refinements and the image
- * viewer are not there.  This header is FROZEN.
  */
 
 /* What an editor scrolls to when it opens. */

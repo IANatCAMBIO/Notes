@@ -4,24 +4,24 @@
 text Title
 key Return
 text see #work here
-tag 1 4 1
-tag 1 8 1
-tag 1 9 0
-tag 1 0 0
+flag 1 -1 4 tag 1
+flag 1 -1 8 tag 1
+flag 1 -1 9 tag 0
+flag 1 -1 0 tag 0
 key Return
 text plain #home
 key Escape
 text  and more
-tag 2 6 0
+flag 2 -1 6 tag 0
 key Return
 text a#b c
-tag 3 1 0
+flag 3 -1 1 tag 0
 key Return
 para code
 text #code x
-tag 4 0 0
+flag 4 -1 0 tag 0
 key Return
 para body
 text #end
 key Return
-tag 5 0 1
+flag 5 -1 0 tag 1

@@ -11,7 +11,7 @@
  * the window's status update.  It is also the library's only DROP target
  * (notes and folders dragged onto folders, the root and the Trash).
  *
- * The specification is porting/gtk_reference/src/library_window.c
+ * The specification is the GTK build's src/library_window.c
  * (refresh_sidebar, the sidebar menus, the drop validation, the
  * fit-to-content sizing).
  */

@@ -104,18 +104,27 @@ change forces a re-sign.
 
 | Program | Covers |
 |---|---|
-| `build/test_document` | the block model: 35 tests, links `document.c` + `bnbf.c` + GLib only |
-| `config_test` | the data-directory policy (override, default, `$HOME`/XDG ignored), ini round trip through a second process |
-| `main_service_test` | main-thread posts, timers, workers; the async integrity check and a backup pass landing under the Cocoa-side run loop |
-| `image_io_test` | capped decode, header probe, PNG encode, file → PNG, a note's image by ordinal |
-| `ipc_test` | the socket between real processes: wire format byte for byte, the real `notes` tool served by a stand-in app, the app lock (busy, stale socket, lock held with nothing accepting → the tool refuses), a data directory longer than a socket path |
-| `lifted_logic_test` | `action_edit` (headless and live), `search_job`, open policy, shutdown order |
+| `build/test_document` | the block model: operations, undo, load/save round trips, repairs (bad UTF-8), a random-operations fuzz; links `document.c` + `bnbf.c` + GLib only |
+| `config_test` | the data-directory policy (override, default, `$HOME`/XDG ignored), ini round trip through a second process, a malformed ini kept aside |
+| `main_service_test` | main-thread posts, timers, workers; the async integrity check and a backup pass landing under the Cocoa-side run loop; a backup paced against a concurrent writer, partial copies, the open database never pruned |
+| `image_io_test` | capped decode, header probe, PNG encode, file → PNG, a note's image bytes by ordinal |
+| `ipc_test` | the socket between real processes: wire format byte for byte, the real `notes` tool served by a stand-in app, relative paths in the tool's directory, the app lock (busy, stale socket, lock held with nothing accepting → the tool refuses, held through a headless run), a data directory longer than a socket path |
+| `lifted_logic_test` | `action_edit` (headless and live), `search_job`, open policy, shutdown order (and its refusal while an editor cannot save), an unreadable note never treated as empty, strict CLI ids, export file names |
 | `utf_index_test` | UTF-8 byte ↔ UTF-16 unit offsets |
-| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); writes light and dark snapshots to `dev/snapshots` |
+| `ui_probe_test` (app objects, in-process) | the `tests/ui/*.txt` scripts replayed against the note view: typing, keys, clicks, the input method, tables, find, tags |
+| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, an unreadable note refused, CLI writes to open notes, a failed save never dropped, permanent delete only of what is still in the Trash, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); writes light and dark snapshots to `dev/snapshots` |
 | `tests/cli_golden.sh` | ~740 CLI comparisons against the GTK build, plain and `--json`, reads and mutations, on databases seeded by each build |
 
 Each test runs with `NOTES_DATA_DIR` set to its own folder under
-`dev/test/`; `tests/check.h` refuses to run without it.
+`dev/test/`; `tests/check.h` refuses to run without it.  Run one `make test`
+at a time: concurrent runs share those folders and `dev/golden`.
+
+**Tools.**  `tools/dev_seed.c` and `tools/seed-dev.sh` fill `dev/data`
+(`make seed`); `tools/bnbf-scan.c` round-trips every note of a database
+COPY through the model and reports what the loader repaired (`make
+bnbf-scan`); `tools/icon-prep.py` normalises a new toolbar icon (see
+`icons/README.md`); `tools/import-apple-notes.sh` imports Apple Notes
+through the `notes` command-line tool.
 
 **The golden test and the GTK reference binary.**  `tests/cli_golden.sh`
 exports this repository's last GTK commit (pinned in the script as

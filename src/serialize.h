@@ -4,7 +4,7 @@
  * The blob-level helpers around a note: the body_text cache
  * (on_note_extract_text, derived through the model), the image ordinals
  * the media browser and the CLI address (on_note_count_images /
- * on_note_image_nth*), and the document's two ends —
+ * on_note_image_nth_png), and the document's two ends —
  * on_note_document_load, the preamble of every consumer that wants the
  * document, and on_note_document_save, THE one way a document is written
  * back (blob, title, body text, and the task rows its '!' lines are).
@@ -17,7 +17,6 @@
 #include "bnbf.h"                    /* the format: flags, reader, writer  */
 #include "document.h"                /* OnDocument                          */
 #include "db.h"                      /* OnDatabase, OnActionItem            */
-#include "image_io.h"                /* CGImageRef, the one decoded type    */
 
 /* ---------------------------------------------------------------------------
  * on_note_extract_text() — the searchable plain text of a BNBF blob
@@ -104,28 +103,12 @@ gboolean on_note_document_reconcile(OnDatabase *db, gint64 id,
 gint on_note_count_images(const guint8 *data, gsize len);
 
 /* ---------------------------------------------------------------------------
- * on_note_image_nth() — decode ONE embedded image out of a BNBF blob,
- * addressed by its position among the blob's IMAGE records (the same 0-based
- * ordinal on_note_count_images() counts, and the same order the editor's
- * image anchors appear in).  Only that one PNG is decoded
- * (on_image_decode_capped); every other payload is walked past.
- *   data   — BNBF bytes (NULL yields NULL).
- *   len    — length of `data`.
- *   ord    — 0-based image ordinal within the note.
- *   max_px — cap on the longest side of the decoded image in pixels (0 =
- *            full resolution); never upscales.  A thumbnail passes its
- *            display size times the screen's scale factor.
- * Returns a new image (+1: CGImageRelease() it), or NULL when the note has
- * no such image or the payload will not decode.
- * ------------------------------------------------------------------------- */
-CGImageRef on_note_image_nth(const guint8 *data, gsize len, gint ord,
-                             gint max_px);
-
-/* ---------------------------------------------------------------------------
  * on_note_image_nth_png() — the ENCODED bytes of one embedded image, taken
- * verbatim out of the blob: THE walk on_note_image_nth() decodes through, and
- * what a caller that only wants to WRITE the image out should use, since
- * decoding and re-encoding a PNG costs time and loses the original bytes.
+ * verbatim out of the blob, addressed by its position among the blob's
+ * IMAGE records (the same 0-based ordinal on_note_count_images() counts, and
+ * the order the editor's image anchors appear in); every other payload is
+ * walked past.  A thumbnail decodes it capped (on_ui_thumbnail); a caller
+ * that only wants to WRITE the image out uses the bytes as they are.
  *   data — BNBF bytes (NULL yields NULL).
  *   len  — length of `data`.
  *   ord  — 0-based image ordinal within the note.

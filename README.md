@@ -6,14 +6,11 @@ tables, code blocks, task lists, and `!` action items with due dates.  The
 original is a GTK4 app; this fork replaces its user interface with native
 AppKit while keeping its document model, database and command-line tool.
 
-**Status: foundation only.**  The non-UI core is complete and tested with no
-GTK in it.  The app launches as a skeleton: the standard menu bar, one
-library window with placeholder panes showing real data from the database,
-editor windows that show a note as plain text (nothing can be typed yet),
-and the command-line tool talking to the running app.  The real editor,
-sidebar, notes list, and the Settings, Search and Media windows are being
-written by separate work packages against the interfaces in
-[`porting/INTERFACES.md`](porting/INTERFACES.md).
+The whole app is native AppKit: the library (sidebar, list, grid and Action
+Items), the note editor with its own layout and rendering, Settings,
+Search, the media browser, the AI summary, and the command-line tool
+talking to the running app.  The document model, database and CLI are the
+GTK build's, and the CLI's output is checked byte for byte against it.
 
 It is a separate application from the GTK Notes: its own bundle
 (`NotesAppKit.app`, `com.cambio.notes-appkit`), its own data folder and its
@@ -49,9 +46,9 @@ bundle, so reinstalling never touches them.
 
 Setting the environment variable `NOTES_DATA_DIR` moves all of them to another
 folder; development and tests always do (`dev/` inside the source tree).
-The database can also be kept elsewhere — a synced folder, say — through
-`db_dir` in `notes.ini`; a window for choosing it (File ▸ Open Database
-File…) is part of the work still to come.
+The database can also be kept elsewhere — a synced folder, say: File ▸ Open
+Database File… opens one for the session, or makes a `notes.db` the default
+(its folder is stored as `db_dir` in `notes.ini`).
 
 ## First run
 
@@ -92,7 +89,7 @@ make ui-check # the UI test alone; window snapshots in dev/snapshots
 
 See [BUILD.md](BUILD.md) for the build and [porting/INTERFACES.md](porting/INTERFACES.md)
 for how the code is organised.  The GTK sources this port is written from
-are kept, uncompiled, in `porting/gtk_reference/`.
+are in git at the last GTK commit (`GTK_COMMIT` in `tests/cli_golden.sh`).
 
 ## License
 

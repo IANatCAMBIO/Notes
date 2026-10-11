@@ -10,8 +10,8 @@
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * The specification is porting/gtk_reference/src/search_window.c (its
- * worker is lifted into search_job.c).  This header is FROZEN.
+ * The specification is the GTK build's src/search_window.c (its
+ * worker is lifted into search_job.c).
  */
 
 /*

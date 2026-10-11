@@ -1,10 +1,10 @@
 /* ===========================================================================
- * editor_window.m — note editor window (work package D)
+ * editor_window.m — note editor window
  *
  * One NSWindowController per open note.  The window has an ordinary title
  * bar and nothing in it — never an NSToolbar (a unified "headerbar") or a
  * titlebar accessory.  Its body is, top to bottom: the format bar, the
- * NSScrollView whose documentView is the NotesNoteView (work package C),
+ * NSScrollView whose documentView is the NotesNoteView,
  * and the status bar.  The modal image viewer (image_viewer.h) is layered
  * over the scroll view while a picture is on show.
  *
@@ -15,7 +15,7 @@
  * While the find field has the keyboard focus the editing commands are
  * disabled, so ⌘B and the like are plain keys in the field (GTK's "gate").
  *
- * Specification: porting/gtk_reference/src/editor_window.c.
+ * Specification: the GTK build's src/editor_window.c.
  * See editor_window.h for the public API and ownership contract.
  * =========================================================================== */
 
@@ -140,7 +140,6 @@ format_button(NSString *symbol, NSString *face, NSString *ident, NSString *toolt
     b.identifier = ident;
     b.bezelStyle = NSBezelStyleRecessed;
     b.showsBorderOnlyWhileMouseInside = YES;
-    b.font       = [NSFont systemFontOfSize:on_look_ui_font];
     b.toolTip    = tooltip;
     b.refusesFirstResponder = YES;
     if (toggle) [b setButtonType:NSButtonTypePushOnPushOff];
@@ -720,7 +719,6 @@ build_format_bar
     NSSearchField *field = [[NSSearchField alloc] initWithFrame:NSZeroRect];
     field.placeholderString            = @"Find in note";
     field.controlSize                  = NSControlSizeSmall;
-    field.font                         = [NSFont systemFontOfSize:on_look_ui_font];
     field.sendsWholeSearchString       = NO;
     field.sendsSearchStringImmediately = YES;
     field.target   = self;

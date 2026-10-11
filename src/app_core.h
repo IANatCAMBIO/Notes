@@ -48,9 +48,6 @@
  *                  worker opens its own connection from db->path.
  *   db_dir       — custom directory holding the database (owned), or NULL
  *                  for the default (the data directory, config.h).
- *   db_transient — TRUE when the open database was chosen for this session
- *                  only (File > Open Database File… > Session Only), so
- *                  db_dir is not what the ini says.
  *
  * Preferences, loaded from notes.ini by on_app_prefs_load (the keys and
  * defaults are one table in app_core.c):
@@ -128,7 +125,6 @@
 typedef struct OnApp {
     OnDatabase *db;
     gchar      *db_dir;
-    gboolean    db_transient;
 
     gboolean    code_copy_buttons;
     gboolean    code_line_numbers;

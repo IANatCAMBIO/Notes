@@ -149,7 +149,6 @@ static const on_look_color_t on_look_card_text   = { { 0.267, 0.267, 0.267, 1 },
 static const double on_look_toolbar_icon     = 24.0;
 static const double on_look_toolbar_field_h  = 22.0;   /* a toolbar text field                   */
 static const double on_look_toolbar_search_w = 220.0;  /* the library's "Search all notes" field */
-static const double on_look_drag_icon        = 32.0;
 static const double on_look_about_icon       = 128.0;
 static const double on_look_format_bar_h     = 30.0;   /* editor's format bar, above a separator */
 static const double on_look_format_btn_h     = 22.0;

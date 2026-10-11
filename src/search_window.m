@@ -1,7 +1,7 @@
 /*
- * search_window.m — the search window (work package H).
+ * search_window.m — the search window.
  *
- * Specification: porting/gtk_reference/src/search_window.c.
+ * Specification: the GTK build's src/search_window.c.
  *
  *   [ query                              ] [Search] (spinner)
  *   (•) All Notes  ( ) Selected Folder/Tag

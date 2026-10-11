@@ -506,9 +506,8 @@ GList *on_db_note_tag_list(OnDatabase *db, gint64 note_id);
 #define ON_TASK_RECUR_TIME_DEFAULT (8 * 60)       /* minutes past midnight */
 #define ON_TASK_RECUR_LEAD_DEFAULT (7 * 24 * 60)  /* minutes                */
 #define ON_TASK_DUE_TIME_DEFAULT   (8 * 60)       /* minutes past midnight */
-#define ON_TASK_STATUS_NEW         0
-#define ON_TASK_STATUS_IN_PROGRESS 1
-#define ON_TASK_STATUS_DONE        2              /* == struck in the note */
+#define ON_TASK_STATUS_DONE        2              /* == struck in the note;
+                                                     0 new, 1 in progress */
 
 /* The one managed list every note-born task is filed in — the name and
  * emoji the Tasks app's Notes plugin gives ITS managed list, so the merge
@@ -578,12 +577,6 @@ void on_db_action_counts(OnDatabase *db, gint *total, gint *open);
 /* Free a list of OnActionItem (from on_db_action_list or
  * on_note_extract_actions).                                                 */
 void on_db_action_list_free(GList *items);
-
-/* --------------------------- schema version ------------------------------ */
-
-/* PRAGMA user_version accessors — gate one-time backfills (0 = unset).     */
-gint on_db_user_version(OnDatabase *db);
-gboolean on_db_set_user_version(OnDatabase *db, gint version);
 
 /* ----------------------------- trash ------------------------------------ */
 

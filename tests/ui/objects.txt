@@ -64,7 +64,7 @@ check 3 para First line here
 check 4 para 
 caret 3 15
 # An image at the caret splits the line around it; Backspace removes it.
-image ../../icons/file.png
+image ../fixtures/file.png
 caret 4 1
 key BackSpace
 check 3 para First line here

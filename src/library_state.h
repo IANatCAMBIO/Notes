@@ -8,7 +8,7 @@
 /*
  * library_state — what the pieces of the library window share.
  *
- * The library window is built by several modules (work packages E to H):
+ * The library window is built by several modules:
  * the window frame and its commands, the sidebar, the notes pane with the
  * Action Items list, the AI pane, and the secondary windows that ask the
  * library what is selected.  They never reach into each other.  What they

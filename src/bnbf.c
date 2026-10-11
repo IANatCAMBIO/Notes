@@ -158,8 +158,9 @@ on_action_split_due(const gchar *rest, gsize *due_start, gint64 *due)
  * TABLES
  * ======================================================================== */
 
-OnTable *
-on_table_new(gint rows, gint cols)
+/* table_new() — a rows×cols table of empty cells (at least 1×1).          */
+static OnTable *
+table_new(gint rows, gint cols)
 {
     OnTable *t = g_new0(OnTable, 1);
     t->rows  = MAX(1, rows);
@@ -179,16 +180,9 @@ on_table_free(OnTable *table)
     g_free(table);
 }
 
-const gchar *
-on_table_get(OnTable *table, gint r, gint c)
-{
-    if (r < 0 || r >= table->rows || c < 0 || c >= table->cols)
-        return "";
-    return g_ptr_array_index(table->cells, r * table->cols + c);
-}
-
-void
-on_table_set(OnTable *table, gint r, gint c, const gchar *text)
+/* table_set() — set cell (row r, column c); out of range writes nothing.  */
+static void
+table_set(OnTable *table, gint r, gint c, const gchar *text)
 {
     if (r < 0 || r >= table->rows || c < 0 || c >= table->cols)
         return;
@@ -303,7 +297,7 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
             r->error = "bad TABLE record";
             return FALSE;
         }
-        OnTable *t = on_table_new((gint)rows, (gint)cols);
+        OnTable *t = table_new((gint)rows, (gint)cols);
         t->header = (tflags & TABLE_FLAG_HEADER) != 0;
         for (guint32 i = 0; i < rows * cols; i++) {
             guint32 n;               /* cell byte length                    */
@@ -314,7 +308,7 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
                 return FALSE;
             }
             gchar *cell = g_strndup((const gchar *)r->data + r->pos, n);
-            on_table_set(t, (gint)(i / cols), (gint)(i % cols), cell);
+            table_set(t, (gint)(i / cols), (gint)(i % cols), cell);
             g_free(cell);
             r->pos += n;
         }

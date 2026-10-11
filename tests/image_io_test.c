@@ -125,8 +125,8 @@ main(void)
     snprintf(path, sizeof path, "%s/missing.png", data_dir);
     check(on_image_file_to_png(path, &n_file) == NULL, "a missing file is refused");
 
-    /* Through a note: the stored bytes come back verbatim, and one image
-     * decodes by ordinal at thumbnail size.                                */
+    /* Through a note: the stored bytes come back verbatim, and an ordinal
+     * past the end is none.                                                */
     GBytes     *bytes = g_bytes_new(png, n_png);
     OnDocument *doc   = on_document_new();
     on_document_insert_block(doc, 1, on_block_new_image(bytes, 0));
@@ -135,10 +135,7 @@ main(void)
     check(on_note_count_images(blob, blob_len) == 1, "the blob holds one image");
     GBytes *stored = on_note_image_nth_png(blob, blob_len, 0);
     check(stored != NULL && g_bytes_equal(stored, bytes), "stored PNG bytes are verbatim");
-    CGImageRef thumb = on_note_image_nth(blob, blob_len, 0, 32);
-    check(size_is(thumb, 32, 24), "a note's image decodes by ordinal, capped");
-    CGImageRelease(thumb);
-    check(on_note_image_nth(blob, blob_len, 1, 32) == NULL, "an ordinal past the end is NULL");
+    check(on_note_image_nth_png(blob, blob_len, 1) == NULL, "an ordinal past the end is NULL");
     g_bytes_unref(stored);
     g_free(blob);
     on_document_free(doc);

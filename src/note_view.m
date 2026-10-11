@@ -1,5 +1,5 @@
 /* ===========================================================================
- * note_view.m — the note editor's view (work package C)
+ * note_view.m — the note editor's view
  *
  * NotesNoteView is a custom NSView implementing NSTextInputClient.  It owns
  * an OnDocument (the note), lays it out with doc_layout.h and draws text,
@@ -81,9 +81,6 @@ static const NSTimeInterval blink_interval = 0.56;
 
 /* What was under the last context click (for context-menu actions). */
 @property (nonatomic, assign) OnDocHitResult ctx_hit;
-
-/* Layout style in effect. */
-@property (nonatomic, assign) OnDocLayoutStyle style;
 
 /* The key event keyDown: is interpreting (nil otherwise): which key a
  * command came from (home_end_command). */
@@ -350,7 +347,6 @@ static void
 apply_style(NotesNoteView *v)
 {
     OnDocLayoutStyle s = current_style(v);
-    v.style = s;
     on_doc_layout_set_style(v.layout, &s);
     on_doc_layout_set_width(v.layout, layout_width(v));
     fit_height(v);
@@ -2781,11 +2777,13 @@ on_note_view_toggle_inline(NotesNoteView *view, OnFormatFlags flag)
         on_document_begin_group(view.doc);
         for (guint i = a.block; i <= b.block; i++) {
             const OnBlock *blk = on_document_block(view.doc, i);
-            if (blk->text == NULL) continue;
             if (i == a.block && a.cell >= 0 && a.cell == b.cell) {
-                on_document_set_flags(view.doc, a, b.offset - a.offset, flag, !has);
+                /* Inside one table cell (a table block has no text).    */
+                if (b.offset > a.offset)
+                    on_document_set_flags(view.doc, a, b.offset - a.offset, flag, !has);
                 break;
             }
+            if (blk->text == NULL) continue;
             OnPos p = { i, -1, (i == a.block) ? a.offset : 0 };
             gsize end = (i == b.block) ? b.offset : blk->text->text->len;
             if (end > p.offset)

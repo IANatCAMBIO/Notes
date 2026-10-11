@@ -31,9 +31,8 @@
  * (The GTK build's render op returned a GdkPaintable; here it returns an
  * NSImage, so no Core Foundation ownership crosses a block.)
  *
- * The specification is porting/gtk_reference/src/image_viewer.c; the
- * geometry and colours are in look.h (on_look_viewer_*).  This header is
- * FROZEN: the editor and the media window are written against it.
+ * The specification is the GTK build's src/image_viewer.c; the
+ * geometry and colours are in look.h (on_look_viewer_*).
  */
 @interface NotesImageViewer : NSView
 

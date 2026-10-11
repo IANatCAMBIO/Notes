@@ -1,5 +1,5 @@
 /*
- * library_sidebar.m — the library's sidebar (work package F).
+ * library_sidebar.m — the library's sidebar.
  *
  * An NSOutlineView over an in-memory tree of SidebarItem objects, built the
  * way the GTK app builds its sidebar (library_window.c, refresh_sidebar):

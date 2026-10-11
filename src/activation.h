@@ -9,17 +9,6 @@
  */
 
 /*
- * on_activation_is_key — is this key event Return or keypad Enter, with no
- * Command, Option or Control?
- *
- * Inputs:
- *   event — a key-down event
- *
- * Output: YES for an activating key.
- */
-BOOL on_activation_is_key(NSEvent *event);
-
-/*
  * NotesActivatingTable — a table whose Return/Enter key sends its
  * doubleAction, as a double-click does.  The action reads which rows it
  * applies to with on_activated_rows.

@@ -16,13 +16,10 @@
  * Coordinates are points, relative to the layout's own top-left corner, y
  * growing downwards.
  *
- * STATUS: text_layout.c is a STUB for work package B, which implements it
- * on CoreText (CTTypesetter line breaking with word wrap and a character
- * fallback, CTLine metrics, CFStringTokenizer word boundaries, composed-
- * character cursor positions, a CTRunDelegate per inline box, hand-drawn
- * strikethrough and highlight rectangles).  Package B owns this header and
- * may add to it; the byte-offset rule and the coordinate convention are
- * frozen.
+ * text_layout.c implements it on CoreText (CTTypesetter line breaking with
+ * word wrap and a character fallback, CTLine metrics, CFStringTokenizer
+ * word boundaries, composed-character cursor positions, a CTRunDelegate per
+ * inline box, hand-drawn strikethrough and highlight rectangles).
  * =========================================================================== */
 
 #ifndef ON_TEXT_LAYOUT_H
@@ -74,6 +71,7 @@ typedef struct {
     bool   centered;                 /* the derived title line               */
     bool   action;                   /* a '!' line: action colour, semibold  */
     bool   plain;                    /* code: run flags and tags not shown   */
+    bool   muted;                    /* code line numbers: their grey        */
     bool   dark;                     /* dark appearance (look.h colours)     */
 } on_text_style_t;
 

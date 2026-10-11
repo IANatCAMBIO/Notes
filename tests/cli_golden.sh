@@ -336,9 +336,9 @@ fork_case seed
 seed fork seed
 fork seed note new "Rich note" >/dev/null                           # note 8
 env -i PATH=/usr/bin:/bin NOTES_DATA_DIR="$G/fork_seed" \
-    "$DEV_SEED" rich 8 "$ROOT/icons/folder.png" >/dev/null \
+    "$DEV_SEED" rich 8 "$ROOT/tests/fixtures/folder.png" >/dev/null \
     || die "dev_seed failed"
-fork seed note add-image 1 "$ROOT/icons/file.png" >/dev/null
+fork seed note add-image 1 "$ROOT/tests/fixtures/file.png" >/dev/null
 fork seed note set-modified 8 1790100000 >/dev/null
 fork seed note set-modified 1 1790003600 >/dev/null
 fork_case a

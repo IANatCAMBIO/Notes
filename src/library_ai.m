@@ -1,8 +1,8 @@
 /*
- * library_ai.m — the AI summary (work package H): the pane under the notes
+ * library_ai.m — the AI summary: the pane under the notes
  * pane and the command that fills it.
  *
- * Specification: porting/gtk_reference/src/library_window.c, the AI
+ * Specification: the GTK build's src/library_window.c, the AI
  * section (run_ai_summary, build_ai_pane, on_ai_button_clicked).
  *
  * The AI Summary command summarises the SELECTED notes: their text and

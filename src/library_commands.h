@@ -6,11 +6,11 @@
 
 /*
  * library_commands — the library's commands that have no view of their own
- * (work package E): new note and folder, the folder tool panel, trash /
+ *: new note and folder, the folder tool panel, trash /
  * delete / restore / empty, sort, export, Open Database File.
  *
- * The specification is porting/gtk_reference/src/library_window.c (its
- * "commands" sections).  This header is FROZEN; functions may be added.
+ * The specification is the GTK build's src/library_window.c (its
+ * "commands" sections).
  */
 
 /*

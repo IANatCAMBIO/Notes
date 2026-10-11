@@ -51,22 +51,6 @@ on_note_image_nth_png(const guint8 *data, gsize len, gint ord)
     return out;
 }
 
-CGImageRef
-on_note_image_nth(const guint8 *data, gsize len, gint ord, gint max_px)
-{
-    /* The copy the GBytes makes is one image's payload, alive only until
-     * the decode finishes — the media browser holds one at a time.        */
-    GBytes *png = on_note_image_nth_png(data, len, ord);
-    if (png == NULL)
-        return NULL;
-
-    gsize n_png;                     /* payload size                        */
-    const guint8 *bytes = g_bytes_get_data(png, &n_png);
-    CGImageRef out = on_image_decode_capped(bytes, n_png, max_px);
-    g_bytes_unref(png);
-    return out;
-}
-
 gchar *
 on_note_extract_text(const guint8 *data, gsize len)
 {

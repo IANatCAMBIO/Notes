@@ -4,10 +4,16 @@
 #import "activation.h"
 
 /*
- * on_activation_is_key — see activation.h.
+ * activation_is_key — is this key event Return or keypad Enter, with no
+ * Command, Option or Control?
+ *
+ * Inputs:
+ *   event — a key-down event
+ *
+ * Output: YES for an activating key.
  */
-BOOL
-on_activation_is_key(NSEvent *event)
+static BOOL
+activation_is_key(NSEvent *event)
 {
     NSEventModifierFlags mods = event.modifierFlags &
         (NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagControl);
@@ -29,7 +35,7 @@ on_activation_is_key(NSEvent *event)
 - (void)
 keyDown:(NSEvent *)event
 {
-    if (on_activation_is_key(event) && self.selectedRowIndexes.count > 0 && self.doubleAction) {
+    if (activation_is_key(event) && self.selectedRowIndexes.count > 0 && self.doubleAction) {
         _by_key = YES;
         [self sendAction:self.doubleAction to:self.target];
         _by_key = NO;
@@ -113,7 +119,7 @@ menuForEvent:(NSEvent *)event
 - (void)
 keyDown:(NSEvent *)event
 {
-    if (on_activation_is_key(event) && self.selectionIndexPaths.count > 0 && self.activate_handler) {
+    if (activation_is_key(event) && self.selectionIndexPaths.count > 0 && self.activate_handler) {
         self.activate_handler(self.selectionIndexPaths);
         return;
     }

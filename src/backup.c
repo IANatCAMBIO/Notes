@@ -130,8 +130,18 @@ on_backup_dir(void)
     return sub;
 }
 
-gboolean
-on_backup_ready(gchar **reason)
+/*
+ * backup_ready — is the feature usable right now?
+ *
+ * Inputs:
+ *   reason — optional; on FALSE receives which check failed, in words fit
+ *            for a status bar (g_free it)
+ *
+ * Output: TRUE when backups are enabled and on_backup_dir() is a writable
+ *         directory.
+ */
+static gboolean
+backup_ready(gchar **reason)
 {
     if (reason != NULL)
         *reason = NULL;
@@ -471,7 +481,7 @@ void
 on_backup_start(OnApp *app, const gchar *db_path)
 {
     gchar *why = NULL;               /* why the feature is unusable         */
-    if (!on_backup_ready(&why)) {
+    if (!backup_ready(&why)) {
         on_app_status(app, "%s", why != NULL ? why : "Backups unavailable");
         g_free(why);
         return;

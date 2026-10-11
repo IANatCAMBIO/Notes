@@ -6,16 +6,11 @@
  * library_notes — the library's notes pane: the notes of the current
  * selection as a list or a grid (one selection shared by the two), and the
  * Action Items list that replaces them while that sidebar row is selected.
- *
- * STATUS: library_notes.m is a STUB for work package G — a placeholder
- * that names the selection and lists its notes' titles.  The specification
- * is porting/gtk_reference/src/library_window.c (refresh_notes, the
- * thumbnails, the column layout, refresh_actions).  This header is FROZEN.
  */
 
 /*
  * on_library_notes_install — register the pane's commands with the library
- * (view-list, view-grid, toggle-view, toggle-done, note-open, note-pin).
+ * (view-list, view-grid, toggle-view, toggle-done, note-pin).
  * Called once at startup by the app delegate.
  */
 void on_library_notes_install(NotesLibrary *lib);

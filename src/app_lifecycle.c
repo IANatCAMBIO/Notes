@@ -72,14 +72,11 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
     }
     g_free(old_path);
 
-    if (set_default) {
+    if (set_default) {               /* (Session Only persists nothing)      */
         gchar *new_dir = g_path_get_dirname(path);
         on_app_config_set("db_dir", new_dir);
         g_free(app->db_dir);
-        app->db_dir       = new_dir;
-        app->db_transient = FALSE;
-    } else {
-        app->db_transient = TRUE;    /* session only: persist nothing        */
+        app->db_dir = new_dir;
     }
 
     /* The backup timer carries the database path, so it is re-armed onto

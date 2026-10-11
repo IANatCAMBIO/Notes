@@ -124,16 +124,8 @@ typedef struct {
     GPtrArray *cells;
 } OnTable;
 
-/* on_table_new() — a rows×cols table of empty cells (at least 1×1).       */
-OnTable *on_table_new(gint rows, gint cols);
-
 /* on_table_free() — release a table and its cell strings (NULL is a no-op). */
 void on_table_free(OnTable *table);
-
-/* on_table_get()/on_table_set() — cell access (row r, column c); out of
- * range reads "" and writes nothing.                                      */
-const gchar *on_table_get(OnTable *table, gint r, gint c);
-void on_table_set(OnTable *table, gint r, gint c, const gchar *text);
 
 /* ---------------------------------------------------------------------------
  * READER — one cursor over a blob's records, so the header validation, the

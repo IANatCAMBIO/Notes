@@ -18,13 +18,6 @@
  * The API is C functions, as in the GTK build (whose note_view.h this is,
  * with the toolkit types removed); the view reports back through three
  * handler blocks instead of GObject signals.
- *
- * STATUS: note_view.m is a STUB for work package C.  The stub shows the
- * note as plain text and implements only what does not need an editor:
- * loading, the document accessor, the save-time flags, the image ordinals
- * and the external-edit pair.  Everything marked "(stub: no-op)" in the .m
- * is to be implemented from porting/gtk_reference/src/note_view.c.  This
- * header is FROZEN: the editor window (package D) is written against it.
  */
 @interface NotesNoteView : NSView
 

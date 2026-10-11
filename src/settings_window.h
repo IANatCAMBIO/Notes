@@ -11,8 +11,7 @@
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * The specification is porting/gtk_reference/src/settings_window.c.  This
- * header is FROZEN.
+ * The specification is the GTK build's src/settings_window.c.
  */
 
 /*

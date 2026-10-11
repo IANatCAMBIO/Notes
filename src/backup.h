@@ -83,21 +83,12 @@
 gchar *on_backup_dir(void);
 
 /* ---------------------------------------------------------------------------
- * on_backup_ready() — is the feature usable right now?
- *
- * Returns TRUE when backups are enabled and on_backup_dir() is a writable
- * directory.  On FALSE, *reason (optional; g_free) says which of those
- * failed, in words fit for a status bar.  Callers use it to explain
- * themselves rather than failing silently.
- * ------------------------------------------------------------------------- */
-gboolean on_backup_ready(gchar **reason);
-
-/* ---------------------------------------------------------------------------
  * on_backup_start() — run one backup pass on a worker thread.
  *
- * Early-outs, each with a status message: disabled or misconfigured (see
- * on_backup_ready), and "already running".  A pass whose source is unchanged
- * since the last backup writes nothing and says nothing.  Main thread only.
+ * Early-outs, each with a status message: disabled, a destination that is
+ * not a writable directory, and "already running".  A pass whose source is
+ * unchanged since the last backup writes nothing and says nothing.  Main
+ * thread only.
  *
  * Inputs:
  *   app     — application context, for the status bar and the in-flight flag

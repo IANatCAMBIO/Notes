@@ -1349,9 +1349,12 @@ test_ops_fuzz(void)
             break;
         }
         case 15:
+            /* A few blocks, not the whole document: pasting a copy of all
+             * of it into itself doubled the document each time and some
+             * seeds never finished.                                        */
             if (t != NULL && pos.cell < 0) {
                 OnDocument *frag = on_document_copy_range(
-                    d, at(0, 0), at(n - 1, 0));
+                    d, at(i, 0), at(MIN(n - 1, i + 3), 0));
                 did = on_document_insert_fragment(d, pos, frag, NULL);
                 on_document_free(frag);
             }

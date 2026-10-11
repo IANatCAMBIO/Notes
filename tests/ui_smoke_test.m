@@ -1997,6 +1997,9 @@ test_secondary_windows(NotesLibrary *lib)
         [first layoutSubtreeIfNeeded];
         check(first != nil && fabs(NSMidY(first.textField.frame) - NSMidY(first.bounds)) < 1.0,
               "a result's text is centred vertically in its row");
+        check(hits.rowHeight == on_look_row_h && hits.intercellSpacing.height ==
+              ((NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class)).intercellSpacing.height,
+              "result rows are as tall as the library list's compact rows");
         [hits selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [search_win makeFirstResponder:query];
         [search_win makeFirstResponder:hits];

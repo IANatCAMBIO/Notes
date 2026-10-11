@@ -174,6 +174,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     [self.results addTableColumn:when];
     self.results.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
     self.results.style                   = NSTableViewStylePlain;
+    self.results.rowHeight               = on_look_row_h;   /* the library list's compact rows */
     self.results.usesAlternatingRowBackgroundColors = YES;
     self.results.dataSource   = self;
     self.results.delegate     = self;

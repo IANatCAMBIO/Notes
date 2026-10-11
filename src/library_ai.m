@@ -160,7 +160,7 @@ init_with_lib:(NotesLibrary *)lib
     self.text.identifier         = @"ai-text";
     self.text.editable           = NO;
     self.text.richText           = NO;
-    self.text.font               = [NSFont systemFontOfSize:on_look_font_size];
+    self.text.font               = [NSFont systemFontOfSize:on_look_ui_font];
     self.text.textContainerInset = NSMakeSize(8, 4);
 
     NSBox *rule = [[NSBox alloc] initWithFrame:NSZeroRect];

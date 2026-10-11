@@ -53,4 +53,4 @@ key Return
 text alpha beta gamma delta epsilon zeta eta theta iota kappa
 command moveToBeginningOfParagraph:
 key End
-caret 2 22
+caret 2 30

@@ -21,7 +21,7 @@ key Return
 text let y = 2
 check 2 code let x = 1
 check 3 code let y = 2
-click 605 66
+click 605 63
 clipboard let x = 1\nlet y = 2
 check 2 code let x = 1
 # A table (code continues on Return, as in GTK): the context menu adds and

@@ -74,7 +74,7 @@ static const on_look_color_t on_look_selection    = { { 0.36, 0.56, 0.90, 0.35 }
 static const on_look_color_t on_look_selection_dim = { { 0.60, 0.60, 0.60, 0.30 }, { 0.50, 0.50, 0.50, 0.35 } }; /* view lacks focus  */
 static const on_look_color_t on_look_checkbox     = { { 0.200, 0.470, 0.860, 1 }, { 0.208, 0.518, 0.894, 1 } };  /* ticked task box   */
 
-static const double on_look_font_size        = 13.0;   /* body text                              */
+static const double on_look_font_size        = 11.0;   /* body text                              */
 static const double on_look_h1_scale         = 1.6;    /* heading 1, and the derived title line  */
 static const double on_look_h2_scale         = 1.3;
 static const double on_look_margin_left      = 16.0;

@@ -411,7 +411,9 @@ gboolean on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
  * on_db_note_set_body_text().                                               */
 gchar *on_db_note_body_text(OnDatabase *db, gint64 id);
 
-/* Fill the searchable-text cache for one note.                              */
+/* Fill the searchable-text cache for one note, if it is still empty: text
+ * extracted from an older read (the search worker) never overwrites what a
+ * save has written meanwhile.                                               */
 gboolean on_db_note_set_body_text(OnDatabase *db, gint64 id,
                                   const gchar *body_text);
 

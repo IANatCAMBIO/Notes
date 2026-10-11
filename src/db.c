@@ -183,6 +183,13 @@ static const char *TASKS_SCHEMA_FMT =
 /* Remove tags that no longer label any note; run (via exec_simple) after
  * anything that can delete note_tags rows, so the library's tag list
  * stays tidy.                                                                */
+/* How every transaction that writes begins.  IMMEDIATE takes the write lock
+ * up front, so a busy database is waited for (the busy timeout) at the
+ * start; a plain BEGIN that reads first and then writes can instead fail at
+ * once with SQLITE_BUSY when another connection is writing, half-way
+ * through a save.                                                           */
+#define WRITE_TXN "BEGIN IMMEDIATE"
+
 #define PRUNE_ORPHAN_TAGS_SQL \
     "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM note_tags)"
 
@@ -574,8 +581,11 @@ on_db_close(OnDatabase *db)
         g_hash_table_destroy(db->stmt_cache);
         db->stmt_cache = NULL;
     }
-    if (db->handle != NULL)
-        sqlite3_close(db->handle);
+    /* A statement left unfinalized would make sqlite3_close refuse, keeping
+     * the file and its locks open: close_v2 lets go once it is finalized,
+     * and the leak is reported.                                            */
+    if (db->handle != NULL && sqlite3_close_v2(db->handle) != SQLITE_OK)
+        g_warning("db: closing %s: %s", db->path, sqlite3_errmsg(db->handle));
     /* An async health pass still running must not report to a connection
      * that is gone: the job outlives us and frees itself.                */
     if (db->health_job != NULL)
@@ -763,6 +773,10 @@ db_check_file(const gchar *path, gboolean *ran, gchar **detail)
         g_free(uri);
         return FALSE;
     }
+    /* A save on the app's connection may hold the write lock as the check
+     * starts: wait for it like every connection does, rather than report
+     * "database is locked" as a failed check.                               */
+    sqlite3_busy_timeout(sq, ON_DB_BUSY_TIMEOUT_MS);
     g_free(uri);
 
     gboolean ok = db_check_pragmas(sq, ran, detail);
@@ -1073,9 +1087,8 @@ typedef void (*BulkBind)(sqlite3_stmt *stmt, gsize i, gint64 id,
                          gpointer data);
 
 /* ---------------------------------------------------------------------------
- * bulk_ids() — run `sql` once per id inside one transaction.
- *   begin     — "BEGIN" or "BEGIN IMMEDIATE" (the latter takes the write
- *               lock up front, for the destructive paths).
+ * bulk_ids() — run `sql` once per id inside one write transaction (BEGIN
+ * IMMEDIATE: see WRITE_TXN).
  *   sql       — the statement to step per id.
  *   ids / n   — the rows to act on.
  *   bind      — binds one row's parameters.
@@ -1086,13 +1099,13 @@ typedef void (*BulkBind)(sqlite3_stmt *stmt, gsize i, gint64 id,
  * opens no transaction at all.
  * ------------------------------------------------------------------------- */
 static gboolean
-bulk_ids(OnDatabase *db, const char *begin, const char *sql,
+bulk_ids(OnDatabase *db, const char *sql,
          const gint64 *ids, gsize n, BulkBind bind, gpointer data,
          const char *after_sql)
 {
     if (n == 0)
         return TRUE;
-    if (!exec_simple(db, begin))
+    if (!exec_simple(db, WRITE_TXN))
         return FALSE;
 
     sqlite3_stmt *stmt = prepare(db, sql);
@@ -1151,7 +1164,7 @@ bind_order_id(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
 static gboolean
 reorder_rows(OnDatabase *db, const char *sql, const gint64 *ids, gsize n)
 {
-    return bulk_ids(db, "BEGIN", sql, ids, n, bind_order_id, NULL, NULL);
+    return bulk_ids(db, sql, ids, n, bind_order_id, NULL, NULL);
 }
 
 gboolean
@@ -1198,7 +1211,7 @@ on_db_folder_sort_children(OnDatabase *db, gint64 parent_id)
 gboolean
 on_db_folder_delete(OnDatabase *db, gint64 id)
 {
-    if (!exec_simple(db, "BEGIN IMMEDIATE"))
+    if (!exec_simple(db, WRITE_TXN))
         return FALSE;
     sqlite3_stmt *stmt = prepare(db, "DELETE FROM folders WHERE id=?");
     if (stmt != NULL)
@@ -1363,7 +1376,7 @@ on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n)
 {
     /* One transaction for the lot — autocommit would fsync per note — and
      * the orphan-tag prune runs once at the end instead of per note.        */
-    return bulk_ids(db, "BEGIN IMMEDIATE", "DELETE FROM notes WHERE id=?",
+    return bulk_ids(db, "DELETE FROM notes WHERE id=?",
                     ids, n, bind_id_only, NULL, PRUNE_ORPHAN_TAGS_SQL);
 }
 
@@ -1388,7 +1401,7 @@ on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
      * restore — a moved note is always meant to be visible where it
      * lands.  The MAX subselect re-evaluates per row inside the
      * transaction, so the notes land appended in array order.               */
-    return bulk_ids(db, "BEGIN",
+    return bulk_ids(db,
                     "UPDATE notes SET folder_id=?, trashed=0, sort_order="
                     "  COALESCE((SELECT MAX(sort_order)+1 FROM notes "
                     "            WHERE folder_id IS ?), 0) "
@@ -1440,7 +1453,7 @@ gboolean
 on_db_note_set_body_text(OnDatabase *db, gint64 id, const gchar *body_text)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "UPDATE notes SET body_text=? WHERE id=?");
+        "UPDATE notes SET body_text=? WHERE id=? AND body_text IS NULL");
     if (stmt != NULL) {
         sqlite3_bind_text(stmt, 1, body_text, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 2, id);
@@ -1753,7 +1766,7 @@ on_db_tag_list_free(GList *tags)
 gboolean
 on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 {
-    if (!exec_simple(db, "BEGIN"))
+    if (!exec_simple(db, WRITE_TXN))
         return FALSE;
 
     /* Drop the note's old tag links, then re-add the current set.          */
@@ -1870,7 +1883,7 @@ on_db_action_uid_alloc(OnDatabase *db)
      * wrapped in one (IMMEDIATE: the write lock from the start), so two
      * allocations cannot read the same `next`.                            */
     gboolean own_txn = sqlite3_get_autocommit(db->handle) != 0;
-    if (own_txn && !exec_simple(db, "BEGIN IMMEDIATE"))
+    if (own_txn && !exec_simple(db, WRITE_TXN))
         return 0;
     gint64 uid = action_uid_alloc(db);
     if (own_txn)
@@ -2039,7 +2052,7 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
 {
     if (changed != NULL)
         *changed = FALSE;
-    if (!exec_simple(db, "BEGIN"))
+    if (!exec_simple(db, WRITE_TXN))
         return FALSE;
     gboolean ok = TRUE;              /* the outcome                         */
     GHashTable *kept = g_hash_table_new(g_int64_hash, g_int64_equal);
@@ -2290,7 +2303,7 @@ gboolean
 on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n)
 {
     /* One transaction for the lot, like on_db_notes_delete.                 */
-    return bulk_ids(db, "BEGIN IMMEDIATE",
+    return bulk_ids(db,
                     "UPDATE notes SET trashed=1 WHERE id=?",
                     ids, n, bind_id_only, NULL, NULL);
 }
@@ -2410,7 +2423,7 @@ on_db_folder_note_ids(OnDatabase *db, gint64 folder_id)
 gboolean
 on_db_trash_empty(OnDatabase *db)
 {
-    if (!exec_simple(db, "BEGIN IMMEDIATE"))
+    if (!exec_simple(db, WRITE_TXN))
         return FALSE;
 
     /* The explicit notes delete covers directly-trashed notes; deleting

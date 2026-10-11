@@ -39,8 +39,8 @@
 /* How many thumbnails one window builds at most (each holds its pixels). */
 static const NSUInteger media_max_images = 500;
 
-/* How long one scan slice may run before yielding (seconds). */
-static const double media_slice_s = 0.040;
+/* How often the scan hands its new thumbnails to the grid (seconds). */
+static const double media_batch_s = 0.1;
 
 /* The caption's height under a thumbnail, and the cell's padding. */
 static const CGFloat caption_h = 16.0;
@@ -65,6 +65,14 @@ static const CGFloat cell_pad  = 3.0;
 @end
 
 @implementation NotesMediaCell
+@end
+
+/* A scan's stop flag, shared with its worker (an atomic property). */
+@interface NotesMediaScan : NSObject
+@property (atomic, assign) BOOL cancelled;
+@end
+
+@implementation NotesMediaScan
 @end
 
 /* ── The cell view ─────────────────────────────────────────────────────── */
@@ -116,12 +124,7 @@ loadView
 @property (nonatomic, strong) NSProgressIndicator *spinner;
 @property (nonatomic, strong) NSArray<NotesMediaNote *>        *notes;
 @property (nonatomic, strong) NSMutableArray<NotesMediaCell *> *cells;
-@property (nonatomic, assign) NSUInteger scan_i;        /* the note being scanned */
-@property (nonatomic, assign) guint8    *scan_blob;     /* its bytes (owned)      */
-@property (nonatomic, assign) gsize      scan_len;
-@property (nonatomic, assign) gint       scan_n_img;
-@property (nonatomic, assign) gint       scan_ord;      /* the next image         */
-@property (nonatomic, assign) BOOL       scan_open;     /* scan_i is loaded       */
+@property (nonatomic, strong) NotesMediaScan *scan;     /* in flight, or nil      */
 @property (nonatomic, assign) BOOL       scanning;
 @property (nonatomic, assign) NSInteger  n_notes;       /* notes with an image    */
 @property (nonatomic, assign) BOOL       truncated;
@@ -181,15 +184,6 @@ init_with_lib:(NotesLibrary *)lib
     on_ui_use_ui_font(win.contentView);
     [win center];
     return self;
-}
-
-/*
- * dealloc — the blob of a note still being scanned.
- */
-- (void)
-dealloc
-{
-    g_free(_scan_blob);
 }
 
 /*
@@ -254,7 +248,7 @@ build
         return (NSInteger)ws.cells.count;
     };
     self.viewer.image_handler = ^NSImage *(NSInteger idx, NSSize box) {
-        return [ws image_at:idx box:box blob:NULL len:0];
+        return [ws image_at:idx box:box];
     };
     self.viewer.caption_handler = ^NSString *(NSInteger idx) {
         NotesMediaWindow *s = ws;
@@ -273,27 +267,25 @@ build
 /* ── Images ────────────────────────────────────────────────────────────── */
 
 /*
- * image_at:box:blob:len: — one cell's image decoded for a box: from bytes
- * already held (the scan) or read fresh (the viewer), capped at the box at
- * the window's scale.
+ * image_at:box: — one cell's image for the viewer, read fresh and decoded
+ * capped at the box at the window's scale.
  *
  * Inputs:
- *   idx  — the cell
- *   box  — the box in points
- *   blob — the note's bytes, or NULL to read them
- *   len  — their length
+ *   idx — the cell
+ *   box — the box in points
  *
  * Output: the image, or nil when it is gone or will not decode.
  */
 - (NSImage *)
-image_at:(NSInteger)idx box:(NSSize)box blob:(const guint8 *)blob len:(gsize)len
+image_at:(NSInteger)idx box:(NSSize)box
 {
     if (idx < 0 || (NSUInteger)idx >= self.cells.count) return nil;
-    NotesMediaCell *c   = self.cells[(NSUInteger)idx];
-    guint8         *own = NULL;
-    if (blob == NULL && on_db_note_load(self.lib.app->db, c.note_id, &own, &len)) blob = own;
+    NotesMediaCell *c    = self.cells[(NSUInteger)idx];
+    guint8         *blob = NULL;
+    gsize           len  = 0;
+    if (!on_db_note_load(self.lib.app->db, c.note_id, &blob, &len)) return nil;
     GBytes *png = blob ? on_note_image_nth_png(blob, len, c.ord) : NULL;
-    g_free(own);
+    g_free(blob);
     if (png == NULL) return nil;
     gsize         n;
     const guint8 *bytes = g_bytes_get_data(png, &n);
@@ -305,126 +297,128 @@ image_at:(NSInteger)idx box:(NSSize)box blob:(const guint8 *)blob len:(gsize)len
 /* ── Scanning ──────────────────────────────────────────────────────────── */
 
 /*
- * start_scan — begin filling the grid.
+ * start_scan — fill the grid from a worker (GTK media_scan_idle, off the
+ * main thread as §7 asks): it reads each listed note over its own
+ * connection and decodes its images at thumbnail size, handing the new
+ * cells over every media_batch_s; at most media_max_images.  Closing the
+ * window stops it.
  */
 - (void)
 start_scan
 {
     self.scanning = YES;
+    self.scan     = [[NotesMediaScan alloc] init];
     self.spinner.hidden = NO;
     [self.spinner startAnimation:nil];
     [self show_status];
-    [self schedule_slice];
-}
 
-/*
- * schedule_slice — the next slice, on the main queue.
- */
-- (void)
-schedule_slice
-{
-    __weak NotesMediaWindow *ws = self;
-    dispatch_async(dispatch_get_main_queue(), ^{ [ws scan_slice]; });
-}
-
-/*
- * close_note — done with the note being scanned: drop its bytes and move
- * on.
- */
-- (void)
-close_note
-{
-    g_free(self.scan_blob);
-    self.scan_blob  = NULL;
-    self.scan_len   = 0;
-    self.scan_n_img = 0;
-    self.scan_ord   = 0;
-    self.scan_open  = NO;
-    self.scan_i++;
-}
-
-/*
- * finish_scan — the queue is drained or the cap reached.
- */
-- (void)
-finish_scan
-{
-    [self close_note];
-    self.scanning = NO;
-    [self.spinner stopAnimation:nil];
-    self.spinner.hidden = YES;
-    [self show_status];
-}
-
-/*
- * scan_slice — walk the queue for one slice, one image per step, then
- * show the new cells and come back (GTK media_scan_idle).
- */
-- (void)
-scan_slice
-{
-    if (!self.scanning) return;
-    NSUInteger     first = self.cells.count;
-    CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
-    BOOL           done  = NO;
-    do {
-        if (self.cells.count >= media_max_images) {
-            self.truncated = YES;
-            done = YES;
-            break;
-        }
-        if (!self.scan_open) {
-            if (self.scan_i >= self.notes.count) {
-                done = YES;
-                break;
+    NotesMediaScan          *scan  = self.scan;
+    NSArray<NotesMediaNote *> *notes = self.notes;
+    NSString                *path  = @(self.lib.app->db->path);
+    CGFloat                  side  = on_look_media_thumb;
+    CGFloat                  scale = self.window.backingScaleFactor ?: 2.0;
+    __weak NotesMediaWindow *ws    = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        OnDatabase *db = on_db_open(path.fileSystemRepresentation);
+        NSMutableArray<NotesMediaCell *> *batch = [NSMutableArray array];
+        NSUInteger     total = 0, with_images = 0;
+        BOOL           truncated = NO;
+        CFAbsoluteTime handed    = CFAbsoluteTimeGetCurrent();
+        for (NotesMediaNote *note in notes) {
+            if (scan.cancelled || truncated || db == NULL) break;
+            @autoreleasepool {
+                guint8 *blob = NULL;
+                gsize   len  = 0;
+                if (!on_db_note_load(db, note.note_id, &blob, &len) || blob == NULL) continue;
+                gint n   = on_note_count_images(blob, len);
+                BOOL any = NO;
+                for (gint ord = 0; ord < n; ord++) {
+                    if (total >= media_max_images) {
+                        truncated = YES;
+                        break;
+                    }
+                    GBytes *png = on_note_image_nth_png(blob, len, ord);
+                    if (png == NULL) continue;
+                    gsize         pn;
+                    const guint8 *pb    = g_bytes_get_data(png, &pn);
+                    NSImage      *thumb = on_ui_thumbnail(pb, pn, side, side, scale);
+                    g_bytes_unref(png);
+                    if (thumb == nil) continue;
+                    NotesMediaCell *c = [[NotesMediaCell alloc] init];
+                    c.note_id = note.note_id;
+                    c.ord     = ord;
+                    c.n_img   = n;
+                    c.title   = note.title;
+                    c.thumb   = thumb;
+                    [batch addObject:c];
+                    total++;
+                    any = YES;
+                }
+                g_free(blob);
+                if (any) with_images++;
             }
-            gsize   len  = 0;
-            guint8 *blob = NULL;
-            on_db_note_load(self.lib.app->db, self.notes[self.scan_i].note_id, &blob, &len);
-            self.scan_blob  = blob;
-            self.scan_len   = len;
-            self.scan_n_img = self.scan_blob ? on_note_count_images(self.scan_blob, len) : 0;
-            self.scan_ord   = 0;
-            self.scan_open  = YES;
-            if (self.scan_n_img > 0) self.n_notes++;
+            if (batch.count > 0 && CFAbsoluteTimeGetCurrent() - handed >= media_batch_s) {
+                NSArray<NotesMediaCell *> *cells = [batch copy];
+                NSUInteger                 noted = with_images;
+                dispatch_async(dispatch_get_main_queue(), ^{ [ws take_cells:cells notes:noted scan:scan]; });
+                [batch removeAllObjects];
+                handed = CFAbsoluteTimeGetCurrent();
+            }
         }
-        if (self.scan_ord < self.scan_n_img) [self add_cell];
-        if (self.scan_ord >= self.scan_n_img) [self close_note];
-    } while (CFAbsoluteTimeGetCurrent() - start < media_slice_s);
+        on_db_close(db);
+        NSArray<NotesMediaCell *> *cells = [batch copy];
+        NSUInteger                 noted = with_images;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NotesMediaWindow *s = ws;
+            [s take_cells:cells notes:noted scan:scan];
+            [s finish_scan:scan truncated:truncated];
+        });
+    });
+}
 
-    if (self.cells.count > first) {
+/*
+ * take_cells:notes:scan: — thumbnails from the worker: into the grid, the
+ * picture on show getting its Next when one follows it.
+ *
+ * Inputs:
+ *   cells — the new cells, in order
+ *   notes — how many notes have had an image so far
+ *   scan  — the scan they come from; ignored unless it is the current one
+ */
+- (void)
+take_cells:(NSArray<NotesMediaCell *> *)cells notes:(NSUInteger)notes scan:(NotesMediaScan *)scan
+{
+    if (scan != self.scan || scan.cancelled) return;
+    self.n_notes = (NSInteger)notes;
+    if (cells.count > 0) {
+        NSUInteger first = self.cells.count;
+        [self.cells addObjectsFromArray:cells];
         NSMutableSet<NSIndexPath *> *paths = [NSMutableSet set];
         for (NSUInteger i = first; i < self.cells.count; i++)
             [paths addObject:[NSIndexPath indexPathForItem:(NSInteger)i inSection:0]];
         [self.grid insertItemsAtIndexPaths:paths];
-        /* A picture right after the one on show makes its Next live. */
         NSInteger shown = on_image_viewer_index(self.viewer);
         if (shown >= 0 && (NSUInteger)shown + 1 >= first) on_image_viewer_nav_sync(self.viewer);
     }
-    if (done) [self finish_scan];
-    else {
-        [self show_status];
-        [self schedule_slice];
-    }
+    [self show_status];
 }
 
 /*
- * add_cell — the scanned note's next image as a cell, if it decodes.
+ * finish_scan:truncated: — the worker is done.
+ *
+ * Inputs:
+ *   scan      — the scan that finished; ignored unless it is the current one
+ *   truncated — YES when it stopped at media_max_images
  */
 - (void)
-add_cell
+finish_scan:(NotesMediaScan *)scan truncated:(BOOL)truncated
 {
-    NotesMediaNote *note = self.notes[self.scan_i];
-    NotesMediaCell *c    = [[NotesMediaCell alloc] init];
-    c.note_id = note.note_id;
-    c.ord     = self.scan_ord++;
-    c.n_img   = self.scan_n_img;
-    c.title   = note.title;
-    [self.cells addObject:c];
-    CGFloat s = on_look_media_thumb;
-    c.thumb = [self image_at:(NSInteger)self.cells.count - 1 box:NSMakeSize(s, s)
-                        blob:self.scan_blob len:self.scan_len];
-    if (c.thumb == nil) [self.cells removeLastObject];
+    if (scan != self.scan) return;
+    self.truncated = truncated;
+    self.scanning  = NO;
+    [self.spinner stopAnimation:nil];
+    self.spinner.hidden = YES;
+    [self show_status];
 }
 
 /*
@@ -497,6 +491,7 @@ collectionView:(NSCollectionView *)cv itemForRepresentedObjectAtIndexPath:(NSInd
 - (void)
 windowWillClose:(NSNotification *)note
 {
+    self.scan.cancelled = YES;
     self.scanning = NO;
     on_image_viewer_close(self.viewer);
     NSSize size = self.window.contentView.frame.size;

@@ -43,10 +43,16 @@ hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
     on_ui_show_notice(@(title), @(message), on_library().window, nil);
 }
 
+/* Links in the About panel's credits: the author's site and the license
+ * (as the Files and Tasks apps have them; GTK: author and BSD license). */
+static NSString * const about_site_url    = @"https://camb.io";
+static NSString * const about_license_url = @"https://opensource.org/license/bsd-3-clause";
+
 /*
- * run_about — "about": the standard About panel.  Its version line reads
- * "Version <VERSION> (built <date>)" from Info.plist; the credits say which
- * database is open and what it holds.
+ * run_about — "about": the standard About panel, as Files and Tasks show
+ * it.  Its version line reads "Version <VERSION> (built <date>)" from
+ * Info.plist; the credits say which database is open and what it holds,
+ * then "camb.io · BSD License", each a link.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -67,14 +73,23 @@ run_about(id target, id sender)
 
     NSMutableParagraphStyle *centred = [[NSMutableParagraphStyle alloc] init];
     centred.alignment = NSTextAlignmentCenter;
+    NSDictionary *plain = @{
+        NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
+        NSForegroundColorAttributeName: NSColor.labelColor,
+        NSParagraphStyleAttributeName:  centred,
+    };
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
+        initWithString:[credits stringByAppendingString:@"\n\n"] attributes:plain];
+    NSArray<NSArray<NSString *> *> *links = @[ @[@"camb.io", about_site_url], @[@"BSD License", about_license_url] ];
+    for (NSArray<NSString *> *link in links) {
+        if (link != links.firstObject)
+            [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"  ·  " attributes:plain]];
+        NSMutableDictionary *attrs = [plain mutableCopy];
+        attrs[NSLinkAttributeName] = [NSURL URLWithString:link[1]];
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:link[0] attributes:attrs]];
+    }
     NSMutableDictionary *options = [NSMutableDictionary dictionary];
-    options[NSAboutPanelOptionCredits] = [[NSAttributedString alloc]
-        initWithString:credits
-            attributes:@{
-                NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
-                NSForegroundColorAttributeName: NSColor.labelColor,
-                NSParagraphStyleAttributeName:  centred,
-            }];
+    options[NSAboutPanelOptionCredits] = text;
     if (on_ui_app_icon()) options[NSAboutPanelOptionApplicationIcon] = on_ui_app_icon();
 
     NSString *stamp = NSBundle.mainBundle.infoDictionary[build_date_key];
@@ -97,6 +112,27 @@ static void
 run_show_library(id target, id sender)
 {
     on_library_window_show(target);
+}
+
+/*
+ * raise_running_copy — this copy found another one serving the same data
+ * folder: bring that one to the front (GTK: a second launch activates the
+ * first).
+ *
+ * Output: YES when another running copy of this app was found and asked to
+ *         come forward.
+ */
+static BOOL
+raise_running_copy(void)
+{
+    pid_t me = NSProcessInfo.processInfo.processIdentifier;
+    for (NSRunningApplication *other in
+         [NSRunningApplication runningApplicationsWithBundleIdentifier:@ON_BUNDLE_ID]) {
+        if (other.processIdentifier == me) continue;
+        [other activateWithOptions:NSApplicationActivateAllWindows];
+        return YES;
+    }
+    return NO;
 }
 
 /* The app delegate's own commands.  Handlers receive the NotesLibrary. */
@@ -261,7 +297,9 @@ open_database_and_start
     on_library_window_show(self.lib);
 
     on_ipc_server_result_t served = on_app_start_services(&_app);
-    if (served == on_ipc_server_busy) {
+    if (served == on_ipc_server_busy && raise_running_copy()) {
+        [NSApp terminate:nil];           /* the running copy is in front now */
+    } else if (served == on_ipc_server_busy) {
         on_ui_show_notice(@ON_APP_NAME @" is already running",
                           @"Another copy is using this data folder. This one will quit.", nil,
                           ^{ [NSApp terminate:nil]; });

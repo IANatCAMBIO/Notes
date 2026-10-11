@@ -51,6 +51,8 @@ typedef struct {
     NotesCommandScope              scope;
     NSString * __unsafe_unretained icon;    /* icons/<icon>.png for a toolbar item;
                                                nil = not a toolbar command            */
+    NSString * __unsafe_unretained tip;     /* the toolbar item's tooltip, saying what
+                                               it does (GTK's); nil = the title       */
 } on_command_t;
 
 /* One command's implementation, in the module that owns it.

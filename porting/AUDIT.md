@@ -118,12 +118,12 @@ Earlier:
 
 - [ ] H note-export-html / note-export-md have no handler — handlers added and enabled in the note menu (step 4); not yet driven by a test (the folder picker)
 - [x] H Status bar location never follows navigation
-- [ ] M open-db: no .db filter, no same-db no-op, failure not reported
+- [x] M open-db: no .db filter, no same-db no-op, failure not reported — fixed; not driven by a test (it starts in the system file picker)
 - [x] M search / find ignore the selected folder or tag as default scope
-- [ ] M App-scope commands do not reopen a closed library window
+- [x] M App-scope commands do not reopen a closed library window — the ones that act on the library (New Folder, the view and sidebar toggles, Media, AI Summary) open it first
 - [x] M ⌘⌫ may trash notes while typing in a field (verify)
-- [ ] M Second instance should raise the running one
-- [ ] L About details; toolbar labels/tooltips/separator; AI button hidden when AI off; window title; status fade
+- [x] M Second instance should raise the running one — it activates the running copy and quits; not driven by a test (needs two processes).  A reopen Apple Event would also show a closed library, but may put an automation prompt on screen
+- [x] L About details; toolbar labels/tooltips/separator; AI button hidden when AI off; window title; status fade — About credits link camb.io and the BSD license (as Files, Tasks); toolbar tooltips are GTK's (commands.h gains an optional `tip`; the toolbar is icon-only, so labels never show); a space sets AI Summary apart; the AI item is disabled, not hidden (see the AI section); the title stays the app name, as Files and Tasks; the status message already clears after 4 s
 
 ## Settings (settings_window.m)
 
@@ -158,4 +158,12 @@ Earlier:
 ## Tests
 
 - [x] H Heap check: not a leak — AppKit's and the library window's caches fill over the first few dozen editor cycles (30–70 KB each, more after an appearance switch) and then level off (1–2 KB, then 0).  The check now warms up for a full batch of 40 cycles and allows 8 KB a cycle, not 48; a control that keeps every editor alive (≈1.8 MB a cycle) proves it can fail
-- [ ] M `/ops/fuzz` fails about 1 run in 10 ("duplicate action uid") — core document model
+- [ ] M `/ops/fuzz` fails about 1 run in 10 ("duplicate action uid", or "blobs differ" after undo) — a real bug in document.c, NOT FIXED: the hard rules forbid changing document.c behaviour, so this is the owner's decision.
+  - Cause: OP_SPLIT with uid 0 at offset 0 moves the head's action uid to the tail (right for Enter at the start of "! item").  But the undo of a JOIN is also a SPLIT, with uid 0 meaning only "the tail had none"; when the head was empty and carried a uid, undoing the join moves that uid down.  The uid is invisible while its line is not an action line, so the damage surfaces several undos later, as a lost uid or as two lines sharing one.
+  - Reproduce: `build/test_document -p /ops/fuzz --seed=R02S52e6f14cbb702c47b52583a32937b5a3` (also R02Seead05f5edf886e27c80131ca4d8d87c, R02Sb399f5a03ecfccfb2283767e28f36293).
+  - Proposed fix (3 lines; all 35 document tests pass, the three seeds pass, 200 random seeds pass): mark a join's inverse split as an exact restore —
+    ```
+    /* struct Op */  gboolean on;   /* …; SPLIT: an exact restore (a join's undo): `uid` is the tail's, 0 or not, and the head keeps its own */
+    /* OP_SPLIT */   if (off == 0 && op->uid == 0 && !op->on) {
+    /* OP_JOIN  */   inv->on = TRUE;      /* undo puts both identities back */
+    ```

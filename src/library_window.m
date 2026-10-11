@@ -26,7 +26,7 @@ toolbar_idents(void)
         @"new-folder", @"delete-folder", NSToolbarSpaceItemIdentifier,
         @"quicknote", @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
         @"toggle-sidebar", @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
-        @"ai-summary", NSToolbarFlexibleSpaceItemIdentifier, search_item_ident,
+        NSToolbarSpaceItemIdentifier, @"ai-summary", NSToolbarFlexibleSpaceItemIdentifier, search_item_ident,
     ];
 }
 

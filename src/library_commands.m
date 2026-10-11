@@ -332,8 +332,10 @@ validate_sort_subfolders(id target, id item)
 }
 
 /*
- * run_open_db — "open-db": pick a .db file and switch to it either for this
- * session or permanently.
+ * run_open_db — "open-db": pick a .db file and switch to it, for this
+ * session or as the new default (GTK on_open_db).  The file already open
+ * needs nothing; a file that will not open is reported, and the previous
+ * database stays open (on_app_switch_db).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -344,22 +346,27 @@ run_open_db(id target, id sender)
 {
     NotesLibrary *lib = target;
     NSWindow     *win = lib.window;
-
-    on_ui_pick_path(NotesPickOpenFile,
-                    @"Choose a Notes Database File",
-                    @"Open",
-                    nil, nil, win,
+    UTType       *db  = [UTType typeWithFilenameExtension:@"db"];
+    on_ui_pick_path(NotesPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil, win,
                     ^(NSString *path) {
-        if (!path) return;
+        if (path == nil ||
+            [path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
+            return;
         NSString *message = [NSString stringWithFormat:
-                             @"Open \"%@\" for this session only, or set it as your default?",
+                             @"Open “%@” as your new default database, or for this session only?",
                              path.lastPathComponent];
         [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
                              buttons:@[@"Set as Default", @"Session Only", @"Cancel"]
                                 over:win
                              handler:^(NSInteger index) {
             if (index != 0 && index != 1) return;   /* Cancel, or dismissed */
-            on_app_switch_db(lib.app, path.UTF8String, index == 0);
+            if (on_app_switch_db(lib.app, path.UTF8String, index == 0)) return;
+            if (lib.app->db == NULL) {              /* not even the old one reopened */
+                [NSApp terminate:nil];
+                return;
+            }
+            on_ui_show_notice(@"Database Error", [NSString stringWithFormat:@"Could not open:\n%@", path],
+                              win, nil);
         }];
     });
 }

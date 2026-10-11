@@ -1,6 +1,7 @@
 #import "library_state.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
+#import "library_window.h"
 #import "ui_util.h"
 
 /* How many modules may register library commands (window frame, commands,
@@ -176,11 +177,36 @@ on_library_add_commands(const on_command_handler_t *table, size_t n)
 }
 
 /*
- * on_library_run_command — see library_state.h.
+ * acts_on_library — does a command act on what the library window shows,
+ * so that from the menu bar with the window closed it must open it first?
+ * (New Folder lands in the selection; the view and sidebar toggles, Media
+ * and AI Summary act on the window itself.)
+ *
+ * Inputs:
+ *   sender — the menu or toolbar item
+ *
+ * Output: YES for those commands.
+ */
+static BOOL
+acts_on_library(id sender)
+{
+    static NSSet<NSString *> *idents;
+    if (idents == nil)
+        idents = [NSSet setWithArray:@[@"new-folder", @"view-list", @"view-grid", @"toggle-view",
+                                       @"toggle-sidebar", @"toggle-done", @"media", @"ai-summary"]];
+    NSString *ident = on_command_ident(sender);
+    return ident != nil && [idents containsObject:ident];
+}
+
+/*
+ * on_library_run_command — see library_state.h.  A command that acts on
+ * the library window opens it first when it is not on screen (GTK: the
+ * library window is always there).
  */
 BOOL
 on_library_run_command(NotesLibrary *lib, id sender)
 {
+    if (!lib.window.visible && acts_on_library(sender)) on_library_window_show(lib);
     for (size_t i = 0; i < command_table_count; i++) {
         if (on_command_run(command_tables[i].table, command_tables[i].n, lib, sender)) return YES;
     }

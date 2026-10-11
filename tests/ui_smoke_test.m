@@ -1749,6 +1749,37 @@ test_notes_pane(NotesLibrary *lib)
 }
 
 /*
+ * test_shell — the library window's toolbar says what each button does,
+ * and a command that acts on the library opens it when it is closed.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_shell(NotesLibrary *lib)
+{
+    NSToolbarItem *media = nil, *before_ai = nil, *previous = nil;
+    for (NSToolbarItem *item in lib.window.toolbar.items) {
+        if ([item.itemIdentifier isEqualToString:@"media"]) media = item;
+        if ([item.itemIdentifier isEqualToString:@"ai-summary"]) before_ai = previous;
+        previous = item;
+    }
+    check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"] &&
+          [before_ai.itemIdentifier isEqualToString:NSToolbarSpaceItemIdentifier],
+          "toolbar buttons have GTK's tooltips, and AI Summary sits apart");
+
+    gboolean shown = app.show_done_actions;
+    [lib.window close];
+    pump(0.3);
+    check(!lib.window.visible, "the library window can be closed");
+    on_library_run_command(lib, command_item(@"toggle-done"));
+    pump(0.3);
+    check(lib.window.visible && app.show_done_actions == !shown,
+          "a library command from the menu bar opens the closed library window, then runs");
+    on_library_run_command(lib, command_item(@"toggle-done"));
+}
+
+/*
  * test_secondary_windows — the four WPH windows open, display correctly,
  * and release their resources on close.
  *
@@ -2252,6 +2283,7 @@ main(void)
         test_trash(lib);
         test_sidebar(lib);
         test_notes_pane(lib);
+        test_shell(lib);
         test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);

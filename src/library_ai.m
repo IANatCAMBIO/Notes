@@ -391,8 +391,8 @@ run_ai_summary(id target, id sender)
 }
 
 /*
- * validate_ai_summary — usable only while AI is enabled and the library
- * window is open.
+ * validate_ai_summary — usable only while AI is enabled (with the library
+ * closed, the command opens it first: library_state.m).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -403,7 +403,7 @@ run_ai_summary(id target, id sender)
 static BOOL
 validate_ai_summary(id target, id item)
 {
-    return ((NotesLibrary *)target).app->ai_enabled && ai_pane != nil;
+    return ((NotesLibrary *)target).app->ai_enabled;
 }
 
 /*

@@ -25,60 +25,72 @@ enum {
  */
 static const on_command_t commands[] = {
     /* ── App scope: works from any window, acts on the library ── */
-    { @"about",            @"About " ON_APP_NAME,      @"",  0,         app, nil },
-    { @"preferences",      @"Settings…",               @",", cmd,       app, @"settings" },
-    { @"new-note",         @"New Note",                @"n", cmd,       app, @"newnote" },
-    { @"new-folder",       @"New Folder…",             @"n", cmd_shift, app, @"new-folder" },
-    { @"quicknote",        @"Quick Note",              @"",  0,         app, @"archive" },
-    { @"open-db",          @"Open Database File…",     @"",  0,         app, nil },
-    { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil },
-    { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil },
-    { @"view-list",        @"as List",                 @"1", cmd,       app, nil },
-    { @"view-grid",        @"as Grid",                 @"2", cmd,       app, nil },
-    { @"toggle-view",      @"List or Grid",            @"",  0,         app, @"grid" },
-    { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar" },
-    { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"hidden" },
-    { @"media",            @"Media…",                  @"i", cmd_shift, app, @"images" },
-    { @"search",           @"Search Notes…",           @"f", cmd_shift, app, @"search" },
-    { @"ai-summary",       @"AI Summary",              @"",  0,         app, @"microchip" },
-    { @"show-library",     @"Library",                 @"0", cmd,       app, nil },
+    { @"about",            @"About " ON_APP_NAME,      @"",  0,         app, nil, nil },
+    { @"preferences",      @"Settings…",               @",", cmd,       app, @"settings",
+      @"Open the settings window" },
+    { @"new-note",         @"New Note",                @"n", cmd,       app, @"newnote",
+      @"Create a note in the current folder" },
+    { @"new-folder",       @"New Folder…",             @"n", cmd_shift, app, @"new-folder",
+      @"Create a folder inside the selection" },
+    { @"quicknote",        @"Quick Note",              @"",  0,         app, @"archive",
+      @"Create a note in the root folder" },
+    { @"open-db",          @"Open Database File…",     @"",  0,         app, nil, nil },
+    { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },
+    { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil, nil },
+    { @"view-list",        @"as List",                 @"1", cmd,       app, nil, nil },
+    { @"view-grid",        @"as Grid",                 @"2", cmd,       app, nil, nil },
+    { @"toggle-view",      @"List or Grid",            @"",  0,         app, @"grid",
+      @"Switch between the list and the grid" },
+    { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar",
+      @"Show or hide the folder pane" },
+    { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"hidden",
+      @"Show or hide completed action items" },
+    { @"media",            @"Media…",                  @"i", cmd_shift, app, @"images",
+      @"Show every image in the listed notes as thumbnails" },
+    { @"search",           @"Search Notes…",           @"f", cmd_shift, app, @"search",
+      @"Open search window" },
+    { @"ai-summary",       @"AI Summary",              @"",  0,         app, @"microchip",
+      @"Summarize notes with AI" },
+    { @"show-library",     @"Library",                 @"0", cmd,       app, nil, nil },
 
     /* ── Window scope, library ── */
-    { @"delete-note",      @"Move to Trash",           KEY_BACKSPACE, cmd, win, @"deletenote" },
-    { @"delete-folder",    @"Move Folder to Trash",    @"",  0,         win, @"delete-folder" },
-    { @"empty-trash",      @"Empty Trash…",            @"",  0,         win, nil },
-    { @"folder-info",      @"Folder Info…",            @"",  0,         win, nil },
-    { @"folder-restore",   @"Restore Folder",          @"",  0,         win, nil },
-    { @"sort-subfolders",  @"Sort Subfolders Alphabetically", @"", 0,   win, nil },
-    { @"search-here",      @"Search Here…",            @"",  0,         win, nil },
-    { @"note-open",        @"Open",                    @"",  0,         win, nil },
-    { @"note-pin",         @"Pin",                     @"",  0,         win, nil },
-    { @"note-restore",     @"Restore",                 @"",  0,         win, nil },
-    { @"note-export-html", @"Export as HTML…",         @"",  0,         win, nil },
-    { @"note-export-md",   @"Export as Markdown…",     @"",  0,         win, nil },
+    { @"delete-note",      @"Move to Trash",           KEY_BACKSPACE, cmd, win, @"deletenote",
+      @"Move the selected notes to the Trash" },
+    { @"delete-folder",    @"Move Folder to Trash",    @"",  0,         win, @"delete-folder",
+      @"Move the selected folder to the Trash" },
+    { @"empty-trash",      @"Empty Trash…",            @"",  0,         win, nil, nil },
+    { @"folder-info",      @"Folder Info…",            @"",  0,         win, nil, nil },
+    { @"folder-restore",   @"Restore Folder",          @"",  0,         win, nil, nil },
+    { @"sort-subfolders",  @"Sort Subfolders Alphabetically", @"", 0,   win, nil, nil },
+    { @"search-here",      @"Search Here…",            @"",  0,         win, nil, nil },
+    { @"note-open",        @"Open",                    @"",  0,         win, nil, nil },
+    { @"note-pin",         @"Pin",                     @"",  0,         win, nil, nil },
+    { @"note-restore",     @"Restore",                 @"",  0,         win, nil, nil },
+    { @"note-export-html", @"Export as HTML…",         @"",  0,         win, nil, nil },
+    { @"note-export-md",   @"Export as Markdown…",     @"",  0,         win, nil, nil },
 
     /* ── Window scope, both windows: the library searches, an editor finds ── */
-    { @"find",             @"Find…",                   @"f", cmd,       win, nil },
+    { @"find",             @"Find…",                   @"f", cmd,       win, nil, nil },
 
     /* ── Window scope, editor ── */
-    { @"find-next",        @"Find Next",               @"g", cmd,       win, nil },
-    { @"find-previous",    @"Find Previous",           @"g", cmd_shift, win, nil },
-    { @"find-selection",   @"Use Selection for Find",  @"e", cmd,       win, nil },
-    { @"inline-bold",      @"Bold",                    @"b", cmd,       win, nil },
-    { @"inline-italic",    @"Italic",                  @"i", cmd,       win, nil },
-    { @"inline-underline", @"Underline",               @"u", cmd,       win, nil },
-    { @"inline-strike",    @"Strikethrough",           @"x", cmd_shift, win, nil },
-    { @"para-h1",          @"Heading 1",               @"",  0,         win, nil },
-    { @"para-h2",          @"Heading 2",               @"",  0,         win, nil },
-    { @"para-body",        @"Body",                    @"",  0,         win, nil },
-    { @"para-bullet",      @"Bulleted List",           @"",  0,         win, nil },
-    { @"para-number",      @"Numbered List",           @"",  0,         win, nil },
-    { @"para-check",       @"Task List",               @"",  0,         win, nil },
-    { @"para-code",        @"Code Block",              @"m", cmd_shift, win, nil },
-    { @"insert-image",     @"Image…",                  @"",  0,         win, nil },
-    { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil },
-    { @"insert-emoji",     @"Emoji…",                  @"",  0,         win, nil },
-    { @"insert-date",      @"Date",                    @"d", cmd,       win, nil },
+    { @"find-next",        @"Find Next",               @"g", cmd,       win, nil, nil },
+    { @"find-previous",    @"Find Previous",           @"g", cmd_shift, win, nil, nil },
+    { @"find-selection",   @"Use Selection for Find",  @"e", cmd,       win, nil, nil },
+    { @"inline-bold",      @"Bold",                    @"b", cmd,       win, nil, nil },
+    { @"inline-italic",    @"Italic",                  @"i", cmd,       win, nil, nil },
+    { @"inline-underline", @"Underline",               @"u", cmd,       win, nil, nil },
+    { @"inline-strike",    @"Strikethrough",           @"x", cmd_shift, win, nil, nil },
+    { @"para-h1",          @"Heading 1",               @"",  0,         win, nil, nil },
+    { @"para-h2",          @"Heading 2",               @"",  0,         win, nil, nil },
+    { @"para-body",        @"Body",                    @"",  0,         win, nil, nil },
+    { @"para-bullet",      @"Bulleted List",           @"",  0,         win, nil, nil },
+    { @"para-number",      @"Numbered List",           @"",  0,         win, nil, nil },
+    { @"para-check",       @"Task List",               @"",  0,         win, nil, nil },
+    { @"para-code",        @"Code Block",              @"m", cmd_shift, win, nil, nil },
+    { @"insert-image",     @"Image…",                  @"",  0,         win, nil, nil },
+    { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil, nil },
+    { @"insert-emoji",     @"Emoji…",                  @"",  0,         win, nil, nil },
+    { @"insert-date",      @"Date",                    @"d", cmd,       win, nil, nil },
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 
@@ -150,7 +162,7 @@ on_command_toolbar_item(NSString *ident)
     SEL action = command_action(command, &target);
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
     item.label    = command->title;
-    item.toolTip  = command->title;
+    item.toolTip  = command->tip ?: command->title;
     item.image    = on_ui_icon(command->icon, on_look_toolbar_icon);
     item.target   = target;
     item.action   = action;
@@ -188,7 +200,7 @@ on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
     } else if ([item isKindOfClass:NSToolbarItem.class]) {
         NSToolbarItem *toolbar_item = item;
         toolbar_item.label   = shown;
-        toolbar_item.toolTip = shown;
+        toolbar_item.toolTip = title ?: command->tip ?: command->title;
         toolbar_item.image   = on_ui_icon(icon ?: command->icon, on_look_toolbar_icon);
     }
 }

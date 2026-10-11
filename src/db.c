@@ -1392,7 +1392,9 @@ on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
             sqlite3_bind_null(stmt, 3);
         sqlite3_bind_int64(stmt, 4, id);
     }
-    return cached_stmt_done(db, stmt);
+    /* No row changed means the note is gone (deleted behind an open
+     * editor): that is a failed save, never a silent success.             */
+    return cached_stmt_done(db, stmt) && sqlite3_changes(db->handle) == 1;
 }
 
 gchar *
@@ -1435,26 +1437,30 @@ on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts)
     return stmt_done(db, stmt);
 }
 
-guint8 *
-on_db_note_load(OnDatabase *db, gint64 id, gsize *out_len)
+gboolean
+on_db_note_load(OnDatabase *db, gint64 id, guint8 **out, gsize *out_len)
 {
+    *out     = NULL;
     *out_len = 0;
     sqlite3_stmt *stmt = prepare(db, "SELECT content FROM notes WHERE id=?");
     if (stmt == NULL)
-        return NULL;
+        return FALSE;
     sqlite3_bind_int64(stmt, 1, id);
 
-    guint8 *copy = NULL;                 /* caller-owned copy of the blob   */
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc = sqlite3_step(stmt);         /* ROW, DONE (no such note), error */
+    if (rc == SQLITE_ROW) {
         const void *blob = sqlite3_column_blob(stmt, 0);
         int         n    = sqlite3_column_bytes(stmt, 0);
         if (blob != NULL && n > 0) {
-            copy = g_memdup2(blob, (gsize)n);
+            *out     = g_memdup2(blob, (gsize)n);
             *out_len = (gsize)n;
         }
+    } else if (rc != SQLITE_DONE) {
+        g_warning("db: cannot read note %" G_GINT64_FORMAT ": %s",
+                  id, sqlite3_errmsg(db->handle));
     }
     sqlite3_finalize(stmt);
-    return copy;
+    return rc == SQLITE_ROW;
 }
 
 /* Column list shared by every note-metadata query, matching

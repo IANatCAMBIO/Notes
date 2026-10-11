@@ -640,11 +640,12 @@ only the `OnApp`).
 
 ## 14. Known hazards (inherited or open)
 
-1. **A note that fails to load looks blank, and a blank note is deleted on
-   close.**  `on_note_document_load` returns an empty document when the blob
-   cannot be read (as in the GTK build).  D: before applying the
-   blank-means-delete rule, make sure the note really was empty or was
-   edited in this window — do not delete on a failed read.
+1. **A note that fails to load is never a blank note** (fixed).
+   `on_note_document_load` returns NULL when the read fails or the blob is
+   malformed or from a newer format; the editor then refuses to open (a
+   tool panel says so), and the CLI's read-modify-write commands and
+   `note cat` exit 2.  An empty document is never handed out in its place,
+   so neither the blank-means-delete rule nor a save can reach the note.
 2. **Two app instances on one data directory.**  LaunchServices prevents it
    for Finder launches; started twice by path, the second finds the app
    lock held and quits — but it has already opened the database (read-only

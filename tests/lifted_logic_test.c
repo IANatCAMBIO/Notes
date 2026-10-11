@@ -8,6 +8,7 @@
 
 #include "action_edit.h"
 #include "app_lifecycle.h"
+#include "cli.h"
 #include "search_job.h"
 #include "serialize.h"
 
@@ -101,6 +102,88 @@ line_of(OnDatabase *db, gint64 note, guint block)
     gchar      *text = g_strdup(on_document_block(doc, block)->text->text->str);
     on_document_free(doc);
     return text;
+}
+
+/*
+ * blob_is — whether a note's stored blob is exactly these bytes.
+ *
+ * Inputs:
+ *   db    — the database
+ *   note  — the note
+ *   bytes — the expected blob
+ *   n     — its size
+ *
+ * Output: TRUE when the stored blob equals bytes.
+ */
+static gboolean
+blob_is(OnDatabase *db, gint64 note, const guint8 *bytes, gsize n)
+{
+    guint8 *blob = NULL;
+    gsize   len  = 0;
+    gboolean same = on_db_note_load(db, note, &blob, &len) &&
+                    len == n && memcmp(blob, bytes, n) == 0;
+    g_free(blob);
+    return same;
+}
+
+/*
+ * cli — run one CLI command in-process, as the app runs a remote one.
+ *
+ * Inputs:
+ *   app  — the context
+ *   argc — how many words
+ *   argv — the words, argv[0] the program
+ *
+ * Output: the command's exit code.
+ */
+static int
+cli(OnApp *app, int argc, char **argv)
+{
+    fflush(stdout);
+    return on_cli_dispatch(app, argc, argv);
+}
+
+/*
+ * test_unreadable_note — a note whose stored blob cannot be read (a newer
+ * format, a damaged header) is never treated as an empty note: no consumer
+ * hands out an empty document for it, and no command saves an edit over
+ * it.  The stored bytes survive every attempt untouched.
+ *
+ * Inputs:
+ *   app — the context, database open, no hooks
+ */
+static void
+test_unreadable_note(OnApp *app)
+{
+    /* "BNBF", version 99: what a future build would write.                 */
+    static const guint8 future[] = { 'B', 'N', 'B', 'F', 99, 0, 0, 0, 1, 0, 0, 0, 'x' };
+    gint64 note = on_db_note_create(app->db, 0);
+    check(on_db_note_save(app->db, note, "From the future", future, sizeof future, NULL),
+          "unreadable: a newer-format blob is stored");
+
+    check(on_note_document_load(app->db, note) == NULL,
+          "unreadable: the document load fails rather than returning an empty note");
+    check(on_note_document_load(app->db, 999999) == NULL,
+          "unreadable: so does the load of a note that does not exist");
+
+    gchar id[32];
+    g_snprintf(id, sizeof id, "%" G_GINT64_FORMAT, note);
+    char *append[] = { "notes", "note", "append", id, "added", NULL };
+    check(cli(app, 5, append) == 2, "unreadable: note append fails");
+    char *tag[] = { "notes", "note", "tag", id, "later", NULL };
+    check(cli(app, 5, tag) == 2, "unreadable: note tag fails");
+    char *cat[] = { "notes", "note", "cat", id, NULL };
+    check(cli(app, 4, cat) == 2, "unreadable: note cat fails instead of printing an empty body");
+    char *cat_md[] = { "notes", "note", "cat", id, "--md", NULL };
+    check(cli(app, 5, cat_md) == 2, "unreadable: and so does note cat --md");
+    check(blob_is(app->db, note, future, sizeof future),
+          "unreadable: the stored bytes are untouched");
+
+    /* A save to a note that is gone fails rather than "succeeding".        */
+    gint64 gone = on_db_note_create(app->db, 0);
+    on_db_notes_delete(app->db, &gone, 1);
+    check(!on_db_note_save(app->db, gone, "Gone", future, sizeof future, NULL),
+          "a save to a deleted note reports failure");
 }
 
 /*
@@ -278,6 +361,7 @@ main(void)
     static OnApp app;
     test_lifecycle(&app, data_dir);
     test_action_edit(&app);
+    test_unreadable_note(&app);
     test_search_job(&app);
 
     /* Shutdown: editors flush while the database is still open, then it

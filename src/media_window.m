@@ -294,7 +294,7 @@ image_at:(NSInteger)idx box:(NSSize)box blob:(const guint8 *)blob len:(gsize)len
     if (idx < 0 || (NSUInteger)idx >= self.cells.count) return nil;
     NotesMediaCell *c   = self.cells[(NSUInteger)idx];
     guint8         *own = NULL;
-    if (blob == NULL) blob = own = on_db_note_load(self.lib.app->db, c.note_id, &len);
+    if (blob == NULL && on_db_note_load(self.lib.app->db, c.note_id, &own, &len)) blob = own;
     GBytes *png = blob ? on_note_image_nth_png(blob, len, c.ord) : NULL;
     g_free(own);
     if (png == NULL) return nil;
@@ -381,8 +381,10 @@ scan_slice
                 done = YES;
                 break;
             }
-            gsize len = 0;
-            self.scan_blob  = on_db_note_load(self.lib.app->db, self.notes[self.scan_i].note_id, &len);
+            gsize   len  = 0;
+            guint8 *blob = NULL;
+            on_db_note_load(self.lib.app->db, self.notes[self.scan_i].note_id, &blob, &len);
+            self.scan_blob  = blob;
             self.scan_len   = len;
             self.scan_n_img = self.scan_blob ? on_note_count_images(self.scan_blob, len) : 0;
             self.scan_ord   = 0;

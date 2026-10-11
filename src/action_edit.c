@@ -90,6 +90,11 @@ action_apply(OnApp *app, gint64 uid, action_edit_t which, gconstpointer arg)
      * document against its rows IS the rewrite — along with any other
      * drift between the two — and the save writes it back.                */
     OnDocument *doc = on_note_document_load(app->db, note_id);
+    if (doc == NULL) {
+        g_warning("action %" G_GINT64_FORMAT ": note %" G_GINT64_FORMAT
+                  " cannot be read", uid, note_id);
+        return FALSE;
+    }
     on_note_document_reconcile(app->db, note_id, doc);
     if (on_document_action_ord(doc, uid) < 0) {
         g_warning("action %" G_GINT64_FORMAT ": no line in note %"

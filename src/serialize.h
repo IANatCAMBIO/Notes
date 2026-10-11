@@ -24,7 +24,8 @@
  * (on_document_plain_text: one line per block, list prefixes rendered,
  * table cells space-separated).  No image is decoded — the model carries
  * PNG bytes verbatim.  Used to (back)fill the notes.body_text column.
- * Returns a newly allocated string; g_free() it.
+ * Returns a newly allocated string (g_free() it), or NULL when the blob is
+ * malformed or from a newer format.
  * ------------------------------------------------------------------------- */
 gchar *on_note_extract_text(const guint8 *data, gsize len);
 
@@ -36,17 +37,20 @@ gchar *on_note_extract_text(const guint8 *data, gsize len);
  * search and the CLI both used to carry their own identical copy.
  *   db — open database (written to when the cache was empty).
  *   id — the note.
- * Returns a newly allocated string, "" for a note with no content; g_free().
+ * Returns a newly allocated string, "" for a note with no content, or NULL
+ * when the note does not exist or cannot be read; g_free().
  * ------------------------------------------------------------------------- */
 gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_load() — note `id`'s stored content as an OnDocument
- * (document.h): the block model, no image decoded.  An empty or
- * missing note is an empty document.  THE preamble of every offscreen
- * consumer: the exporter, the CLI's content commands, the headless action
- * rewrites, the grid thumbnail.  Returns the document; on_document_free()
- * it.
+ * (document.h): the block model, no image decoded.  A note with no
+ * content is an empty document.  THE preamble of every consumer: the
+ * editor, the exporter, the CLI's content commands, the headless action
+ * rewrites, the grid thumbnail.  Returns the document (on_document_free()
+ * it), or NULL when the note does not exist, the read failed, or its blob
+ * is malformed or from a newer format — never an empty document in its
+ * place, which a save would write over the note.
  * ------------------------------------------------------------------------- */
 OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 

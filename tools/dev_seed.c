@@ -142,6 +142,12 @@ seed_rich(OnDatabase *db, gint64 note_id, const char *image_path)
     GBytes *image = g_bytes_new_with_free_func(png, n_png, free, png);
 
     OnDocument *doc = on_note_document_load(db, note_id);
+    if (doc == NULL) {
+        fprintf(stderr, "dev_seed: cannot read note %" G_GINT64_FORMAT "\n",
+                note_id);
+        g_bytes_unref(image);
+        return 2;
+    }
     add_text(doc, ON_BLOCK_H1, "Heading one", 0);
     add_text(doc, ON_BLOCK_H2, "Heading two", 0);
     add_styled(doc);

@@ -397,7 +397,8 @@ gboolean on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
  *   content   — BNBF blob bytes (may be NULL when len is 0).
  *   len       — length of `content` in bytes.
  *   body_text — plain text of the note for fast searching (may be NULL).
- * Also bumps updated_at. Returns TRUE on success.                           */
+ * Also bumps updated_at.  Returns TRUE on success; FALSE on an error or
+ * when the note no longer exists.                                           */
 gboolean on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                          const guint8 *content, gsize len,
                          const gchar *body_text);
@@ -419,10 +420,13 @@ gboolean on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts);
 
 /* Load a note's serialized content.
  *   id      — note to load.
+ *   out     — receives a newly allocated buffer (g_free() it), or NULL when
+ *             the note has no content yet.
  *   out_len — receives the blob length in bytes.
- * Returns a newly allocated buffer (g_free() it), or NULL if the note has
- * no content yet or on error.                                               */
-guint8 *on_db_note_load(OnDatabase *db, gint64 id, gsize *out_len);
+ * Returns TRUE when the note was read; FALSE when it does not exist or the
+ * read failed (then *out is NULL).  A failed read is never an empty note.  */
+gboolean on_db_note_load(OnDatabase *db, gint64 id, guint8 **out,
+                         gsize *out_len);
 
 /* Fetch metadata for a single note. Returns an OnNoteMeta* to free with
  * on_db_note_meta_free(), or NULL if not found.                             */

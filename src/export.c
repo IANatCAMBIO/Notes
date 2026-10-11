@@ -463,6 +463,10 @@ export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
            OnExportFormat format, GHashTable *used)
 {
     OnDocument *doc = on_note_document_load(app->db, m->id);
+    if (doc == NULL) {
+        g_warning("export: note %" G_GINT64_FORMAT " cannot be read", m->id);
+        return FALSE;
+    }
 
     /* Compute the output path.                                             */
     const gchar *ext = (format == ON_EXPORT_HTML) ? ".html" : ".md";
@@ -596,8 +600,9 @@ on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
 gchar *
 on_export_note_markdown(OnApp *app, gint64 note_id)
 {
-    /* A missing/empty note renders as an empty string.                     */
     OnDocument *doc = on_note_document_load(app->db, note_id);
+    if (doc == NULL)
+        return NULL;
 
     OnExportCtx ctx = {
         .format    = ON_EXPORT_MARKDOWN,

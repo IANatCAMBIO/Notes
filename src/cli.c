@@ -230,6 +230,24 @@ note_from_arg(OnDatabase *db, const gchar *arg)
 }
 
 /* ---------------------------------------------------------------------------
+ * note_document() — load a note's document for a read-modify-write.
+ *   db — open database.
+ *   id — the note (already validated).
+ * Returns the document (on_document_free it), or NULL after printing
+ * "error: note N cannot be read" when the read failed or the stored blob is
+ * malformed — so a command never saves its edit over an unread note.
+ * ------------------------------------------------------------------------- */
+static OnDocument *
+note_document(OnDatabase *db, gint64 id)
+{
+    OnDocument *doc = on_note_document_load(db, id);
+    if (doc == NULL)
+        fprintf(stderr, "error: note %" G_GINT64_FORMAT " cannot be read; "
+                        "it has not been changed\n", id);
+    return doc;
+}
+
+/* ---------------------------------------------------------------------------
  * cli_read_content() — resolve a CLI content argument: the literal text,
  * or stdin when `arg` is "-" (the pre-slurped cli_stdin_data when running
  * inside a GUI instance on behalf of a remote CLI).
@@ -889,6 +907,14 @@ cmd_cat_note(OnDatabase *db, const gchar *id_str, gboolean markdown)
     } else {
         text = on_note_text_cached(db, meta->id);
     }
+    if (text == NULL) {
+        /* Never an empty body in its place: `cat | edit | set` would then
+         * write the empty text over the note.                              */
+        fprintf(stderr, "error: note %" G_GINT64_FORMAT " cannot be read\n",
+                meta->id);
+        on_db_note_meta_free(meta);
+        return 2;
+    }
 
     if (cli_json) {
         /* The whole body as one escaped string: the newlines (and any tabs)
@@ -925,7 +951,12 @@ cmd_append_note(OnDatabase *db, const gchar *id_str, const gchar *content)
         return 2;
     }
 
-    OnDocument *doc = on_note_document_load(db, meta->id);
+    OnDocument *doc = note_document(db, meta->id);
+    if (doc == NULL) {
+        g_free(text);
+        on_db_note_meta_free(meta);
+        return 2;
+    }
     document_append_text(doc, text);
 
     int rc = 0;                      /* process exit code                   */
@@ -1016,7 +1047,12 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
 
     /* Load the note and append the image on a fresh line: an empty last
      * line becomes the image, anything else gets the image after it.      */
-    OnDocument *doc = on_note_document_load(db, id);
+    OnDocument *doc = note_document(db, id);
+    if (doc == NULL) {
+        g_bytes_unref(png);
+        on_db_note_meta_free(meta);
+        return 2;
+    }
     guint last = on_document_n_blocks(doc) - 1;
     const OnBlock *lb = on_document_block(doc, last);
     if (lb->text != NULL && lb->text->text->len == 0) {
@@ -1026,16 +1062,22 @@ cmd_add_image(OnDatabase *db, const gchar *id_str, const gchar *file)
         on_document_insert_block(doc, last + 1, on_block_new_image(png, 0));
     }
 
-    on_note_document_save(db, id, doc, TRUE, NULL);
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
-                                     ON_TITLE_MAX_CHARS);
-    printf("added image to note %" G_GINT64_FORMAT "\t%s\n", id, title);
+    int rc = 0;                      /* process exit code                   */
+    if (on_note_document_save(db, id, doc, TRUE, NULL)) {
+        gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                         ON_TITLE_MAX_CHARS);
+        printf("added image to note %" G_GINT64_FORMAT "\t%s\n", id, title);
+        g_free(title);
+    } else {
+        fprintf(stderr, "error: could not save note %" G_GINT64_FORMAT "\n",
+                id);
+        rc = 2;
+    }
 
-    g_free(title);
     on_document_free(doc);
     g_bytes_unref(png);
     on_db_note_meta_free(meta);
-    return 0;
+    return rc;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1066,12 +1108,13 @@ cmd_note_info(OnDatabase *db, const gchar *id_str)
     /* Images need the blob, but only its record headers — no PNG is
      * decoded (on_note_count_images walks past every payload).             */
     gsize blob_len = 0;              /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, meta->id, &blob_len);
+    guint8 *blob = NULL;             /* the stored blob                     */
+    on_db_note_load(db, meta->id, &blob, &blob_len);
     gint n_images = on_note_count_images(blob, blob_len);
     g_free(blob);
 
     gchar *body = on_note_text_cached(db, meta->id);
-    glong n_chars = g_utf8_strlen(body, -1);
+    glong n_chars = body != NULL ? g_utf8_strlen(body, -1) : 0;
     g_free(body);
 
     gboolean trashed = on_db_note_is_trashed(db, meta->id);
@@ -1159,8 +1202,11 @@ cmd_note_pin(OnDatabase *db, char **ids, int n, gboolean pinned)
 static guint8 *
 note_image_blob(OnDatabase *db, OnNoteMeta *meta, gsize *out_len)
 {
-    guint8 *blob = on_db_note_load(db, meta->id, out_len);
-    if (blob == NULL)
+    guint8 *blob = NULL;             /* the stored blob                     */
+    if (!on_db_note_load(db, meta->id, &blob, out_len))
+        fprintf(stderr, "error: note %" G_GINT64_FORMAT " cannot be read\n",
+                meta->id);
+    else if (blob == NULL)
         fprintf(stderr, "error: note %" G_GINT64_FORMAT " has no content\n",
                 meta->id);
     return blob;
@@ -1318,7 +1364,11 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
     if (meta == NULL)
         return 2;
 
-    OnDocument *doc = on_note_document_load(db, meta->id);
+    OnDocument *doc = note_document(db, meta->id);
+    if (doc == NULL) {
+        on_db_note_meta_free(meta);
+        return 2;
+    }
     GList *existing = on_document_collect_tags(doc);
     int rc = 0;                      /* process exit code                   */
 
@@ -1377,7 +1427,11 @@ cmd_untag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
     if (meta == NULL)
         return 2;
 
-    OnDocument *doc = on_note_document_load(db, meta->id);
+    OnDocument *doc = note_document(db, meta->id);
+    if (doc == NULL) {
+        on_db_note_meta_free(meta);
+        return 2;
+    }
 
     /* Delete every matching #tag run, walking each block's runs back to
      * front so earlier offsets stay valid.                                 */

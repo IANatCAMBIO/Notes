@@ -54,8 +54,8 @@ gboolean on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
  * "![image N]()" placeholders.  Used by the CLI's "note cat --md".
  *   app     — global application context.
  *   note_id — the note to render.
- * Returns a newly allocated string (g_free() it); empty for an unknown
- * or empty note.
+ * Returns a newly allocated string (g_free() it), empty for an empty
+ * note; NULL when the note does not exist or cannot be read.
  * ------------------------------------------------------------------------- */
 gchar *on_export_note_markdown(OnApp *app, gint64 note_id);
 

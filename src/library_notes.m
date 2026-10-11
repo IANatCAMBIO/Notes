@@ -426,15 +426,15 @@ static NSImage *
 render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
 {
     const CGFloat sz  = on_look_thumb_size;
-    OnDocument   *doc = on_note_document_load(db, note_id);
+    OnDocument   *doc = on_note_document_load(db, note_id);   /* NULL: unreadable */
     CGImageRef    img = NULL;
-    GBytes       *png = on_document_image_nth(doc, 0, NULL);
+    GBytes       *png = doc ? on_document_image_nth(doc, 0, NULL) : NULL;
     if (png) {
         gsize n;
         const guint8 *bytes = g_bytes_get_data(png, &n);
         img = on_image_decode_capped(bytes, n, card_decode_px);
     }
-    NSString *body = card_body(doc);
+    NSString *body = doc ? card_body(doc) : @"";
     on_document_free(doc);
 
     NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]

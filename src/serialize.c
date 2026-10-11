@@ -72,8 +72,9 @@ on_note_extract_text(const guint8 *data, gsize len)
 {
     /* Through the model, so there is ONE definition of a line's text.
      * Parsing decodes no image — the PNG bytes are carried verbatim.     */
-    OnDocument *doc = on_document_from_bnbf(data, len, NULL);
-    gchar *text = on_document_plain_text(doc);
+    OnDocLoadReport rep;             /* what the reader met                 */
+    OnDocument *doc = on_document_from_bnbf(data, len, &rep);
+    gchar *text = rep.error == NULL ? on_document_plain_text(doc) : NULL;
     on_document_free(doc);
     return text;
 }
@@ -86,13 +87,16 @@ on_note_text_cached(OnDatabase *db, gint64 id)
         return cached;
 
     gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, id, &blob_len);
+    guint8 *blob = NULL;             /* the stored blob                     */
+    if (!on_db_note_load(db, id, &blob, &blob_len))
+        return NULL;
     if (blob == NULL)
         return g_strdup("");
 
     gchar *text = on_note_extract_text(blob, blob_len);
     g_free(blob);
-    on_db_note_set_body_text(db, id, text);
+    if (text != NULL)
+        on_db_note_set_body_text(db, id, text);
     return text;
 }
 
@@ -100,9 +104,19 @@ OnDocument *
 on_note_document_load(OnDatabase *db, gint64 id)
 {
     gsize   blob_len = 0;            /* stored blob size                    */
-    guint8 *blob = on_db_note_load(db, id, &blob_len);
-    OnDocument *doc = on_document_from_bnbf(blob, blob_len, NULL);
+    guint8 *blob = NULL;             /* the stored blob                     */
+    if (!on_db_note_load(db, id, &blob, &blob_len))
+        return NULL;
+
+    OnDocLoadReport rep;             /* what the reader met                 */
+    OnDocument *doc = on_document_from_bnbf(blob, blob_len, &rep);
     g_free(blob);
+    if (rep.error != NULL) {
+        /* A partial document saved back would truncate the note.          */
+        g_warning("note %" G_GINT64_FORMAT " cannot be read: %s", id, rep.error);
+        on_document_free(doc);
+        return NULL;
+    }
     return doc;
 }
 

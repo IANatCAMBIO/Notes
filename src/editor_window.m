@@ -526,12 +526,13 @@ static const on_command_handler_t editor_commands[] = {
 /* ── Construction ──────────────────────────────────────────────────────── */
 
 /*
- * init_with_app:note:title:search_term:reveal:ordinal: — create the editor
- * for one note; the caller registers and shows it.
+ * init_with_app:note:document:title:search_term:reveal:ordinal: — create
+ * the editor for one note; the caller registers and shows it.
  *
  * Inputs:
  *   app         — application context
  *   note_id     — the note
+ *   doc         — its loaded document; the editor's view takes ownership
  *   title       — the note's title for the window
  *   search_term — pre-populate the find field (nil = none)
  *   reveal      — what to scroll to on open
@@ -542,6 +543,7 @@ static const on_command_handler_t editor_commands[] = {
 - (instancetype)
 init_with_app:(OnApp *)app
          note:(gint64)note_id
+     document:(OnDocument *)doc
         title:(NSString *)title
   search_term:(NSString *)search_term
        reveal:(NotesEditorReveal)reveal
@@ -574,7 +576,7 @@ init_with_app:(OnApp *)app
     [self build_layout];
     [self build_image_viewer];
     on_ui_use_ui_font(window.contentView);   /* the note's own text is drawn by the note view */
-    [self load_content];
+    [self load_content:doc];
 
     __weak NotesEditorWindow *ws = self;
     window.key_filter = ^BOOL(NSEvent *event) {
@@ -848,15 +850,17 @@ build_image_viewer
 }
 
 /*
- * load_content — load the note's document, reconciled against its task
+ * load_content: — put the note's document, reconciled against its task
  * rows, into the note view.  A reconciled line is an unsaved change, so
  * the autosave is queued to write it back.
+ *
+ * Inputs:
+ *   doc — the loaded document; the note view takes ownership
  */
 - (void)
-load_content
+load_content:(OnDocument *)doc
 {
     OnApp      *app    = self.app;
-    OnDocument *doc    = on_note_document_load(app->db, self.note_id);
     gboolean    healed = on_note_document_reconcile(app->db, self.note_id, doc);
     on_note_view_load_document(self.note_view, doc);   /* the view owns doc now */
     if (healed) [self queue_autosave];
@@ -1181,8 +1185,17 @@ on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
     NSString *title = @(meta->title);
     on_db_note_meta_free(meta);
 
+    /* A note that cannot be read is never shown as an empty one: an empty
+     * editor would delete it on close, and a save would overwrite it.     */
+    OnDocument *doc = on_note_document_load(app->db, note_id);
+    if (doc == NULL) {
+        on_ui_show_notice([NSString stringWithFormat:@"Could not open \u201C%@\u201D", title],
+                          @"The note could not be read. It has not been changed.", nil, nil);
+        return NO;
+    }
+
     editor = [[NotesEditorWindow alloc]
-              init_with_app:app note:note_id title:title
+              init_with_app:app note:note_id document:doc title:title
               search_term:search_term reveal:reveal ordinal:ordinal];
     editors[@(note_id)] = editor;
     [editor showWindow:nil];

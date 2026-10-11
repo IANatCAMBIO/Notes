@@ -377,6 +377,8 @@ test_library(NotesLibrary *lib)
 /*
  * test_editor — open, live edit, close: saved and released.
  */
+static BOOL answer_panel(NSString *title);   /* below, with the panel tests */
+
 static void
 test_editor(void)
 {
@@ -460,6 +462,23 @@ test_editor(void)
     pump(0.3);
     OnNoteMeta *gone = on_db_note_get(app.db, blank);
     check(gone == NULL, "an editor closed on a blank note deletes the note");
+
+    /* A note that cannot be read is not a blank note: no editor opens on
+     * it (an empty one would delete it on close), and it survives.        */
+    static const guint8 future[] = { 'B', 'N', 'B', 'F', 99, 0, 0, 0 };
+    gint64 unreadable = on_db_note_create(app.db, 0);
+    on_db_note_save(app.db, unreadable, "From the future", future, sizeof future, NULL);
+    @autoreleasepool {
+        check(!on_editor_window_open(&app, unreadable, NotesEditorRevealNone, 0, nil),
+              "no editor opens on a note that cannot be read");
+        pump(0.2);
+        check(answer_panel(@"OK"), "and a tool panel says so");
+        app.flush_editors(&app);
+    }
+    pump(0.2);
+    OnNoteMeta *kept = on_db_note_get(app.db, unreadable);
+    check(kept != NULL, "the unreadable note is not deleted");
+    on_db_note_meta_free(kept);
     body = on_db_note_body_text(app.db, note_id);
     check(body != NULL && strstr(body, "Flushed by close-all") != NULL,
           "flush_editors saves every open editor before it returns");

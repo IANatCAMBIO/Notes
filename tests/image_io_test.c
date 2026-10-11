@@ -8,6 +8,7 @@
 #include "image_io.h"
 #include "serialize.h"
 
+#include <ImageIO/ImageIO.h>
 #include <unistd.h>
 
 /* The picture every case starts from.                                       */
@@ -114,6 +115,31 @@ main(void)
     uint8_t *from_file = on_image_file_to_png(path, &n_file);
     check(from_file != NULL && on_image_probe_size(from_file, n_file, &w, &h) &&
           w == SRC_W && h == SRC_H, "an image file loads as PNG bytes");
+    free(from_file);
+
+    /* A photo stored on its side with an EXIF orientation (6: turn it a
+     * quarter clockwise) enters the note upright: PNG keeps no tag.        */
+    snprintf(path, sizeof path, "%s/sideways.jpg", data_dir);
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path,
+                                                           (CFIndex)strlen(path), false);
+    CGImageDestinationRef jpeg = CGImageDestinationCreateWithURL(url, CFSTR("public.jpeg"), 1, NULL);
+    int six = 6;
+    CFNumberRef orientation = CFNumberCreate(NULL, kCFNumberIntType, &six);
+    const void *okeys[] = { kCGImagePropertyOrientation };
+    const void *ovals[] = { orientation };
+    CFDictionaryRef props = CFDictionaryCreate(NULL, okeys, ovals, 1, &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+    CGImageRef wide = make_image();
+    CGImageDestinationAddImage(jpeg, wide, props);
+    CGImageDestinationFinalize(jpeg);
+    CGImageRelease(wide);
+    CFRelease(props);
+    CFRelease(orientation);
+    CFRelease(jpeg);
+    CFRelease(url);
+    from_file = on_image_file_to_png(path, &n_file);
+    check(from_file != NULL && on_image_probe_size(from_file, n_file, &w, &h) &&
+          w == SRC_H && h == SRC_W, "a photo with an EXIF orientation is stored upright");
     free(from_file);
 
     snprintf(path, sizeof path, "%s/not-an-image.txt", data_dir);

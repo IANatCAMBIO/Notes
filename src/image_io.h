@@ -74,10 +74,15 @@ bool on_image_probe_size(const uint8_t *bytes, size_t n, int *w, int *h);
  * ------------------------------------------------------------------------- */
 uint8_t *on_image_png_encode(CGImageRef image, size_t *n_out);
 
+/* The longest side an image entering a note keeps, in pixels: past every
+ * camera's, short of what a hostile file can declare.                      */
+#define ON_IMAGE_MAX_SIDE 16384
+
 /* ---------------------------------------------------------------------------
  * on_image_file_to_png() — an image FILE of any format ImageIO reads, as
- * PNG bytes at full resolution: what Insert Image and `note add-image`
- * store.
+ * PNG bytes at full resolution (up to ON_IMAGE_MAX_SIDE on the longest
+ * side) and upright (its EXIF orientation applied): what Insert Image and
+ * `note add-image` store.
  *
  * Inputs:
  *   path  — the file

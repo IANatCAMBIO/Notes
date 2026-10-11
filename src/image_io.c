@@ -16,18 +16,25 @@
 #define PNG_TYPE CFSTR("public.png")
 
 /*
- * source_first_image — the first image of a source, optionally shrunk
- * during decode.
+ * source_first_image — decode the first image of a source, capped, and for
+ * an image file entering a note, upright.
+ *
+ * Capping goes through ImageIO's thumbnail path, so a big image is scaled
+ * during decode.  Upright applies the file's orientation (EXIF: a phone's
+ * portrait photo is stored on its side with a tag saying so), which no
+ * one reads again once the bytes are PNG.
  *
  * Inputs:
- *   source — the image source (borrowed)
- *   max_px — cap on the longest side in pixels; 0 = full resolution
+ *   source  — the image source (borrowed)
+ *   max_px  — cap on the longest side in pixels (never scaled up); 0 =
+ *             full resolution, as stored (no orientation applied)
+ *   upright — apply the orientation (with a cap)
  *
  * Output: a new image (+1), or NULL when the source holds no decodable
  *         image.
  */
 static CGImageRef
-source_first_image(CGImageSourceRef source, int max_px)
+source_first_image(CGImageSourceRef source, int max_px, bool upright)
 {
     if (max_px <= 0) {
         return CGImageSourceCreateImageAtIndex(source, 0, NULL);
@@ -36,10 +43,12 @@ source_first_image(CGImageSourceRef source, int max_px)
      * return an embedded preview of unknown size; it never scales up.      */
     CFNumberRef cap = CFNumberCreate(NULL, kCFNumberIntType, &max_px);
     const void *keys[]   = { kCGImageSourceCreateThumbnailFromImageAlways,
-                             kCGImageSourceThumbnailMaxPixelSize };
-    const void *values[] = { kCFBooleanTrue, cap };
+                             kCGImageSourceThumbnailMaxPixelSize,
+                             kCGImageSourceCreateThumbnailWithTransform };
+    const void *values[] = { kCFBooleanTrue, cap,
+                             upright ? kCFBooleanTrue : kCFBooleanFalse };
     CFDictionaryRef options = CFDictionaryCreate(
-        NULL, keys, values, 2, &kCFTypeDictionaryKeyCallBacks,
+        NULL, keys, values, 3, &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks);
     CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, options);
     CFRelease(options);
@@ -68,7 +77,7 @@ on_image_decode_capped(const uint8_t *bytes, size_t n, int max_px)
     if (source == NULL) {
         return NULL;
     }
-    CGImageRef image = source_first_image(source, max_px);
+    CGImageRef image = source_first_image(source, max_px, false);
     CFRelease(source);
     return image;
 }
@@ -140,8 +149,10 @@ on_image_png_encode(CGImageRef image, size_t *n_out)
         if (CGImageDestinationFinalize(dest)) {
             size_t n = (size_t)CFDataGetLength(data);
             out = malloc(n);
-            memcpy(out, CFDataGetBytePtr(data), n);
-            *n_out = n;
+            if (out != NULL) {
+                memcpy(out, CFDataGetBytePtr(data), n);
+                *n_out = n;
+            }
         }
         CFRelease(dest);
     }
@@ -166,7 +177,9 @@ on_image_file_to_png(const char *path, size_t *n_out)
     if (source == NULL) {
         return NULL;
     }
-    CGImageRef image = source_first_image(source, 0);
+    /* Upright, and decoded no bigger than ON_IMAGE_MAX_SIDE (the cap never
+     * enlarges): a few-KB file can declare 50000 x 50000 pixels, ~10 GB.  */
+    CGImageRef image = source_first_image(source, ON_IMAGE_MAX_SIDE, true);
     CFRelease(source);
     if (image == NULL) {
         return NULL;

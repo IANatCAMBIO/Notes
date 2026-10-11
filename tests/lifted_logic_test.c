@@ -9,6 +9,7 @@
 #include "action_edit.h"
 #include "app_lifecycle.h"
 #include "cli.h"
+#include "export.h"
 #include "search_job.h"
 #include "serialize.h"
 
@@ -214,6 +215,49 @@ test_strict_ids(OnApp *app)
 }
 
 /*
+ * test_export_names — an export never writes two notes to one file, nor
+ * outside the folder it was given: titles differing only in case get
+ * their own files (the volume is case-insensitive), and a folder named
+ * ".." stays inside.
+ *
+ * Inputs:
+ *   app      — the context, database open, no hooks
+ *   data_dir — the test data directory
+ */
+static void
+test_export_names(OnApp *app, const char *data_dir)
+{
+    gint64 up   = on_db_folder_create(app->db, 0, "..", ON_AI_MODE_NORMAL, NULL);
+    new_note(app->db, up, "Plan\nfirst");
+    new_note(app->db, up, "plan\nsecond");
+    gchar *dest = g_build_filename(data_dir, "export", "inside", NULL);
+    on_export_all(app, dest, ON_EXPORT_MARKDOWN, NULL);
+    gchar *dir = g_build_filename(dest, "--", NULL);
+    gint   files = 0;
+    gboolean first = FALSE, second = FALSE;
+    GDir  *d = g_dir_open(dir, 0, NULL);
+    for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
+        gchar *path = g_build_filename(dir, name, NULL);
+        gchar *text = NULL;
+        if (g_file_get_contents(path, &text, NULL, NULL)) {
+            files++;
+            first  = first  || strstr(text, "first") != NULL;
+            second = second || strstr(text, "second") != NULL;
+        }
+        g_free(text);
+        g_free(path);
+    }
+    if (d != NULL) g_dir_close(d);
+    check(files == 2 && first && second,
+          "export: titles differing only in case get a file each");
+    gchar *outside = g_build_filename(data_dir, "export", "Plan.md", NULL);
+    check(!g_file_test(outside, G_FILE_TEST_EXISTS), "export: a folder named '..' stays inside");
+    g_free(outside);
+    g_free(dir);
+    g_free(dest);
+}
+
+/*
  * test_action_edit — headless (no hooks) and live (hooks installed).
  *
  * Inputs:
@@ -390,6 +434,7 @@ main(void)
     test_action_edit(&app);
     test_unreadable_note(&app);
     test_strict_ids(&app);
+    test_export_names(&app, data_dir);
     test_search_job(&app);
 
     /* Shutdown: editors flush while the database is still open, then it

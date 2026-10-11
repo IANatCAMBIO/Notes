@@ -398,8 +398,11 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
 }
 
 /* ---------------------------------------------------------------------------
- * sanitize_filename() — turn a note title into a safe file basename:
- * path separators and control chars become '-', long names truncate.
+ * sanitize_filename() — turn a note title or folder name into a safe file
+ * name: path separators and control chars become '-', a name of dots only
+ * ("." and ".." would leave the export folder) becomes dashes, and long
+ * names truncate on a character boundary (a split character is an invalid
+ * name APFS refuses).
  * Returns a newly allocated string.
  * ------------------------------------------------------------------------- */
 static gchar *
@@ -415,9 +418,54 @@ sanitize_filename(const gchar *title)
         g_free(name);
         return g_strdup("Untitled");
     }
-    if (strlen(name) > 100)
-        name[100] = '\0';
+    if (strspn(name, ".") == strlen(name))
+        memset(name, '-', strlen(name));
+    gsize cut = 100;                 /* the byte length kept                */
+    if (strlen(name) > cut) {
+        while (cut > 0 && ((guchar)name[cut] & 0xc0) == 0x80)
+            cut--;
+        name[cut] = '\0';
+    }
     return name;
+}
+
+/* ---------------------------------------------------------------------------
+ * safe_rel_dir() — a folder path ("Work/Sub") as a relative directory under
+ * the export folder: each component through sanitize_filename, so none can
+ * be "..".
+ * Returns a newly allocated string.
+ * ------------------------------------------------------------------------- */
+static gchar *
+safe_rel_dir(const gchar *rel)
+{
+    gchar  **parts = g_strsplit(rel, "/", -1);
+    GString *out   = g_string_new(NULL);
+    for (gchar **p = parts; *p != NULL; p++) {
+        if (**p == '\0')
+            continue;
+        gchar *part = sanitize_filename(*p);
+        if (out->len > 0)
+            g_string_append_c(out, '/');
+        g_string_append(out, part);
+        g_free(part);
+    }
+    g_strfreev(parts);
+    return g_string_free(out, FALSE);
+}
+
+/* ---------------------------------------------------------------------------
+ * path_key() — what makes two paths the same file on APFS: the volume
+ * compares names case-insensitively and normalization-insensitively, so
+ * "Plan.md" and "plan.md" are one file.
+ * Returns a newly allocated string.
+ * ------------------------------------------------------------------------- */
+static gchar *
+path_key(const gchar *path)
+{
+    gchar *nfc = g_utf8_normalize(path, -1, G_NORMALIZE_NFC);
+    gchar *key = g_utf8_casefold(nfc != NULL ? nfc : path, -1);
+    g_free(nfc);
+    return key;
 }
 
 /* ---------------------------------------------------------------------------
@@ -426,8 +474,10 @@ sanitize_filename(const gchar *title)
  * NULL for single-note exports).  Uniquifying against the set rather
  * than the disk makes exports re-runnable mirrors: a second export into
  * the same directory overwrites its previous output instead of growing
- * an endless "Note (2)", "Note (3)"… series.  Returns the full path
- * and, via out_base, the final base name (both newly allocated).
+ * an endless "Note (2)", "Note (3)"… series.  Paths are compared as the
+ * volume does (path_key), so "Plan" and "plan" do not overwrite each
+ * other.  Returns the full path and, via out_base, the final base name
+ * (both newly allocated).
  * ------------------------------------------------------------------------- */
 static gchar *
 unique_path(const gchar *dir, const gchar *base, const gchar *ext,
@@ -435,15 +485,20 @@ unique_path(const gchar *dir, const gchar *base, const gchar *ext,
 {
     gchar *final_base = g_strdup(base);  /* base name actually used         */
     gchar *path = g_strdup_printf("%s/%s%s", dir, final_base, ext);
+    gchar *key  = path_key(path);
     for (gint n = 2;
-         used != NULL && g_hash_table_contains(used, path); n++) {
+         used != NULL && g_hash_table_contains(used, key); n++) {
         g_free(final_base);
         g_free(path);
+        g_free(key);
         final_base = g_strdup_printf("%s (%d)", base, n);
         path = g_strdup_printf("%s/%s%s", dir, final_base, ext);
+        key  = path_key(path);
     }
     if (used != NULL)
-        g_hash_table_add(used, g_strdup(path));
+        g_hash_table_add(used, key);
+    else
+        g_free(key);
     *out_base = final_base;
     return path;
 }
@@ -561,9 +616,11 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
         if (note_dir == NULL) {
             const gchar *rel_dir = (m->folder_id != 0)
                 ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
-            note_dir = (rel_dir != NULL && *rel_dir != '\0')
-                       ? g_build_filename(dest_dir, rel_dir, NULL)
+            gchar *safe = (rel_dir != NULL) ? safe_rel_dir(rel_dir) : NULL;
+            note_dir = (safe != NULL && *safe != '\0')
+                       ? g_build_filename(dest_dir, safe, NULL)
                        : g_strdup(dest_dir);
+            g_free(safe);
             g_mkdir_with_parents(note_dir, 0755);
             gint64 *key = g_new(gint64, 1);
             *key = m->folder_id;

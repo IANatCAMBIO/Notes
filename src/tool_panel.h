@@ -43,6 +43,29 @@
                  primary_handler:(NSString *(^)(void))primary_handler;
 
 /*
+ * panel_with_title:hero_title:subtitle:symbol:content:buttons:handler: —
+ * build a panel with the caller's controls and any buttons (the due-date
+ * panel's Set / Clear / Cancel).
+ *
+ * Inputs:
+ *   window_title, hero_title, subtitle, symbol, content — as above
+ *   buttons — button labels, at least one: [0] is the default (Return) and
+ *             sits rightmost, the rest follow to its left
+ *   handler — called with the index of the clicked button; returns nil to
+ *             close the panel or a one-line problem to show (the panel
+ *             stays open)
+ *
+ * Output: the panel, not yet shown.
+ */
++ (instancetype)panel_with_title:(NSString *)window_title
+                      hero_title:(NSString *)hero_title
+                        subtitle:(NSString *)subtitle
+                          symbol:(NSString *)symbol
+                         content:(NSView *)content
+                         buttons:(NSArray<NSString *> *)buttons
+                         handler:(NSString *(^)(NSInteger index))handler;
+
+/*
  * show_message:message:symbol:buttons:over:handler: — show a message in a
  * tool panel and return at once: the replacement for a native alert.
  *

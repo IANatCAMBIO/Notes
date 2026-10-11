@@ -88,6 +88,22 @@ mouseDown:(NSEvent *)event
 }
 
 /*
+ * menuForEvent: — the item under a right click gets menu_handler's menu.
+ *
+ * Inputs:
+ *   event — the click
+ *
+ * Output: the menu, or nil.
+ */
+- (NSMenu *)
+menuForEvent:(NSEvent *)event
+{
+    if (!self.menu_handler) return [super menuForEvent:event];
+    NSPoint at = [self convertPoint:event.locationInWindow fromView:nil];
+    return self.menu_handler([self indexPathForItemAtPoint:at]);
+}
+
+/*
  * keyDown: — Return or Enter activates the selection; every other key
  * goes to NSCollectionView.
  *

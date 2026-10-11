@@ -78,24 +78,24 @@ Earlier:
 ## Notes list / grid / Action Items (library_notes.m)
 
 - [x] H Action Items checkbox: objectValue overwrites state; toggle sends uid 0/1 — wrong item edited
-- [ ] H Endless thumbnail reload loop for notes without images; no in-flight tracking
-- [ ] H Selection/scroll restore by index not id; navigation keeps old selection, no scroll reset
+- [x] H Endless thumbnail reload loop for notes without images; no in-flight tracking
+- [x] H Selection/scroll restore by index not id; navigation keeps old selection, no scroll reset
 - [x] H Delete bypasses on_library_trash_notes (editors left open, no status); no permanent delete in Trash
-- [ ] H No context menu (Open, Pin/Unpin, Export, Move to Trash; Trash: Open, Restore, Delete Permanently)
-- [ ] H toggle-done has no handler; completed items always listed
-- [ ] H Action Items: four sortable columns (Done, Context, Action, Due), `action_columns` persistence, strike-through when done
-- [ ] H Density (Compact/Comfortable), bold titles, preview line ignored
-- [ ] H List columns Path/Title/Modified/Created, sort header, `list_columns` persistence (known)
-- [ ] H Grid thumbnails: white card, border, image + body text; selected cards look unselected
-- [ ] H Note drag source (known); due-date tool panel (known)
-- [ ] M Shared selection between list and grid; default sort Modified newest-first drives grid
-- [ ] M One-row update is a full reload; no re-sort, no preview
-- [ ] M Due colours use UTC days; date formats; GTK colours (#c01c28/#d19a00/#26a269)
-- [ ] M Pin affects first note only; label never "Unpin"
-- [ ] M Ticking a box reloads the whole list; sidebar count not refreshed
-- [ ] M Thumbnails shared between list and grid sizes; scale hard-coded 2.0; list rows should have no thumbnails
-- [ ] M Alternating row tint; "N files selected" status
-- [ ] L Stale shown-state after Action Items; restore status; toggle-view label; dead code and missing comment blocks
+- [x] H No context menu (Open, Pin/Unpin, Export, Move to Trash; Trash: Open, Restore, Delete Permanently)
+- [x] H toggle-done has no handler; completed items always listed
+- [x] H Action Items: four sortable columns (Done, Context, Action, Due), `action_columns` persistence, strike-through when done
+- [x] H Density (Compact/Comfortable), bold titles, preview line ignored
+- [x] H List columns Path/Title/Modified/Created, sort header, `list_columns` persistence (known)
+- [x] H Grid thumbnails: white card, border, image + body text; selected cards look unselected
+- [x] H Note drag source (known); due-date tool panel (known)
+- [x] M Shared selection between list and grid; default sort Modified newest-first drives grid
+- [x] M One-row update is a full reload; no re-sort, no preview
+- [x] M Due colours use UTC days; date formats; GTK colours (#c01c28/#d19a00/#26a269)
+- [x] M Pin affects first note only; label never "Unpin"
+- [x] M Ticking a box reloads the whole list; sidebar count not refreshed
+- [x] M Thumbnails shared between list and grid sizes; scale hard-coded 2.0; list rows should have no thumbnails
+- [x] M Alternating row tint; "N files selected" status
+- [x] L Stale shown-state after Action Items; restore status; toggle-view label; dead code and missing comment blocks
 
 ## Sidebar (library_sidebar.m)
 
@@ -116,7 +116,7 @@ Earlier:
 
 ## Shell, menus, commands (app_delegate, library_window, library_commands)
 
-- [ ] H note-export-html / note-export-md have no handler
+- [ ] H note-export-html / note-export-md have no handler — handlers added and enabled in the note menu (step 4); not yet driven by a test (the folder picker)
 - [x] H Status bar location never follows navigation
 - [ ] M open-db: no .db filter, no same-db no-op, failure not reported
 - [ ] M search / find ignore the selected folder or tag as default scope

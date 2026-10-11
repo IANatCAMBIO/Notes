@@ -1,5 +1,6 @@
 #import "library_commands.h"
 #import "editor_window.h"
+#import "library_notes.h"
 #import "library_sidebar.h"
 #import "tool_panel.h"
 #import "ui_util.h"
@@ -364,36 +365,37 @@ run_open_db(id target, id sender)
 }
 
 /*
- * run_export — pick a destination directory and export notes in the given
- * format.  A notice reports how many were written or what failed.
+ * run_export — pick a destination folder and export notes there: the ones
+ * given, or every note.  A notice reports how many were written or what
+ * failed.
  *
  * Inputs:
  *   lib    — the library
- *   win    — the window to attach sheets to
  *   format — ON_EXPORT_HTML or ON_EXPORT_MARKDOWN
+ *   ids    — the notes (NSNumber ids), or nil for all of them
  */
 static void
-run_export(NotesLibrary *lib, NSWindow *win, OnExportFormat format)
+run_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids)
 {
+    NSWindow *win = lib.window;
     on_ui_pick_path(NotesPickFolder,
-                    format == ON_EXPORT_HTML
-                        ? @"Choose Export Folder for HTML"
-                        : @"Choose Export Folder for Markdown",
-                    @"Export",
-                    nil, nil, win,
-                    ^(NSString *path) {
+                    format == ON_EXPORT_HTML ? @"Choose Export Folder for HTML"
+                                             : @"Choose Export Folder for Markdown",
+                    @"Export", nil, nil, win, ^(NSString *path) {
         if (!path) return;
         gchar *err = NULL;
-        gint   n   = on_export_all(lib.app, path.UTF8String, format, &err);
-        if (n >= 0) {
-            on_ui_show_notice([NSString stringWithFormat:
-                               @"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
-                              [NSString stringWithFormat:@"Files written to:\n%@", path],
-                              win, nil);
+        gint   n   = 0;
+        if (ids == nil) {
+            n = on_export_all(lib.app, path.UTF8String, format, &err);
         } else {
-            on_ui_show_notice(@"Export failed",
-                              err ? @(err) : @"An unknown error occurred.",
-                              win, nil);
+            for (NSNumber *nid in ids)
+                if (on_export_note(lib.app, nid.longLongValue, path.UTF8String, format)) n++;
+        }
+        if (n >= 0) {
+            on_ui_show_notice([NSString stringWithFormat:@"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
+                              [NSString stringWithFormat:@"Files written to:\n%@", path], win, nil);
+        } else {
+            on_ui_show_notice(@"Export failed", err ? @(err) : @"An unknown error occurred.", win, nil);
         }
         g_free(err);
     });
@@ -409,8 +411,7 @@ run_export(NotesLibrary *lib, NSWindow *win, OnExportFormat format)
 static void
 run_export_html(id target, id sender)
 {
-    NotesLibrary *lib = target;
-    run_export(lib, lib.window, ON_EXPORT_HTML);
+    run_export(target, ON_EXPORT_HTML, nil);
 }
 
 /*
@@ -423,8 +424,7 @@ run_export_html(id target, id sender)
 static void
 run_export_md(id target, id sender)
 {
-    NotesLibrary *lib = target;
-    run_export(lib, lib.window, ON_EXPORT_MARKDOWN);
+    run_export(target, ON_EXPORT_MARKDOWN, nil);
 }
 
 /*
@@ -551,6 +551,41 @@ run_empty_trash(id target, id sender)
     });
 }
 
+/*
+ * run_note_export_html / run_note_export_md — "note-export-html" /
+ * "note-export-md": export the selected notes.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (unused)
+ */
+static void
+run_note_export_html(id target, id sender)
+{
+    run_export(target, ON_EXPORT_HTML, on_library_notes_selected_ids(target));
+}
+
+static void
+run_note_export_md(id target, id sender)
+{
+    run_export(target, ON_EXPORT_MARKDOWN, on_library_notes_selected_ids(target));
+}
+
+/*
+ * validate_notes_selected — notes are selected, outside the Trash view.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_notes_selected(id target, id item)
+{
+    return !on_library_in_trash_view(target) && on_library_notes_selected_ids(target).count > 0;
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const on_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
@@ -559,6 +594,8 @@ static const on_command_handler_t handlers[] = {
     { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },
+    { @"note-export-html", run_note_export_html, validate_notes_selected },
+    { @"note-export-md",   run_note_export_md,   validate_notes_selected },
     { @"delete-folder",  run_delete_folder,  validate_delete_folder  },
     { @"folder-info",     run_folder_info,     validate_folder_selected  },
     { @"sort-subfolders", run_sort_subfolders, validate_sort_subfolders  },

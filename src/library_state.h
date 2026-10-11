@@ -234,7 +234,9 @@ BOOL on_library_validate_command(NotesLibrary *lib, id item);
 NSPasteboardItem *on_library_drag_item(on_drag_kind_t kind, NSArray<NSNumber *> *ids);
 
 /*
- * on_library_drag_read — read a drag of rows back.
+ * on_library_drag_read — read a drag of rows back: the ids of every
+ * pasteboard item of the first item's kind (a table drag writes one item
+ * per row).
  *
  * Inputs:
  *   pasteboard — the dragging pasteboard

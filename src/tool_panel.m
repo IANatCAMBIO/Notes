@@ -303,6 +303,23 @@ panel_with_title:(NSString *)window_title
 }
 
 /*
+ * panel_with_title:…:buttons:handler: — see tool_panel.h.
+ */
++ (instancetype)
+panel_with_title:(NSString *)window_title
+      hero_title:(NSString *)hero_title
+        subtitle:(NSString *)subtitle
+          symbol:(NSString *)symbol
+         content:(NSView *)content
+         buttons:(NSArray<NSString *> *)buttons
+         handler:(NSString *(^)(NSInteger index))handler
+{
+    return [self build_with_title:window_title hero_title:hero_title subtitle:subtitle
+                           symbol:symbol content:content button_titles:buttons
+                   button_handler:handler];
+}
+
+/*
  * message_content — the wrapped, selectable message text in a fixed-size
  * view; messages taller than on_look_tool_msg_max_h scroll.
  *

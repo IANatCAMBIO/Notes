@@ -220,11 +220,21 @@ on_library_drag_item(on_drag_kind_t kind, NSArray<NSNumber *> *ids)
 NSArray<NSNumber *> *
 on_library_drag_read(NSPasteboard *pasteboard, on_drag_kind_t *kind)
 {
-    NSDictionary *plist = [pasteboard propertyListForType:on_pasteboard_type_rows];
-    if (![plist isKindOfClass:NSDictionary.class]) return nil;
-    NSNumber *boxed_kind = plist[drag_key_kind];
-    NSArray  *ids        = plist[drag_key_ids];
-    if (![boxed_kind isKindOfClass:NSNumber.class] || ![ids isKindOfClass:NSArray.class]) return nil;
-    *kind = (on_drag_kind_t)boxed_kind.integerValue;
-    return ids;
+    /* A table writes one item per dragged row: gather the ids of every
+     * item of the same kind. */
+    NSMutableArray<NSNumber *> *all = [NSMutableArray array];
+    NSNumber *first_kind = nil;
+    for (NSPasteboardItem *item in pasteboard.pasteboardItems) {
+        NSDictionary *plist = [item propertyListForType:on_pasteboard_type_rows];
+        if (![plist isKindOfClass:NSDictionary.class]) continue;
+        NSNumber *boxed_kind = plist[drag_key_kind];
+        NSArray  *ids        = plist[drag_key_ids];
+        if (![boxed_kind isKindOfClass:NSNumber.class] || ![ids isKindOfClass:NSArray.class]) continue;
+        if (first_kind && ![first_kind isEqual:boxed_kind]) continue;
+        first_kind = boxed_kind;
+        [all addObjectsFromArray:ids];
+    }
+    if (first_kind == nil) return nil;
+    *kind = (on_drag_kind_t)first_kind.integerValue;
+    return all;
 }

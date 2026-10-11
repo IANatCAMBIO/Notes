@@ -33,6 +33,7 @@
 
 #include "check.h"
 
+#import "activation.h"
 #import "editor_window.h"
 #import "image_viewer.h"
 #import "library_ai.h"
@@ -53,6 +54,7 @@
 #include "serialize.h"
 
 #include <mach/mach.h>
+#include <objc/message.h>
 #include <mach/mach_vm.h>
 #include <malloc/malloc.h>
 
@@ -201,6 +203,7 @@ save_snapshots(NSWindow *window, NSString *name)
     };
     for (NSString *look in looks) {
         window.appearance = [NSAppearance appearanceNamed:looks[look]];
+        pump(0.2);                   /* what redraws on its own: grid cards */
         [window displayIfNeeded];
         NSString *file = [NSString stringWithFormat:@"%@-%@.png", name, look];
         ok = save_png(window, [snapshot_dir() stringByAppendingPathComponent:file]) && ok;
@@ -321,7 +324,6 @@ add_image(gint64 note_id)
 }
 
 /* Forward declaration — defined after test_library which calls it. */
-static void test_notes_pane(NotesLibrary *lib);
 
 /*
  * test_library — the library window comes up with true data, and goes away
@@ -364,65 +366,6 @@ test_library(NotesLibrary *lib)
     on_library_window_show(lib);
     pump(0.3);
     check(lib.window != nil, "and it can be shown again");
-    test_notes_pane(lib);
-}
-
-/*
- * test_notes_pane — notes list, grid and action items pane smoke checks.
- */
-static void
-test_notes_pane(NotesLibrary *lib)
-{
-    /* The pane was installed by on_library_notes_new inside library_window.
-     * on_library_notes_selected_ids always returns an NSArray. */
-    NSArray *ids = on_library_notes_selected_ids(lib);
-    check(ids != nil, "notes pane: selected_ids returns an array");
-
-    /* Refresh in list mode; the seeded note should appear. */
-    lib.grid_pref = NO;
-    on_library_notes_refresh(lib);
-    pump(0.2);
-
-    /* Return on a selected row opens its note (double-click sends the same
-     * action with clickedRow set). */
-    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
-    check(table != nil && table.doubleAction != NULL && table.target != nil,
-          "notes list: double-click is wired to open the note");
-    NSUInteger before = 0, after = 0;
-    for (NSWindow *w in NSApp.windows) if (w.visible) before++;
-    if (table.numberOfRows > 0) {
-        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-        [table keyDown:return_key(lib.window)];
-        pump(0.3);
-    }
-    for (NSWindow *w in NSApp.windows) if (w.visible) after++;
-    check(table.numberOfRows > 0 && after == before + 1, "notes list: Return opens the selected note");
-    on_editor_close_all();
-    pump(0.2);
-
-    /* Switch to grid mode and back. */
-    lib.grid_pref = YES;
-    on_library_notes_refresh(lib);
-    pump(0.2);
-    lib.grid_pref = NO;
-    on_library_notes_refresh(lib);
-    pump(0.2);
-    check(YES, "notes pane: list/grid toggle does not crash");
-
-    /* Switch to Action Items pane. */
-    on_sb_kind_t saved_kind = lib.sel_kind;
-    gint64       saved_id   = lib.sel_id;
-    lib.sel_kind = on_sb_actions;
-    lib.sel_id   = 0;
-    on_library_notes_refresh(lib);
-    pump(0.2);
-    check(YES, "notes pane: action items view does not crash");
-
-    /* Restore selection. */
-    lib.sel_kind = saved_kind;
-    lib.sel_id   = saved_id;
-    on_library_notes_refresh(lib);
-    pump(0.1);
 }
 
 /*
@@ -814,7 +757,8 @@ test_trash(NotesLibrary *lib)
                                                   NSOutlineView.class);
     NSInteger row = -1;
     for (NSInteger r = 0; r < table.numberOfRows; r++) {
-        NSTableCellView *cell = [table viewAtColumn:0 row:r makeIfNecessary:YES];
+        NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:r
+                                       makeIfNecessary:YES];
         if (label_with_text(cell, @"Loose note")) row = r;
     }
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
@@ -1233,16 +1177,17 @@ menu_titles(NSMenu *menu)
 }
 
 /*
- * right_click — the menu a right click on a sidebar row shows.
+ * right_click — the menu a right click on a table row shows (a sidebar or
+ * notes row).
  *
  * Inputs:
- *   outline — the sidebar
+ *   outline — the table
  *   row     — the row
  *
  * Output: the menu, or nil.
  */
 static NSMenu *
-right_click(NSOutlineView *outline, NSInteger row)
+right_click(NSTableView *outline, NSInteger row)
 {
     NSRect   rect  = [outline rectOfRow:row];
     NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
@@ -1381,6 +1326,417 @@ test_sidebar(NotesLibrary *lib)
     check(outline.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
           "with fit-to-content on, the sidebar widens to a long folder name");
     app.sidebar_fit_content = FALSE;
+}
+
+/*
+ * pane_table — the notes pane's visible table (the list or Action Items).
+ *
+ * Inputs:
+ *   lib — the library
+ *
+ * Output: the table, or nil while the grid shows.
+ */
+static NSTableView *
+pane_table(NotesLibrary *lib)
+{
+    return (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
+}
+
+/*
+ * cell_text — the text of a table cell, by column key.
+ *
+ * Inputs:
+ *   table — the table
+ *   key   — the column's identifier
+ *   row   — the row
+ *
+ * Output: the text, or nil.
+ */
+static NSString *
+cell_text(NSTableView *table, NSString *key, NSInteger row)
+{
+    NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:key] row:row makeIfNecessary:YES];
+    return cell.textField.stringValue;
+}
+
+/*
+ * column_texts — one column's text, top to bottom.
+ *
+ * Inputs:
+ *   table — the table
+ *   key   — the column's identifier
+ *
+ * Output: the texts.
+ */
+static NSArray<NSString *> *
+column_texts(NSTableView *table, NSString *key)
+{
+    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+    for (NSInteger r = 0; r < table.numberOfRows; r++) [texts addObject:cell_text(table, key, r) ?: @""];
+    return texts;
+}
+
+/*
+ * row_with_text — the first row whose cell in a column says this.
+ *
+ * Inputs:
+ *   table — the table
+ *   key   — the column's identifier
+ *   text  — the text
+ *
+ * Output: the row, or -1.
+ */
+static NSInteger
+row_with_text(NSTableView *table, NSString *key, NSString *text)
+{
+    NSUInteger i = [column_texts(table, key) indexOfObject:text];
+    return i == NSNotFound ? -1 : (NSInteger)i;
+}
+
+/*
+ * visible_columns — a table's shown column keys, in display order.
+ *
+ * Inputs:
+ *   table — the table
+ *
+ * Output: the keys.
+ */
+static NSArray<NSString *> *
+visible_columns(NSTableView *table)
+{
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    for (NSTableColumn *c in table.tableColumns) if (!c.hidden) [keys addObject:c.identifier];
+    return keys;
+}
+
+/*
+ * validated_titles — a menu's item titles after each command item has
+ * been validated (as AppKit does when the menu opens), with whether each
+ * is enabled: "Title" or "(Title)" when disabled.
+ *
+ * Inputs:
+ *   lib  — the library
+ *   menu — the menu
+ *
+ * Output: the titles.
+ */
+static NSArray<NSString *> *
+validated_titles(NotesLibrary *lib, NSMenu *menu)
+{
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.separatorItem) continue;
+        BOOL on = item.target ? YES : on_library_validate_command(lib, item);
+        [titles addObject:on ? item.title : [NSString stringWithFormat:@"(%@)", item.title]];
+    }
+    return titles;
+}
+
+/*
+ * open_menu — what a menu shows once its delegate has filled it.
+ *
+ * Inputs:
+ *   menu — the menu
+ *
+ * Output: the menu.
+ */
+static NSMenu *
+open_menu(NSMenu *menu)
+{
+    [menu.delegate menuNeedsUpdate:menu];
+    return menu;
+}
+
+/*
+ * double_click — what a double-click on a table cell does: the table's
+ * double action, with the clicked row and column.  (Synthetic mouse events
+ * never reach a table here: the test's windows cannot become key without
+ * activating the app on the owner's screen.)
+ *
+ * Inputs:
+ *   table — the Action Items table
+ *   row   — the row
+ *   key   — the column's identifier
+ */
+static void
+double_click(NSTableView *table, NSInteger row, NSString *key)
+{
+    SEL activate = NSSelectorFromString(@"activate_actions:column:");
+    if (table.doubleAction == NULL || ![table.target respondsToSelector:activate]) return;
+    ((void (*)(id, SEL, NSIndexSet *, NSString *))objc_msgSend)(
+        table.target, activate, [NSIndexSet indexSetWithIndex:(NSUInteger)row], key);
+}
+
+/*
+ * action_due — an action item's due date in the database.
+ *
+ * Inputs:
+ *   text — the item's text
+ *
+ * Output: the due time, 0 for none, -1 when there is no such item.
+ */
+static gint64
+action_due(const char *text)
+{
+    gint64 due   = -1;
+    GList *items = on_db_action_list(app.db);
+    for (GList *l = items; l != NULL; l = l->next) {
+        const OnActionItem *it = l->data;
+        if (g_strcmp0(it->text, text) == 0) due = it->due;
+    }
+    on_db_action_list_free(items);
+    return due;
+}
+
+/*
+ * test_notes_pane — the notes list, grid and Action Items, as the GTK app
+ * has them: columns, sorting, the one selection, cards, menus, drags, the
+ * one-row update on save, and Action Items' done and due dates.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_notes_pane(NotesLibrary *lib)
+{
+    gint64 folder  = on_db_folder_create(app.db, 0, "Pane", 0, NULL);
+    gint64 bravo   = new_note_in(folder, "Bravo\nbravo body");
+    gint64 alpha   = new_note_in(folder, "alpha\n\n   the preview line\nmore");
+    gint64 charlie = new_note_in(folder, "Charlie\ncharlie body");
+    add_image(charlie);
+    lib.grid_pref         = NO;
+    app.comfortable_list  = FALSE;
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_folder, folder);
+    pump(0.2);
+
+    /* Columns. */
+    NSTableView *table = pane_table(lib);
+    check([visible_columns(table) isEqualToArray:@[@"title", @"modified"]],
+          "the list shows Title and Modified by default (Path and Created hidden)");
+    check(table.doubleAction != NULL && table.target != nil && table.allowsColumnReordering,
+          "the list opens notes on a double-click and its headers reorder");
+    NSMenu *header = open_menu(table.headerView.menu);
+    check([menu_titles(header) isEqualToArray:@[@"Title", @"Path", @"Modified", @"Created"]],
+          "the header menu lists every column");
+    [NSApp sendAction:[header itemWithTitle:@"Path"].action to:[header itemWithTitle:@"Path"].target
+                 from:[header itemWithTitle:@"Path"]];
+    gchar *layout = on_app_config_get("list_columns");
+    check([visible_columns(table) containsObject:@"path"] && layout && strstr(layout, "path:1") != NULL,
+          "the header menu shows a column and the layout is saved");
+    g_free(layout);
+    check([cell_text(table, @"path", 0) isEqualToString:@"/Pane"], "the Path column shows the note's folder");
+    header = open_menu(table.headerView.menu);
+    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Path"].target
+                 from:[header itemWithTitle:@"Path"]];
+    header = open_menu(table.headerView.menu);
+    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Modified"].target
+                 from:[header itemWithTitle:@"Modified"]];
+    header = open_menu(table.headerView.menu);
+    check(![header itemWithTitle:@"Title"].enabled && [visible_columns(table) isEqualToArray:@[@"title"]],
+          "the last visible column cannot be hidden");
+    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Modified"].target
+                 from:[header itemWithTitle:@"Modified"]];
+
+    /* Sorting, and the one-row update on save. */
+    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:YES]];
+    check([column_texts(table, @"title") isEqualToArray:@[@"alpha", @"Bravo", @"Charlie"]],
+          "a Title header click sorts by title, ignoring case");
+    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:NO]];
+    check([column_texts(table, @"title") isEqualToArray:@[@"Charlie", @"Bravo", @"alpha"]],
+          "a second click reverses it");
+    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES]];
+    pump(1.1);
+    OnDocument *doc = on_document_from_text("Bravo renamed\nbravo body");
+    on_note_document_save(app.db, bravo, doc, TRUE, NULL);
+    on_document_free(doc);
+    on_library_notes_note_saved(lib, bravo);
+    check([cell_text(table, @"title", 0) isEqualToString:@"Bravo renamed"],
+          "a saved note's row takes its new title and moves to the top (Modified, newest first)");
+
+    /* The one selection: kept across refreshes and views, dropped on navigation. */
+    NSInteger alpha_row = row_with_text(table, @"title", @"alpha");
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)alpha_row] byExtendingSelection:NO];
+    check(label_with_text(lib.window.contentView, @"1 file selected") != nil,
+          "the status bar counts the selected notes");
+    on_library_refresh_all(lib);
+    pump(0.1);
+    NSArray<NSNumber *> *ids = on_library_notes_selected_ids(lib);
+    check(ids.count == 1 && ids[0].longLongValue == alpha &&
+          [cell_text(table, @"title", table.selectedRow) isEqualToString:@"alpha"],
+          "a refresh keeps the selected note selected");
+    [lib.window makeFirstResponder:table];
+    [table keyDown:return_key(lib.window)];
+    pump(0.3);
+    check(editor_window_titled(@"alpha") != nil, "Return opens the selected note");
+    on_editor_close_all();
+    pump(0.2);
+
+    lib.grid_pref = YES;
+    on_library_notes_refresh(lib);
+    pump(0.6);
+    NotesActivatingGrid *grid = (NotesActivatingGrid *)find_view(lib.window.contentView,
+                                                                 NSCollectionView.class, Nil);
+    check(grid != nil && grid.selectionIndexPaths.count == 1 &&
+          on_library_notes_selected_ids(lib).firstObject.longLongValue == alpha,
+          "the grid shows the same selection");
+    BOOL      all_cards   = grid.numberOfSections > 0 && [grid numberOfItemsInSection:0] == 3;
+    NSInteger charlie_card = -1;
+    NSMutableSet<NSString *> *card_titles = [NSMutableSet set];
+    for (NSInteger i = 0; all_cards && i < 3; i++) {
+        NSCollectionViewItem *item  = [grid itemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
+        NSImageView          *thumb = (NSImageView *)find_view(item.view, NSImageView.class, Nil);
+        NSTextField          *title = (NSTextField *)find_view(item.view, NSTextField.class, Nil);
+        all_cards = thumb.image != nil && thumb.image.size.width == on_look_thumb_size;
+        if (title) [card_titles addObject:title.stringValue];
+        if ([title.stringValue isEqualToString:@"Charlie"]) charlie_card = i;
+    }
+    all_cards = all_cards && [card_titles isEqualToSet:[NSSet setWithArray:@[@"Bravo renamed", @"Charlie", @"alpha"]]];
+    check(all_cards, "every grid card is rendered, with the note's title under it");
+    check(save_snapshots(lib.window, @"library-grid"), "grid snapshots written");
+    BOOL follows = YES;
+    for (NSInteger dark = 0; dark <= 1; dark++) {
+        lib.window.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        pump(0.3);
+        NSCollectionViewItem *item  = [grid itemAtIndexPath:[NSIndexPath indexPathForItem:0 inSection:0]];
+        NSImageView          *thumb = (NSImageView *)find_view(item.view, NSImageView.class, Nil);
+        NSBitmapImageRep     *rep   = (NSBitmapImageRep *)thumb.image.representations.firstObject;
+        NSColor *corner = [[rep colorAtX:rep.pixelsWide / 2 y:rep.pixelsHigh - 8]
+                           colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        follows = follows && corner != nil && (dark ? corner.redComponent < 0.5 : corner.redComponent > 0.5);
+    }
+    lib.window.appearance = nil;
+    check(follows, "grid cards are re-rendered when the appearance changes");
+    NSMenu *card_menu = grid.menu_handler([NSIndexPath indexPathForItem:charlie_card inSection:0]);
+    check([validated_titles(lib, card_menu) isEqualToArray:@[@"Open", @"Pin", @"Export as HTML…",
+                                                              @"Export as Markdown…", @"Move to Trash"]] &&
+          on_library_notes_selected_ids(lib).firstObject.longLongValue == charlie,
+          "a right click on a card selects it and offers Open, Pin, the exports and Move to Trash");
+    on_library_run_command(lib, command_item(@"note-pin"));
+    OnNoteMeta *m = on_db_note_get(app.db, charlie);
+    NSMenuItem *pin = command_item(@"note-pin");
+    on_library_validate_command(lib, pin);
+    check(m && m->pinned && [pin.title isEqualToString:@"Unpin"], "Pin pins it, and the item then says Unpin");
+    on_db_note_meta_free(m);
+    on_library_run_command(lib, command_item(@"note-pin"));
+
+    lib.grid_pref = NO;
+    on_library_notes_refresh(lib);
+    pump(0.1);
+    table = pane_table(lib);
+    check(table.selectedRowIndexes.count == 1 &&
+          [cell_text(table, @"title", table.selectedRow) isEqualToString:@"Charlie"],
+          "and back in the list the card's selection is the row's");
+
+    /* The list's menu and drag. */
+    NSMenu *row_menu = right_click(table, row_with_text(table, @"title", @"alpha"));
+    check(row_menu != nil && [validated_titles(lib, open_menu(row_menu)) containsObject:@"Move to Trash"] &&
+          on_library_notes_selected_ids(lib).firstObject.longLongValue == alpha,
+          "a right click on a row selects it and shows the note menu");
+    NSPasteboard *pb = [NSPasteboard pasteboardWithUniqueName];
+    [pb clearContents];
+    [pb writeObjects:@[[table.dataSource tableView:table pasteboardWriterForRow:0],
+                       [table.dataSource tableView:table pasteboardWriterForRow:1]]];
+    on_drag_kind_t kind;
+    NSArray<NSNumber *> *dragged = on_library_drag_read(pb, &kind);
+    check(kind == on_drag_notes && dragged.count == 2, "dragging two rows drags both notes");
+    [pb releaseGlobally];
+
+    /* Navigation drops the selection. */
+    on_library_sidebar_select(lib, on_sb_all, 0);
+    pump(0.1);
+    check(on_library_notes_selected_ids(lib).count == 0, "selecting another sidebar row starts with nothing selected");
+
+    /* Comfortable density. */
+    app.comfortable_list = TRUE;
+    on_library_sidebar_select(lib, on_sb_folder, folder);
+    pump(0.1);
+    table = pane_table(lib);
+    NSInteger arow = row_with_text(table, @"title", @"alpha");
+    check(table.rowHeight == on_look_row_comfortable_h &&
+          label_with_text([table viewAtColumn:[table columnWithIdentifier:@"title"] row:arow makeIfNecessary:YES],
+                          @"the preview line") != nil,
+          "Comfortable rows show the first line after the title, dimmed under it");
+    app.comfortable_list = FALSE;
+
+    /* Trash: the menu, and Restore. */
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)arow] byExtendingSelection:NO];
+    on_library_run_command(lib, command_item(@"delete-note"));
+    on_library_sidebar_select(lib, on_sb_trash, 0);
+    pump(0.1);
+    table = pane_table(lib);
+    NSMenu *trash_menu = right_click(table, row_with_text(table, @"title", @"alpha"));
+    check([validated_titles(lib, open_menu(trash_menu)) isEqualToArray:@[@"Open", @"Restore", @"Delete Permanently"]],
+          "in the Trash the note menu offers Open, Restore and Delete Permanently");
+    on_library_run_command(lib, command_item(@"note-restore"));
+    pump(0.1);
+    check(!id_in(on_db_trash_note_ids(app.db), alpha) &&
+          label_with_text(lib.window.contentView, @"Restored 1 note") != nil,
+          "Restore takes the note out of the Trash and says so");
+
+    /* Action Items. */
+    new_note_in(folder, "Tasks\n! Zeta task\n! Alpha task");
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_actions, 0);
+    pump(0.2);
+    table = pane_table(lib);
+    check([visible_columns(table) isEqualToArray:@[@"done", @"context", @"action", @"due"]],
+          "Action Items shows Done, Context, Action and Due Date");
+    check(on_library_notes_selected_ids(lib).count == 0, "and has no note selection");
+    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"action" ascending:YES]];
+    NSInteger a_row = row_with_text(table, @"action", @"Alpha task");
+    NSInteger z_row = row_with_text(table, @"action", @"Zeta task");
+    check(a_row >= 0 && z_row > a_row && [cell_text(table, @"context", a_row) isEqualToString:@"Pane"],
+          "Action items sort by their text and show their folder as the context");
+
+    NSButton *box = [table viewAtColumn:[table columnWithIdentifier:@"done"] row:a_row makeIfNecessary:YES];
+    [box performClick:nil];
+    pump(0.1);
+    a_row = row_with_text(table, @"action", @"Alpha task");
+    NSTableCellView *done_cell = [table viewAtColumn:[table columnWithIdentifier:@"action"] row:a_row
+                                     makeIfNecessary:YES];
+    check(app.show_done_actions && a_row >= 0 &&
+          [done_cell.textField.attributedStringValue attribute:NSStrikethroughStyleAttributeName atIndex:0
+                                                effectiveRange:NULL] != nil,
+          "ticking an item strikes it through while completed items are shown");
+    on_library_run_command(lib, command_item(@"toggle-done"));
+    pump(0.1);
+    table = pane_table(lib);
+    NSMenuItem *done_item = command_item(@"toggle-done");
+    on_library_validate_command(lib, done_item);
+    check(row_with_text(table, @"action", @"Alpha task") < 0 && [done_item.title isEqualToString:@"Show Completed"],
+          "Hide Completed hides it, and the item then says Show Completed");
+    on_library_run_command(lib, command_item(@"toggle-done"));
+    pump(0.1);
+    table = pane_table(lib);
+
+    z_row = row_with_text(table, @"action", @"Zeta task");
+    double_click(table, z_row, @"due");
+    pump(0.2);
+    check(answer_panel(@"Set"), "a double-click on a due date asks for it in a tool panel");
+    pump(0.1);
+    gint64 midnight = (gint64)[NSCalendar.currentCalendar startOfDayForDate:NSDate.date].timeIntervalSince1970;
+    z_row = row_with_text(table, @"action", @"Zeta task");
+    NSTableCellView *due_cell = [table viewAtColumn:[table columnWithIdentifier:@"due"] row:z_row makeIfNecessary:YES];
+    NSAttributedString *due_text = due_cell.textField.attributedStringValue;
+    NSColor *tint = due_text.length ? [due_text attribute:NSForegroundColorAttributeName atIndex:0
+                                           effectiveRange:NULL] : nil;
+    __block NSColor *shown = nil;
+    [[NSAppearance appearanceNamed:NSAppearanceNameAqua] performAsCurrentDrawingAppearance:^{
+        shown = [tint colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    }];
+    check(action_due("Zeta task") == midnight && shown != nil &&
+          fabs(shown.redComponent - on_look_due_today.light.r) < 0.01 &&
+          fabs(shown.greenComponent - on_look_due_today.light.g) < 0.01 &&
+          fabs(shown.blueComponent - on_look_due_today.light.b) < 0.01,
+          "Set gives it today's date, shown in the due-today colour");
+
+    double_click(table, z_row, @"action");
+    pump(0.3);
+    check(editor_window_titled(@"Tasks") != nil, "a double-click elsewhere opens the item's note");
+    on_editor_close_all();
+    pump(0.2);
+    on_library_sidebar_select(lib, on_sb_root, 0);
 }
 
 /*
@@ -1655,6 +2011,7 @@ main(void)
         test_new_folder(lib);
         test_trash(lib);
         test_sidebar(lib);
+        test_notes_pane(lib);
         test_secondary_windows(lib);
 
         gint64 quick = app.quicknote(&app);

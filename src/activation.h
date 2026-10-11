@@ -48,4 +48,7 @@ NSIndexSet *on_activated_rows(NotesActivatingTable *table);
 @interface NotesActivatingGrid : NSCollectionView
 @property (nonatomic, assign) NSInteger activate_clicks;
 @property (nonatomic, copy)   void (^activate_handler)(NSSet<NSIndexPath *> *paths);
+/* The menu for a right click (or Control-click) on an item, given the
+ * item's path (nil for empty space); nil = no menu. */
+@property (nonatomic, copy)   NSMenu *(^menu_handler)(NSIndexPath *path);
 @end

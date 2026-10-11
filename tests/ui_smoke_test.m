@@ -1769,18 +1769,90 @@ test_secondary_windows(NotesLibrary *lib)
             }
         }
         check(settings_win != nil, "the settings window opens on 'preferences' command");
-        NSTabView *tv = nil;
-        for (NSView *v in settings_win.contentView.subviews) {
-            if ([v isKindOfClass:[NSTabView class]]) { tv = (NSTabView *)v; break; }
-        }
-        check(tv != nil && tv.numberOfTabViewItems == 3,
-              "the settings window has three tabs");
+        check([settings_win isKindOfClass:NSPanel.class] && (settings_win.styleMask & NSWindowStyleMaskUtilityWindow),
+              "Settings is a tool window");
+        NSView *root = settings_win.contentView;
+        check(label_with_text(root, @"Appearance") && label_with_text(root, @"Editor") &&
+              label_with_text(root, @"Database") && label_with_text(root, @"AI Features"),
+              "it has the GTK sections: Appearance, Editor, Database, AI Features");
+        check(save_snapshots(settings_win, @"settings"), "settings snapshots written");
+        NSBox  *plate = (NSBox *)find_view(root, NSBox.class, Nil);
+        NSView *path  = label_with_text(root, @(app.db->path));
+        NSRect  path_in_plate = [path convertRect:path.bounds toView:plate];
+        check(plate != nil && path != nil && NSContainsRect(plate.bounds, path_in_plate),
+              "the database plate holds its lines");
+        NSScrollView *settings_scroll = (NSScrollView *)root;
+        check(settings_scroll.documentView.flipped && NSMinY(settings_scroll.documentVisibleRect) < 1 &&
+              label_with_text(root, @"Appearance") != nil &&
+              NSIntersectsRect(settings_scroll.documentVisibleRect,
+                               [label_with_text(root, @"Appearance") convertRect:label_with_text(root, @"Appearance").bounds
+                                                                         toView:settings_scroll.documentView]),
+              "Settings opens scrolled to the top");
+
+        NSButton *bold = button_titled(root, @"Bold titles in comfortable list density");
+        check(app.bold_list_titles && bold.state == NSControlStateValueOn,
+              "a checkbox whose default is on starts ticked");
+        NSButton *counts = button_titled(root, @"Show note counts next to folders and tags");
+        gboolean counts_was = app.sidebar_counts;
+        [counts performClick:nil];
+        check(app.sidebar_counts == !counts_was && on_app_config_get_bool("sidebar_counts", counts_was) == !counts_was,
+              "ticking a checkbox writes its setting and OnApp follows");
+        [counts performClick:nil];
+
+        NSPopUpButton *density = (NSPopUpButton *)view_with_identifier(root, @"density");
+        gboolean density_was = app.comfortable_list;
+        [density selectItemAtIndex:density_was ? 0 : 1];
+        [density sendAction:density.action to:density.target];
+        check(app.comfortable_list == !density_was, "List density switches Compact and Comfortable");
+        [density selectItemAtIndex:density_was ? 1 : 0];
+        [density sendAction:density.action to:density.target];
+
+        check(app.notify_db_health != NULL, "while Settings is open the health plate follows checks");
+        NSTextField *health = (NSTextField *)view_with_identifier(root, @"health");
+        [button_titled(root, @"Update") performClick:nil];
+        check([health.stringValue hasPrefix:@"Healthy — checked"] &&
+              label_with_text(lib.window.contentView, @"Database check passed") != nil,
+              "Update runs the health check and says so");
+        gint n_notes = 0, n_folders = 0;
+        on_db_totals(app.db, &n_notes, &n_folders, NULL);
+        NSTextField *data = (NSTextField *)view_with_identifier(root, @"data");
+        check([data.stringValue isEqualToString:[NSString stringWithFormat:@"%d notes in %d folders",
+                                                 n_notes, n_folders]],
+              "the plate counts the notes and folders");
+        NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
+        check([backup_path.stringValue hasPrefix:@"Backing up to "] &&
+              button_titled(root, @"Back Up Now").enabled == on_app_config_get_bool("backup_enabled", FALSE),
+              "the backup line names the folder, and its buttons follow the switch");
+
+        NSButton    *ai     = button_titled(root, @"Enable AI features");
+        NSTextField *ai_cmd = (NSTextField *)view_with_identifier(root, @"ai-command");
+        gboolean     ai_was = app.ai_enabled;
+        check(ai_cmd.enabled == ai_was, "the AI command is usable only while AI is on");
+        [ai performClick:nil];
+        check(app.ai_enabled == !ai_was && ai_cmd.enabled == !ai_was, "Enable AI features turns AI on");
+        ai_cmd.stringValue = @"/bin/cat";
+        [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
+            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
+        NSTextView *prompt = (NSTextView *)view_with_identifier(root, @"ai-prompt");
+        prompt.string = @"Summarise briefly.";
+        [prompt.delegate textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:prompt]];
+        check(g_strcmp0(app.ai_command, "/bin/cat") == 0 && g_strcmp0(app.ai_custom_prompt, "Summarise briefly.") == 0,
+              "the AI command and custom prompt are written as they are typed");
+        ai_cmd.stringValue = @"";
+        [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
+            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
+        prompt.string = @"";
+        [prompt.delegate textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:prompt]];
+        [ai performClick:nil];
+        check(app.ai_command == NULL && app.ai_custom_prompt == NULL && app.ai_enabled == ai_was,
+              "and clearing them clears the settings");
 
         weak_settings = settings_win;
         [settings_win close];
     }
     pump(0.3);
-    check(weak_settings == nil, "closed settings window is deallocated (no retain cycle)");
+    check(weak_settings == nil && app.notify_db_health == NULL,
+          "closed settings window is deallocated and lets go of the health hook");
 
     /* Search window ───────────────────────────────────────────────────── */
     __weak NSWindow *weak_search = nil;

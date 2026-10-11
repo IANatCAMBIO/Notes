@@ -127,12 +127,12 @@ Earlier:
 
 ## Settings (settings_window.m)
 
-- [ ] H AI section missing (ai_enabled, ai_command, ai_custom_prompt) — AI can never be turned on
-- [ ] H Database health plate missing; notify_db_health never set
-- [ ] H Checkboxes start unticked for keys whose default is on (read OnApp, not config with NO)
-- [ ] H Most settings have no reader (density, bold titles, show done, code/title options)
-- [ ] M Image viewer setting; backup interval/keep validation; "Backing up to …" line and warning; timer re-arm; folder picker is a sheet and duplicates on_ui_pick_path
-- [ ] L Labels and tooltips; title; layout; stale comments
+- [x] H AI section missing (ai_enabled, ai_command, ai_custom_prompt) — AI can never be turned on
+- [x] H Database health plate missing; notify_db_health never set
+- [x] H Checkboxes start unticked for keys whose default is on (read OnApp, not config with NO)
+- [x] H Most settings have no reader (density, bold titles, show done, code/title options)
+- [x] M Image viewer setting; backup interval/keep validation; "Backing up to …" line and warning; timer re-arm; folder picker is a sheet and duplicates on_ui_pick_path (the range clamp and the pickers are not driven by a test)
+- [x] L Labels and tooltips; title; layout; stale comments — one tool window, as Files; GTK-only settings (touch assist, native menu bar, SVG loader) not carried
 
 ## Search window (search_window.m)
 

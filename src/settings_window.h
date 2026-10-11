@@ -11,9 +11,8 @@
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * STATUS: settings_window.m is a STUB for work package H that registers
- * nothing.  The specification is
- * porting/gtk_reference/src/settings_window.c.  This header is FROZEN.
+ * The specification is porting/gtk_reference/src/settings_window.c.  This
+ * header is FROZEN.
  */
 
 /*

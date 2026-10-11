@@ -197,6 +197,21 @@ on_ui_open_image_external(NSData *png)
     return ok;
 }
 
+@implementation NotesFlippedView
+
+/*
+ * isFlipped — y grows downward.
+ *
+ * Output: YES.
+ */
+- (BOOL)
+isFlipped
+{
+    return YES;
+}
+
+@end
+
 @implementation NotesKeyFilterWindow
 
 /*

@@ -228,6 +228,14 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
+ * NotesFlippedView — a plain container whose y grows downward: the
+ * document view of a scroll view whose content should start at the top
+ * (a scroll view shows a non-flipped document's BOTTOM first).
+ */
+@interface NotesFlippedView : NSView
+@end
+
+/*
  * on_ui_toolbar_search_field — a search field for a toolbar: fixed width,
  * and NO focus ring.  A focused toolbar field's ring is clipped by the
  * toolbar and changes the field's measured width; this is the one place

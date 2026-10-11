@@ -867,6 +867,32 @@ test_trash(NotesLibrary *lib)
 }
 
 /*
+ * test_strike_snapshot — struck text (a body run, a heading run and a
+ * completed action item), for the eye: the line goes through the middle
+ * of the lowercase letters.
+ */
+static void
+test_strike_snapshot(void)
+{
+    gint64      note_id = new_note("Strike note\nsome struck words here\nA struck heading\n! finished item");
+    OnDocument *doc     = on_note_document_load(app.db, note_id);
+    on_document_set_kind(doc, 2, ON_BLOCK_H2);
+    on_document_set_flags(doc, (OnPos){ 1, -1, 5 }, strlen("struck words"), ON_FMT_STRIKE, TRUE);
+    on_document_set_flags(doc, (OnPos){ 2, -1, 2 }, strlen("struck"), ON_FMT_STRIKE, TRUE);
+    on_document_set_flags(doc, (OnPos){ 3, -1, 2 }, strlen("finished item"), ON_FMT_STRIKE, TRUE);
+    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
+    on_document_free(doc);
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        check(save_snapshots(editor_window_titled(@"Strike note"), @"editor-strike"),
+              "strikethrough snapshots written");
+        on_editor_close_all();
+    }
+    pump(0.2);
+}
+
+/*
  * test_accessibility — VoiceOver sees a note as a text area holding its
  * text, with the selection where the editor has it.
  */
@@ -2416,6 +2442,7 @@ main(void)
         test_editor_commands();
         test_inline_image();
         test_accessibility();
+        test_strike_snapshot();
         test_tag_suggestions();
         test_pointer();
         test_new_folder(lib);

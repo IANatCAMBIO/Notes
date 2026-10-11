@@ -847,6 +847,34 @@ on_text_layout_box_rect(const on_text_layout_t *layout, size_t box,
 /* ── Drawing ────────────────────────────────────────────────────────────── */
 
 /*
+ * strike_y — where a strikethrough goes: through the middle of the
+ * lowercase letters (half the x-height above the baseline) of the font at
+ * a string index, as AppKit and Pango draw it.  Half the line's ascent,
+ * used before, measured from the line's top, which sits above the capitals
+ * and so put the line near the top of the text.
+ *
+ * Inputs:
+ *   line     — the CoreText line
+ *   at       — a string index inside it (the strike's start)
+ *   baseline — the line's baseline, in drawing coordinates (y down)
+ *
+ * Output: the y to draw at.
+ */
+static double
+strike_y(CTLineRef line, CFIndex at, double baseline)
+{
+    CFArrayRef runs = CTLineGetGlyphRuns(line);
+    for (CFIndex i = 0; i < CFArrayGetCount(runs); i++) {
+        CTRunRef run = CFArrayGetValueAtIndex(runs, i);
+        CFRange  r   = CTRunGetStringRange(run);
+        if (at < r.location || at >= r.location + r.length) continue;
+        CTFontRef font = CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName);
+        if (font) return baseline - CTFontGetXHeight(font) / 2.0;
+    }
+    return baseline;
+}
+
+/*
  * on_text_layout_draw — see text_layout.h.
  */
 void
@@ -868,7 +896,6 @@ on_text_layout_draw(const on_text_layout_t *layout, CGContextRef ctx,
         CGContextRestoreGState(ctx);
 
         /* Strikethrough: drawn manually after the text. */
-        double mid_y = ly + layout->line_asc[li] * 0.5;
         CFRange lr = CTLineGetStringRange(layout->lines[li]);
         for (size_t si = 0; si < layout->n_strikes; si++) {
             const strike_span_t *sp = &layout->strikes[si];
@@ -882,6 +909,7 @@ on_text_layout_draw(const on_text_layout_t *layout, CGContextRef ctx,
                 layout->lines[li], rs, NULL);
             CGFloat xb = (CGFloat)CTLineGetOffsetForStringIndex(
                 layout->lines[li], re, NULL);
+            double mid_y = strike_y(layout->lines[li], rs, baseline);
             on_paint_line(ctx, x + layout->line_x[li] + xa, mid_y, x + layout->line_x[li] + xb, mid_y,
                           sp->color, 1.0);
         }

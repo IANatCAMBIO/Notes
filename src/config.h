@@ -74,10 +74,24 @@ char *on_paths_data_file(const char *name);
  * configuration.  Must run before any other config call; a second call is
  * a no-op.
  *
+ * An ini that exists but cannot be read (a malformed hand edit) is moved
+ * aside as notes.ini.bad-<time> — or, if it cannot be moved, left alone
+ * and never saved over this run — and the configuration starts empty;
+ * on_app_config_problem() then says so.
+ *
  * Output: none.  A directory that cannot be created is reported on stderr;
  *         the settings then live in memory for this run only.
  * ------------------------------------------------------------------------- */
 void on_app_config_init(void);
+
+/* ---------------------------------------------------------------------------
+ * on_app_config_problem() — why notes.ini could not be loaded at init, for
+ * the app to tell the user (the CLI has printed it on stderr).
+ *
+ * Output: the message (owned by the module), or NULL when the ini loaded
+ *         or did not exist.
+ * ------------------------------------------------------------------------- */
+const gchar *on_app_config_problem(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_get() — read one setting from the in-memory config.

@@ -10,6 +10,8 @@
 #include "config.h"
 #include "identity.h"
 
+#include <glib/gstdio.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <pwd.h>
@@ -27,6 +29,7 @@
 
 static char     *config_ini_path = NULL;   /* resolved ini path (owned)      */
 static GKeyFile *config_kf       = NULL;   /* in-memory settings             */
+static gchar    *config_problem  = NULL;   /* why the ini was not loaded     */
 
 /*
  * path_join — "<dir>/<name>" as a new string.
@@ -123,8 +126,40 @@ on_app_config_init(void)
 
     config_ini_path = on_paths_data_file(ON_CONFIG_FILENAME);
     config_kf       = g_key_file_new();
-    g_key_file_load_from_file(config_kf, config_ini_path, G_KEY_FILE_NONE,
-                              NULL);       /* an absent file is fine         */
+    GError *err = NULL;
+    if (!g_key_file_load_from_file(config_kf, config_ini_path, G_KEY_FILE_NONE,
+                                   &err) &&
+        !g_error_matches(err, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
+        /* Unreadable: moved aside, never overwritten by the next save —
+         * it may hold db_dir, and the defaults would point elsewhere.      */
+        gchar *aside = g_strdup_printf("%s.bad-%" G_GINT64_FORMAT,
+                                       config_ini_path, g_get_real_time() / G_USEC_PER_SEC);
+        gboolean moved = g_rename(config_ini_path, aside) == 0;
+        config_problem = moved
+            ? g_strdup_printf("%s could not be read (%s). It was kept as %s, "
+                              "and every setting starts from its default.",
+                              config_ini_path, err->message, aside)
+            : g_strdup_printf("%s could not be read (%s). Settings changed "
+                              "in this session are not saved.",
+                              config_ini_path, err->message);
+        if (!moved) {
+            g_clear_pointer(&config_ini_path, free);
+        }
+        fprintf(stderr, "notes: %s\n", config_problem);
+        g_free(aside);
+        g_key_file_free(config_kf);
+        config_kf = g_key_file_new();
+    }
+    g_clear_error(&err);
+}
+
+/*
+ * on_app_config_problem — see config.h.
+ */
+const gchar *
+on_app_config_problem(void)
+{
+    return config_problem;
 }
 
 /*
@@ -176,6 +211,9 @@ on_app_config_set(const gchar *key, const gchar *value)
         g_key_file_set_string(config_kf, CONFIG_GROUP, key, value);
     } else {
         g_key_file_remove_key(config_kf, CONFIG_GROUP, key, NULL);
+    }
+    if (config_ini_path == NULL) {
+        return;                      /* an unreadable ini is never replaced  */
     }
     GError *err = NULL;
     if (!g_key_file_save_to_file(config_kf, config_ini_path, &err)) {

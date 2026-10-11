@@ -193,6 +193,9 @@ applicationDidFinishLaunching:(NSNotification *)n
     } else {
         [self ask_first_run];
     }
+    if (on_app_config_problem() != NULL) {
+        on_ui_show_notice(@"Settings could not be read", @(on_app_config_problem()), nil, nil);
+    }
 }
 
 /*

@@ -54,6 +54,68 @@ verify_child(void)
 }
 
 /*
+ * malformed_child — a process started on an ini that cannot be parsed: the
+ * problem is reported, and a setting saved afterwards writes a new ini.
+ *
+ * Output: the child's exit status (0 = all held).
+ */
+static int
+malformed_child(void)
+{
+    on_app_config_init();
+    check(on_app_config_problem() != NULL, "an unreadable ini is reported");
+    gchar *dir = on_app_config_load_db_dir();
+    check(dir == NULL, "and the settings start from their defaults");
+    g_free(dir);
+    on_app_config_set("flag", "1");
+    return check_result();
+}
+
+/*
+ * test_malformed — a malformed ini (a bad hand edit) is never overwritten:
+ * it is kept beside the new one, every byte intact.
+ *
+ * Inputs:
+ *   test_dir — this test's NOTES_DATA_DIR
+ *   self     — this executable, to run again as the child
+ */
+static void
+test_malformed(const char *test_dir, const char *self)
+{
+    static const char bad[] = "[notes]\ndb_dir=/Volumes/Work\nthis line is not a key\n";
+    gchar *dir = g_build_filename(test_dir, "malformed", NULL);
+    gchar *ini = g_build_filename(dir, "notes.ini", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    g_file_set_contents(ini, bad, -1, NULL);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        setenv(ON_DATA_DIR_ENV, dir, 1);
+        execl(self, self, "--malformed", (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a process started on a malformed ini reports it and runs on defaults");
+
+    gboolean kept = FALSE;
+    GDir *d = g_dir_open(dir, 0, NULL);
+    for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
+        if (!g_str_has_prefix(name, "notes.ini.bad-")) continue;
+        gchar *path = g_build_filename(dir, name, NULL);
+        gchar *text = NULL;
+        kept = g_file_get_contents(path, &text, NULL, NULL) && strcmp(text, bad) == 0;
+        g_free(text);
+        g_free(path);
+    }
+    if (d != NULL) g_dir_close(d);
+    check(kept, "the malformed ini is kept aside, unchanged, not saved over");
+    g_free(ini);
+    g_free(dir);
+}
+
+/*
  * test_policy — where the data directory is, with and without the
  * override.  Pure: nothing is created.
  *
@@ -202,9 +264,13 @@ main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "--verify") == 0) {
         return verify_child();
     }
+    if (argc > 1 && strcmp(argv[1], "--malformed") == 0) {
+        return malformed_child();
+    }
     char dir[PATH_MAX];
     snprintf(dir, sizeof dir, "%s", test_dir);   /* setenv invalidates getenv's */
     test_policy(dir);
     test_settings(dir, argv[0]);
+    test_malformed(dir, argv[0]);
     return check_result();
 }

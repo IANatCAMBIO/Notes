@@ -158,12 +158,4 @@ Earlier:
 ## Tests
 
 - [x] H Heap check: not a leak — AppKit's and the library window's caches fill over the first few dozen editor cycles (30–70 KB each, more after an appearance switch) and then level off (1–2 KB, then 0).  The check now warms up for a full batch of 40 cycles and allows 8 KB a cycle, not 48; a control that keeps every editor alive (≈1.8 MB a cycle) proves it can fail
-- [ ] M `/ops/fuzz` fails about 1 run in 10 ("duplicate action uid", or "blobs differ" after undo) — a real bug in document.c, NOT FIXED: the hard rules forbid changing document.c behaviour, so this is the owner's decision.
-  - Cause: OP_SPLIT with uid 0 at offset 0 moves the head's action uid to the tail (right for Enter at the start of "! item").  But the undo of a JOIN is also a SPLIT, with uid 0 meaning only "the tail had none"; when the head was empty and carried a uid, undoing the join moves that uid down.  The uid is invisible while its line is not an action line, so the damage surfaces several undos later, as a lost uid or as two lines sharing one.
-  - Reproduce: `build/test_document -p /ops/fuzz --seed=R02S52e6f14cbb702c47b52583a32937b5a3` (also R02Seead05f5edf886e27c80131ca4d8d87c, R02Sb399f5a03ecfccfb2283767e28f36293).
-  - Proposed fix (3 lines; all 35 document tests pass, the three seeds pass, 200 random seeds pass): mark a join's inverse split as an exact restore —
-    ```
-    /* struct Op */  gboolean on;   /* …; SPLIT: an exact restore (a join's undo): `uid` is the tail's, 0 or not, and the head keeps its own */
-    /* OP_SPLIT */   if (off == 0 && op->uid == 0 && !op->on) {
-    /* OP_JOIN  */   inv->on = TRUE;      /* undo puts both identities back */
-    ```
+- [x] M `/ops/fuzz` failed about 1 run in 10 ("duplicate action uid", or "blobs differ" after undo) — a real bug in document.c, fixed with the owner's approval.  Undoing a join is a split, and a split at column 0 with no uid moved the head's action uid to the tail (right for Enter at the start of "! item", wrong for a join's undo when the head was an emptied action line).  A join's inverse split is now marked as an exact restore (`Op.on`).  /ops/join-undo-uid covers the case and fails on the old code; the three recorded seeds and 200 random seeds pass; golden CLI output unchanged

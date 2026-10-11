@@ -1135,7 +1135,10 @@ struct Op {
     OnText     *frag;                /* INSERT_TEXT: what to insert (owned)  */
     GArray     *runs;                /* RESTORE_RUNS: OnRun tiling n bytes   */
     guint32     flags;               /* SET_FLAGS mask; SET_EOL / SPLIT eol  */
-    gboolean    on;                  /* SET_FLAGS / SET_CHECKED / HEADER     */
+    gboolean    on;                  /* SET_FLAGS / SET_CHECKED / HEADER;
+                                        SPLIT: an exact restore (a join's
+                                        undo): `uid` is the tail's, 0 or
+                                        not, and the head keeps its own     */
     OnBlockKind block_kind;          /* SET_KIND; SPLIT: the second block's  */
     gboolean    checked;             /* SPLIT: the second block's            */
     gint64      uid;                 /* SPLIT: the second block's            */
@@ -1466,7 +1469,7 @@ apply_op(OnDocument *d, Op *op)
          * line down, so the uid moves with it; and a redo whose tail is
          * given the uid the head still holds takes it off the head.  Two
          * blocks never share one.                                         */
-        if (off == 0 && op->uid == 0) {
+        if (off == 0 && op->uid == 0 && !op->on) {
             c->action_uid = b->action_uid;
             b->action_uid = 0;
         } else if (c->action_uid != 0 && c->action_uid == b->action_uid) {
@@ -1490,6 +1493,7 @@ apply_op(OnDocument *d, Op *op)
         inv->block_kind = c->kind;
         inv->checked    = c->checked;
         inv->uid        = c->action_uid;
+        inv->on         = TRUE;      /* undo puts both identities back      */
         /* Two #tags meeting at the seam become one.                        */
         if (t->text->len > 0 && c->text->text->len > 0 &&
             (on_text_flags_at(t, t->text->len - 1) &

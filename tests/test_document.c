@@ -1154,6 +1154,50 @@ test_ops_groups(void)
     on_document_free(d);
 }
 
+/* Undoing a join whose head is an EMPTIED action line (its "! " deleted,
+ * its uid still on it) gives the uid back to the head, not the tail: the
+ * join's undo is an exact split, unlike Enter at column 0, which moves the
+ * line's identity down with its text.  /ops/fuzz found this.              */
+static void
+test_ops_join_undo_uid(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_action(&b, 3);
+    blob_text(&b, 0, "! a\nb");
+    GBytes *blob = blob_end(&b);
+    OnDocument *d = load_clean(blob);
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 3);
+
+    g_assert_true(on_document_delete_text(d, at(0, 0), 3));   /* "" keeps uid 3 */
+    g_assert_true(on_document_join_blocks(d, 0));             /* "b", uid 3     */
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 3);
+    g_assert_true(on_document_undo(d));                       /* the join       */
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 3);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 0);
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));                       /* the delete     */
+    assert_roundtrip(d, blob);
+
+    /* Redo both, undo both: the same again.                                */
+    g_assert_true(on_document_redo(d));
+    g_assert_true(on_document_redo(d));
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 3);
+    g_assert_true(on_document_undo(d));
+    g_assert_true(on_document_undo(d));
+    assert_roundtrip(d, blob);
+
+    /* Enter at column 0 still moves the identity down with the line.       */
+    g_assert_true(on_document_split_block(d, at(0, 0), 0));
+    g_assert_cmpint(on_document_block(d, 0)->action_uid, ==, 0);
+    g_assert_cmpint(on_document_block(d, 1)->action_uid, ==, 3);
+    g_assert_true(on_document_undo(d));
+    assert_roundtrip(d, blob);
+
+    g_bytes_unref(blob);
+    on_document_free(d);
+}
+
 /* Random operations, invariants checked after each; then undo everything
  * back to the start and redo everything back to the end, byte for byte.   */
 static void
@@ -1832,6 +1876,7 @@ main(int argc, char **argv)
     g_test_add_func("/ops/blocks", test_ops_blocks);
     g_test_add_func("/ops/table", test_ops_table);
     g_test_add_func("/ops/groups", test_ops_groups);
+    g_test_add_func("/ops/join-undo-uid", test_ops_join_undo_uid);
     g_test_add_func("/ops/fuzz", test_ops_fuzz);
     g_test_add_func("/derived/title", test_title);
     g_test_add_func("/derived/from-text", test_from_text);

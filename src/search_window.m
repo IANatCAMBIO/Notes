@@ -167,6 +167,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     [self.results addTableColumn:path];
     [self.results addTableColumn:when];
     self.results.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+    self.results.style                   = NSTableViewStylePlain;
     self.results.usesAlternatingRowBackgroundColors = YES;
     self.results.dataSource   = self;
     self.results.delegate     = self;

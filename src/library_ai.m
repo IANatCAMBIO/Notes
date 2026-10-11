@@ -140,7 +140,6 @@ init_with_lib:(NotesLibrary *)lib
 
     NSTextField *title = [NSTextField labelWithString:@"AI Summary"];
     title.font = [NSFont boldSystemFontOfSize:NSFont.smallSystemFontSize];
-    [title setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSButton *copy  = [NSButton buttonWithTitle:@"Copy" target:self action:@selector(copy_text:)];
     NSButton *close = [NSButton buttonWithTitle:@"✕" target:self action:@selector(close_pane:)];
     copy.toolTip  = @"Copy summary to clipboard";
@@ -150,7 +149,9 @@ init_with_lib:(NotesLibrary *)lib
         b.controlSize = NSControlSizeSmall;
         b.font        = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     }
-    NSStackView *header = [NSStackView stackViewWithViews:@[title, copy, close]];
+    NSStackView *header = [NSStackView stackViewWithViews:@[title]];
+    [header addView:copy inGravity:NSStackViewGravityTrailing];      /* Copy, then ✕ at the edge */
+    [header addView:close inGravity:NSStackViewGravityTrailing];
     header.spacing    = 4;
     header.edgeInsets = NSEdgeInsetsMake(1, 6, 1, 2);
 

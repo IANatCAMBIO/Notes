@@ -157,5 +157,5 @@ Earlier:
 
 ## Tests
 
-- [ ] H Heap check: ~45–70 KB per editor open/close cycle, on the old and new code alike (budget 48 KB) — a real leak to find, not a budget to raise.  Reproducible lead (step 5): switching the LIBRARY window's appearance (window.appearance Aqua → DarkAqua → nil) late in the run — any save_snapshots(lib.window) after test_sidebar — raises editor-cycle growth from ~28 KB to ~66 KB; without it the check passes at ~28 KB
+- [x] H Heap check: not a leak — AppKit's and the library window's caches fill over the first few dozen editor cycles (30–70 KB each, more after an appearance switch) and then level off (1–2 KB, then 0).  The check now warms up for a full batch of 40 cycles and allows 8 KB a cycle, not 48; a control that keeps every editor alive (≈1.8 MB a cycle) proves it can fail
 - [ ] M `/ops/fuzz` fails about 1 run in 10 ("duplicate action uid") — core document model

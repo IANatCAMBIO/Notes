@@ -58,13 +58,19 @@
 #include <mach/mach_vm.h>
 #include <malloc/malloc.h>
 
-/* How many open/close cycles the heap check runs after warming up. */
+/* How many open/close cycles the heap check warms up with, and then
+ * measures.  The warm-up is a full batch: AppKit's caches (and the
+ * library window's, which every editor cycle touches) fill over the first
+ * few dozen cycles — 30 to 70 KB a cycle, more after an appearance switch
+ * — and level off after that (measured: the second batch grows 1–2 KB a
+ * cycle, the third not at all).  A five-cycle warm-up measured the filling
+ * and failed at random. */
 #define HEAP_CYCLES 40
 
-/* A leaked editor on the image note costs hundreds of KB per cycle; this
- * much is noise from AppKit's own caches.  Measured baseline ~20 KB/cycle;
- * 48 KB gives a 2× buffer against GLib slab-allocator variance. */
-#define HEAP_SLACK_PER_CYCLE (48 * 1024)
+/* A leaked editor on the image note costs hundreds of KB a cycle (its
+ * picture alone is 384 KB); after the warm-up the steady state is within
+ * ±3 KB, so this catches any real leak with room for noise. */
+#define HEAP_SLACK_PER_CYCLE (8 * 1024)
 
 /* A decoded-image region this large means a full-size image was rendered
  * for a small view (toolbar icons are a few KB each; the bundled artwork
@@ -2102,6 +2108,7 @@ test_secondary_windows(NotesLibrary *lib)
         [button_titled(ai_pane, @"Copy") performClick:nil];
         check([[NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString] isEqualToString:summary],
               "Copy puts the summary on the clipboard");
+        check(save_snapshots(lib.window, @"library-ai"), "AI pane snapshots written");
         [button_titled(ai_pane, @"✕") performClick:nil];
         check(ai_pane.hidden, "✕ closes the pane");
         g_free(app.ai_command);
@@ -2112,37 +2119,59 @@ test_secondary_windows(NotesLibrary *lib)
 }
 
 /*
- * test_heap — open/close cycles on an image-bearing note must not grow the
- * heap.
+ * editor_cycles — open and close the editor of a note, again and again.
+ *
+ * Inputs:
+ *   note_id — the note
+ *   n       — how many times
+ *   keep    — nil; or an array that is given each editor's controller,
+ *             keeping it alive as a leak would (the check's control)
+ */
+static void
+editor_cycles(gint64 note_id, int n, NSMutableArray *keep)
+{
+    for (int i = 0; i < n; i++) {
+        @autoreleasepool {
+            on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+            pump(0.05);
+            if (keep) [keep addObject:editor_window_titled(@"Heap note").windowController];
+            on_editor_close_all();
+        }
+        pump(0.05);
+    }
+}
+
+/*
+ * test_heap — once the caches are warm, open/close cycles on an
+ * image-bearing note must not grow the heap.
  */
 static void
 test_heap(void)
 {
     gint64 note_id = new_note("Heap note\nwith a picture");
     add_image(note_id);
-    for (int i = 0; i < 5; i++) {    /* warm AppKit's caches */
-        @autoreleasepool {
-            on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
-            pump(0.05);
-            on_editor_close_all();
-        }
-        pump(0.05);
-    }
+    editor_cycles(note_id, HEAP_CYCLES, nil);      /* warm the caches (see HEAP_CYCLES) */
     size_t before = heap_in_use();
-    for (int i = 0; i < HEAP_CYCLES; i++) {
-        @autoreleasepool {
-            on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
-            pump(0.05);
-            on_editor_close_all();
-        }
-        pump(0.05);
-    }
+    editor_cycles(note_id, HEAP_CYCLES, nil);
     size_t after  = heap_in_use();
     long   growth = (long)after - (long)before;
     printf("     heap in use: %zu -> %zu bytes over %d cycles (%ld per cycle)\n",
            before, after, HEAP_CYCLES, growth / HEAP_CYCLES);
     check(growth < (long)HEAP_CYCLES * HEAP_SLACK_PER_CYCLE,
           "forty editor open/close cycles do not grow the heap");
+
+    /* The control: the same cycles with every editor kept alive must fail
+     * the same check.  A check that cannot fail proves nothing. */
+    @autoreleasepool {
+        NSMutableArray *leaked = [NSMutableArray array];
+        before = heap_in_use();
+        editor_cycles(note_id, HEAP_CYCLES, leaked);
+        growth = (long)heap_in_use() - (long)before;
+        printf("     control (every editor kept): %ld bytes per cycle\n", growth / HEAP_CYCLES);
+        check(leaked.count == HEAP_CYCLES && growth >= (long)HEAP_CYCLES * HEAP_SLACK_PER_CYCLE,
+              "control: leaking the editors does fail the heap check");
+    }
+    pump(0.3);
 }
 
 /*

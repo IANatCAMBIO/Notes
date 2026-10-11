@@ -305,7 +305,7 @@ static const column_spec_t action_columns[] = {
 
 /*
  * add_columns — give a table its columns, each sortable by its key, the
- * headers reorderable.
+ * headers reorderable, the rows flat and full width (as Files has them).
  *
  * Inputs:
  *   table — the table
@@ -327,6 +327,7 @@ add_columns(NSTableView *table, const column_spec_t *specs, size_t n)
     }
     table.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
     table.allowsColumnReordering  = YES;
+    table.style                   = NSTableViewStylePlain;
 }
 
 /*

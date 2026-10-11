@@ -1,497 +1,425 @@
 /*
- * search_window.m — the full-text search window.
+ * search_window.m — the search window (work package H).
  *
- * Each call to on_search_window_open creates a new NSWindow; windows are
- * independent and may exist in parallel (one per search the user has
- * running).  The window presents:
+ * Specification: porting/gtk_reference/src/search_window.c.
  *
- *   [ scope pop-up ]  [ search field ]
- *   ─────────────────────────────────
- *   result rows: path · note-modified-date
- *   ─────────────────────────────────
- *   status bar ("3 matches · 0.1 s")
+ *   [ query                              ] [Search] (spinner)
+ *   (•) All Notes  ( ) Selected Folder/Tag
+ *   [ ] Case sensitive  [ ] Regular expression
+ *   ┌ Path ─────────────────────────────── Modified ┐
+ *   └───────────────────────────────────────────────┘
+ *   3 matches in “Work”
  *
- * Typing is debounced by 200 ms.  A running job is cancelled before a new
- * one starts.  Double-clicking a row opens the note.
- *
- * The module registers "search" (Find Notes…, ⌥⌘F), "find" (Find in
- * library, ⌘F when the library window is key), and "search-here"
- * (Search in Selection…, ⌥⌘G) with the library at startup.
+ * A search runs when Return is pressed in the query or Search is clicked,
+ * never per keystroke.  The query is parsed on the main thread
+ * (search_query.h: a bad pattern is reported at once); the matching runs on
+ * a worker (search_job.h) and a newer search, an empty query or closing the
+ * window abandons the one in flight.  "Selected Folder/Tag" is read from
+ * the library's selection each time a search starts.  A result opens on a
+ * double-click or Return, with the query's first positive term highlighted
+ * in the note.  Several search windows may be open; each opens at the size
+ * the last one was left at.
  */
 
 #import "search_window.h"
-#import "ui_util.h"
 
+#import "activation.h"
+#import "editor_window.h"
 #import "look.h"
+#import "ui_util.h"
 
 #include "app_core.h"
 #include "commands.h"
+#include "config.h"
 #include "db.h"
-#include "editor_window.h"
-#include "library_state.h"
 #include "search_job.h"
 #include "search_query.h"
 
-#include <mach/mach_time.h>
-#include <stdio.h>
-
-/* ── Column identifiers ─────────────────────────────────────────────────── */
-
-static NSString * const kColPath = @"path";
-static NSString * const kColWhen = @"when";
-
-/* ── Forward declarations ───────────────────────────────────────────────── */
-
-@interface NotesSearchWindow : NSWindowController
-    <NSWindowDelegate, NSTableViewDelegate, NSTableViewDataSource>
-- (instancetype)initWithLibrary:(NotesLibrary *)lib
-                scopeToSelection:(BOOL)scope_to_selection
-                           query:(NSString *)query;
+/* One result: the note and its two columns. */
+@interface NotesSearchHit : NSObject
+@property (nonatomic, assign) gint64    note_id;
+@property (nonatomic, copy)   NSString *path;
+@property (nonatomic, copy)   NSString *when;
 @end
 
-/* ── NotesSearchWindow ──────────────────────────────────────────────────── */
+@implementation NotesSearchHit
+@end
 
-@implementation NotesSearchWindow {
-    NotesLibrary           *_lib;
-    NSSearchField          *_search_field;
-    NSPopUpButton          *_scope_pop;
-    NSTableView            *_table;
-    NSTextField            *_status;
-
-    /* Search state */
-    on_search_job_t        *_job;           /* nil when idle */
-    NSMutableArray<NSArray *> *_hits; /* {NSNumber(id), path, when} triples */
-    NSTimer                *_debounce;
-    uint64_t                _job_start;     /* mach_absolute_time at job start */
-}
+@interface NotesSearchWindow : NSWindowController <NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@property (nonatomic, weak)   NotesLibrary         *lib;
+@property (nonatomic, strong) NSTextField          *query;
+@property (nonatomic, strong) NSButton             *scope_all;
+@property (nonatomic, strong) NSButton             *scope_selection;
+@property (nonatomic, strong) NSButton             *case_sensitive;
+@property (nonatomic, strong) NSButton             *regex;
+@property (nonatomic, strong) NSProgressIndicator  *spinner;
+@property (nonatomic, strong) NotesActivatingTable *results;
+@property (nonatomic, strong) NSTextField          *status;
+@property (nonatomic, strong) NSArray<NotesSearchHit *> *hits;
+@property (nonatomic, copy)   NSString             *highlight;    /* the parsed query's term */
+@property (nonatomic, copy)   NSString             *scope_desc;   /* " in “name”", or nil */
+@property (nonatomic, assign) on_search_job_t      *job;          /* in flight, or NULL */
+- (void)run_search;
+@end
 
 /*
- * initWithLibrary:scopeToSelection:query: — build and show a search window.
+ * search_done — a job finished (main thread): show its hits and the count.
  *
  * Inputs:
- *   lib              — the library
- *   scope_to_selection — YES to pre-select "Selected Folder/Tag" scope
- *   query            — pre-populate the search field; nil/@"" opens blank
+ *   error — why the search failed, or NULL
+ *   hits  — the matches (borrowed)
+ *   n     — how many
+ *   data  — the window controller (unretained: a closing window cancels its
+ *           job, so this never runs for a gone window)
+ */
+static void
+search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gpointer data)
+{
+    NotesSearchWindow *s = (__bridge NotesSearchWindow *)data;
+    s.job = NULL;
+    [s.spinner stopAnimation:nil];
+    s.spinner.hidden = YES;
+    if (error) {
+        s.status.stringValue = @(error);
+        return;
+    }
+    NSMutableArray<NotesSearchHit *> *rows = [NSMutableArray arrayWithCapacity:n];
+    for (size_t i = 0; i < n; i++) {
+        NotesSearchHit *h = [[NotesSearchHit alloc] init];
+        h.note_id = hits[i]->id;
+        h.path    = @(hits[i]->path ?: "");
+        h.when    = @(hits[i]->when ?: "");
+        [rows addObject:h];
+    }
+    s.hits = rows;
+    [s.results reloadData];
+    s.status.stringValue = [NSString stringWithFormat:@"%zu match%@%@", n, n == 1 ? @"" : @"es",
+                            s.scope_desc ?: @""];
+}
+
+@implementation NotesSearchWindow
+
+/*
+ * init_with_lib:scoped: — build the window at the last search window's
+ * size; the query field has the focus.
  *
- * Output: the window controller.
+ * Inputs:
+ *   lib    — the library
+ *   scoped — YES preselects Selected Folder/Tag
+ *
+ * Output: the controller (the window not yet shown).
  */
 - (instancetype)
-initWithLibrary:(NotesLibrary *)lib
-  scopeToSelection:(BOOL)scope_to_selection
-             query:(NSString *)query
+init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
 {
-    NSWindow *win = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, on_look_search_w, on_look_search_h)
-                  styleMask:(NSWindowStyleMaskTitled |
-                             NSWindowStyleMaskClosable |
-                             NSWindowStyleMaskResizable |
-                             NSWindowStyleMaskMiniaturizable)
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    win.title = @"Search Notes";
+    gint w = (gint)on_look_search_w, h = (gint)on_look_search_h;
+    on_app_config_get_size("search_win_w", "search_win_h", &w, &h);
+    NSWindow *win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
+                                                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                                          NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                                                  backing:NSBackingStoreBuffered defer:NO];
+    win.title              = @"Search Notes";
     win.releasedWhenClosed = NO;
-    win.minSize = NSMakeSize(400, 260);
-    [win center];
-
-    self = [super initWithWindow:win];
-    if (!self) return nil;
-
+    win.contentMinSize     = NSMakeSize(400, 260);
+    if (!(self = [super initWithWindow:win])) return nil;
     _lib  = lib;
-    _hits = [NSMutableArray array];
+    _hits = @[];
     win.delegate = self;
 
-    [self build_ui:scope_to_selection query:query];
-    [win makeKeyAndOrderFront:nil];
-    if (query.length) [self start_search];
+    self.query = [NSTextField textFieldWithString:@""];
+    self.query.identifier = @"search-query";
+    self.query.placeholderString = @"Search titles and note text…";
+    self.query.toolTip = @"Every word must appear somewhere in the note.\n\"in quotes\" matches the whole phrase; "
+                          "-word excludes notes that contain it.\nRegular expression mode takes the query as one "
+                          "pattern instead.";
+    self.query.target = self;
+    self.query.action = @selector(search_clicked:);
+    self.query.cell.sendsActionOnEndEditing = NO;   /* Return searches; leaving the field does not */
+    [self.query setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                           forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSButton *search = [NSButton buttonWithTitle:@"Search" target:self action:@selector(search_clicked:)];
+    self.spinner = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
+    self.spinner.style       = NSProgressIndicatorStyleSpinning;
+    self.spinner.controlSize = NSControlSizeSmall;
+    self.spinner.hidden      = YES;
 
+    self.scope_all       = [NSButton radioButtonWithTitle:@"All Notes" target:self action:@selector(scope_clicked:)];
+    self.scope_selection = [NSButton radioButtonWithTitle:@"Selected Folder/Tag" target:self
+                                                   action:@selector(scope_clicked:)];
+    self.scope_selection.toolTip = @"Search only whatever folder or tag is selected in the library when you press "
+                                    "Search";
+    (scoped ? self.scope_selection : self.scope_all).state = NSControlStateValueOn;
+
+    self.case_sensitive = [NSButton checkboxWithTitle:@"Case sensitive" target:nil action:NULL];
+    self.regex          = [NSButton checkboxWithTitle:@"Regular expression" target:nil action:NULL];
+    self.regex.toolTip  = @"Match the whole query as one pattern; quoting and -exclusions keep their "
+                           "regular-expression meaning instead";
+
+    self.results = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
+    NSTableColumn *path = [[NSTableColumn alloc] initWithIdentifier:@"path"];
+    path.title        = @"Path";
+    path.width        = 380;
+    path.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
+    NSTableColumn *when = [[NSTableColumn alloc] initWithIdentifier:@"when"];
+    when.title        = @"Modified";
+    when.width        = 130;
+    when.resizingMask = NSTableColumnUserResizingMask;
+    [self.results addTableColumn:path];
+    [self.results addTableColumn:when];
+    self.results.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+    self.results.usesAlternatingRowBackgroundColors = YES;
+    self.results.dataSource   = self;
+    self.results.delegate     = self;
+    self.results.target       = self;
+    self.results.doubleAction = @selector(open_results:);
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scroll.documentView        = self.results;
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers  = YES;
+    scroll.borderType          = NSBezelBorder;
+
+    self.status = [NSTextField labelWithString:@""];
+    self.status.identifier = @"search-status";
+    self.status.lineBreakMode = NSLineBreakByTruncatingTail;
+
+    NSStackView *query_row = [NSStackView stackViewWithViews:@[self.query, search, self.spinner]];
+    NSStackView *scope_row = [NSStackView stackViewWithViews:@[self.scope_all, self.scope_selection]];
+    NSStackView *opt_row   = [NSStackView stackViewWithViews:@[self.case_sensitive, self.regex]];
+    scope_row.spacing = opt_row.spacing = 12;
+    NSStackView *column = [NSStackView stackViewWithViews:@[query_row, scope_row, opt_row, scroll, self.status]];
+    column.orientation = NSUserInterfaceLayoutOrientationVertical;
+    column.alignment   = NSLayoutAttributeLeading;
+    column.spacing     = 6;
+    column.edgeInsets  = NSEdgeInsetsMake(10, 10, 10, 10);
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+    [column setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    NSView *content = win.contentView;
+    [content addSubview:column];
+    [NSLayoutConstraint activateConstraints:@[
+        [column.topAnchor        constraintEqualToAnchor:content.topAnchor],
+        [column.bottomAnchor     constraintEqualToAnchor:content.bottomAnchor],
+        [column.leadingAnchor    constraintEqualToAnchor:content.leadingAnchor],
+        [column.trailingAnchor   constraintEqualToAnchor:content.trailingAnchor],
+        [query_row.widthAnchor   constraintEqualToAnchor:column.widthAnchor constant:-20],
+        [scroll.widthAnchor      constraintEqualToAnchor:column.widthAnchor constant:-20],
+        [self.status.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-20],
+    ]];
+    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    [win center];
+    win.initialFirstResponder = self.query;
     return self;
 }
 
-/*
- * build_ui:query: — lay out the window's controls.
- *
- * Inputs:
- *   scope_to_selection — initial scope pop selection
- *   query              — initial search-field text
- */
-- (void)
-build_ui:(BOOL)scope_to_selection
-    query:(NSString *)query
-{
-    /* Scope pop-up */
-    _scope_pop = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [_scope_pop addItemWithTitle:@"All Notes"];
-    [_scope_pop addItemWithTitle:@"Selected Folder / Tag"];
-    if (scope_to_selection) [_scope_pop selectItemAtIndex:1];
-    _scope_pop.target = self;
-    _scope_pop.action = @selector(scope_changed:);
-
-    /* Search field */
-    _search_field = [[NSSearchField alloc] init];
-    _search_field.placeholderString = @"Search";
-    _search_field.stringValue = query ?: @"";
-    _search_field.target = self;
-    _search_field.action = @selector(search_field_changed:);
-    _search_field.sendsWholeSearchString = NO;
-    ((NSSearchFieldCell *)_search_field.cell).sendsSearchStringImmediately = YES;
-    [_search_field setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                              forOrientation:NSLayoutConstraintOrientationHorizontal];
-
-    /* Top bar */
-    NSStackView *top_bar = [NSStackView stackViewWithViews:@[_scope_pop, _search_field]];
-    top_bar.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    top_bar.spacing = 8;
-
-    /* Results table */
-    _table = [[NSTableView alloc] init];
-    _table.usesAlternatingRowBackgroundColors = YES;
-    _table.delegate   = self;
-    _table.dataSource = self;
-    _table.target  = self;
-    _table.doubleAction = @selector(open_selected:);
-
-    NSTableColumn *path_col = [[NSTableColumn alloc] initWithIdentifier:kColPath];
-    path_col.title = @"Note";
-    path_col.resizingMask = NSTableColumnAutoresizingMask;
-    [_table addTableColumn:path_col];
-
-    NSTableColumn *when_col = [[NSTableColumn alloc] initWithIdentifier:kColWhen];
-    when_col.title = @"Modified";
-    when_col.width = 110;
-    when_col.resizingMask = NSTableColumnNoResizing;
-    [_table addTableColumn:when_col];
-
-    NSScrollView *scroll = [[NSScrollView alloc] init];
-    scroll.documentView = _table;
-    scroll.hasVerticalScroller = YES;
-    scroll.autohidesScrollers  = YES;
-    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                       forOrientation:NSLayoutConstraintOrientationVertical];
-
-    /* Status bar */
-    _status = [NSTextField labelWithString:@"Type to search"];
-    _status.textColor = NSColor.secondaryLabelColor;
-    _status.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-
-    /* Main stack */
-    NSStackView *sv = [NSStackView stackViewWithViews:@[top_bar, scroll, _status]];
-    sv.orientation = NSUserInterfaceLayoutOrientationVertical;
-    sv.alignment   = NSLayoutAttributeLeading;
-    sv.spacing = 8;
-    sv.edgeInsets = NSEdgeInsetsMake(12, 12, 12, 12);
-
-    [sv setHuggingPriority:NSLayoutPriorityDefaultLow
-            forOrientation:NSLayoutConstraintOrientationVertical];
-    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                           forOrientation:NSLayoutConstraintOrientationVertical];
-
-    NSView *content = self.window.contentView;
-    [content addSubview:sv];
-    sv.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [sv.leadingAnchor  constraintEqualToAnchor:content.leadingAnchor],
-        [sv.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [sv.topAnchor      constraintEqualToAnchor:content.topAnchor],
-        [sv.bottomAnchor   constraintEqualToAnchor:content.bottomAnchor],
-    ]];
-}
-
-/* ── Search ─────────────────────────────────────────────────────────────── */
+/* ── Searching ─────────────────────────────────────────────────────────── */
 
 /*
- * search_field_changed: — the search field's text changed.
- *
- * Debounces: cancels any pending timer and schedules a 200 ms one.
- *
- * Inputs:
- *   sender — unused
+ * cancel_job — abandon the search in flight, if any.
  */
 - (void)
-search_field_changed:(id)sender
+cancel_job
 {
-    (void)sender;
-    [_debounce invalidate];
-    _debounce = [NSTimer scheduledTimerWithTimeInterval:0.20
-                                                 target:self
-                                               selector:@selector(debounce_fired:)
-                                               userInfo:nil
-                                                repeats:NO];
+    if (self.job) on_search_job_cancel(self.job);
+    self.job = NULL;
+    [self.spinner stopAnimation:nil];
+    self.spinner.hidden = YES;
 }
 
 /*
- * scope_changed: — the scope pop-up selection changed.
- *
- * Inputs:
- *   sender — unused
- *
- * Output: restarts the search with the new scope.
+ * run_search — start a search for the query (GTK run_search): the old one
+ * is abandoned and the results cleared; an empty query or a bad pattern
+ * is reported in the status line instead.
  */
 - (void)
-scope_changed:(id)sender
+run_search
 {
-    (void)sender;
-    [self start_search];
-}
-
-/*
- * debounce_fired: — the 200 ms debounce timer fired.
- *
- * Inputs:
- *   timer — invalidated on entry
- */
-- (void)
-debounce_fired:(NSTimer *)timer
-{
-    (void)timer;
-    _debounce = nil;
-    [self start_search];
-}
-
-/*
- * start_search — cancel any running job and launch a new one.
- *
- * Reads the search field and scope pop.  A blank or empty query clears
- * results and shows the placeholder status.
- */
-- (void)
-start_search
-{
-    [_debounce invalidate];
-    _debounce = nil;
-
-    if (_job) {
-        on_search_job_cancel(_job);
-        _job = NULL;
-    }
-
-    NSString *text = _search_field.stringValue;
-    if (!text.length) {
-        [_hits removeAllObjects];
-        [_table reloadData];
-        _status.stringValue = @"Type to search";
+    [self cancel_job];
+    self.hits = @[];
+    [self.results reloadData];
+    NSString *text = self.query.stringValue;
+    if (text.length == 0) {
+        self.status.stringValue = @"Type something to search for.";
         return;
     }
-
-    GError *err = NULL;
-    OnQuery *q = on_query_new(text.UTF8String, NO, NO, &err);
-    if (!q) {
-        NSString *msg = err ? @(err->message) : @"Invalid search.";
-        if (err) g_error_free(err);
-        _status.stringValue = msg;
+    GError  *err    = NULL;
+    OnQuery *parsed = on_query_new(text.UTF8String, self.case_sensitive.state == NSControlStateValueOn,
+                                   self.regex.state == NSControlStateValueOn, &err);
+    if (parsed == NULL) {
+        self.status.stringValue = [NSString stringWithFormat:@"Bad pattern: %s", err ? err->message : "?"];
+        g_clear_error(&err);
         return;
     }
+    if (on_query_is_empty(parsed)) {
+        self.status.stringValue = @"Type something to search for.";
+        on_query_free(parsed);
+        return;
+    }
+    const gchar *term = on_query_highlight_term(parsed);
+    self.highlight = term ? @(term) : nil;
 
-    BOOL scoped = (_scope_pop.indexOfSelectedItem == 1);
-    OnSearchScope scope = ON_SCOPE_FOLDER;
-    gint64 scope_id = 0;
-    if (scoped) on_library_search_scope(_lib, &scope, &scope_id);
-
-    OnApp *app = _lib.app;
-    _job_start = mach_absolute_time();
-    _job = on_search_job_start(app->db->path, q,
-                               scoped, scope, scope_id,
-                               search_done, (__bridge void *)self);
-    _status.stringValue = @"Searching…";
+    BOOL          scoped   = self.scope_selection.state == NSControlStateValueOn;
+    OnSearchScope scope    = ON_SCOPE_FOLDER;
+    gint64        scope_id = 0;
+    self.scope_desc = scoped ? [NSString stringWithFormat:@" in “%@”",
+                                on_library_search_scope(self.lib, &scope, &scope_id)] : nil;
+    self.status.stringValue = @"Searching…";
+    self.spinner.hidden = NO;
+    [self.spinner startAnimation:nil];
+    self.job = on_search_job_start(self.lib.app->db->path, parsed, scoped, scope, scope_id, search_done,
+                                   (__bridge gpointer)self);
 }
 
 /*
- * search_done — job completion callback, dispatched onto the main thread.
+ * search_clicked: — Return in the query, or the Search button.
  *
  * Inputs:
- *   error — error message or NULL
- *   hits  — array of matching notes (borrowed)
- *   n     — hit count
- *   data  — the NotesSearchWindow, bridge-transferred
- */
-static void
-search_done(const gchar *error,
-            const on_search_hit_t *const *hits, size_t n,
-            gpointer data)
-{
-    NotesSearchWindow *self = (__bridge NotesSearchWindow *)data;
-    self->_job = NULL;
-
-    if (error) {
-        self->_status.stringValue = @(error);
-        [self->_hits removeAllObjects];
-        [self->_table reloadData];
-        return;
-    }
-
-    [self->_hits removeAllObjects];
-    for (size_t i = 0; i < n; i++) {
-        NSNumber *nid  = @(hits[i]->id);
-        NSString *path = @(hits[i]->path ?: "");
-        NSString *when = @(hits[i]->when ?: "");
-        [self->_hits addObject:@[nid, path, when]];
-    }
-    [self->_table reloadData];
-
-    /* Elapsed time in milliseconds */
-    uint64_t elapsed = mach_absolute_time() - self->_job_start;
-    mach_timebase_info_data_t tb;
-    mach_timebase_info(&tb);
-    double ms = (double)elapsed * tb.numer / tb.denom / 1e6;
-
-    if (n == 0) {
-        self->_status.stringValue = @"No matches";
-    } else {
-        char buf[80];
-        snprintf(buf, sizeof buf, "%zu match%s · %.0f ms",
-                 n, n == 1 ? "" : "es", ms);
-        self->_status.stringValue = @(buf);
-    }
-}
-
-/* ── Table open ─────────────────────────────────────────────────────────── */
-
-/*
- * open_selected: — double-click on a result row: open the note in an editor.
- *
- * Inputs:
- *   sender — unused
+ *   sender — the field or button (unused)
  */
 - (void)
-open_selected:(id)sender
+search_clicked:(id)sender
 {
-    (void)sender;
-    NSInteger row = _table.clickedRow;
-    if (row < 0 || row >= (NSInteger)_hits.count) return;
-
-    NSArray *hit = _hits[(NSUInteger)row];
-    gint64 note_id = [hit[0] longLongValue];
-    if (note_id <= 0) return;
-
-    NSString *term = _search_field.stringValue.length ? _search_field.stringValue : nil;
-    on_editor_window_open(_lib.app, note_id, NotesEditorRevealNone, 0, term);
+    [self run_search];
 }
 
-/* ── NSTableViewDataSource ──────────────────────────────────────────────── */
-
 /*
- * numberOfRowsInTableView: — result count.
+ * scope_clicked: — a scope radio: the two act as one group.
  *
  * Inputs:
- *   tv — unused
+ *   sender — the radio clicked
+ */
+- (void)
+scope_clicked:(NSButton *)sender
+{
+    self.scope_all.state       = sender == self.scope_all ? NSControlStateValueOn : NSControlStateValueOff;
+    self.scope_selection.state = sender == self.scope_selection ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+/*
+ * open_results: — a double-click or Return on results: open each note
+ * with the query's term highlighted.
  *
- * Output: number of hits.
+ * Inputs:
+ *   sender — the table (unused)
+ */
+- (void)
+open_results:(id)sender
+{
+    [on_activated_rows(self.results) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
+        if (i < self.hits.count)
+            on_editor_window_open(self.lib.app, self.hits[i].note_id, NotesEditorRevealNone, 0, self.highlight);
+    }];
+}
+
+/* ── Table ─────────────────────────────────────────────────────────────── */
+
+/*
+ * numberOfRowsInTableView: — the hits.
+ *
+ * Inputs:
+ *   table — the results (unused)
+ *
+ * Output: the count.
  */
 - (NSInteger)
-numberOfRowsInTableView:(NSTableView *)tv
+numberOfRowsInTableView:(NSTableView *)table
 {
-    (void)tv;
-    return (NSInteger)_hits.count;
+    return (NSInteger)self.hits.count;
 }
 
-/* ── NSTableViewDelegate ────────────────────────────────────────────────── */
-
 /*
- * tableView:viewForTableColumn:row: — provide a cell view for a result.
+ * tableView:viewForTableColumn:row: — a result's path or time.
  *
  * Inputs:
- *   tv     — the table
- *   col    — the column (path or when)
- *   row    — the row index
+ *   table  — the results
+ *   column — which column
+ *   row    — which hit
  *
- * Output: an NSTextField cell.
+ * Output: the cell.
  */
 - (NSView *)
-tableView:(NSTableView *)tv
-  viewForTableColumn:(NSTableColumn *)col
-                 row:(NSInteger)row
+tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
-    (void)tv;
-    NSArray *hit = _hits[(NSUInteger)row];
-    /* hit[0] = NSNumber(id), hit[1] = path, hit[2] = when */
-    NSString *value = [col.identifier isEqualToString:kColPath] ? hit[1] : hit[2];
-
-    NSTextField *cell = [tv makeViewWithIdentifier:col.identifier owner:self];
-    if (!cell) {
-        cell = [NSTextField labelWithString:value];
-        cell.identifier = col.identifier;
-        cell.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    } else {
-        cell.stringValue = value;
+    NSTextField *cell = [table makeViewWithIdentifier:column.identifier owner:nil];
+    if (cell == nil) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier    = column.identifier;
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
     }
+    NotesSearchHit *h = self.hits[(NSUInteger)row];
+    cell.stringValue = [column.identifier isEqualToString:@"path"] ? h.path : h.when;
     return cell;
 }
 
-/* ── NSWindowDelegate ───────────────────────────────────────────────────── */
+/* ── Window ────────────────────────────────────────────────────────────── */
 
 /*
- * windowWillClose: — cancel any in-flight search job.
+ * windowWillClose: — abandon the search, and remember the size for the
+ * next search window.
  *
  * Inputs:
- *   notification — unused
+ *   note — the notification (unused)
  */
 - (void)
-windowWillClose:(NSNotification *)notification
+windowWillClose:(NSNotification *)note
 {
-    (void)notification;
-    [_debounce invalidate];
-    _debounce = nil;
-    if (_job) {
-        on_search_job_cancel(_job);
-        _job = NULL;
-    }
+    [self cancel_job];
+    NSSize size = self.window.contentView.frame.size;
+    on_app_config_set("search_win_w", @((int)size.width).stringValue.UTF8String);
+    on_app_config_set("search_win_h", @((int)size.height).stringValue.UTF8String);
 }
 
 @end
 
-/* ── Command handlers ───────────────────────────────────────────────────── */
+/* ── Commands ───────────────────────────────────────────────────────────── */
 
 /*
- * run_search — open a search window for all notes.
+ * selection_is_narrow — is the library's selection a folder or a tag, so
+ * the window should start scoped to it (GTK on_open_search)?
+ *
+ * Inputs:
+ *   lib — the library
+ *
+ * Output: YES for a folder, tag or trashed folder.
+ */
+static BOOL
+selection_is_narrow(NotesLibrary *lib)
+{
+    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_tag || lib.sel_kind == on_sb_trash_folder;
+}
+
+/*
+ * run_search — "search" and "find": a search window, scoped to the
+ * selection when that is a folder or a tag.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — unused
+ *   sender — the item (unused)
  */
 static void
 run_search(id target, id sender)
 {
-    (void)sender;
-    on_search_window_open(target, NO, nil);
+    on_search_window_open(target, selection_is_narrow(target), nil);
 }
 
 /*
- * run_search_here — open a search window scoped to the library selection.
+ * run_search_here — "search-here": a search window scoped to the row just
+ * selected.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — unused
+ *   sender — the item (unused)
  */
 static void
 run_search_here(id target, id sender)
 {
-    (void)sender;
     on_search_window_open(target, YES, nil);
 }
 
-/*
- * validate_search — disable if no database is open.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   item   — unused
- *
- * Output: YES when a database is open.
- */
-static BOOL
-validate_search(id target, id item)
-{
-    (void)item;
-    NotesLibrary *lib = target;
-    return lib.app && lib.app->db != NULL;
-}
-
+/* This module's commands.  Handlers receive the NotesLibrary. */
 static const on_command_handler_t search_handlers[] = {
-    { @"search",      run_search,      validate_search },
-    { @"find",        run_search,      validate_search },
-    { @"search-here", run_search_here, validate_search },
+    { @"search",      run_search,      NULL },
+    { @"find",        run_search,      NULL },
+    { @"search-here", run_search_here, NULL },
 };
-
-/* ── Public API ─────────────────────────────────────────────────────────── */
 
 /*
  * on_search_install — see search_window.h.
@@ -499,9 +427,7 @@ static const on_command_handler_t search_handlers[] = {
 void
 on_search_install(NotesLibrary *lib)
 {
-    on_library_add_commands(search_handlers,
-                            sizeof search_handlers / sizeof *search_handlers);
-    (void)lib;
+    on_library_add_commands(search_handlers, sizeof search_handlers / sizeof *search_handlers);
 }
 
 /*
@@ -510,8 +436,11 @@ on_search_install(NotesLibrary *lib)
 void
 on_search_window_open(NotesLibrary *lib, BOOL scope_to_selection, NSString *query)
 {
-    /* Each call creates an independent window, owned until it closes. */
-    on_ui_keep_until_closed([[NotesSearchWindow alloc] initWithLibrary:lib
-                                                      scopeToSelection:scope_to_selection
-                                                                 query:query]);
+    NotesSearchWindow *s = [[NotesSearchWindow alloc] init_with_lib:lib scoped:scope_to_selection];
+    on_ui_keep_until_closed(s);
+    [s showWindow:nil];
+    if (query.length) {
+        s.query.stringValue = query;
+        [s run_search];
+    }
 }

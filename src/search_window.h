@@ -10,9 +10,8 @@
  * the toolbar reach it without any other module naming it; until it does,
  * those items are disabled.
  *
- * STATUS: search_window.m is a STUB for work package H that registers
- * nothing.  The specification is porting/gtk_reference/src/search_window.c
- * (its worker is already lifted into search_job.c).  This header is FROZEN.
+ * The specification is porting/gtk_reference/src/search_window.c (its
+ * worker is lifted into search_job.c).  This header is FROZEN.
  */
 
 /*

@@ -1870,17 +1870,85 @@ test_secondary_windows(NotesLibrary *lib)
         check(search_win != nil, "the search window opens via on_search_window_open");
         pump(0.2);
         check(search_win.windowController != nil, "its controller stays alive while it is open");
-        NSSearchField *query = (NSSearchField *)find_view(search_win.contentView, NSSearchField.class, Nil);
-        NSTableView   *hits  = (NSTableView *)find_view(search_win.contentView, NSTableView.class, Nil);
+        NSView      *root   = search_win.contentView;
+        NSTextField *query  = (NSTextField *)view_with_identifier(root, @"search-query");
+        NSTextField *status = (NSTextField *)view_with_identifier(root, @"search-status");
+        NSTableView *hits   = (NSTableView *)find_view(root, NSTableView.class, Nil);
+        NSButton    *exact  = button_titled(root, @"Case sensitive");
+        NSButton    *regex  = button_titled(root, @"Regular expression");
+        BOOL (^search)(NSString *) = ^BOOL(NSString *text) {
+            query.stringValue = text;
+            [NSApp sendAction:query.action to:query.target from:query];
+            for (int i = 0; i < 40 && [status.stringValue isEqualToString:@"Searching…"]; i++) pump(0.05);
+            return ![status.stringValue isEqualToString:@"Searching…"];
+        };
+        check(exact != nil && regex != nil && button_titled(root, @"All Notes").state == NSControlStateValueOn,
+              "it offers Case sensitive and Regular expression, and starts on All Notes");
         query.stringValue = @"Smoke";
-        [NSApp sendAction:query.action to:query.target from:query];
-        pump(1.0);
-        check(hits.numberOfRows > 0, "a query typed into it lists matching notes");
+        pump(0.5);
+        check(hits.numberOfRows == 0, "typing alone does not search");
+        check(search(@"smoke NOTE") && hits.numberOfRows > 0 && [status.stringValue hasSuffix:@"es"] == (hits.numberOfRows != 1),
+              "Return searches every word, ignoring case, and counts the matches");
+        check(save_snapshots(search_win, @"search"), "search snapshots written");
+        exact.state = NSControlStateValueOn;
+        check(search(@"smoke NOTE") && hits.numberOfRows == 0 && [status.stringValue isEqualToString:@"0 matches"],
+              "Case sensitive finds nothing for the wrong case");
+        exact.state = NSControlStateValueOff;
+        regex.state = NSControlStateValueOn;
+        check(search(@"Sm.ke n") && hits.numberOfRows > 0, "a regular expression matches");
+        check(search(@"(") && [status.stringValue hasPrefix:@"Bad pattern:"], "a bad pattern is reported");
+        regex.state = NSControlStateValueOff;
+        check(search(@"") && [status.stringValue isEqualToString:@"Type something to search for."],
+              "an empty query asks for one");
+        search(@"smoke -nothingmatchesthis");
+        NSTextField *first = hits.numberOfRows > 0 ? [hits viewAtColumn:0 row:0 makeIfNecessary:YES] : nil;
+        NSString    *title = first.stringValue.lastPathComponent;
+        [hits selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [search_win makeFirstResponder:query];
+        [search_win makeFirstResponder:hits];
+        check(hits.selectedRowIndexes.count == 1, "leaving the query for the results keeps the selected result");
+        [hits keyDown:return_key(search_win)];
+        pump(0.3);
+        check(title.length > 0 && editor_window_titled(title) != nil,
+              "Return opens the selected result in an editor");
+        on_editor_close_all();
+        pump(0.2);
+        [search_win setContentSize:NSMakeSize(612, 333)];
         weak_search = search_win;
         [search_win close];
     }
     pump(0.3);
-    check(weak_search == nil, "closed search window is deallocated");
+    gint saved_w = 0, saved_h = 0;
+    on_app_config_get_size("search_win_w", "search_win_h", &saved_w, &saved_h);
+    check(weak_search == nil && saved_w == 612 && saved_h == 333,
+          "closed search window is deallocated and its size kept for the next one");
+
+    /* Search Here and Find start on the selection when it is a folder. */
+    @autoreleasepool {
+        gint64 pane = 0;
+        GList *folders = on_db_folder_list(app.db, 0);
+        for (GList *l = folders; l != NULL; l = l->next)
+            if (g_strcmp0(((OnFolder *)l->data)->name, "Pane") == 0) pane = ((OnFolder *)l->data)->id;
+        on_db_folder_list_free(folders);
+        on_library_sidebar_select(lib, on_sb_folder, pane);
+        on_library_run_command(lib, command_item(@"find"));
+        pump(0.3);
+        NSWindow *scoped_win = nil;
+        for (NSWindow *w in NSApp.windows)
+            if (w.visible && [w.title isEqualToString:@"Search Notes"]) scoped_win = w;
+        NSView      *root   = scoped_win.contentView;
+        NSTextField *query  = (NSTextField *)view_with_identifier(root, @"search-query");
+        NSTextField *status = (NSTextField *)view_with_identifier(root, @"search-status");
+        query.stringValue = @"body";
+        [NSApp sendAction:query.action to:query.target from:query];
+        for (int i = 0; i < 40 && [status.stringValue isEqualToString:@"Searching…"]; i++) pump(0.05);
+        check(pane != 0 && button_titled(root, @"Selected Folder/Tag").state == NSControlStateValueOn &&
+              [status.stringValue hasSuffix:@" in “Pane”"],
+              "Find on a selected folder searches that folder, and says so");
+        [scoped_win close];
+        on_library_sidebar_select(lib, on_sb_root, 0);
+    }
+    pump(0.3);
 
     /* With every autorelease pool drained, an open search window still
      * answers: something owns its controller besides the pool. */

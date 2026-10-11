@@ -119,7 +119,7 @@ Earlier:
 - [ ] H note-export-html / note-export-md have no handler — handlers added and enabled in the note menu (step 4); not yet driven by a test (the folder picker)
 - [x] H Status bar location never follows navigation
 - [ ] M open-db: no .db filter, no same-db no-op, failure not reported
-- [ ] M search / find ignore the selected folder or tag as default scope
+- [x] M search / find ignore the selected folder or tag as default scope
 - [ ] M App-scope commands do not reopen a closed library window
 - [x] M ⌘⌫ may trash notes while typing in a field (verify)
 - [ ] M Second instance should raise the running one
@@ -137,9 +137,9 @@ Earlier:
 ## Search window (search_window.m)
 
 - [x] H Window controller not retained (ARC): typing probably does nothing; job callback may use freed memory
-- [ ] H Case-sensitive and regex options missing
-- [ ] M Search on Enter/Search button, not as-you-type; highlight term from the parsed query; Return opens; default scope; empty query; size persistence
-- [ ] L Status line, title, column, placeholder
+- [x] H Case-sensitive and regex options missing
+- [x] M Search on Enter/Search button, not as-you-type; highlight term from the parsed query; Return opens; default scope; empty query; size persistence — and leaving the query field no longer re-runs the search (it wiped the selected result)
+- [x] L Status line, title, column, placeholder
 
 ## Media window (media_window.m)
 

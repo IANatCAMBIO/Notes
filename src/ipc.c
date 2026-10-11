@@ -380,11 +380,8 @@ ipc_resolve_note_path(OnDatabase *db, const gchar *path, gint64 *out_id)
 
     /* A bare number is a note id (mirrors the rest of the CLI, which
      * addresses notes by id).                                               */
-    gboolean all_digits = TRUE;      /* is every character a digit?          */
-    for (const char *p = path; *p != '\0'; p++)
-        if (!g_ascii_isdigit((guchar)*p)) { all_digits = FALSE; break; }
-    if (all_digits) {
-        gint64 id = g_ascii_strtoll(path, NULL, 10);
+    gint64 id = 0;                   /* the parsed id                        */
+    if (g_ascii_string_to_signed(path, 10, 0, G_MAXINT64, &id, NULL)) {
         OnNoteMeta *m = (id > 0) ? on_db_note_get(db, id) : NULL;
         if (m != NULL) {
             *out_id = id;

@@ -191,6 +191,29 @@ test_unreadable_note(OnApp *app)
 }
 
 /*
+ * test_strict_ids — a note id on the command line is the whole argument or
+ * nothing: "3,4" or "3abc" is no note, never note 3.
+ *
+ * Inputs:
+ *   app — the context, database open, no hooks
+ */
+static void
+test_strict_ids(OnApp *app)
+{
+    gint64 note = new_note(app->db, 0, "Keep me\nbody");
+    gchar  arg[48];
+    g_snprintf(arg, sizeof arg, "%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT, note, note + 1);
+    char *del[] = { "notes", "note", "delete", arg, "--permanent", NULL };
+    check(cli(app, 5, del) == 2, "strict ids: note delete of \"N,M\" fails");
+    g_snprintf(arg, sizeof arg, "%" G_GINT64_FORMAT "abc", note);
+    char *cat[] = { "notes", "note", "cat", arg, NULL };
+    check(cli(app, 4, cat) == 2, "strict ids: \"Nabc\" is no note");
+    OnNoteMeta *meta = on_db_note_get(app->db, note);
+    check(meta != NULL, "strict ids: the note those arguments began with is untouched");
+    on_db_note_meta_free(meta);
+}
+
+/*
  * test_action_edit — headless (no hooks) and live (hooks installed).
  *
  * Inputs:
@@ -366,6 +389,7 @@ main(void)
     test_lifecycle(&app, data_dir);
     test_action_edit(&app);
     test_unreadable_note(&app);
+    test_strict_ids(&app);
     test_search_job(&app);
 
     /* Shutdown: editors flush while the database is still open, then it

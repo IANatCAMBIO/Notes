@@ -217,13 +217,14 @@ on_cli_resolve_folder_path(OnDatabase *db, const gchar *path, gboolean create,
  *   arg — the id string as typed on the command line.
  * Returns an OnNoteMeta* (free with on_db_note_meta_free), or NULL after
  * printing "error: no such note: <arg>" to stderr when the argument is
- * not a positive number or names no note.
+ * not wholly a positive number ("3,4" is not note 3) or names no note.
  * ------------------------------------------------------------------------- */
 static OnNoteMeta *
 note_from_arg(OnDatabase *db, const gchar *arg)
 {
-    gint64 id = g_ascii_strtoll(arg, NULL, 10);
-    OnNoteMeta *meta = (id > 0) ? on_db_note_get(db, id) : NULL;
+    gint64 id = 0;                   /* the parsed id                       */
+    OnNoteMeta *meta = g_ascii_string_to_signed(arg, 10, 1, G_MAXINT64, &id, NULL)
+                       ? on_db_note_get(db, id) : NULL;
     if (meta == NULL)
         fprintf(stderr, "error: no such note: %s\n", arg);
     return meta;
@@ -688,9 +689,8 @@ cmd_folder_sort(OnDatabase *db, const gchar *path)
 static int
 cmd_folder_restore(OnDatabase *db, const gchar *id_str)
 {
-    gchar *endp = NULL;              /* end of the parsed id                */
-    gint64 id = g_ascii_strtoll(id_str, &endp, 10);
-    if (id <= 0 || endp == NULL || *endp != '\0') {
+    gint64 id = 0;                   /* the parsed id                       */
+    if (!g_ascii_string_to_signed(id_str, 10, 1, G_MAXINT64, &id, NULL)) {
         fprintf(stderr, "error: bad folder id: %s "
                         "(see 'trash list')\n", id_str);
         return 2;
@@ -873,16 +873,22 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
     }
 
     OnDocument *doc = on_document_from_text(text);
-    on_note_document_save(db, id, doc, TRUE, NULL);
+    int rc = 0;                      /* process exit code                   */
+    if (on_note_document_save(db, id, doc, TRUE, NULL)) {
+        gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+                                         ON_TITLE_MAX_CHARS);
+        printf("note %" G_GINT64_FORMAT "\t%s\n", id, title);
+        g_free(title);
+    } else {
+        /* No empty note left behind in place of the one asked for.         */
+        fprintf(stderr, "error: could not save the new note\n");
+        on_db_notes_delete(db, &id, 1);
+        rc = 2;
+    }
 
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
-                                     ON_TITLE_MAX_CHARS);
-    printf("note %" G_GINT64_FORMAT "\t%s\n", id, title);
-
-    g_free(title);
     on_document_free(doc);
     g_free(text);
-    return 0;
+    return rc;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1271,9 +1277,8 @@ cmd_note_image(OnDatabase *db, const gchar *id_str, const gchar *ord_str,
     if (meta == NULL)
         return 2;
 
-    gchar *endp = NULL;              /* end of the parsed ordinal           */
-    gint64 ord = g_ascii_strtoll(ord_str, &endp, 10);
-    if (ord < 1 || endp == NULL || *endp != '\0') {
+    gint64 ord = 0;                  /* the parsed ordinal                  */
+    if (!g_ascii_string_to_signed(ord_str, 10, 1, G_MAXINT64, &ord, NULL)) {
         fprintf(stderr, "error: bad image number: %s "
                         "(1-based, see 'note images')\n", ord_str);
         on_db_note_meta_free(meta);
@@ -1374,9 +1379,14 @@ cmd_tag_note(OnDatabase *db, const gchar *id_str, const gchar *name)
 
     if (g_list_find_custom(existing, name, (GCompareFunc)g_strcmp0) != NULL) {
         /* Already in the text; just make sure the db link agrees.          */
-        on_db_note_set_tags(db, meta->id, existing);
-        printf("note %" G_GINT64_FORMAT " already tagged #%s\n",
-               meta->id, name);
+        if (on_db_note_set_tags(db, meta->id, existing)) {
+            printf("note %" G_GINT64_FORMAT " already tagged #%s\n",
+                   meta->id, name);
+        } else {
+            fprintf(stderr, "error: could not save the tags of note %"
+                            G_GINT64_FORMAT "\n", meta->id);
+            rc = 2;
+        }
     } else {
         /* The token goes at the end of the last line, one space after
          * whatever is there — or on a fresh line after an image/table.   */
@@ -1591,9 +1601,14 @@ cmd_move_notes(OnDatabase *db, char **ids, int n, const gchar *dest)
             rc = 2;
             continue;
         }
-        on_db_notes_move(db, &meta->id, 1, folder);
-        printf("moved note %" G_GINT64_FORMAT "\t%s -> %s\n",
-               meta->id, meta->title, *dest ? dest : "/");
+        if (on_db_notes_move(db, &meta->id, 1, folder)) {
+            printf("moved note %" G_GINT64_FORMAT "\t%s -> %s\n",
+                   meta->id, meta->title, *dest ? dest : "/");
+        } else {
+            fprintf(stderr, "error: could not move note %" G_GINT64_FORMAT "\n",
+                    meta->id);
+            rc = 2;
+        }
         on_db_note_meta_free(meta);
     }
     return rc;
@@ -1609,19 +1624,24 @@ cmd_set_modified(OnDatabase *db, const gchar *id_str, const gchar *ts_str)
     if (meta == NULL)
         return 2;
 
-    gchar *endp = NULL;              /* end of the parsed number            */
-    gint64 ts = g_ascii_strtoll(ts_str, &endp, 10);
-    if (ts <= 0 || endp == NULL || *endp != '\0') {
+    gint64 ts = 0;                   /* the parsed timestamp                */
+    if (!g_ascii_string_to_signed(ts_str, 10, 1, G_MAXINT64, &ts, NULL)) {
         fprintf(stderr, "error: bad UNIX timestamp: %s\n", ts_str);
         on_db_note_meta_free(meta);
         return 2;
     }
 
-    on_db_note_set_updated_at(db, meta->id, ts);
-    printf("set modified of note %" G_GINT64_FORMAT "\t%s\n",
-           meta->id, meta->title);
+    int rc = 0;                      /* process exit code                   */
+    if (on_db_note_set_updated_at(db, meta->id, ts)) {
+        printf("set modified of note %" G_GINT64_FORMAT "\t%s\n",
+               meta->id, meta->title);
+    } else {
+        fprintf(stderr, "error: could not set the modified date of note %"
+                        G_GINT64_FORMAT "\n", meta->id);
+        rc = 2;
+    }
     on_db_note_meta_free(meta);
-    return 0;
+    return rc;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1644,9 +1664,7 @@ action_token_parse(OnDatabase *db, const gchar *token)
     gchar *colon = strchr(token, ':');
     gint64 uid = 0;                  /* the answer                          */
     if (colon == NULL) {             /* the stable-uid form                 */
-        gchar *endp = NULL;          /* end of the parsed uid               */
-        uid = g_ascii_strtoll(token, &endp, 10);
-        if (uid <= 0 || endp == NULL || *endp != '\0') {
+        if (!g_ascii_string_to_signed(token, 10, 1, G_MAXINT64, &uid, NULL)) {
             fprintf(stderr, "error: bad action item id: %s (expected a UID "
                             "from 'action list --uid', or NOTEID:ORD)\n",
                     token);
@@ -1671,9 +1689,8 @@ action_token_parse(OnDatabase *db, const gchar *token)
         gint64 note_id = meta->id;
         on_db_note_meta_free(meta);
 
-        gchar *endp = NULL;          /* end of the parsed ordinal           */
-        gint64 o = g_ascii_strtoll(colon + 1, &endp, 10);
-        if (o < 0 || endp == NULL || *endp != '\0') {
+        gint64 o = 0;                /* the parsed ordinal                  */
+        if (!g_ascii_string_to_signed(colon + 1, 10, 0, G_MAXINT, &o, NULL)) {
             fprintf(stderr, "error: bad action item id: %s\n", token);
             return 0;
         }

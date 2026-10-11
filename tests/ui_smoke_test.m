@@ -583,6 +583,34 @@ label_with_text(NSView *root, NSString *text)
 }
 
 /*
+ * status_text_centred — is a status label 9 pt, with its capitals centred
+ * in the status band: from the window's bottom edge up to the separator
+ * above the bar?
+ *
+ * Inputs:
+ *   label — the label
+ *
+ * Output: YES when it is (within half a point).
+ */
+static BOOL
+status_text_centred(NSTextField *label)
+{
+    NSView *content = label.window.contentView;
+    [content layoutSubtreeIfNeeded];
+    CGFloat top = 0;                 /* the separator's bottom edge, the band's top */
+    for (NSView *v in content.subviews) {
+        NSRect line = [v alignmentRectForFrame:v.frame];   /* where layout put the rule */
+        if ([v isKindOfClass:NSBox.class] && ((NSBox *)v).boxType == NSBoxSeparator &&
+            NSMinY(line) < 40 && NSMinY(line) > top)
+            top = NSMinY(line);
+    }
+    NSRect  frame    = [label convertRect:label.bounds toView:content];
+    CGFloat baseline = NSMaxY(frame) - label.firstBaselineOffsetFromTop;
+    CGFloat caps_mid = baseline + label.font.capHeight / 2.0;
+    return label.font.pointSize == on_look_status_font && top > 0 && fabs(caps_mid - top / 2.0) <= 0.5;
+}
+
+/*
  * test_editor_commands — an editor runs its commands through the same
  * path the menu bar uses, gates them while the find field is typed in,
  * shows its location and save state, and opens at the bottom-right.
@@ -628,6 +656,8 @@ test_editor_commands(void)
 
         check(label_with_text(window.contentView, @"/") != nil,
               "the status bar shows the note's location");
+        check(status_text_centred(label_with_text(window.contentView, @"/")),
+              "the editor's status text is 9 pt and centred in its bar");
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
 
@@ -1833,6 +1863,11 @@ test_shell(NotesLibrary *lib)
         if ([item.itemIdentifier isEqualToString:@"ai-summary"]) before_ai = previous;
         previous = item;
     }
+    NSTextField *path_label = nil;
+    for (NSView *v in lib.window.contentView.subviews)
+        if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue hasPrefix:@"/"]) path_label = (NSTextField *)v;
+    check(path_label != nil && status_text_centred(path_label),
+          "the library's status text is 9 pt and centred in its bar");
     check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"] &&
           [before_ai.itemIdentifier isEqualToString:NSToolbarSpaceItemIdentifier],
           "toolbar buttons have GTK's tooltips, and AI Summary sits apart");

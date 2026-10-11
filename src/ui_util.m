@@ -281,6 +281,39 @@ on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt, NSArray<U
 }
 
 /*
+ * NotesStatusLabel — a status bar's label (on_ui_status_label): its own
+ * class only so that on_ui_use_ui_font can tell it apart.
+ */
+@interface NotesStatusLabel : NSTextField
+@end
+
+@implementation NotesStatusLabel
+@end
+
+/*
+ * on_ui_status_label — a status bar label, centred on its capitals.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSTextField *
+on_ui_status_label(NSView *bar, NSLayoutYAxisAnchor *middle, NSTextAlignment alignment)
+{
+    NotesStatusLabel *label = [NotesStatusLabel labelWithString:@""];
+    label.font          = [NSFont systemFontOfSize:on_look_status_font];
+    label.textColor     = NSColor.secondaryLabelColor;
+    label.alignment     = alignment;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [bar addSubview:label];
+    /* y grows downward for anchors: the baseline sits half a cap height
+     * below the middle, so the capitals straddle it. */
+    [label.firstBaselineAnchor constraintEqualToAnchor:middle
+                                              constant:round(label.font.capHeight / 2.0)].active = YES;
+    return label;
+}
+
+/*
  * on_ui_use_ui_font — the app's text size under a view.
  * Inputs/output are documented in ui_util.h.
  */
@@ -288,6 +321,7 @@ void
 on_ui_use_ui_font(NSView *root)
 {
     if ([root isKindOfClass:NSOutlineView.class]) return;     /* the sidebar keeps its own */
+    if ([root isKindOfClass:NotesStatusLabel.class]) return;  /* so do the status bars     */
     NSFontManager *fm = NSFontManager.sharedFontManager;
     if ([root isKindOfClass:NSControl.class] && ![root isKindOfClass:NSTableView.class]) {
         NSControl *c = (NSControl *)root;

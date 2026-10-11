@@ -64,25 +64,6 @@ static NSMutableDictionary<NSNumber *, NSWindowController *> *editors;
 @implementation NotesStatusBar
 
 /*
- * status_label — one label of the status bar.
- *
- * Inputs:
- *   alignment — its text alignment
- *
- * Output: the label, for Auto Layout.
- */
-static NSTextField *
-status_label(NSTextAlignment alignment)
-{
-    NSTextField *label = [NSTextField labelWithString:@""];
-    label.font      = [NSFont systemFontOfSize:on_look_ui_font];
-    label.textColor = NSColor.secondaryLabelColor;
-    label.alignment = alignment;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    return label;
-}
-
-/*
  * initWithFrame: — build the bar: location left, then id and dot right,
  * at a fixed height.
  *
@@ -97,24 +78,17 @@ initWithFrame:(NSRect)frame
     if (!(self = [super initWithFrame:frame])) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
 
-    NSTextField *path = status_label(NSTextAlignmentLeft);
-    path.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    [path setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSTextField *note_id = status_label(NSTextAlignmentRight);
-    NSTextField *dot     = status_label(NSTextAlignmentRight);
-    for (NSView *v in @[path, note_id, dot]) [self addSubview:v];
+    NSTextField *path    = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentLeft);
+    NSTextField *note_id = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
+    NSTextField *dot     = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
     self.path_label = path;
     self.id_label   = note_id;
     self.dot_label  = dot;
 
     [NSLayoutConstraint activateConstraints:@[
         [path.leadingAnchor     constraintEqualToAnchor:self.leadingAnchor constant:on_look_status_inset],
-        [path.centerYAnchor     constraintEqualToAnchor:self.centerYAnchor],
         [dot.trailingAnchor     constraintEqualToAnchor:self.trailingAnchor constant:-on_look_status_inset],
-        [dot.centerYAnchor      constraintEqualToAnchor:self.centerYAnchor],
         [note_id.trailingAnchor constraintEqualToAnchor:dot.leadingAnchor constant:-on_look_status_inset],
-        [note_id.centerYAnchor  constraintEqualToAnchor:self.centerYAnchor],
         [path.trailingAnchor    constraintLessThanOrEqualToAnchor:note_id.leadingAnchor
                                                          constant:-on_look_status_inset],
         [self.heightAnchor      constraintEqualToConstant:on_look_status_h],

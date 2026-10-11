@@ -45,28 +45,6 @@ toolbar_idents(void)
 static NotesLibraryWindow *library_window;
 
 /*
- * status_label — one of the status bar's two labels.
- *
- * Inputs:
- *   alignment — which side its text sits on
- *
- * Output: the label.
- */
-static NSTextField *
-status_label(NSTextAlignment alignment)
-{
-    NSTextField *label = [NSTextField labelWithString:@""];
-    label.font          = [NSFont systemFontOfSize:on_look_ui_font];
-    label.textColor     = NSColor.secondaryLabelColor;
-    label.alignment     = alignment;
-    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return label;
-}
-
-/*
  * pane_item — a split-view item around a pane's view.
  *
  * Inputs:
@@ -171,15 +149,17 @@ build_content
 
     NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType = NSBoxSeparator;
-    self.status_path  = status_label(NSTextAlignmentLeft);
-    self.status_event = status_label(NSTextAlignmentRight);
-
     NSView *content = self.window.contentView;
     NSView *panes   = self.split.view;
-    for (NSView *view in @[panes, rule, self.status_path, self.status_event]) {
+    for (NSView *view in @[panes, rule]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:view];
     }
+    /* The status band: from under the rule to the window's bottom edge. */
+    NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
+    [content addLayoutGuide:band];
+    self.status_path  = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
+    self.status_event = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
     CGFloat inset = on_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
         [panes.topAnchor constraintEqualToAnchor:content.topAnchor],
@@ -189,12 +169,11 @@ build_content
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-on_look_status_h],
+        [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
+        [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
         [self.status_path.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],
-        [self.status_path.centerYAnchor constraintEqualToAnchor:content.bottomAnchor
-                                                       constant:-on_look_status_h / 2.0],
         [self.status_event.trailingAnchor constraintEqualToAnchor:content.trailingAnchor
                                                          constant:-inset],
-        [self.status_event.centerYAnchor constraintEqualToAnchor:self.status_path.centerYAnchor],
         [self.status_event.leadingAnchor
             constraintGreaterThanOrEqualToAnchor:self.status_path.trailingAnchor constant:inset],
     ]];

@@ -53,11 +53,13 @@ on_look_pick(on_look_color_t color, bool dark)
 
 /* ── Type ─────────────────────────────────────────────────────────────────── */
 
-/* THE size of the app's own text: every label, button, field, table cell,
- * status bar and tool panel (on_ui_use_ui_font applies it to a window).
- * Two things keep their own: the sidebar (on_look_sidebar_font) and a
- * note's text in the editor (on_look_font_size and its headings).        */
+/* THE size of the app's own text: every label, button, field, table cell
+ * and tool panel (on_ui_use_ui_font applies it to a window).  Three things
+ * keep their own: the status bars (on_look_status_font), the sidebar
+ * (on_look_sidebar_font) and a note's text in the editor (on_look_font_size
+ * and its headings).                                                      */
 static const double on_look_ui_font          = 11.0;
+static const double on_look_status_font      = 9.0;    /* the status bars (on_ui_status_label)  */
 
 /* ── The note editor ──────────────────────────────────────────────────────── */
 

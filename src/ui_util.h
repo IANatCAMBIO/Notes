@@ -229,11 +229,29 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
+ * on_ui_status_label — one label of a status bar (the library's, an
+ * editor's): small (on_look_status_font), secondary colour, truncated in
+ * the middle, added to `bar` and centred VISUALLY on `middle` — the middle
+ * of its capital letters, not of its frame, which carries room for
+ * descenders and would sit the text low.  The caller places it
+ * horizontally.  on_ui_use_ui_font leaves it at its size.
+ *
+ * Inputs:
+ *   bar       — the view it goes in
+ *   middle    — the y the text is centred on (the bar's middle)
+ *   alignment — its text alignment
+ *
+ * Output: the label.
+ */
+NSTextField *on_ui_status_label(NSView *bar, NSLayoutYAxisAnchor *middle, NSTextAlignment alignment);
+
+/*
  * on_ui_use_ui_font — give everything under a view the app's text size
  * (look.h: on_look_ui_font), keeping each font's weight and slant; labelled
  * buttons, check boxes, radios, pop-ups, steppers and editable fields also
  * take the small control size, which is drawn for that size of text.  An
- * outline view (the sidebar) and what is under it keep their own.  Called
+ * outline view (the sidebar) and what is under it, and status labels
+ * (on_ui_status_label), keep their own.  Called
  * once a window's content is built; cells made later (table rows) set the
  * font themselves (on_ui_label_cell).
  *

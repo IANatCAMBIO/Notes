@@ -114,8 +114,7 @@ db_health_done(OnDatabase *db, gpointer data)
     OnApp *app = data;
     const OnDbHealth *h = on_db_health(db);
     if (h != NULL && h->ok) {
-        on_app_status(app, "DB at %s loaded, integrity check passed",
-                      db->path);
+        on_app_status(app, "Database check passed");
     } else if (app->show_notice != NULL) {
         gchar *message = g_strdup_printf(
             "%s\n\n%s",

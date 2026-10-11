@@ -417,8 +417,10 @@ expand_keys:(NSSet<NSString *> *)keys in:(NSArray<SidebarItem *> *)items
  * are expanded, the scroll position and the selection.  A selection that
  * no longer exists falls back to the first row, and then the notes pane
  * is refreshed for it.
+ *
+ * Output: YES when the notes pane was refreshed (the selection moved).
  */
-- (void)
+- (BOOL)
 refresh
 {
     NSMutableSet<NSString *> *expanded = [NSMutableSet set];
@@ -438,6 +440,7 @@ refresh
     if (clip) [clip scrollToPoint:scroll];
     if (!restored) on_library_notes_refresh(self.lib);
     [self queue_fit:NO];
+    return !restored;
 }
 
 /*
@@ -1013,10 +1016,10 @@ on_library_sidebar_new(NotesLibrary *lib)
 /*
  * on_library_sidebar_refresh — see library_sidebar.h.
  */
-void
+BOOL
 on_library_sidebar_refresh(NotesLibrary *lib)
 {
-    [sidebar refresh];
+    return [sidebar refresh];
 }
 
 /*

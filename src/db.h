@@ -99,7 +99,7 @@ typedef struct {
                                   reset+clear_bindings between calls        */
     /* The last health pass over this file, held IN MEMORY for the life
      * of the connection and deliberately never written down — see
-     * on_db_health_check().                                                */
+     * on_db_health_check_async().                                          */
     OnDbHealth  health;
     gpointer    health_job;   /* the async pass in flight, or NULL (db.c) */
 } OnDatabase;
@@ -225,32 +225,22 @@ void on_db_close(OnDatabase *db);
 gboolean on_db_verify_file(const gchar *path, gchar **detail);
 
 /* ---------------------------------------------------------------------------
- * on_db_health_check() — run the same two checks against the OPEN database
- * and remember what they found on the connection, so a later reader (the
- * Settings window) can say WHEN the answer was true.  Returns TRUE when the
- * database is sound.
+ * on_db_health_check_async() — the same two checks against the OPEN
+ * database, on a worker thread with its own READ-ONLY connection to the
+ * file (a connection must not cross threads), so nothing waits for it:
+ * PRAGMA integrity_check walks every page and every index entry, ~2 s per
+ * 600 MB on a warm local disk and longer from a cold iCloud Drive file.
+ * on_db_health() reports `pending` until the verdict lands; it is then
+ * remembered on the connection, so a later reader (the Settings window) can
+ * say WHEN the answer was true, and `done` is called on the main thread.
  *
  * It writes NOTHING to the database, and that is the point rather than an
  * optimisation: a verdict stamped into the file would make a health check
  * MUTATE THE FILE IT WAS MEASURING, so the SHA-256 shown beside it would
- * move on every press of Update while the user's notes sat untouched.  A
- * fingerprint that its own refresh invalidates is worse than none.
- *
- * The cost, accepted: the verdict does not survive a restart.  Living on
- * the connection is also what makes File → Open Database safe — the old
- * connection's verdict cannot outlive the file it describes.
- * ------------------------------------------------------------------------- */
-gboolean on_db_health_check(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_db_health_check_async() — the same pass, on a worker thread with its
- * own READ-ONLY connection to the file (a connection must not cross
- * threads), so the launch does not wait for it: PRAGMA integrity_check
- * walks every page and every index entry, ~2 s per 600 MB on a warm local
- * disk and longer from a cold iCloud Drive file.  on_db_health() reports
- * `pending` until the verdict lands, when it is recorded on the connection
- * exactly as the synchronous pass records it and `done` is called on the
- * main thread.  Closing the database while the pass runs abandons it —
+ * move on every press of Update while the user's notes sat untouched.  The
+ * cost, accepted: the verdict does not survive a restart.  Living on the
+ * connection is also what makes File → Open Database safe — the old
+ * connection's verdict cannot outlive the file it describes.  Closing the database while the pass runs abandons it —
  * `done` is never called for a connection that is gone.  One pass per
  * connection at a time: a second call while one is pending is ignored.
  *   db   — the open database.
@@ -264,7 +254,7 @@ void on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done,
 
 /* on_db_health() — the stored result, or NULL when no pass has been made or
  * started on this connection.  Borrowed, owned by the connection: do not
- * free it, and do not keep it across an on_db_health_check().  While
+ * free it, and do not keep it across another pass.  While
  * `pending` is set the other fields are the PREVIOUS pass's (or zero).    */
 const OnDbHealth *on_db_health(OnDatabase *db);
 

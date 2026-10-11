@@ -682,10 +682,10 @@ fk_collect(void *data, int argc, char **argv, char **col_names)
  * db_check_pragmas — run PRAGMA integrity_check then PRAGMA
  * foreign_key_check on `sq`, honoring BOTH exec return codes.
  *
- * The ONE spelling of "is this database structurally sound?".  Three
+ * The ONE spelling of "is this database structurally sound?".  Two
  * callers want that answer about different connections — on_db_verify_file
- * about a file nothing has open, on_db_health_check about the live one, and
- * through the latter the startup check in main.c — and the rule they must
+ * about a file nothing has open, the health pass (on_db_health_check_async)
+ * about the live one, at launch and on Settings' Update — and the rule they must
  * all follow is the same: a PRAGMA that never RAN collects no rows, which
  * is indistinguishable from a clean result if you only look at the
  * collector.  Reporting "verified" when nothing was checked is the one
@@ -821,16 +821,6 @@ health_record(OnDatabase *db, gboolean ok, gboolean ran, gchar *detail)
     db->health.detail  = detail;     /* handed over                         */
     db->health.when    = g_get_real_time() / G_USEC_PER_SEC;
     db->health.pending = FALSE;
-}
-
-gboolean
-on_db_health_check(OnDatabase *db)
-{
-    gboolean  ran    = FALSE;        /* did both PRAGMAs execute?           */
-    gchar    *detail = NULL;         /* sqlite's words on failure           */
-    gboolean  ok = db_check_pragmas(db->handle, &ran, &detail);
-    health_record(db, ok, ran, detail);
-    return ok;
 }
 
 /* ---------------------------------------------------------------------------

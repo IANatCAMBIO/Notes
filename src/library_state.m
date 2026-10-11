@@ -160,8 +160,7 @@ void
 on_library_refresh_all(NotesLibrary *lib)
 {
     if (!lib.window) return;
-    on_library_sidebar_refresh(lib);
-    on_library_notes_refresh(lib);
+    if (!on_library_sidebar_refresh(lib)) on_library_notes_refresh(lib);
 }
 
 /*

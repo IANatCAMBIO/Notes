@@ -213,10 +213,10 @@ gchar *on_app_location_text(OnApp *app, const gchar *location);
 gchar *on_app_folder_location(OnApp *app, gint64 folder_id);
 
 /* ---------------------------------------------------------------------------
- * on_app_db_health_start() — THE integrity check of a freshly opened
- * database: launch and File > Open Database File… both run it, every time,
- * with no switch (a check that can be skipped can only report a silence
- * that means "not looked").  It runs on a worker with its own read-only
+ * on_app_db_health_start() — THE integrity check of the open database:
+ * launch and File > Open Database File… run it every time, with no switch
+ * (a check that can be skipped can only report a silence that means "not
+ * looked"), and Settings' Update on request.  It runs on a worker with its own read-only
  * connection; when the verdict lands on the main thread it posts a status
  * line, or calls app->show_notice if anything is wrong, and then
  * app->notify_db_health.

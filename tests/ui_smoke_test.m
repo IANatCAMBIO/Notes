@@ -2228,6 +2228,9 @@ test_secondary_windows(NotesLibrary *lib)
         check(app.notify_db_health != NULL, "while Settings is open the health plate follows checks");
         NSTextField *health = (NSTextField *)view_with_identifier(root, @"health");
         [button_titled(root, @"Update") performClick:nil];
+        check([health.stringValue isEqualToString:@"Checking…"],
+              "Update starts the health check on a worker, and the plate says so");
+        for (int i = 0; i < 200 && ![health.stringValue hasPrefix:@"Healthy"]; i++) pump(0.05);
         check([health.stringValue hasPrefix:@"Healthy — checked"] &&
               label_with_text(lib.window.contentView, @"Database check passed") != nil,
               "Update runs the health check and says so");

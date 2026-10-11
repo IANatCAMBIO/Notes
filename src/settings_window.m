@@ -268,6 +268,7 @@ shares_fate(NSString *dir, NSString *other)
 @property (nonatomic, strong) NSTextField  *db_size;
 @property (nonatomic, strong) NSButton     *sha;
 @property (nonatomic, copy)   NSString     *sha_full;
+@property (nonatomic, assign) NSUInteger    sha_gen;      /* the hash in flight */
 @property (nonatomic, strong) NSButton     *backup_on;
 @property (nonatomic, strong) NSTextField  *interval;
 @property (nonatomic, strong) NSStepper    *interval_step;
@@ -284,6 +285,7 @@ shares_fate(NSString *dir, NSString *other)
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
 @property (nonatomic, strong) NSStackView  *backup_buttons;
 - (void)refresh_db;
+- (void)show_sha:(NSString *)full;
 @end
 
 /* The open Settings window, or nil. */
@@ -702,9 +704,38 @@ refresh_db
     struct stat st;
     self.db_size.stringValue = stat(db->path, &st) == 0 ? on_ui_format_bytes((int64_t)st.st_size) : @"unknown";
 
-    gchar *sha = on_db_file_sha256(db->path);
-    self.sha_full = sha ? @(sha) : nil;
-    g_free(sha);
+    /* The whole file is read for the digest: on a worker, so a large or
+     * iCloud-held database never stalls the window.  A newer refresh
+     * outdates the one in flight.                                          */
+    self.sha.title   = @"…";
+    self.sha.enabled = NO;
+    NSUInteger gen  = ++self.sha_gen;
+    NSString  *path = @(db->path);
+    __weak NotesSettingsWindow *ws = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            gchar    *sha  = on_db_file_sha256(path.fileSystemRepresentation);
+            NSString *full = sha ? @(sha) : nil;
+            g_free(sha);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NotesSettingsWindow *s = ws;
+                if (s && s.sha_gen == gen) [s show_sha:full];
+            });
+        }
+    });
+}
+
+/*
+ * show_sha: — the digest line of the health plate: its head and tail,
+ * the whole of it in the tooltip and on a click.
+ *
+ * Inputs:
+ *   full — the hex digest; nil when the file could not be read
+ */
+- (void)
+show_sha:(NSString *)full
+{
+    self.sha_full = full;
     if (self.sha_full.length > sha_head + sha_tail) {
         self.sha.title   = [NSString stringWithFormat:@"%@…%@", [self.sha_full substringToIndex:sha_head],
                             [self.sha_full substringFromIndex:self.sha_full.length - sha_tail]];
@@ -851,9 +882,10 @@ browse_viewer:(id)sender
 }
 
 /*
- * update_health: — Update: a health pass, then every line of the plate
- * re-read; the result in the status bar too (a clean pass changes nothing
- * visible).
+ * update_health: — Update: a health pass on a worker (THE check, as at
+ * launch: its verdict lands in the status bar, problems in a tool panel,
+ * and the plate refreshes through notify_db_health); the plate shows
+ * "Checking…" meanwhile.
  *
  * Inputs:
  *   sender — the button (unused)
@@ -861,12 +893,8 @@ browse_viewer:(id)sender
 - (void)
 update_health:(id)sender
 {
-    OnApp   *app = self.lib.app;
-    gboolean ok  = on_db_health_check(app->db);
+    on_app_db_health_start(self.lib.app);   /* the verdict reaches the plate and the status bar */
     [self refresh_db];
-    const OnDbHealth *h = on_db_health(app->db);
-    on_app_status(app, "%s", ok ? "Database check passed"
-                           : h && h->ran ? "Database check found problems" : "Database check did not complete");
 }
 
 /*

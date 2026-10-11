@@ -24,70 +24,77 @@
 
 /* ── Font cache ─────────────────────────────────────────────────────────── */
 
-/* Six font variants: [mono][scale_idx] — regular and bold are attributes. */
-typedef struct {
-    CTFontRef fonts[2][3];  /* [mono 0/1][scale 0=body, 1=h2, 2=h1] */
-    double    base_size;
-} font_cache_t;
+/* Every font a layout asks for, by its exact size, face and traits: a few
+ * sizes (body, headings, the code line numbers, the copy word) in a few
+ * faces, so a small table that is never flushed; past FONT_CACHE_MAX the
+ * oldest entry makes room.  Main thread only, like every layout.           */
+#define FONT_CACHE_MAX 32
 
-static font_cache_t g_fc;
+typedef struct {
+    double               size;       /* points, the scale applied           */
+    bool                 mono;
+    CTFontSymbolicTraits traits;     /* bold / italic                       */
+    CTFontRef            font;
+} font_entry_t;
+
+static font_entry_t g_fonts[FONT_CACHE_MAX];
+static int          g_fonts_n;       /* entries in use                      */
+static int          g_fonts_next;    /* the slot the next miss replaces once
+                                        the table is full                    */
 
 /*
- * fc_index — map a scale value to the cache index.
+ * get_font_traits — a font of a size, face and traits, made once.
  *
  * Inputs:
- *   scale — on_look_h1_scale, on_look_h2_scale, or 1.0
+ *   size   — points
+ *   mono   — the monospaced font (Menlo) rather than the system font
+ *   traits — kCTFontTraitBold / kCTFontTraitItalic, or 0
  *
- * Output: 0, 1, or 2.
+ * Output: the font, +1 (CFRelease it).
  */
-static int
-fc_index(double scale)
+static CTFontRef
+get_font_traits(double size, bool mono, CTFontSymbolicTraits traits)
 {
-    if (scale >= on_look_h1_scale - 0.01)
-        return 2;
-    if (scale >= on_look_h2_scale - 0.01)
-        return 1;
-    return 0;
+    for (int i = 0; i < g_fonts_n; i++) {
+        font_entry_t *e = &g_fonts[i];
+        if (e->size == size && e->mono == mono && e->traits == traits) {
+            CFRetain(e->font);
+            return e->font;
+        }
+    }
+    CTFontRef font = mono ? CTFontCreateWithName(CFSTR("Menlo"), size, NULL)
+                          : CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, size, NULL);
+    if (traits != 0) {
+        CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(
+            font, 0.0, NULL, traits, kCTFontTraitBold | kCTFontTraitItalic);
+        if (styled) {
+            CFRelease(font);
+            font = styled;
+        }
+    }
+    int slot = g_fonts_n < FONT_CACHE_MAX ? g_fonts_n++ : g_fonts_next++ % FONT_CACHE_MAX;
+    if (g_fonts[slot].font) CFRelease(g_fonts[slot].font);
+    g_fonts[slot] = (font_entry_t){ size, mono, traits, font };
+    CFRetain(font);
+    return font;
 }
 
 /*
- * get_font — return (borrowing) a cached CTFont for the given metrics.
+ * get_font — a font for a style: body size times its scale, regular or
+ * bold.
  *
  * Inputs:
  *   font_size — body size in points
- *   scale     — heading scale (1.0, on_look_h2_scale, on_look_h1_scale)
- *   mono      — use the monospaced system font
+ *   scale     — heading scale (1.0, on_look_h2_scale, on_look_h1_scale, …)
+ *   mono      — use the monospaced font
  *   bold      — bold weight
  *
- * Output: a borrowed CTFontRef.  Valid until the next make_font call with the
- *         same (mono, scale_idx) that would replace a size-changed entry.
+ * Output: the font, +1 (CFRelease it).
  */
 static CTFontRef
 get_font(double font_size, double scale, bool mono, bool bold)
 {
-    if (g_fc.base_size != font_size) {
-        for (int m = 0; m < 2; m++)
-            for (int s = 0; s < 3; s++)
-                if (g_fc.fonts[m][s]) { CFRelease(g_fc.fonts[m][s]); g_fc.fonts[m][s] = NULL; }
-        g_fc.base_size = font_size;
-    }
-    int si = fc_index(scale);
-    if (g_fc.fonts[mono ? 1 : 0][si] == NULL) {
-        double sz = font_size * scale;
-        CTFontRef base = mono
-            ? CTFontCreateWithName(CFSTR("Menlo"), sz, NULL)
-            : CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, sz, NULL);
-        g_fc.fonts[mono ? 1 : 0][si] = base;
-    }
-    CTFontRef base = g_fc.fonts[mono ? 1 : 0][si];
-    if (bold) {
-        CTFontRef bf = CTFontCreateCopyWithSymbolicTraits(
-            base, 0.0, NULL, kCTFontTraitBold,
-            kCTFontTraitBold | kCTFontTraitItalic);
-        return bf ? bf : (CFRetain(base), base);
-    }
-    CFRetain(base);
-    return base;
+    return get_font_traits(font_size * scale, mono, bold ? kCTFontTraitBold : 0);
 }
 
 /* ── Inline box delegates ───────────────────────────────────────────────── */
@@ -301,14 +308,9 @@ on_text_layout_new(const on_text_content_t *content,
                 CTFontSymbolicTraits want = kCTFontTraitItalic;
                 if (bold_base || (r->flags & ON_FMT_BOLD))
                     want |= kCTFontTraitBold;
-                CTFontRef ifont = get_font(style->font_size, style->scale,
-                                           style->mono, false);
-                CTFontRef icopy = CTFontCreateCopyWithSymbolicTraits(
-                    ifont, 0, NULL, want, kCTFontTraitItalic | kCTFontTraitBold);
-                if (icopy) {
-                    set_attr(ms, kCTFontAttributeName, icopy, cs, ce);
-                    CFRelease(icopy);
-                }
+                CTFontRef ifont = get_font_traits(style->font_size * style->scale,
+                                                  style->mono, want);
+                set_attr(ms, kCTFontAttributeName, ifont, cs, ce);
                 CFRelease(ifont);
             }
             /* Underline. */

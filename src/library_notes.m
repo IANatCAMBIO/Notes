@@ -854,8 +854,9 @@ index_of_note:(gint64)note_id
 }
 
 /*
- * show_selection — select, in both views, the notes of `selected` that
- * are listed; the others leave the selection.
+ * show_selection — select, in the view on screen, the notes of `selected`
+ * that are listed; the others leave the selection.  (The hidden view is
+ * not reloaded meanwhile, so it is not touched.)
  */
 - (void)
 show_selection
@@ -872,20 +873,21 @@ show_selection
     }
     self.selected = kept;
     self.lib.populating++;
-    [self.list selectRowIndexes:rows byExtendingSelection:NO];
-    self.grid.selectionIndexPaths = paths;
+    if (on_library_view(self.lib) == on_library_view_grid) self.grid.selectionIndexPaths = paths;
+    else                                                     [self.list selectRowIndexes:rows byExtendingSelection:NO];
     self.lib.populating--;
 }
 
 /*
- * reload_notes — both views from the records, the selection put back.
+ * reload_notes — the view on screen from the records, the selection put
+ * back.  (The other is reloaded by the refresh that switches to it.)
  */
 - (void)
 reload_notes
 {
     self.lib.populating++;
-    [self.list reloadData];
-    [self.grid reloadData];
+    if (on_library_view(self.lib) == on_library_view_grid) [self.grid reloadData];
+    else                                                     [self.list reloadData];
     self.lib.populating--;
     [self show_selection];
 }
@@ -959,7 +961,13 @@ refresh_note:(gint64)note_id
         g_free(body);
     }
     [self sort_records];
-    [self reload_notes];
+    if ([self index_of_note:note_id] != i) {
+        [self reload_notes];               /* it moved: the order changed */
+    } else if (mode == on_library_view_list) {
+        [self.list reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:i]
+                             columnIndexes:[NSIndexSet indexSetWithIndexesInRange:
+                                            NSMakeRange(0, (NSUInteger)self.list.numberOfColumns)]];
+    }
     if (mode == on_library_view_grid) {
         [self.card_queue addObject:@(note_id)];
         [self schedule_cards];

@@ -34,8 +34,10 @@ NSView *on_library_sidebar_new(NotesLibrary *lib);
  * (updating lib's selection and refreshing the notes pane for it).  When
  * the selection survives the notes pane is not refreshed: the caller does
  * that.
+ *
+ * Output: YES when the notes pane was refreshed (the selection moved).
  */
-void on_library_sidebar_refresh(NotesLibrary *lib);
+BOOL on_library_sidebar_refresh(NotesLibrary *lib);
 
 /*
  * on_library_sidebar_select — select a row from code (after creating a

@@ -260,6 +260,24 @@ test_core_jobs(const char *data_dir)
     check(stamp != NULL, "the source stamp was persisted on the main thread");
     g_free(stamp);
 
+    /* A backup opened as the database (File > Open Database) is never
+     * pruned by a pass over its own folder, however small the rotation.    */
+    gchar *opened = g_build_filename(backups, "notes-20000101-000000.db", NULL);
+    check(on_db_backup_to(app.db, opened), "an old-looking backup exists");
+    OnDatabase *was = app.db;
+    app.db = on_db_open(opened);
+    on_db_note_create(app.db, 0);    /* a change, so the pass is not skipped */
+    on_app_config_set("backup_keep", "1");
+    on_backup_start(&app, app.db->path);
+    for (int i = 0; i < 500 && app.backup_running; i++) {
+        check_pump(NULL, 0.02);
+    }
+    check(!app.backup_running && g_file_test(opened, G_FILE_TEST_EXISTS),
+          "the prune never deletes the open database, even when it looks like the oldest backup");
+    on_db_close(app.db);
+    app.db = was;
+    g_free(opened);
+
     /* The periodic timer arms and disarms through the same service.        */
     on_app_config_set("backup_interval_min", "60");
     on_backup_auto_start(&app, app.db->path);

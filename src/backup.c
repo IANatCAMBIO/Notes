@@ -9,6 +9,7 @@
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Backup filenames: sortable, so lexical order IS chronological order and
@@ -210,6 +211,24 @@ backup_list(const gchar *dir)
 }
 
 /* ---------------------------------------------------------------------------
+ * same_file — whether two paths name the same file (device and inode, so a
+ * symlink or a different spelling of the path still matches).
+ *
+ * Inputs:
+ *   a, b — the paths
+ *
+ * Output:
+ *   TRUE when both exist and are one file.
+ */
+static gboolean
+same_file(const gchar *a, const gchar *b)
+{
+    struct stat sa, sb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
+           sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
+/* ---------------------------------------------------------------------------
  * BackupJob — one pass, owned by the worker thread and released on the main
  * thread in backup_finish().
  *
@@ -353,8 +372,14 @@ backup_thread(void *data)
     }
     g_free(detail);
 
-    /* Prune — only now, and only our own files.                            */
+    /* Prune — only now, and only our own files.  The database being backed
+     * up may itself be one of them (a backup opened with File > Open
+     * Database): it is never a candidate, nor counted.                     */
     GPtrArray *have   = backup_list(job->dir);
+    for (guint i = have->len; i > 0; i--) {
+        if (same_file(g_ptr_array_index(have, i - 1), job->db_path))
+            g_ptr_array_remove_index(have, i - 1);
+    }
     gint       pruned = 0;           /* how many were removed               */
     for (guint i = 0; have->len - i > (guint)job->keep; i++) {
         if (g_unlink(g_ptr_array_index(have, i)) == 0)

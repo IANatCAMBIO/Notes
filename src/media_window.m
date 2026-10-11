@@ -178,6 +178,7 @@ init_with_lib:(NotesLibrary *)lib
         on_image_viewer_key_down(s.viewer, event);
         return YES;                  /* modal: the grid behind sees no key */
     };
+    on_ui_use_ui_font(win.contentView);
     [win center];
     return self;
 }

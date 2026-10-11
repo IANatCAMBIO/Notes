@@ -212,6 +212,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
         [self.status.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-20],
     ]];
     [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    on_ui_use_ui_font(content);
     [win center];
     win.initialFirstResponder = self.query;
     return self;

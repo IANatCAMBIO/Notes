@@ -517,7 +517,7 @@ initWithFrame:(NSRect)frame
     _thumb = on_ui_image_view(nil, sz, sz);
     _thumb.translatesAutoresizingMaskIntoConstraints = NO;
     _title = [NSTextField wrappingLabelWithString:@""];
-    _title.font                 = [NSFont boldSystemFontOfSize:on_look_cell_font];
+    _title.font                 = [NSFont boldSystemFontOfSize:on_look_ui_font];
     _title.alignment            = NSTextAlignmentCenter;
     _title.maximumNumberOfLines = 2;
     _title.lineBreakMode        = NSLineBreakByTruncatingTail;
@@ -669,7 +669,7 @@ static NSAttributedString *
 struck(NSString *text, BOOL done, NSColor *colour)
 {
     NSMutableDictionary *attrs = [NSMutableDictionary dictionaryWithDictionary:@{
-        NSFontAttributeName:            [NSFont systemFontOfSize:on_look_cell_font],
+        NSFontAttributeName:            [NSFont systemFontOfSize:on_look_ui_font],
         NSForegroundColorAttributeName: colour ?: NSColor.labelColor,
     }];
     if (done) attrs[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
@@ -1368,7 +1368,7 @@ title_cell:(NotesNoteRecord *)r
         NSTextField *title   = [NSTextField labelWithString:@""];
         NSTextField *preview = [NSTextField labelWithString:@""];
         preview.identifier = @"preview";
-        preview.font       = [NSFont systemFontOfSize:on_look_preview_font];
+        preview.font       = [NSFont systemFontOfSize:on_look_ui_font];
         preview.alphaValue = on_look_preview_alpha;
         for (NSTextField *l in @[title, preview]) {
             l.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -1392,8 +1392,8 @@ title_cell:(NotesNoteRecord *)r
     BOOL comfy = self.lib.app->comfortable_list;
     cell.textField.stringValue = r.title.length ? r.title : comfy ? @"Untitled" : @"";
     cell.textField.font = comfy && self.lib.app->bold_list_titles
-                        ? [NSFont boldSystemFontOfSize:on_look_cell_font]
-                        : [NSFont systemFontOfSize:on_look_cell_font];
+                        ? [NSFont boldSystemFontOfSize:on_look_ui_font]
+                        : [NSFont systemFontOfSize:on_look_ui_font];
     preview.stringValue = r.preview ?: @"";
     preview.hidden      = !(comfy && r.preview.length);
     return cell;
@@ -1426,7 +1426,8 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         NSButton *check = [table makeViewWithIdentifier:@"done" owner:nil];
         if (check == nil) {
             check = [NSButton checkboxWithTitle:@"" target:self action:@selector(toggle_action:)];
-            check.identifier = @"done";
+            check.identifier  = @"done";
+            check.controlSize = NSControlSizeSmall;
         }
         check.state = r.done ? NSControlStateValueOn : NSControlStateValueOff;
         return check;

@@ -505,7 +505,7 @@ fit:(BOOL)force
     for (NSInteger row = 0; row < self.outline.numberOfRows; row++) {
         SidebarItem *it   = [self.outline itemAtRow:row];
         NSRect       cell = [self.outline frameOfCellAtColumn:0 row:row];
-        NSFont      *font = [NSFont systemFontOfSize:on_look_cell_font
+        NSFont      *font = [NSFont systemFontOfSize:on_look_sidebar_font
                                               weight:is_section(it.kind) ? NSFontWeightBold : NSFontWeightRegular];
         CGFloat text = [it.display sizeWithAttributes:@{ NSFontAttributeName: font }].width;
         want = MAX(want, NSMinX(cell) + 2 * on_look_sidebar_cell_pad + ceil(text));
@@ -667,7 +667,7 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
         ]];
     }
     cell.textField.stringValue = it.display;
-    cell.textField.font = [NSFont systemFontOfSize:on_look_cell_font
+    cell.textField.font = [NSFont systemFontOfSize:on_look_sidebar_font
                                             weight:is_section(it.kind) ? NSFontWeightBold : NSFontWeightRegular];
     return cell;
 }

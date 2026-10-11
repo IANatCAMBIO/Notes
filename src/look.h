@@ -51,6 +51,14 @@ on_look_pick(on_look_color_t color, bool dark)
     return dark ? color.dark : color.light;
 }
 
+/* ── Type ─────────────────────────────────────────────────────────────────── */
+
+/* THE size of the app's own text: every label, button, field, table cell,
+ * status bar and tool panel (on_ui_use_ui_font applies it to a window).
+ * Two things keep their own: the sidebar (on_look_sidebar_font) and a
+ * note's text in the editor (on_look_font_size and its headings).        */
+static const double on_look_ui_font          = 11.0;
+
 /* ── The note editor ──────────────────────────────────────────────────────── */
 
 static const on_look_color_t on_look_page         = { { 1.000, 1.000, 1.000, 1 }, { 0.118, 0.118, 0.118, 1 } };
@@ -87,7 +95,6 @@ static const double on_look_image_thumb_h    = 125.0;
 static const double on_look_tag_popup_row_h  = 20.0;   /* the #tag suggestion list               */
 static const double on_look_tag_popup_min_w  = 120.0;
 static const double on_look_tag_popup_pad    = 10.0;   /* row text inset, each side              */
-static const double on_look_tag_popup_font   = 12.0;
 static const int    on_look_tag_popup_max    = 8;      /* rows at most (GTK TAG_POPUP_MAX)       */
 
 /* ── Windows ──────────────────────────────────────────────────────────────── */
@@ -127,7 +134,6 @@ static const double on_look_tool_msg_w      = 388.0;  /* wrapped message text   
 static const double on_look_tool_msg_max_h  = 240.0;  /* taller messages scroll                */
 static const double on_look_tool_field_w    = 260.0;  /* a single text field asking for a name */
 static const double on_look_tool_emoji_w    = 44.0;   /* the folder prompt's emoji field       */
-static const double on_look_tool_font       = 11.0;   /* every label and button title          */
 
 /* ── Library ──────────────────────────────────────────────────────────────── */
 
@@ -150,7 +156,6 @@ static const double on_look_format_group_gap = 10.0;   /* between groups        
 static const double on_look_format_icon      = 16.0;   /* a format button's icon                 */
 static const double on_look_find_w           = 180.0;  /* the editor's "Find in note" field      */
 static const double on_look_status_h         = 20.0;   /* status bar, under a 1 pt separator     */
-static const double on_look_status_font      = 11.0;
 static const double on_look_status_inset     = 8.0;
 static const double on_look_sidebar_w        = 180.0;  /* initial                                */
 static const double on_look_sidebar_min_w    = 160.0;  /* also the fit-to-content floor          */
@@ -159,8 +164,7 @@ static const double on_look_sidebar_max_fraction = 0.5; /* fit-to-content ceilin
 static const double on_look_main_pane_min_w  = 400.0;
 static const double on_look_row_h            = 20.0;   /* compact list row                       */
 static const double on_look_row_comfortable_h = 40.0;  /* title + preview                        */
-static const double on_look_cell_font        = 12.0;
-static const double on_look_preview_font     = 11.0;
+static const double on_look_sidebar_font     = 12.0;   /* the sidebar's rows (not on_look_ui_font) */
 static const double on_look_preview_alpha    = 0.65;   /* the dimmed preview line                */
 static const double on_look_thumb_size       = 140.0;  /* grid card thumbnail, square            */
 static const double on_look_thumb_image_w    = 128.0;  /* a note's first image inside the card   */

@@ -229,6 +229,20 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
+ * on_ui_use_ui_font — give everything under a view the app's text size
+ * (look.h: on_look_ui_font), keeping each font's weight and slant; labelled
+ * buttons, check boxes, radios, pop-ups, steppers and editable fields also
+ * take the small control size, which is drawn for that size of text.  An
+ * outline view (the sidebar) and what is under it keep their own.  Called
+ * once a window's content is built; cells made later (table rows) set the
+ * font themselves (on_ui_label_cell).
+ *
+ * Inputs:
+ *   root — the view to start at (itself included)
+ */
+void on_ui_use_ui_font(NSView *root);
+
+/*
  * on_ui_label_cell — a table's reusable one-line text cell: a label in the
  * cell font, truncated at the tail, centred vertically in its row.  (A
  * bare NSTextField returned as a cell sits at the top of the row.)

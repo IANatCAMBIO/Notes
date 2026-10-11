@@ -347,6 +347,7 @@ init_with_lib:(NotesLibrary *)lib
     for (NSView *v in @[self.plate_box, self.backup_buttons])
         [v.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-stack.edgeInsets.right].active = YES;
 
+    on_ui_use_ui_font(stack);
     NSSize fit = stack.fittingSize;
     NotesFlippedView *doc = [[NotesFlippedView alloc] initWithFrame:NSZeroRect];
     doc.translatesAutoresizingMaskIntoConstraints   = NO;

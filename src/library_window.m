@@ -56,7 +56,7 @@ static NSTextField *
 status_label(NSTextAlignment alignment)
 {
     NSTextField *label = [NSTextField labelWithString:@""];
-    label.font          = [NSFont systemFontOfSize:on_look_status_font];
+    label.font          = [NSFont systemFontOfSize:on_look_ui_font];
     label.textColor     = NSColor.secondaryLabelColor;
     label.alignment     = alignment;
     label.lineBreakMode = NSLineBreakByTruncatingMiddle;
@@ -140,6 +140,7 @@ init_with_library:(NotesLibrary *)lib
     win.toolbar         = toolbar;
 
     [self build_content];
+    on_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_status_path];
     return self;
 }

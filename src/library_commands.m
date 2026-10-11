@@ -151,10 +151,10 @@ static NotesFolderFields *
 folder_fields(NSString *name, NSString *emoji, gint mode)
 {
     NotesFolderFields *f = [[NotesFolderFields alloc] init];
-    NSFont *font = [NSFont systemFontOfSize:on_look_tool_font];
+    NSFont *font = [NSFont systemFontOfSize:on_look_ui_font];
 
     f.emoji = [NSTextField textFieldWithString:emoji ?: @""];
-    f.emoji.font      = [NSFont systemFontOfSize:on_look_tool_font + 3];
+    f.emoji.font      = [NSFont systemFontOfSize:on_look_ui_font + 3];
     f.emoji.alignment = NSTextAlignmentCenter;
     f.emoji.toolTip   = @"Optional emoji";
     f.emoji.identifier = @"folder-emoji";

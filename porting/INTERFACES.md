@@ -555,6 +555,12 @@ its inputs as locals, and never reads `self.…` off the main thread.
   (New Folder) or several answers.  Tool panels are not modal: whatever
   must wait for the answer goes in the handler.  The one system panel kept
   is the file picker (`on_ui_pick_path`), as in Files.
+- **Type size**: the app's own text is 11 pt (`on_look_ui_font`) —
+  labels, buttons, fields, table cells, status bars, tool panels — with
+  the small control size for buttons, check boxes, pop-ups and fields.
+  Build a window, then call `on_ui_use_ui_font` on its content; table cells
+  use `on_ui_label_cell`.  Only the sidebar (`on_look_sidebar_font`) and a
+  note's own text in the editor keep other sizes.
 - **Activation**: a row or card that stands for a note opens it on
   double-click and on Return/Enter, everywhere a list of notes or action
   items is shown.

@@ -120,7 +120,7 @@ build_with_title:(NSString *)window_title
         NSButton *b = [NSButton buttonWithTitle:button_titles[i] target:p
                                          action:@selector(button_clicked:)];
         b.tag  = (NSInteger)i;
-        b.font = [NSFont systemFontOfSize:on_look_tool_font];
+        b.font = [NSFont systemFontOfSize:on_look_ui_font];
         b.translatesAutoresizingMaskIntoConstraints = NO;
         [buttons addObject:b];
         buttons_w += on_look_tool_btn_gap +
@@ -166,14 +166,14 @@ build_with_title:(NSString *)window_title
     [hero addSubview:icon];
 
     NSTextField *title = [NSTextField labelWithString:hero_title];
-    title.font          = [NSFont boldSystemFontOfSize:on_look_tool_font];
+    title.font          = [NSFont boldSystemFontOfSize:on_look_ui_font];
     title.textColor     = NSColor.whiteColor;
     title.lineBreakMode = NSLineBreakByTruncatingMiddle;
     title.translatesAutoresizingMaskIntoConstraints = NO;
     [hero addSubview:title];
 
     NSTextField *sub = [NSTextField labelWithString:subtitle];
-    sub.font          = [NSFont systemFontOfSize:on_look_tool_font];
+    sub.font          = [NSFont systemFontOfSize:on_look_ui_font];
     sub.lineBreakMode = NSLineBreakByTruncatingTail;
     sub.translatesAutoresizingMaskIntoConstraints = NO;
     [hero addSubview:sub];
@@ -196,7 +196,7 @@ build_with_title:(NSString *)window_title
         [title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-on_look_tool_hero_pad],
         [title.bottomAnchor   constraintEqualToAnchor:hero.centerYAnchor
                                              constant:subtitle.length ? -on_look_tool_hero_gap / 2.0
-                                                                      : on_look_tool_font / 2.0],
+                                                                      : on_look_ui_font / 2.0],
 
         [sub.leadingAnchor  constraintEqualToAnchor:title.leadingAnchor],
         [sub.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
@@ -332,7 +332,7 @@ static NSView *
 message_content(NSString *message)
 {
     NSTextField *label = [NSTextField wrappingLabelWithString:message];
-    label.font         = [NSFont systemFontOfSize:on_look_tool_font];
+    label.font         = [NSFont systemFontOfSize:on_look_ui_font];
     label.selectable   = YES;
     label.preferredMaxLayoutWidth = on_look_tool_msg_w;
     CGFloat h = ceil([label.cell cellSizeForBounds:

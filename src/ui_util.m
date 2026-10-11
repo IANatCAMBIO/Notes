@@ -281,6 +281,29 @@ on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt, NSArray<U
 }
 
 /*
+ * on_ui_use_ui_font — the app's text size under a view.
+ * Inputs/output are documented in ui_util.h.
+ */
+void
+on_ui_use_ui_font(NSView *root)
+{
+    if ([root isKindOfClass:NSOutlineView.class]) return;     /* the sidebar keeps its own */
+    NSFontManager *fm = NSFontManager.sharedFontManager;
+    if ([root isKindOfClass:NSControl.class] && ![root isKindOfClass:NSTableView.class]) {
+        NSControl *c = (NSControl *)root;
+        if (c.font) c.font = [fm convertFont:c.font toSize:on_look_ui_font];
+        BOOL labelled = [c isKindOfClass:NSButton.class] && ((NSButton *)c).title.length > 0;
+        BOOL editable = [c isKindOfClass:NSTextField.class] && ((NSTextField *)c).editable;
+        if (labelled || editable || [c isKindOfClass:NSPopUpButton.class] || [c isKindOfClass:NSStepper.class])
+            c.controlSize = NSControlSizeSmall;
+    } else if ([root isKindOfClass:NSTextView.class]) {
+        NSTextView *t = (NSTextView *)root;
+        if (t.font) t.font = [fm convertFont:t.font toSize:on_look_ui_font];
+    }
+    for (NSView *v in root.subviews) on_ui_use_ui_font(v);
+}
+
+/*
  * on_ui_label_cell — a vertically centred text cell.
  * Inputs/output are documented in ui_util.h.
  */
@@ -293,7 +316,7 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
     cell.identifier = ident;
     NSTextField *label = [NSTextField labelWithString:@""];
     label.lineBreakMode = NSLineBreakByTruncatingTail;
-    label.font = [NSFont systemFontOfSize:on_look_cell_font];
+    label.font = [NSFont systemFontOfSize:on_look_ui_font];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                     forOrientation:NSLayoutConstraintOrientationHorizontal];

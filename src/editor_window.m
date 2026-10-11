@@ -75,7 +75,7 @@ static NSTextField *
 status_label(NSTextAlignment alignment)
 {
     NSTextField *label = [NSTextField labelWithString:@""];
-    label.font      = [NSFont systemFontOfSize:on_look_status_font];
+    label.font      = [NSFont systemFontOfSize:on_look_ui_font];
     label.textColor = NSColor.secondaryLabelColor;
     label.alignment = alignment;
     label.translatesAutoresizingMaskIntoConstraints = NO;
@@ -166,7 +166,7 @@ format_button(NSString *symbol, NSString *face, NSString *ident, NSString *toolt
     b.identifier = ident;
     b.bezelStyle = NSBezelStyleRecessed;
     b.showsBorderOnlyWhileMouseInside = YES;
-    b.font       = [NSFont systemFontOfSize:on_look_status_font + 1];
+    b.font       = [NSFont systemFontOfSize:on_look_ui_font];
     b.toolTip    = tooltip;
     b.refusesFirstResponder = YES;
     if (toggle) [b setButtonType:NSButtonTypePushOnPushOff];
@@ -200,7 +200,7 @@ format_menu(NSString *face, NSString *tooltip, NSArray<NSString *> *idents)
     NSPopUpButton *menu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
     menu.bezelStyle = NSBezelStyleRecessed;
     menu.showsBorderOnlyWhileMouseInside = YES;
-    menu.font       = [NSFont systemFontOfSize:on_look_status_font + 1];
+    menu.font       = [NSFont systemFontOfSize:on_look_ui_font];
     menu.toolTip    = tooltip;
     menu.refusesFirstResponder = YES;
     [menu addItemWithTitle:face];                  /* the pull-down's own title */
@@ -599,6 +599,7 @@ init_with_app:(OnApp *)app
     [self build_note_view];
     [self build_layout];
     [self build_image_viewer];
+    on_ui_use_ui_font(window.contentView);   /* the note's own text is drawn by the note view */
     [self load_content];
 
     __weak NotesEditorWindow *ws = self;
@@ -737,7 +738,7 @@ build_format_bar
     NSSearchField *field = [[NSSearchField alloc] initWithFrame:NSZeroRect];
     field.placeholderString            = @"Find in note";
     field.controlSize                  = NSControlSizeSmall;
-    field.font                         = [NSFont systemFontOfSize:on_look_status_font];
+    field.font                         = [NSFont systemFontOfSize:on_look_ui_font];
     field.sendsWholeSearchString       = NO;
     field.sendsSearchStringImmediately = YES;
     field.target   = self;
@@ -813,6 +814,7 @@ rebuild_format_groups
     groups.translatesAutoresizingMaskIntoConstraints = NO;
     [self.format_bar addSubview:groups];
     self.format_groups = groups;
+    on_ui_use_ui_font(groups);
 
     NSView *find = self.search_field.superview;
     [NSLayoutConstraint activateConstraints:@[

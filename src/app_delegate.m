@@ -221,7 +221,7 @@ ask_first_run
             [self open_database_and_start];
         } else if (index == 1) {
             on_ui_pick_path(NotesPickOpenFile, @"Choose the notes.db file to open", @"Open",
-                            @[[UTType typeWithFilenameExtension:@"db"]], nil, nil,
+                            @[[UTType typeWithFilenameExtension:@"db"]], nil,
                             ^(NSString *path) { [self first_run_picked:path]; });
         } else {
             [NSApp terminate:nil];   /* Quit, or the panel dismissed */

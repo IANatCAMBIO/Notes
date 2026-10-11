@@ -843,7 +843,7 @@ browse_viewer:(id)sender
 {
     __weak NotesSettingsWindow *ws = self;
     on_ui_pick_path(NotesPickOpenFile, @"Choose Image Viewer", @"Select", @[UTTypeApplicationBundle],
-                    @"/Applications", self.window, ^(NSString *path) {
+                    @"/Applications", ^(NSString *path) {
         if (path == nil || ws == nil) return;
         ws.viewer.stringValue = path;
         [ws write_setting:"image_viewer" value:path.UTF8String];
@@ -933,7 +933,7 @@ choose_backup_folder:(id)sender
     NSString *dir   = @(dir_c);
     g_free(dir_c);
     __weak NotesSettingsWindow *ws = self;
-    on_ui_pick_path(NotesPickFolder, @"Choose Backup Folder", @"Select", nil, dir, self.window,
+    on_ui_pick_path(NotesPickFolder, @"Choose Backup Folder", @"Select", nil, dir,
                     ^(NSString *path) {
         NotesSettingsWindow *s = ws;
         if (path == nil || s == nil) return;

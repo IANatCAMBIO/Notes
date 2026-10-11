@@ -171,6 +171,8 @@ typedef NS_ENUM(NSInteger, NotesPickKind) {
 
 /*
  * on_ui_pick_path — run an open or save panel and hand over the choice.
+ * The panel is always a window of its own, app-modal, as in the Files app:
+ * never a sheet on another window (the app's rule: no sheets).
  *
  * Inputs:
  *   kind      — what to pick
@@ -178,13 +180,12 @@ typedef NS_ENUM(NSInteger, NotesPickKind) {
  *   prompt    — the accept button's title, e.g. @"Open"
  *   types     — content types to allow (e.g. @[UTTypeImage]); nil = any
  *   start_dir — the folder to open in; nil = where the user last was
- *   window    — the window to attach to; nil = app-modal
- *   handler   — called on the main thread, once, with the chosen path, or
- *               nil when the panel was cancelled
+ *   handler   — called on the main thread, once, when the panel closes,
+ *               with the chosen path, or nil when it was cancelled
  */
 void on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt,
                      NSArray<UTType *> *types, NSString *start_dir,
-                     NSWindow *window, void (^handler)(NSString *path));
+                     void (^handler)(NSString *path));
 
 /*
  * on_ui_open_image_external — show a note's image in an outside viewer: the

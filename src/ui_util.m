@@ -259,7 +259,7 @@ on_ui_keep_until_closed(NSWindowController *controller)
  */
 void
 on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt, NSArray<UTType *> *types,
-                NSString *start_dir, NSWindow *window, void (^handler)(NSString *path))
+                NSString *start_dir, void (^handler)(NSString *path))
 {
     NSSavePanel *panel;
     if (kind == NotesPickSaveFile) {
@@ -277,14 +277,7 @@ on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt, NSArray<U
     if (types) panel.allowedContentTypes = types;
     if (start_dir) panel.directoryURL = [NSURL fileURLWithPath:start_dir isDirectory:YES];
 
-    void (^done)(NSModalResponse) = ^(NSModalResponse response) {
-        handler(response == NSModalResponseOK ? panel.URL.path : nil);
-    };
-    if (window) {
-        [panel beginSheetModalForWindow:window completionHandler:done];
-    } else {
-        done([panel runModal]);
-    }
+    handler([panel runModal] == NSModalResponseOK ? panel.URL.path : nil);
 }
 
 /*

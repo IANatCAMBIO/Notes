@@ -347,7 +347,7 @@ run_open_db(id target, id sender)
     NotesLibrary *lib = target;
     NSWindow     *win = lib.window;
     UTType       *db  = [UTType typeWithFilenameExtension:@"db"];
-    on_ui_pick_path(NotesPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil, win,
+    on_ui_pick_path(NotesPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil,
                     ^(NSString *path) {
         if (path == nil ||
             [path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
@@ -388,7 +388,7 @@ run_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids)
     on_ui_pick_path(NotesPickFolder,
                     format == ON_EXPORT_HTML ? @"Choose Export Folder for HTML"
                                              : @"Choose Export Folder for Markdown",
-                    @"Export", nil, nil, win, ^(NSString *path) {
+                    @"Export", nil, nil, ^(NSString *path) {
         if (!path) return;
         gchar *err = NULL;
         gint   n   = 0;

@@ -381,7 +381,7 @@ run_insert_image(id target, id sender)
 {
     __weak NotesEditorWindow *ws = target;
     on_ui_pick_path(NotesPickOpenFile, @"Insert Image", @"Insert",
-                    @[UTTypeImage], nil, ((NotesEditorWindow *)target).window, ^(NSString *path) {
+                    @[UTTypeImage], nil, ^(NSString *path) {
         NotesEditorWindow *ed = ws;
         if (!ed || !path) return;
         size_t   n   = 0;

@@ -1956,6 +1956,9 @@ test_secondary_windows(NotesLibrary *lib)
             }
         }
         check(search_win != nil, "the search window opens via on_search_window_open");
+        check([search_win isKindOfClass:NSPanel.class] &&
+              (search_win.styleMask & NSWindowStyleMaskUtilityWindow) && !((NSPanel *)search_win).floatingPanel,
+              "it is a tool window with the small title bar, and does not float over editors");
         pump(0.2);
         check(search_win.windowController != nil, "its controller stays alive while it is open");
         NSView      *root   = search_win.contentView;

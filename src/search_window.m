@@ -100,8 +100,9 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
 @implementation NotesSearchWindow
 
 /*
- * init_with_lib:scoped: — build the window at the last search window's
- * size; the query field has the focus.
+ * init_with_lib:scoped: — build the window, a tool window with the small
+ * title bar, at the last search window's size; the query field has the
+ * focus.
  *
  * Inputs:
  *   lib    — the library
@@ -114,11 +115,16 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
 {
     gint w = (gint)on_look_search_w, h = (gint)on_look_search_h;
     on_app_config_get_size("search_win_w", "search_win_h", &w, &h);
-    NSWindow *win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
-                                                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                                          NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
-                                                  backing:NSBackingStoreBuffered defer:NO];
+    /* A tool window: the small utility title bar, as Settings and the
+     * tool panels have it.  It does not float, so an editor opened from a
+     * result comes in front of it; it stays up when the app is inactive. */
+    NSPanel *win = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
+                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                                        NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow
+                                                backing:NSBackingStoreBuffered defer:NO];
     win.title              = @"Search Notes";
+    win.floatingPanel      = NO;
+    win.hidesOnDeactivate  = NO;
     win.releasedWhenClosed = NO;
     win.contentMinSize     = NSMakeSize(400, 260);
     if (!(self = [super initWithWindow:win])) return nil;

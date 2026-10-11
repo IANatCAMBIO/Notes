@@ -1,23 +1,20 @@
 /* ===========================================================================
- * note_edit.h — the editing policy of a note, with no toolkit in it
+ * note_edit.h — the editing vocabulary shared by the note view, the test
+ * probe and the editor window, with no toolkit in it
  *
- * What a key, a click or a paste DOES to a note is not a property of the
- * view that received it.  In the GTK build that policy lived inside the
- * widget (note_view.c); here it belongs in this module, in C over
- * OnDocument and OnDocLayout, so the AppKit view (note_view.m) and the
- * test probe drive one implementation: typing and the armed inline flags,
- * Enter and Backspace (lists continue, an empty item ends its list,
- * headings are one line), the block and inline toggles, pasting a fragment,
- * the #tag capture, find, the typing undo group.
+ * The editing policy itself — typing and the armed inline flags, Enter and
+ * Backspace (lists continue, an empty item ends its list, headings are one
+ * line), the block and inline toggles, pasting, the #tag capture, find,
+ * the typing undo group — lives in the note view (note_view.m), as it did
+ * in the GTK widget (porting/gtk_reference/src/note_view.c).  There is ONE
+ * implementation: the probe and the tests drive it through the view's
+ * on_note_view_feed_* entry points, never a copy of it.
  *
- * STATUS: work package C owns this module and grows it by lifting that
- * policy out of porting/gtk_reference/src/note_view.c (map section 3.4
- * lists the line ranges).  What is here today is the part other modules
- * already rely on, implemented for real:
+ * What is here:
  *   - the vocabulary of a key press, shared by the view and the probe;
  *   - the rule for a blank note, which the editor window applies on close.
- * Package C may add to this header freely; nothing outside the note view,
- * the probe and the editor window includes it.
+ * Nothing outside the note view, the probe and the editor window includes
+ * it.
  *
  * Every text position in this module is an OnPos with a UTF-8 BYTE offset
  * (utf_index.h).

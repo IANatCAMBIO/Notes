@@ -816,6 +816,32 @@ test_trash(NotesLibrary *lib)
 }
 
 /*
+ * test_accessibility — VoiceOver sees a note as a text area holding its
+ * text, with the selection where the editor has it.
+ */
+static void
+test_accessibility(void)
+{
+    gint64 note_id = new_note("Access note\nsome body text");
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NotesNoteView *view = (NotesNoteView *)find_view(editor_window_titled(@"Access note").contentView,
+                                                         NotesNoteView.class, Nil);
+        check(view.isAccessibilityElement && [view.accessibilityRole isEqualToString:NSAccessibilityTextAreaRole] &&
+              [view.accessibilityValue isEqual:@"Access note\nsome body text"],
+              "the note view is a text area holding the note's text");
+        on_note_view_find(view, @"body");
+        check([view.accessibilitySelectedText isEqualToString:@"body"] &&
+              view.accessibilitySelectedTextRange.location == strlen("Access note\nsome ") &&
+              view.accessibilityInsertionPointLineNumber == 1,
+              "and reports the selection and the caret's line");
+        on_editor_close_all();
+    }
+    pump(0.2);
+}
+
+/*
  * test_inline_image — an image inside a line of text (older notes have
  * them) is laid out in the line and can be opened by a click.
  */
@@ -2277,6 +2303,7 @@ main(void)
         test_editor();
         test_editor_commands();
         test_inline_image();
+        test_accessibility();
         test_tag_suggestions();
         test_pointer();
         test_new_folder(lib);

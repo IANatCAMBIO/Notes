@@ -72,8 +72,8 @@ Earlier:
 - [x] M Image ordinals: image/reveal count blocks only, count/png count inline too
 - [x] M pos_to_utf16 reads out of bounds in table cells
 - [x] L select_all/doc_end/clamp_pos with tables; end_external_edit fires edited twice; empty selected lines unmarked; action_reveal offset 0 not 1 and no 30 % scroll; Escape swallowed
-- [ ] L Accessibility (GTK implements accessible text; VoiceOver sees nothing in the note view)
-- [ ] L note_edit.[ch] holds only on_note_edit_is_blank; the editing policy its header promises is in note_view.m
+- [x] L Accessibility (GTK implements accessible text; VoiceOver sees nothing in the note view) — the note view is a text area: its value is the note's text (blocks by line, table cells by tab), with the selection, the caret's line and change notifications; read-only (VoiceOver edits through the normal key path)
+- [x] L note_edit.[ch] holds only on_note_edit_is_blank; the editing policy its header promises is in note_view.m — the header now says so: one implementation, in the view, which the probe drives (lifting ~3000 lines of working, tested policy into C was not worth the risk)
 
 ## Notes list / grid / Action Items (library_notes.m)
 

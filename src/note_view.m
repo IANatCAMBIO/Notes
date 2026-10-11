@@ -454,6 +454,56 @@ refresh_hits(NotesNoteView *v)
     g_free(hits);
 }
 
+/* ── Accessibility text ──────────────────────────────────────────────────── */
+
+/*
+ * access_text — what VoiceOver reads for one block: its text; a table's
+ * cells with a tab between cells and a newline between rows; an image
+ * block as one object character.
+ *
+ * Inputs:
+ *   b — the block
+ *
+ * Output: the text.
+ */
+static NSString *
+access_text(const OnBlock *b)
+{
+    if (b->kind == ON_BLOCK_IMAGE) return @"\uFFFC";
+    if (b->kind != ON_BLOCK_TABLE) return @(b->text->text->str);
+    NSMutableString *s = [NSMutableString string];
+    for (gint i = 0; i < b->rows * b->cols; i++) {
+        if (i > 0) [s appendString:i % b->cols == 0 ? @"\n" : @"\t"];
+        [s appendString:@(((const OnText *)g_ptr_array_index(b->cells, (guint)i))->text->str)];
+    }
+    return s;
+}
+
+/*
+ * access_offset — a document position as an offset into the accessible
+ * text (the blocks' access_text joined by newlines), in UTF-16 units.
+ *
+ * Inputs:
+ *   doc — the document
+ *   p   — the position
+ *
+ * Output: the offset.
+ */
+static NSUInteger
+access_offset(const OnDocument *doc, OnPos p)
+{
+    NSUInteger at = 0;
+    for (guint i = 0; i < p.block; i++) at += access_text(on_document_block(doc, i)).length + 1;
+    const OnBlock *b = on_document_block(doc, p.block);
+    if (b->kind == ON_BLOCK_IMAGE) return at + MIN(p.offset, 1);
+    if (b->kind != ON_BLOCK_TABLE) return at + on_utf16_from_utf8(b->text->text->str, p.offset);
+    gint cell = MAX(p.cell, 0);
+    for (gint i = 0; i < cell; i++)
+        at += @(((const OnText *)g_ptr_array_index(b->cells, (guint)i))->text->str).length + 1;
+    const OnText *t = g_ptr_array_index(b->cells, (guint)cell);
+    return at + (p.cell >= 0 ? on_utf16_from_utf8(t->text->str, p.offset) : 0);
+}
+
 /*
  * after_edit — call after every mutation: resize the view, scroll to the
  * caret, fire the edited handler, reset the blink.
@@ -472,6 +522,7 @@ after_edit(NotesNoteView *v)
     scroll_to_caret(v);
     im_sync_location(v);
     blink_restart(v);
+    NSAccessibilityPostNotification(v, NSAccessibilityValueChangedNotification);
     if (v.edited_handler) v.edited_handler();
 }
 
@@ -547,6 +598,7 @@ set_caret(NotesNoteView *v, OnPos p, BOOL extend)
     blink_restart(v);
     scroll_to_caret(v);
     im_sync_location(v);
+    NSAccessibilityPostNotification(v, NSAccessibilitySelectedTextChangedNotification);
 }
 
 /*
@@ -1747,6 +1799,117 @@ dealloc
 isFlipped
 {
     return YES;
+}
+
+/* ── Accessibility ─────────────────────────────────────────────────────── */
+
+/*
+ * isAccessibilityElement — VoiceOver sees the note as one text area (GTK:
+ * the view implements accessible text).
+ *
+ * Output: YES.
+ */
+- (BOOL)
+isAccessibilityElement
+{
+    return YES;
+}
+
+/*
+ * accessibilityRole — a text area.
+ *
+ * Output: the role.
+ */
+- (NSAccessibilityRole)
+accessibilityRole
+{
+    return NSAccessibilityTextAreaRole;
+}
+
+/*
+ * accessibilityLabel — what the area is.
+ *
+ * Output: the label.
+ */
+- (NSString *)
+accessibilityLabel
+{
+    return @"Note";
+}
+
+/*
+ * accessibilityValue — the note's text: its blocks joined by newlines
+ * (access_text).
+ *
+ * Output: the text.
+ */
+- (id)
+accessibilityValue
+{
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    for (guint i = 0; i < on_document_n_blocks(self.doc); i++)
+        [lines addObject:access_text(on_document_block(self.doc, i))];
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+/*
+ * accessibilityNumberOfCharacters — the length of the value.
+ *
+ * Output: UTF-16 units.
+ */
+- (NSInteger)
+accessibilityNumberOfCharacters
+{
+    return (NSInteger)((NSString *)self.accessibilityValue).length;
+}
+
+/*
+ * accessibilitySelectedTextRange — the selection (or the caret) in the
+ * value.
+ *
+ * Output: the range.
+ */
+- (NSRange)
+accessibilitySelectedTextRange
+{
+    NSUInteger a = access_offset(self.doc, self.anchor), c = access_offset(self.doc, self.caret);
+    return NSMakeRange(MIN(a, c), a > c ? a - c : c - a);
+}
+
+/*
+ * accessibilitySelectedText — the selected text.
+ *
+ * Output: the text; empty with no selection.
+ */
+- (NSString *)
+accessibilitySelectedText
+{
+    NSString *value = self.accessibilityValue;
+    NSRange   range = self.accessibilitySelectedTextRange;
+    return NSMaxRange(range) <= value.length ? [value substringWithRange:range] : @"";
+}
+
+/*
+ * accessibilityInsertionPointLineNumber — the caret's line: its block.
+ *
+ * Output: the line number.
+ */
+- (NSInteger)
+accessibilityInsertionPointLineNumber
+{
+    return (NSInteger)self.caret.block;
+}
+
+/*
+ * accessibilityVisibleCharacterRange — all of it (the view is as tall as
+ * the note; the scroll view clips it).
+ *
+ * Output: the range.
+ */
+- (NSRange)
+accessibilityVisibleCharacterRange
+{
+    return NSMakeRange(0, (NSUInteger)self.accessibilityNumberOfCharacters);
 }
 
 /*

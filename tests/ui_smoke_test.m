@@ -1999,19 +1999,37 @@ test_secondary_windows(NotesLibrary *lib)
 
         NSWindow *media_win = nil;
         for (NSWindow *w in NSApp.windows) {
-            if (w.visible && [w.title isEqualToString:@"Media Browser"]) {
+            if (w.visible && [w.title isEqualToString:@"Media in All Notes"]) {
                 media_win = w;
                 break;
             }
         }
-        check(media_win != nil, "the media window opens on 'media' command");
-        pump(0.2);
+        check(media_win != nil, "the media window opens on 'media' command, titled with what it browses");
+        NSTextField *media_status = (NSTextField *)view_with_identifier(media_win.contentView, @"media-status");
+        for (int i = 0; i < 60 && [media_status.stringValue hasPrefix:@"Scanning"]; i++) pump(0.05);
         check(media_win.windowController != nil, "its controller stays alive while it is open");
 
         NSCollectionView *grid = (NSCollectionView *)find_view(media_win.contentView,
                                                                NSCollectionView.class, Nil);
-        NSView *viewer = find_view(media_win.contentView, NotesImageViewer.class, Nil);
-        check(grid.selectable && [grid numberOfItemsInSection:0] > 0, "its thumbnails can be selected");
+        NotesImageViewer *viewer = (NotesImageViewer *)find_view(media_win.contentView, NotesImageViewer.class, Nil);
+        NSInteger n_images = [grid numberOfItemsInSection:0];
+        check(n_images > 0 && [media_status.stringValue hasPrefix:
+                                 [NSString stringWithFormat:@"%ld image%s in ", (long)n_images, n_images == 1 ? "" : "s"]],
+              "the scan fills the grid and counts the images");
+        NSInteger media_cell = -1;
+        for (NSInteger i = 0; i < n_images; i++) {
+            NSCollectionViewItem *item = [grid itemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
+            if (item && label_with_text(item.view, @"Media note")) media_cell = i;
+        }
+        NSCollectionViewItem *media_item_view = media_cell >= 0
+            ? [grid itemAtIndexPath:[NSIndexPath indexPathForItem:media_cell inSection:0]] : nil;
+        check(media_item_view != nil && [media_item_view.view.toolTip hasPrefix:@"Media note\nImage 1 of 1"] &&
+              media_item_view.imageView.image.size.width <= on_look_media_thumb,
+              "each thumbnail is captioned and labelled with its note, and decoded at thumbnail size");
+        check([viewer.caption_handler(media_cell) isEqualToString:@"Media note — image 1 of 1"],
+              "the viewer's caption names the note and the image");
+        check(save_snapshots(media_win, @"media"), "media snapshots written");
+        check(grid.selectable && n_images > 0, "its thumbnails can be selected");
         grid.selectionIndexPaths = [NSSet setWithObject:[NSIndexPath indexPathForItem:0 inSection:0]];
         [grid keyDown:return_key(media_win)];
         pump(0.2);
@@ -2027,10 +2045,14 @@ test_secondary_windows(NotesLibrary *lib)
         [media_win sendEvent:escape];
         check(!on_image_viewer_is_open((NotesImageViewer *)viewer), "and Escape in the window closes it");
         weak_media = media_win;
+        [media_win setContentSize:NSMakeSize(640, 480)];
         [media_win close];
     }
     pump(0.3);
-    check(weak_media == nil, "closed media window is deallocated");
+    gint media_w = 0, media_h = 0;
+    on_app_config_get_size("media_win_w", "media_win_h", &media_w, &media_h);
+    check(weak_media == nil && media_w == 640 && media_h == 480,
+          "closed media window is deallocated and its size kept");
 
     /* AI pane ─────────────────────────────────────────────────────────── */
     @autoreleasepool {

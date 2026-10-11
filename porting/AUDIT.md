@@ -146,8 +146,8 @@ Earlier:
 - [x] H Window controller not retained
 - [x] H Thumbnails not selectable — click does nothing
 - [x] H Viewer shows the 144 px thumbnail, not the image
-- [ ] M Synchronous scan on the main thread, no cap; captions/tooltips; viewer caption; size persistence (viewer keys done)
-- [ ] L Title/status scope; blank cells; Retina scale
+- [x] M Synchronous scan on the main thread, no cap; captions/tooltips; viewer caption; size persistence (viewer keys done)
+- [x] L Title/status scope; blank cells; Retina scale
 
 ## AI summary (library_ai.m)
 

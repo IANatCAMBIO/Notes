@@ -205,7 +205,9 @@ gchar *on_db_default_path(void);
 OnDatabase *on_db_open(const gchar *path_override);
 
 /* Write a consistent snapshot of the (possibly in-use) database to
- * `dest_path` using SQLite's online backup API. Returns TRUE on success.   */
+ * `dest_path` using SQLite's online backup API, a few megabytes at a time
+ * so a writer on another connection is never held up for the whole copy.
+ * Returns TRUE on success.                                                  */
 gboolean on_db_backup_to(OnDatabase *db, const gchar *dest_path);
 
 /* Close the database and free the handle.  Safe to call with NULL.         */

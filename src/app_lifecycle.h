@@ -25,18 +25,20 @@
  *   - app->flush_editors (installed by the editor module) closes EVERY
  *     editor window synchronously: each one saves its document if it is
  *     dirty, or deletes its note if it was left blank, before the hook
- *     returns.  No timers, no deferred work: when it returns, the database
- *     holds everything.
- *   - on_app_shutdown() is the ONE way the app ends: it stops the IPC
- *     server (so no command arrives half-way through), calls
- *     app->flush_editors, removes the backup timer and closes the
- *     database.  It is idempotent.
+ *     returns.  No timers, no deferred work: when it returns TRUE, the
+ *     database holds everything.  An editor whose save fails stays open
+ *     and the hook returns FALSE.
+ *   - on_app_shutdown() is the ONE way the app ends: it calls
+ *     app->flush_editors — and stops there, changing nothing else, when an
+ *     editor could not save — then stops the IPC server, removes the
+ *     backup timer and closes the database.  It is idempotent.
  *   - every route out goes through it: the app delegate calls it from
  *     applicationShouldTerminate: (Quit, the Dock, logout and restart all
- *     arrive there) and turns SIGTERM into [NSApp terminate:], which
- *     arrives there too.  Nothing calls exit() with windows open.
+ *     arrive there), cancelling the quit when it fails, and turns SIGTERM
+ *     into [NSApp terminate:], which arrives there too.  Nothing calls
+ *     exit() with windows open.
  *   - on_app_switch_db() flushes the same way before it closes the old
- *     database.
+ *     database, and does not switch when an editor could not save.
  *
  * What is NOT covered: SIGKILL, a crash or power loss can lose the edits
  * typed since the last autosave (at most the autosave delay), and a
@@ -95,11 +97,19 @@ gboolean on_app_open_db(OnApp *app);
  * ------------------------------------------------------------------------- */
 on_ipc_server_result_t on_app_start_services(OnApp *app);
 
+/* What on_app_switch_db did. */
+typedef enum {
+    ON_SWITCH_DONE,                  /* the app is on the new database       */
+    ON_SWITCH_UNSAVED,               /* an editor could not save: no switch  */
+    ON_SWITCH_FAILED,                /* the new file would not open          */
+} on_switch_result_t;
+
 /* ---------------------------------------------------------------------------
  * on_app_switch_db() — File > Open Database File…: switch the running app
  * to another database file, for this session or as the new default.  Every
- * editor is flushed and closed first.  If the new file cannot be opened the
- * previous database is re-opened and nothing else changes.
+ * editor is flushed and closed first; if one cannot save, nothing changes.
+ * If the new file cannot be opened the previous database is re-opened and
+ * nothing else changes.
  *
  * Inputs:
  *   app         — the application context
@@ -107,13 +117,16 @@ on_ipc_server_result_t on_app_start_services(OnApp *app);
  *   set_default — TRUE to persist its directory as `db_dir`; FALSE for
  *                 this session only (app->db_transient)
  *
- * Output: TRUE when the app is now on `path` (the library has been told to
- *         refresh, the backup timer re-armed, the integrity check started).
- *         FALSE when it could not be opened: the previous database is open
- *         again, or — if even that failed — app->db is NULL and the caller
- *         must quit.
+ * Output: ON_SWITCH_DONE when the app is now on `path` (the library has
+ *         been told to refresh, the backup timer re-armed, the integrity
+ *         check started).  ON_SWITCH_UNSAVED when an editor could not save:
+ *         it is still open and the old database still in use.
+ *         ON_SWITCH_FAILED when `path` could not be opened: the previous
+ *         database is open again, or — if even that failed — app->db is
+ *         NULL and the caller must quit.
  * ------------------------------------------------------------------------- */
-gboolean on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default);
+on_switch_result_t on_app_switch_db(OnApp *app, const gchar *path,
+                                    gboolean set_default);
 
 /* ---------------------------------------------------------------------------
  * on_app_shutdown() — end the app's work in the one safe order (see the
@@ -122,9 +135,11 @@ gboolean on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default);
  * Inputs:
  *   app — the application context
  *
- * Output: none.  When it returns no editor is open, no timer is armed, the
- *         socket file is gone and app->db is NULL.
+ * Output: TRUE when the work has ended: no editor is open, no timer is
+ *         armed, the socket file is gone and app->db is NULL.  FALSE when an
+ *         editor could not save its edits: it is still open, and nothing
+ *         else was stopped — the caller must not end the process.
  * ------------------------------------------------------------------------- */
-void on_app_shutdown(OnApp *app);
+gboolean on_app_shutdown(OnApp *app);
 
 #endif /* ON_APP_LIFECYCLE_H */

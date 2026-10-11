@@ -480,6 +480,31 @@ test_editor(void)
     OnNoteMeta *kept = on_db_note_get(app.db, unreadable);
     check(kept != NULL, "the unreadable note is not deleted");
     on_db_note_meta_free(kept);
+
+    /* A save that fails (here: the note deleted behind its editor) never
+     * drops the edits: no close path takes the window away silently.      */
+    gint64 doomed = new_note("Cannot be saved\nbody");
+    @autoreleasepool {
+        on_editor_window_open(&app, doomed, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Cannot be saved");
+        NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+        NotesNoteView *view   = scroll.documentView;
+        on_note_view_feed_click(view, 40, 40, 1, 0, NO);
+        on_note_view_feed_text(view, "unsaved ");
+        on_db_notes_delete(app.db, &doomed, 1);
+        check(!app.flush_editors(&app) && editor_window_titled(@"Cannot be saved") != nil,
+              "flush_editors keeps open an editor whose save fails, and says so");
+        check(!on_editor_close_notes(&doomed, 1) && editor_window_titled(@"Cannot be saved") != nil,
+              "so does closing the editors of a note");
+        [window performClose:nil];
+        pump(0.2);
+        check(editor_window_titled(@"Cannot be saved") != nil,
+              "the close box does not close it either");
+        check(answer_panel(@"Close Without Saving"), "it offers to close without saving");
+        pump(0.2);
+        check(editor_window_titled(@"Cannot be saved") == nil, "which closes it");
+    }
     body = on_db_note_body_text(app.db, note_id);
     check(body != NULL && strstr(body, "Flushed by close-all") != NULL,
           "flush_editors saves every open editor before it returns");

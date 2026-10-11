@@ -235,13 +235,14 @@ separator(void)
 @property (nonatomic, strong) NSSearchField *search_field;
 
 @property (nonatomic, assign) BOOL    dirty;          /* unsaved edits       */
-@property (nonatomic, assign) BOOL    gone;           /* note deleted behind
-                                                         the editor: close
-                                                         without saving      */
+@property (nonatomic, assign) BOOL    discard;        /* close without saving:
+                                                         the note is gone, or
+                                                         the user chose to   */
 @property (nonatomic, assign) BOOL    sync_actions;   /* action line touched */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
 
 - (BOOL)save;
+- (BOOL)close_saved;
 - (void)update_status;
 - (void)reload_if_changed;
 @end
@@ -1016,7 +1017,7 @@ queue_autosave
         NotesEditorWindow *s = ws;
         if (!s) return;
         s.autosave_timer = nil;
-        [s save];
+        if (![s save]) [s queue_autosave];   /* still unsaved: try again */
     }];
 }
 
@@ -1079,7 +1080,7 @@ reload_if_changed
     OnApp      *app  = self.app;
     OnNoteMeta *meta = on_db_note_get(app->db, self.note_id);
     if (meta == NULL) {
-        self.gone = YES;
+        self.discard = YES;
         [self.window close];
         return;
     }
@@ -1103,7 +1104,7 @@ reload_if_changed
 
     OnDocument *doc = on_note_document_load(app->db, self.note_id);
     if (doc == NULL) {                 /* now unreadable: leave it alone */
-        self.gone = YES;
+        self.discard = YES;
         [self.window close];
         return;
     }
@@ -1157,6 +1158,54 @@ windowDidBecomeKey:(NSNotification *)note
 }
 
 /*
+ * windowShouldClose: — the user closes the window: unsaved edits are saved
+ * first, and a save that fails keeps the window open, with a tool panel
+ * offering to close without saving.
+ *
+ * Inputs:
+ *   sender — the window
+ *
+ * Output: YES when the window may close now.
+ */
+- (BOOL)
+windowShouldClose:(NSWindow *)sender
+{
+    if (!self.dirty || self.discard || [self save]) return YES;
+    __weak NotesEditorWindow *ws = self;
+    on_ui_confirm([NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title],
+                  @"Your changes are still in the window. Closing it now loses them.",
+                  @"Close Without Saving", self.window, ^(BOOL confirmed) {
+        NotesEditorWindow *s = ws;
+        if (!s || !confirmed) return;
+        s.discard = YES;
+        [s.window close];
+    });
+    return NO;
+}
+
+/*
+ * close_saved — close the window unless it holds edits that cannot be
+ * saved now (programmatic closes: quit, database switch, trash, delete).
+ *
+ * Output: YES when the window closed; NO when it stays open because its
+ * save failed.
+ */
+- (BOOL)
+close_saved
+{
+    if (self.dirty && !self.discard) {
+        [self.autosave_timer invalidate];
+        self.autosave_timer = nil;
+        if (![self save]) {
+            [self queue_autosave];
+            return NO;
+        }
+    }
+    [self.window close];
+    return YES;
+}
+
+/*
  * windowWillClose: — teardown: stop the timer, save or (a blank note)
  * delete, leave the registry.
  *
@@ -1176,8 +1225,8 @@ windowWillClose:(NSNotification *)note
     ((NotesKeyFilterWindow *)self.window).key_filter = nil;
 
     OnDocument *doc = on_note_view_document(self.note_view);
-    if (self.gone) {
-        /* Deleted (or made unreadable) from outside: nothing to save to. */
+    if (self.discard) {
+        /* The note is gone or unreadable, or the user let the edits go. */
     } else if (on_note_edit_is_blank(doc)) {
         gint64 nid = self.note_id;
         on_db_notes_delete(app->db, &nid, 1);
@@ -1263,25 +1312,38 @@ on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
 /*
  * on_editor_close_notes — see editor_window.h.
  */
-void
+BOOL
 on_editor_close_notes(const gint64 *ids, size_t n)
 {
+    BOOL ok = YES;
     for (size_t i = 0; i < n; i++) {
-        [editor_for(ids[i]).window close];
+        NotesEditorWindow *editor = editor_for(ids[i]);
+        if (editor && ![editor close_saved]) ok = NO;
     }
+    return ok;
+}
+
+/*
+ * on_editor_report_unsaved — see editor_window.h.
+ */
+void
+on_editor_report_unsaved(NSString *title, NSWindow *window)
+{
+    on_ui_show_notice(title, @"A note could not be saved. Its window is still open with your changes.",
+                      window, nil);
 }
 
 /*
  * on_editor_close_all — see editor_window.h.
  */
-void
+BOOL
 on_editor_close_all(void)
 {
-    /* Snapshot keys before the loop, since closing modifies editors. */
-    NSArray<NSNumber *> *keys = editors.allKeys;
-    for (NSNumber *k in keys) {
-        [((NotesEditorWindow *)editors[k]).window close];
+    BOOL ok = YES;
+    for (NotesEditorWindow *editor in editors.allValues) {   /* a copy: closing edits editors */
+        if (![editor close_saved]) ok = NO;
     }
+    return ok;
 }
 
 /*
@@ -1386,11 +1448,13 @@ hook_reload_editors(OnApp *app)
  *
  * Inputs:
  *   app — the application context (unused)
+ *
+ * Output: FALSE when an editor could not save and is still open.
  */
-static void
+static gboolean
 hook_flush_editors(OnApp *app)
 {
-    on_editor_close_all();
+    return on_editor_close_all();
 }
 
 /*

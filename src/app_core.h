@@ -120,8 +120,9 @@
  *                    command.
  *   flush_editors  — close every editor window NOW, each one saving its
  *                    unsaved edits (or deleting its note if it was left
- *                    blank) before the call returns.  Called by
- *                    on_app_shutdown and on_app_switch_db.  See
+ *                    blank) before the call returns.  An editor whose save
+ *                    fails stays open and the hook returns FALSE.  Called
+ *                    by on_app_shutdown and on_app_switch_db.  See
  *                    app_lifecycle.h for the contract.
  * ------------------------------------------------------------------------- */
 typedef struct OnApp {
@@ -160,7 +161,7 @@ typedef struct OnApp {
     void        (*live_edited)(struct OnApp *app, gint64 note_id);
     gboolean    (*save_editors)(struct OnApp *app);
     void        (*reload_editors)(struct OnApp *app);
-    void        (*flush_editors)(struct OnApp *app);
+    gboolean    (*flush_editors)(struct OnApp *app);
 } OnApp;
 
 /* ---------------------------------------------------------------------------

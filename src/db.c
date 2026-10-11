@@ -507,6 +507,14 @@ on_db_open(const gchar *path_override)
     return db;
 }
 
+/* on_db_backup_to's pacing: pages per backup step (2 MB at 4 KB pages),
+ * the pause between steps that lets a writer in, and how many times a
+ * write may send the copy back to the start before it is finished in one
+ * step.                                                                     */
+#define BACKUP_STEP_PAGES    512
+#define BACKUP_STEP_PAUSE_MS 5
+#define BACKUP_MAX_RESTARTS  3
+
 gboolean
 on_db_backup_to(OnDatabase *db, const gchar *dest_path)
 {
@@ -518,19 +526,34 @@ on_db_backup_to(OnDatabase *db, const gchar *dest_path)
         return FALSE;
     }
 
-    /* The online backup API snapshots a live database safely.  Step with
-     * -1 to copy all pages in one call; retry on transient SQLITE_BUSY
-     * (a concurrent CLI write may briefly hold the read lock).            */
+    /* The online backup API snapshots a live database safely.  It copies
+     * BACKUP_STEP_PAGES at a time and lets go of the read lock between
+     * steps, so a save on another connection waits milliseconds rather
+     * than for the whole copy (a large file on a slow disk outlasts the
+     * busy timeout).  A write between steps restarts the copy; after
+     * BACKUP_MAX_RESTARTS the rest goes in one step, holding the lock.
+     * Transient SQLITE_BUSY (a writer holding the lock) is retried.        */
     sqlite3_backup *backup =
         sqlite3_backup_init(dest, "main", db->handle, "main");
     gboolean ok = FALSE;             /* overall success                     */
     if (backup != NULL) {
-        int rc, tries = 0;
+        int rc, busy = 0, restarts = 0;
+        int left = -1;               /* pages still to copy, -1 = unknown   */
         do {
-            rc = sqlite3_backup_step(backup, -1);
-            if ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && tries++ < 5)
+            int pages = restarts < BACKUP_MAX_RESTARTS ? BACKUP_STEP_PAGES : -1;
+            rc = sqlite3_backup_step(backup, pages);
+            if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+                busy++;
                 g_usleep(200 * 1000);    /* 200 ms between retries          */
-        } while ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && tries < 5);
+            } else if (rc == SQLITE_OK) {
+                int now = sqlite3_backup_remaining(backup);
+                if (left >= 0 && now > left - BACKUP_STEP_PAGES)
+                    restarts++;          /* a write sent it back to the start */
+                left = now;
+                sqlite3_sleep(BACKUP_STEP_PAUSE_MS);
+            }
+        } while (rc == SQLITE_OK ||
+                 ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && busy < 5));
         sqlite3_backup_finish(backup);
         ok = (rc == SQLITE_DONE);
     }

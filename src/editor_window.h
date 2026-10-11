@@ -65,21 +65,36 @@ BOOL on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
 /*
  * on_editor_close_notes — close the editors of these notes, each saving
  * its unsaved edits first.  Called before notes are trashed or deleted, so
- * no editor is left open on a note that is gone.
+ * no editor is left open on a note that is gone.  An editor whose save
+ * fails stays open, and the caller must then leave its note alone.
  *
  * Inputs:
  *   ids — note ids; those with no open editor are skipped
  *   n   — how many
+ *
+ * Output: NO when an editor could not save and is still open.
  */
-void on_editor_close_notes(const gint64 *ids, size_t n);
+BOOL on_editor_close_notes(const gint64 *ids, size_t n);
+
+/*
+ * on_editor_report_unsaved — THE tool panel for "an editor could not save,
+ * so this did not happen": its title names what was stopped.
+ *
+ * Inputs:
+ *   title  — what did not happen, e.g. @"Could not quit"
+ *   window — the window to centre over; nil = the screen
+ */
+void on_editor_report_unsaved(NSString *title, NSWindow *window);
 
 /*
  * on_editor_close_all — close every editor NOW: each saves its unsaved
  * edits, or deletes its note if it was left blank, before this returns.
- * This is the OnApp.flush_editors hook (app_lifecycle.h, "the flush-on-quit
- * contract").
+ * An editor whose save fails stays open.  This is the OnApp.flush_editors
+ * hook (app_lifecycle.h, "the flush-on-quit contract").
+ *
+ * Output: NO when an editor could not save and is still open.
  */
-void on_editor_close_all(void);
+BOOL on_editor_close_all(void);
 
 /*
  * on_editor_settings_changed — a preference that editors render from

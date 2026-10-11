@@ -140,13 +140,15 @@ A hook is handed only the `OnApp`; UI state is reached through
 
 An editor holds unsaved edits for up to its autosave delay.  Nothing may end
 the process, or close or switch the database, while one does.  So:
-`on_app_shutdown()` is the one way out (stop the socket → `flush_editors` →
+`on_app_shutdown()` is the one way out (`flush_editors` → stop the socket →
 remove the backup timer → close the database); the app delegate calls it
 from `applicationShouldTerminate:`; SIGTERM is turned into `[NSApp
-terminate:]`; `flush_editors` closes every editor **synchronously**, and an
-editor's `windowWillClose:` saves a dirty note or deletes a blank one before
-it returns.  If you add a window that holds unsaved state, it must be
-flushed by this path too.  Never call `exit()` with windows open.
+terminate:]`; `flush_editors` closes every editor **synchronously**, each
+saving first.  A save that fails is never dropped: that editor stays open,
+`flush_editors` returns FALSE, and the quit (or database switch, or trash,
+or delete) is cancelled with a tool panel; the close box offers "Close
+Without Saving" instead.  If you add a window that holds unsaved state, it
+must be flushed by this path too.  Never call `exit()` with windows open.
 
 ---------------------------------------------------------------------------
 

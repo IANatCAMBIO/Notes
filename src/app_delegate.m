@@ -352,12 +352,16 @@ watch_signals
  * Inputs:
  *   sender — NSApplication (unused)
  *
- * Output: NSTerminateNow, once everything is on disk.
+ * Output: NSTerminateNow, once everything is on disk; NSTerminateCancel
+ *         (with a tool panel) when a note could not be saved.
  */
 - (NSApplicationTerminateReply)
 applicationShouldTerminate:(NSApplication *)sender
 {
-    on_app_shutdown(&_app);
+    if (!on_app_shutdown(&_app)) {
+        on_editor_report_unsaved(@"Could not quit", nil);
+        return NSTerminateCancel;
+    }
     NSLog(@"[quit] editors flushed, database closed");
     return NSTerminateNow;
 }

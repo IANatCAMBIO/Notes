@@ -18,6 +18,7 @@ static OnDocument *live_doc;         /* the "open editor's" document         */
 static gint64      live_note;        /* the note it is editing               */
 static int         live_edits;       /* live_edited calls                    */
 static int         flushes;          /* flush_editors calls                  */
+static gboolean    flush_fails;      /* the "editor" cannot save             */
 
 /*
  * fake_live_document — OnApp.live_document: only live_note is "open".
@@ -56,13 +57,16 @@ fake_live_edited(OnApp *app, gint64 note_id)
  *
  * Inputs:
  *   app — the context
+ *
+ * Output: FALSE while flush_fails is set (an editor that cannot save).
  */
-static void
+static gboolean
 fake_flush(OnApp *app)
 {
     if (app->db != NULL) {
         flushes++;
     }
+    return !flush_fails;
 }
 
 /*
@@ -367,7 +371,12 @@ main(void)
     /* Shutdown: editors flush while the database is still open, then it
      * closes; a second call is harmless.                                   */
     app.flush_editors = fake_flush;
-    on_app_shutdown(&app);
+    flush_fails = TRUE;
+    check(!on_app_shutdown(&app) && app.db != NULL,
+          "shutdown stops, the database still open, when an editor cannot save");
+    flush_fails = FALSE;
+    flushes = 0;
+    check(on_app_shutdown(&app), "shutdown completes once the editors have saved");
     check(flushes == 1 && app.db == NULL, "shutdown flushes editors, then closes the database");
     on_app_shutdown(&app);
     check(app.db == NULL, "a second shutdown is harmless");

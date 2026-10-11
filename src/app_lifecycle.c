@@ -56,11 +56,11 @@ on_app_start_services(OnApp *app)
 /*
  * on_app_switch_db — see app_lifecycle.h.
  */
-gboolean
+on_switch_result_t
 on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
 {
-    if (app->flush_editors != NULL) {
-        app->flush_editors(app);
+    if (app->flush_editors != NULL && !app->flush_editors(app)) {
+        return ON_SWITCH_UNSAVED;
     }
     gchar *old_path = g_strdup(app->db->path);
     on_db_close(app->db);
@@ -68,7 +68,7 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
     if (app->db == NULL) {
         app->db = on_db_open(old_path);      /* back to where we were        */
         g_free(old_path);
-        return FALSE;
+        return ON_SWITCH_FAILED;
     }
     g_free(old_path);
 
@@ -90,21 +90,25 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
     }
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);     /* every opened database is checked     */
-    return TRUE;
+    return ON_SWITCH_DONE;
 }
 
 /*
  * on_app_shutdown — see app_lifecycle.h.
  */
-void
+gboolean
 on_app_shutdown(OnApp *app)
 {
-    on_ipc_server_stop();
-    if (app->flush_editors != NULL) {
-        app->flush_editors(app);
+    /* Editors first: one that cannot save stops the shutdown with nothing
+     * else torn down.  No command can arrive meanwhile — the socket is
+     * served on this thread.                                               */
+    if (app->flush_editors != NULL && !app->flush_editors(app)) {
+        return FALSE;
     }
+    on_ipc_server_stop();
     on_timer_remove(app->backup_timer);
     app->backup_timer = 0;
     on_db_close(app->db);            /* NULL-safe                            */
     app->db = NULL;
+    return TRUE;
 }

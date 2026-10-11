@@ -35,7 +35,8 @@ void on_library_commands_install(NotesLibrary *lib);
  *   ids — the notes
  *   n   — how many
  *
- * Output: YES when the database move succeeded.
+ * Output: YES when the database move succeeded; NO also when an editor
+ *         could not save (a tool panel says so, nothing moved).
  */
 BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
 
@@ -50,7 +51,8 @@ BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
  *   folder_id — the folder
  *   name      — its bare name, for the status line
  *
- * Output: YES when the database move succeeded.
+ * Output: YES when the database move succeeded; NO also when an editor
+ *         could not save (a tool panel says so, nothing moved).
  */
 BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name);
 

@@ -272,6 +272,76 @@ test_core_jobs(const char *data_dir)
     on_db_close(app.db);
 }
 
+/* What the paced-backup worker reports back. */
+typedef struct {
+    OnDatabase *db;                  /* its own connection                   */
+    gchar      *dest;                /* the backup file                      */
+    gboolean    ok;                  /* on_db_backup_to's verdict            */
+    gint        done;                /* set (atomically) when it returns     */
+} paced_backup_t;
+
+/*
+ * paced_backup_worker — run one on_db_backup_to on a worker thread, as the
+ * backup service does.
+ *
+ * Inputs:
+ *   data — the paced_backup_t
+ *
+ * Output: NULL.
+ */
+static gpointer
+paced_backup_worker(gpointer data)
+{
+    paced_backup_t *job = data;
+    job->ok = on_db_backup_to(job->db, job->dest);
+    g_atomic_int_set(&job->done, 1);
+    return NULL;
+}
+
+/*
+ * test_paced_backup — a backup of a database many steps long completes
+ * while another connection keeps writing (each write sends the copy back
+ * to the start), no write waits long for it, and the copy is whole.
+ *
+ * Inputs:
+ *   data_dir — the test data directory
+ */
+static void
+test_paced_backup(const char *data_dir)
+{
+    OnDatabase *writer = on_db_open(NULL);
+    gint64      note   = on_db_note_create(writer, 0);
+    gsize       big    = 8 * 1024 * 1024;     /* ~2000 pages: four steps    */
+    guint8     *bytes  = g_malloc(big);
+    for (gsize i = 0; i < big; i++) bytes[i] = (guint8)(i * 2654435761u >> 24);
+    check(on_db_note_save(writer, note, "Big", bytes, big, NULL), "a large note is stored");
+
+    paced_backup_t job = { on_db_open(NULL), g_build_filename(data_dir, "paced.db", NULL), FALSE, 0 };
+    GThread *thread = g_thread_new("paced-backup", paced_backup_worker, &job);
+    gint64   slowest = 0, writes = 0;
+    while (!g_atomic_int_get(&job.done)) {
+        gint64 t0 = g_get_monotonic_time();
+        on_db_note_set_updated_at(writer, note, writes++);
+        slowest = MAX(slowest, g_get_monotonic_time() - t0);
+    }
+    g_thread_join(thread);
+    check(job.ok, "the backup completes while another connection keeps writing");
+    check(slowest < G_USEC_PER_SEC, "no write waits a second for it");
+
+    OnDatabase *copy = on_db_open(job.dest);
+    guint8     *blob = NULL;
+    gsize       len  = 0;
+    check(copy != NULL && on_db_note_load(copy, note, &blob, &len) &&
+          len == big && memcmp(blob, bytes, big) == 0,
+          "the copy holds the large note whole");
+    g_free(blob);
+    on_db_close(copy);
+    on_db_close(job.db);
+    on_db_close(writer);
+    g_free(job.dest);
+    g_free(bytes);
+}
+
 /*
  * main — run the test.
  *
@@ -284,5 +354,6 @@ main(void)
     test_posts_and_workers();
     test_timers();
     test_core_jobs(data_dir);
+    test_paced_backup(data_dir);
     return check_result();
 }

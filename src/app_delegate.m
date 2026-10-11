@@ -176,6 +176,20 @@ applicationDidFinishLaunching:(NSNotification *)n
     [self build_menu_bar];
     [self watch_signals];
 
+    /* First of all: is this the one copy for this data folder?  A second
+     * copy never opens the database, nor shows a window to type into.     */
+    if (on_ipc_lock_take() == on_ipc_lock_busy) {
+        if (raise_running_copy()) {
+            [NSApp terminate:nil];       /* the running copy is in front now */
+        } else {
+            [NSApp activate];
+            on_ui_show_notice(@ON_APP_NAME @" is already running",
+                              @"Another copy is using this data folder. This one will quit.", nil,
+                              ^{ [NSApp terminate:nil]; });
+        }
+        return;
+    }
+
     on_app_prefs_load(&_app);
     _app.db_dir      = on_app_config_load_db_dir();
     _app.show_notice = hook_show_notice;
@@ -299,14 +313,9 @@ open_database_and_start
 
     on_library_window_show(self.lib);
 
+    /* The lock is held since launch, so the server is never "busy" here. */
     on_ipc_server_result_t served = on_app_start_services(&_app);
-    if (served == on_ipc_server_busy && raise_running_copy()) {
-        [NSApp terminate:nil];           /* the running copy is in front now */
-    } else if (served == on_ipc_server_busy) {
-        on_ui_show_notice(@ON_APP_NAME @" is already running",
-                          @"Another copy is using this data folder. This one will quit.", nil,
-                          ^{ [NSApp terminate:nil]; });
-    } else if (served == on_ipc_server_failed) {
+    if (served == on_ipc_server_failed) {
         on_ui_show_notice(@"The command-line tool cannot reach this app",
                           @"The app's socket could not be created. While this app is running, `"
                           @ON_CLI_NAME @"` commands will be refused rather than work on the "

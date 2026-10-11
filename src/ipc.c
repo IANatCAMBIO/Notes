@@ -850,36 +850,62 @@ ipc_server_free(void *context)
 /*
  * on_ipc_server_start — see ipc.h.
  */
-on_ipc_server_result_t
-on_ipc_server_start(OnApp *app)
+on_ipc_lock_result_t
+on_ipc_lock_take(void)
 {
-    if (ipc_lock_fd >= 0) {          /* already started: say how it went     */
-        return ipc_source != NULL ? on_ipc_server_listening
-                                  : on_ipc_server_failed;
+    if (ipc_lock_fd >= 0) {
+        return on_ipc_lock_held;
     }
-
-    /* The lock decides whether this is the only app.  A client probing
-     * the lock holds it for an instant, so try a few times before
-     * concluding another app is there.                                     */
+    /* A client probing the lock holds it for an instant, so try a few
+     * times before concluding another app is there.                        */
     int lock = -1;
     for (int i = 0; i < IPC_SERVER_TRIES && lock < 0; i++) {
         lock = ipc_lock_try();
         if (lock < 0 && errno != EWOULDBLOCK) {
             fprintf(stderr, "notes: cannot take the app lock: %s\n",
                     strerror(errno));
-            return on_ipc_server_failed;
+            return on_ipc_lock_failed;
         }
         if (lock < 0) {
             usleep(IPC_RETRY_US);
         }
     }
     if (lock < 0) {
-        return on_ipc_server_busy;
+        return on_ipc_lock_busy;
     }
-    /* From here this process IS the app for the data directory.  The lock
-     * is kept even if the socket cannot be created: a tool that cannot
-     * connect then refuses to run, rather than write behind this app.      */
     ipc_lock_fd = lock;
+    return on_ipc_lock_held;
+}
+
+/*
+ * on_ipc_lock_release — see ipc.h.
+ */
+void
+on_ipc_lock_release(void)
+{
+    if (ipc_lock_fd >= 0) {
+        close(ipc_lock_fd);
+        ipc_lock_fd = -1;
+    }
+}
+
+/*
+ * on_ipc_server_start — see ipc.h.
+ */
+on_ipc_server_result_t
+on_ipc_server_start(OnApp *app)
+{
+    if (ipc_source != NULL) {
+        return on_ipc_server_listening;
+    }
+    /* The lock decides whether this is the only app.  It is kept even if
+     * the socket cannot be created: a tool that cannot connect then
+     * refuses to run, rather than write behind this app.                   */
+    switch (on_ipc_lock_take()) {
+    case on_ipc_lock_busy:   return on_ipc_server_busy;
+    case on_ipc_lock_failed: return on_ipc_server_failed;
+    case on_ipc_lock_held:   break;
+    }
 
     /* With the lock held, a socket file can only be a crashed app's.       */
     char *path = on_paths_data_file(ON_SOCKET_FILENAME);
@@ -929,10 +955,7 @@ on_ipc_server_stop(void)
         free(ipc_bound_path);
         ipc_bound_path = NULL;
     }
-    if (ipc_lock_fd >= 0) {
-        close(ipc_lock_fd);          /* releases the app lock                */
-        ipc_lock_fd = -1;
-    }
+    on_ipc_lock_release();
 }
 
 /* ===========================================================================
@@ -957,7 +980,7 @@ on_ipc_server_stop(void)
  *         the database itself.
  */
 static int
-ipc_connect(gboolean *no_server)
+ipc_connect(gboolean *no_server, gboolean keep_lock)
 {
     *no_server = FALSE;
     for (int i = 0; i < IPC_CLIENT_TRIES; i++) {
@@ -978,7 +1001,11 @@ ipc_connect(gboolean *no_server)
 
         int lock = ipc_lock_try();
         if (lock >= 0) {
-            close(lock);
+            if (keep_lock) {
+                ipc_lock_fd = lock;  /* held until on_ipc_lock_release/exit */
+            } else {
+                close(lock);
+            }
             *no_server = TRUE;
             return -1;
         }
@@ -1001,7 +1028,7 @@ on_ipc_try_remote(const gchar *command, gchar **reply_out)
         *reply_out = NULL;
     }
     gboolean no_server;
-    int fd = ipc_connect(&no_server);
+    int fd = ipc_connect(&no_server, FALSE);
     if (fd < 0) {
         if (no_server) {
             return ON_IPC_NO_SERVER;
@@ -1043,7 +1070,8 @@ on_ipc_try_remote_run(int argc, char **argv, const gchar *stdin_data,
 {
     *ran = FALSE;
     gboolean no_server;
-    int fd = ipc_connect(&no_server);
+    int fd = ipc_connect(&no_server, TRUE);   /* no app: keep the lock while
+                                                headless runs                */
     if (fd < 0) {
         if (no_server) {
             return 0;                /* the caller runs headless             */

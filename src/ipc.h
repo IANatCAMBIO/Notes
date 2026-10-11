@@ -59,6 +59,13 @@ typedef enum {
                                         be reached                           */
 } OnIpcResult;
 
+/* Outcome of taking the app lock.                                           */
+typedef enum {
+    on_ipc_lock_held,                /* this process holds it                */
+    on_ipc_lock_busy,                /* a live app holds it                  */
+    on_ipc_lock_failed,              /* it could not be tried (stderr)       */
+} on_ipc_lock_result_t;
+
 /* Outcome of starting the server (app side).                                */
 typedef enum {
     on_ipc_server_listening,         /* this process now serves the socket   */
@@ -98,7 +105,9 @@ OnIpcResult on_ipc_try_remote(const gchar *command, gchar **reply_out);
  * Output: the command's exit code when *ran is TRUE (2, with a message,
  *         when the response could not be read whole, or the socket could
  *         not be tried); 0 with *ran FALSE when no app is listening, so the
- *         caller runs headless.
+ *         caller runs headless — this process then HOLDS the app lock, so
+ *         no app can start on the database until on_ipc_lock_release (or
+ *         the process ends).
  * ------------------------------------------------------------------------- */
 int on_ipc_try_remote_run(int argc, char **argv, const gchar *stdin_data,
                           gboolean *ran);
@@ -157,10 +166,29 @@ gboolean on_ipc_has_pending(void);
 void on_ipc_run_pending(OnApp *app);
 
 /* ---------------------------------------------------------------------------
- * on_ipc_server_start() — SERVER: begin listening for command-line
- * invocations.  A socket file left by a crashed instance is cleared; one a
- * live instance still serves is left alone.  Main thread, after the hooks
- * are installed.
+ * on_ipc_lock_take() — make this process THE one using the data directory:
+ * take the app lock (retrying briefly, as a client may be probing it).
+ * The app takes it first thing at launch, before it opens the database or
+ * shows a window, so a second copy never has the database open.
+ *
+ * Output: on_ipc_lock_held (also when already held), on_ipc_lock_busy when
+ *         a live app holds it, on_ipc_lock_failed when it could not be
+ *         tried (reported on stderr).
+ * ------------------------------------------------------------------------- */
+on_ipc_lock_result_t on_ipc_lock_take(void);
+
+/* ---------------------------------------------------------------------------
+ * on_ipc_lock_release() — let go of the app lock (on_ipc_server_stop does;
+ * a headless command-line run does once its database is closed).  A no-op
+ * when not held.
+ * ------------------------------------------------------------------------- */
+void on_ipc_lock_release(void);
+
+/* ---------------------------------------------------------------------------
+ * on_ipc_server_start() — SERVER: take the app lock if this process does
+ * not hold it yet, and begin listening for command-line invocations.  A
+ * socket file left by a crashed instance is cleared; one a live instance
+ * still serves is left alone.  Main thread, after the hooks are installed.
  *
  * Inputs:
  *   app — the application context commands will run against

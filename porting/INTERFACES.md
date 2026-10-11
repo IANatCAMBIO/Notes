@@ -648,12 +648,11 @@ only the `OnApp`).
    tool panel says so), and the CLI's read-modify-write commands and
    `note cat` exit 2.  An empty document is never handed out in its place,
    so neither the blank-means-delete rule nor a save can reach the note.
-2. **Two app instances on one data directory.**  LaunchServices prevents it
-   for Finder launches; started twice by path, the second finds the app
-   lock held and quits — but it has already opened the database (read-only
-   in effect: a current schema is not written on open).  A `notes` command
-   run in the instant between an app taking the lock and a headless tool
-   finishing can still overlap; the window is milliseconds.
+2. **Two writers on one data directory** (fixed).  The app takes the
+   data directory's lock (`on_ipc_lock_take`) first thing at launch, before
+   it opens the database or shows a window, so a second copy never has the
+   database open; a headless `notes` command keeps the lock it probed until
+   its database is closed, so an app cannot start in the middle of it.
 3. **A CLI command that writes a note open in an editor** (fixed).  The
    app runs such a command through `on_ipc_run_command`: open editors save
    first (`save_editors`; the command is refused if one cannot), then catch

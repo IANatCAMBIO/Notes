@@ -387,6 +387,12 @@ main(int argc, char **argv)
     gboolean ran = TRUE;
     check(on_ipc_try_remote_run(2, argv_stats, NULL, &ran) == 0 && !ran,
           "no socket file: the data command is not run remotely");
+    int probe = open(ON_LOCK_FILENAME, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    check(probe >= 0 && flock(probe, LOCK_EX | LOCK_NB) != 0,
+          "and the caller, about to run it headless, holds the app lock");
+    on_ipc_lock_release();
+    check(flock(probe, LOCK_EX | LOCK_NB) == 0, "until it lets go");
+    close(probe);
 
     pid_t server = start_server(self);
     check(server > 0, "the stand-in app starts and listens");

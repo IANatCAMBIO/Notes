@@ -2688,6 +2688,7 @@ on_cli_run(int argc, char **argv)
             on_cli_set_stdin_data(NULL);
             on_db_close(app.db);
         }
+        on_ipc_lock_release();       /* held since the probe found no app   */
     }
     g_free(stdin_data);
     return rc;

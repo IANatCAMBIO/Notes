@@ -661,9 +661,30 @@ test_editor_commands(void)
                                                                  NotesImageViewer.class, Nil);
         NSScrollView *scroll = (NSScrollView *)viewer.superview;
         on_image_viewer_open(viewer, 0);
+        [window layoutIfNeeded];
+        [window displayIfNeeded];
         NSImageView *big = (NSImageView *)find_view(viewer, NSImageView.class, Nil);
         check(on_image_viewer_is_open(viewer) && NSEqualSizes(viewer.frame.size, scroll.bounds.size) &&
-              big.image.size.width > 64, "the editor's image viewer covers the note at full size");
+              big.frame.size.width > 200 && big.frame.size.height > 200 &&
+              NSContainsRect(viewer.bounds, big.frame),
+              "the editor's image viewer covers the note and shows the picture big, inside it");
+        NSTextField *hint    = nil;
+        for (NSView *v in viewer.subviews)
+            if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue hasSuffix:@"ESC to close"])
+                hint = (NSTextField *)v;
+        NSTextField *open_it = label_with_text(viewer, @"Open in Image Viewer");
+        __block NSColor *hint_rgb = nil, *link_rgb = nil;
+        [[NSAppearance appearanceNamed:NSAppearanceNameAqua] performAsCurrentDrawingAppearance:^{
+            hint_rgb = [hint.textColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            link_rgb = [[open_it.attributedStringValue attribute:NSForegroundColorAttributeName atIndex:0
+                                                   effectiveRange:NULL]
+                        colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        }];
+        check(hint != nil && hint_rgb.redComponent > 0.9 && NSMinY(hint.frame) < NSMinY(big.frame) &&
+              open_it != nil && link_rgb.blueComponent > 0.9 && link_rgb.redComponent < 0.6 &&
+              fabs(NSMaxX(open_it.frame) - NSMaxX(hint.frame) - on_look_viewer_gap - open_it.frame.size.width) < 1,
+              "under the picture: a light caption with the key hint, and the action link in blue");
+        check(save_snapshots(window, @"editor-viewer"), "editor image viewer snapshots written");
         on_image_viewer_close(viewer);
 
         NSRect area = window.screen.visibleFrame;
@@ -2132,8 +2153,33 @@ test_secondary_windows(NotesLibrary *lib)
         pump(0.2);
         NSImageView *big = (NSImageView *)find_view(viewer, NSImageView.class, Nil);
         check(on_image_viewer_is_open((NotesImageViewer *)viewer) &&
-              big.image.size.width > on_look_media_thumb,
-              "Return on a thumbnail opens the viewer at full size, not the thumbnail");
+              big.frame.size.width > on_look_media_thumb && big.image.size.width > on_look_media_thumb,
+              "Return on a thumbnail opens the viewer with the picture bigger than its thumbnail");
+        check(save_snapshots(media_win, @"media-viewer"), "media image viewer snapshots written");
+        NSEvent *(^key)(unsigned short) = ^NSEvent *(unsigned short code) {
+            unichar c = code == 123 ? NSLeftArrowFunctionKey : NSRightArrowFunctionKey;
+            NSString *chars = [NSString stringWithCharacters:&c length:1];
+            return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+                                windowNumber:media_win.windowNumber context:nil characters:chars
+                 charactersIgnoringModifiers:chars isARepeat:NO keyCode:code];
+        };
+        [media_win sendEvent:key(123)];
+        check(on_image_viewer_index(viewer) == 0, "Left on the first picture stays there: no wrap-around");
+        [media_win sendEvent:key(124)];
+        check(on_image_viewer_index(viewer) == 1, "Right steps to the next picture");
+        NSEvent *(^press)(NSPoint) = ^NSEvent *(NSPoint p) {
+            return [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:[viewer convertPoint:p toView:nil]
+                                 modifierFlags:0 timestamp:0 windowNumber:media_win.windowNumber context:nil
+                                   eventNumber:0 clickCount:1 pressure:1];
+        };
+        NSView *nav_row = label_with_text(viewer, @"Next").superview;
+        NSRect  nav     = [nav_row convertRect:nav_row.bounds toView:viewer];
+        [viewer mouseDown:press(NSMakePoint(NSMaxX(nav) - 2, NSMidY(nav)))];
+        check(!nav_row.hidden && on_image_viewer_index(viewer) == 2,
+              "a click on the right half of Previous | Next steps forward");
+        [viewer mouseDown:press(NSMakePoint(5, 5))];
+        check(!on_image_viewer_is_open(viewer), "a click on the backdrop closes the viewer");
+        on_image_viewer_open(viewer, 0);
         NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
                                       modifierFlags:0 timestamp:0
                                        windowNumber:media_win.windowNumber context:nil

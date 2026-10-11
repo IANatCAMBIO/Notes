@@ -1,373 +1,393 @@
 /* ===========================================================================
- * image_viewer.m — modal full-size image viewer (work package D)
+ * image_viewer.m — the modal image viewer (work package D)
  *
- * A dark overlay over a host view.  Clicking anywhere or pressing Escape
- * closes it.  Left/Right arrows step through the host's images.  The host
- * window calls on_image_viewer_key_down first for every key while the
- * viewer is open, and swallows the key itself when this returns NO — the
- * viewer NEVER takes keyboard focus.
+ * Specification: porting/gtk_reference/src/image_viewer.c.  One picture
+ * shown big over its host view, on a dark backdrop:
  *
- * Layout (bottom-anchored, viewer's coordinate system, Y up):
+ *   ┌─────────────────────────────────────────────┐
+ *   │                                             │
+ *   │          ┌───────────────────────┐          │ ← fitted to the host,
+ *   │          │        picture        │          │   never enlarged
+ *   │          └───────────────────────┘          │
+ *   │          caption, key hint     action link  │ ← as wide as the picture
+ *   │               Previous  |  Next             │ ← only with 2+ pictures
+ *   │                                             │
+ *   └─────────────────────────────────────────────┘
  *
- *   ┌─────────────────────────────────────┐
- *   │              backdrop               │ ← click anywhere → close
- *   │   ┌───────────────────────┐         │
- *   │   │       NSImageView     │         │ ← scaled to fit inset box
- *   │   └───────────────────────┘         │
- *   │  caption text     [action link]     │ ← on_look_viewer_caption_h
- *   │       Previous  |  Next             │ ← on_look_viewer_nav_h
- *   └─────────────────────────────────────┘
- *
- * See image_viewer.h for the public API.
+ *   layout  — frames, computed here (arrange): the picture's view is sized
+ *             to the fitted picture, so the caption row under it is exactly
+ *             as wide as the picture and the link sits under its bottom-right
+ *             corner; the group is centred in the host.  The host is asked
+ *             for the picture again once a resize has settled, since it may
+ *             decode to the box it is offered.
+ *   clicks  — the words are plain labels, hit-tested here (mouseDown:): the
+ *             Previous | Next row splits at its MIDLINE (left half back,
+ *             right half forward — no dead gaps between small words), the
+ *             action link runs the host's action, and a press anywhere else
+ *             closes the viewer.  A step past either end does nothing — no
+ *             wrap-around — and that word is dimmed.  The hand cursor shows
+ *             over exactly what a click would act on.
+ *   focus   — the viewer never takes the keyboard: the host window offers
+ *             each key to on_image_viewer_key_down first and swallows the
+ *             rest while it is open.
  * =========================================================================== */
 
 #import "image_viewer.h"
+
 #import "ui_util.h"
+
 #include "look.h"
 
-/* ── Key codes ──────────────────────────────────────────────────────────── */
+/* Key codes the viewer acts on. */
+static const unsigned short key_escape = 53;
+static const unsigned short key_left   = 123;
+static const unsigned short key_right  = 124;
 
-static const unsigned short kEscape     = 53;
-static const unsigned short kLeftArrow  = 123;
-static const unsigned short kRightArrow = 124;
-
-/* ── Resize settle timer ────────────────────────────────────────────────── */
-
-/* Milliseconds of quiet after a resize before the image is re-requested. */
+/* Quiet after a resize before the host is asked for the picture again (s). */
 static const double resize_settle_s = 0.15;
 
-/* ── Subview tags ───────────────────────────────────────────────────────── */
-
-static const NSInteger tag_image_view   = 1;
-static const NSInteger tag_caption      = 2;
-static const NSInteger tag_action_link  = 3;
-static const NSInteger tag_nav_prev     = 4;
-static const NSInteger tag_nav_next     = 5;
-
-/* ── NotesImageViewer ────────────────────────────────────────────────────── */
+/* The longest caption, in characters, before it truncates (GTK: 60). */
+static const NSUInteger caption_max_chars = 60;
 
 @interface NotesImageViewer ()
-@property (nonatomic, assign) NSInteger  idx;           /* -1 = closed        */
-@property (nonatomic, strong) NSString  *action_label;
-@property (nonatomic, strong) NSString  *action_tip;
-@property (nonatomic, strong) NSTimer   *resize_timer;
-@property (nonatomic, strong) id         frame_observer; /* over's frame changes */
-@property (nonatomic, weak)   NSImageView   *image_view;
-@property (nonatomic, weak)   NSTextField   *caption_view;
-@property (nonatomic, weak)   NSButton      *action_button;
-@property (nonatomic, weak)   NSTextField   *nav_prev;
-@property (nonatomic, weak)   NSTextField   *nav_next;
+@property (nonatomic, assign) NSInteger    idx;              /* -1 = closed          */
+@property (nonatomic, strong) NSImageView *picture;
+@property (nonatomic, strong) NSTextField *caption;
+@property (nonatomic, strong) NSTextField *link;             /* nil = no action      */
+@property (nonatomic, strong) NSView      *nav;              /* Previous | Next      */
+@property (nonatomic, strong) NSTextField *nav_prev;
+@property (nonatomic, strong) NSTextField *nav_next;
+@property (nonatomic, strong) NSTextField *nav_bar;          /* the dim "|"          */
+@property (nonatomic, assign) NSSize       fitted;           /* the picture's size   */
+@property (nonatomic, assign) NSSize       fit_box;          /* the box it fitted    */
+@property (nonatomic, strong) NSTimer     *resize_timer;
+@property (nonatomic, strong) id           frame_observer;   /* the host's frame     */
 @end
+
+/*
+ * viewer_label — a small label in the viewer's light text colour.
+ *
+ * Inputs:
+ *   text — the text
+ *
+ * Output: the label (frame-laid-out by the viewer).
+ */
+static NSTextField *
+viewer_label(NSString *text)
+{
+    NSTextField *label = [NSTextField labelWithString:text];
+    label.font      = [NSFont systemFontOfSize:on_look_ui_font];
+    label.textColor = on_ui_color(on_look_viewer_text);
+    return label;
+}
+
+/*
+ * link_look — show a word as live (blue, underlined) or as a dead end
+ * (dimmed).  Only the look: mouseDown: decides what a click does.
+ *
+ * Inputs:
+ *   label — the word
+ *   live  — YES when a click on it does something
+ */
+static void
+link_look(NSTextField *label, BOOL live)
+{
+    NSDictionary *attrs = live
+        ? @{ NSFontAttributeName: label.font,
+             NSForegroundColorAttributeName: on_ui_color(on_look_viewer_link),
+             NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) }
+        : @{ NSFontAttributeName: label.font,
+             NSForegroundColorAttributeName: [on_ui_color(on_look_viewer_text)
+                                              colorWithAlphaComponent:on_look_viewer_dim_alpha] };
+    label.attributedStringValue = [[NSAttributedString alloc] initWithString:label.stringValue
+                                                                   attributes:attrs];
+}
 
 @implementation NotesImageViewer
 
-/* ── NSView overrides ──────────────────────────────────────────────────── */
+/* ── NSView ──────────────────────────────────────────────────────────── */
 
 /*
- * isOpaque — not opaque (has transparent corners outside the image).
+ * acceptsFirstResponder — never: the keyboard stays with the view behind.
  *
- * Inputs: none
  * Output: NO.
  */
-- (BOOL) isOpaque { return NO; }
+- (BOOL)
+acceptsFirstResponder
+{
+    return NO;
+}
 
 /*
- * wantsLayer — YES so the viewer draws above all host subviews.
- *
- * Inputs: none
- * Output: YES.
- */
-- (BOOL) wantsLayer { return YES; }
-
-/*
- * acceptsFirstResponder — NO: the viewer never takes keyboard focus.
- *
- * Inputs: none
- * Output: NO.
- */
-- (BOOL) acceptsFirstResponder { return NO; }
-
-/*
- * drawRect: — fill with the dark backdrop colour.
+ * drawRect: — the dark backdrop.
  *
  * Inputs:
- *   dirty — the dirty rect (unused; we redraw the whole view)
- *
- * Output: none.
+ *   dirty — the area to draw (unused: all of it)
  */
 - (void)
 drawRect:(NSRect)dirty
 {
-    (void)dirty;
-    on_color_t c = on_look_pick(on_look_viewer_backdrop, on_ui_is_dark(self));
-    [[NSColor colorWithRed:c.r green:c.g blue:c.b alpha:c.a] setFill];
-    NSRectFill(self.bounds);
+    [on_ui_color(on_look_viewer_backdrop) setFill];
+    NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
 }
 
 /*
- * dealloc — stop following the covered view's frame.
+ * dealloc — stop following the host's frame.
  */
 - (void)
 dealloc
 {
     if (_frame_observer) [NSNotificationCenter.defaultCenter removeObserver:_frame_observer];
+    [_resize_timer invalidate];
 }
 
 /*
- * mouseDown: — close the viewer on any click.
- *
- * Inputs:
- *   event — the mouse event
- *
- * Output: none.
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    (void)event;
-    on_image_viewer_close(self);
-}
-
-/*
- * resizeSubviewsWithOldSize: — re-request the image after a brief settle.
+ * resizeSubviewsWithOldSize: — the host changed size: re-arrange at once
+ * (the picture only ever shrinks inside its view), and ask the host for
+ * the picture again once the size has settled.
  *
  * Inputs:
  *   old_size — the previous size (unused)
- *
- * Output: none.
  */
 - (void)
 resizeSubviewsWithOldSize:(NSSize)old_size
 {
-    (void)old_size;
-    [super resizeSubviewsWithOldSize:old_size];
     if (self.idx < 0) return;
+    [self arrange];
     [self.resize_timer invalidate];
     __weak NotesImageViewer *wv = self;
-    self.resize_timer = [NSTimer scheduledTimerWithTimeInterval:resize_settle_s
-                                                        repeats:NO
+    self.resize_timer = [NSTimer scheduledTimerWithTimeInterval:resize_settle_s repeats:NO
                                                           block:^(NSTimer *t) {
-        (void)t;
         NotesImageViewer *v = wv;
-        if (!v || v.idx < 0) return;
         v.resize_timer = nil;
-        [v load_image_at:v.idx];
+        if (v.idx >= 0 && !NSEqualSizes([v image_box], v.fit_box)) [v render];
     }];
 }
 
-/* ── Internal layout helpers ────────────────────────────────────────────── */
+/* ── Geometry ─────────────────────────────────────────────────────────── */
 
 /*
- * image_box — the rect inside the overlay that the image may fill.
+ * image_box — the room the picture may fill: the viewer inset on every
+ * side, less the caption and navigation rows, never below the minimum.
  *
- * Inputs: none
- * Output: the inset rect, never smaller than on_look_viewer_min_box square.
+ * Output: the size.
  */
-- (NSRect)
+- (NSSize)
 image_box
 {
     const CGFloat in = on_look_viewer_inset;
-    const CGFloat bh = on_look_viewer_caption_h + on_look_viewer_nav_h;
-    NSRect bounds = self.bounds;
-    CGFloat w = MAX(bounds.size.width  - 2 * in, on_look_viewer_min_box);
-    CGFloat h = MAX(bounds.size.height - 2 * in - bh, on_look_viewer_min_box);
-    CGFloat x = (bounds.size.width  - w) / 2;
-    CGFloat y = bh + in;
-    return NSMakeRect(x, y, w, h);
+    return NSMakeSize(MAX(NSWidth(self.bounds) - 2 * in, on_look_viewer_min_box),
+                      MAX(NSHeight(self.bounds) - 2 * in - on_look_viewer_caption_h - on_look_viewer_nav_h,
+                          on_look_viewer_min_box));
 }
 
 /*
- * layout_chrome — position caption, action button, and nav labels.
- *
- * Inputs: none  Output: none.
+ * arrange — lay the group out, centred: the picture at its fitted size
+ * (shrunk further if the viewer has since become smaller), the caption row
+ * as wide as the picture (wider only for a short picture's caption, never
+ * wider than the viewer), the navigation row centred under it.
  */
 - (void)
-layout_chrome
+arrange
 {
-    const CGFloat in  = on_look_viewer_inset;
-    const CGFloat ch  = on_look_viewer_caption_h;
-    const CGFloat nh  = on_look_viewer_nav_h;
-    CGFloat w = self.bounds.size.width;
+    NSSize  box   = [self image_box];
+    CGFloat k     = MIN(MIN(box.width / MAX(self.fitted.width, 1), box.height / MAX(self.fitted.height, 1)), 1.0);
+    NSSize  pic   = NSMakeSize(floor(self.fitted.width * k), floor(self.fitted.height * k));
+    CGFloat link_w = self.link ? self.link.fittingSize.width : 0;
+    CGFloat gap    = self.link ? on_look_viewer_gap : 0;
+    CGFloat row_w  = MIN(box.width, MAX(pic.width, MIN(self.caption.fittingSize.width, box.width) + gap + link_w));
+    BOOL    has_nav = !self.nav.hidden;
+    CGFloat cap_h  = self.caption.fittingSize.height;
+    CGFloat height = pic.height + on_look_viewer_row_gap + cap_h +
+                     (has_nav ? on_look_viewer_row_gap + self.nav.frame.size.height : 0);
 
-    self.caption_view.frame = NSMakeRect(in, nh, w / 2 - in, ch);
-    self.action_button.frame = NSMakeRect(w / 2, nh, w / 2 - in, ch);
-
-    CGFloat nav_w = (w - 2 * in) / 2;
-    self.nav_prev.frame = NSMakeRect(in, 0, nav_w, nh);
-    self.nav_next.frame = NSMakeRect(in + nav_w, 0, nav_w, nh);
+    CGFloat top  = floor((NSHeight(self.bounds) + height) / 2.0);            /* y up */
+    CGFloat left = floor((NSWidth(self.bounds) - row_w) / 2.0);
+    self.picture.frame = NSMakeRect(floor((NSWidth(self.bounds) - pic.width) / 2.0), top - pic.height,
+                                    pic.width, pic.height);
+    CGFloat row_y = top - pic.height - on_look_viewer_row_gap - cap_h;
+    self.caption.frame = NSMakeRect(left, row_y, MAX(row_w - gap - link_w, 0), cap_h);
+    self.link.frame    = NSMakeRect(left + row_w - link_w, row_y, link_w, cap_h);
+    NSSize nav = self.nav.frame.size;
+    [self.nav setFrameOrigin:NSMakePoint(floor((NSWidth(self.bounds) - nav.width) / 2.0),
+                                         row_y - on_look_viewer_row_gap - nav.height)];
+    [self.window invalidateCursorRectsForView:self];
 }
 
 /*
- * update_nav — hide the nav row when there is only one image.
- *
- * Inputs: none  Output: none.
+ * render — ask the host for the picture on show, decoded for the room on
+ * offer, and lay it out; a picture the host can no longer give closes the
+ * viewer.
  */
 - (void)
-update_nav
+render
 {
-    NSInteger count = self.count_handler ? self.count_handler() : 0;
-    BOOL multi = (count > 1);
-    self.nav_prev.hidden = !multi;
-    self.nav_next.hidden = !multi;
-}
-
-/*
- * load_image_at: — request the image and update the image view.
- *
- * Inputs:
- *   index — the image ordinal to load
- *
- * Output: none.
- */
-- (void)
-load_image_at:(NSInteger)index
-{
-    if (!self.image_handler) {
+    NSSize   box   = [self image_box];
+    NSImage *image = self.image_handler ? self.image_handler(self.idx, box) : nil;
+    if (image == nil || image.size.width <= 0 || image.size.height <= 0) {
         on_image_viewer_close(self);
         return;
     }
-    NSRect box  = [self image_box];
-    NSImage *img = self.image_handler(index, box.size);
-    if (!img) {
-        on_image_viewer_close(self);
+    /* As GTK: up to the picture's PIXEL size in points (a 1000 px picture
+     * shows 1000 pt wide when there is room), scaled down to fit — not its
+     * Retina point size, which would show it at half that. */
+    NSImageRep *rep  = image.representations.firstObject;
+    NSSize      full = rep.pixelsWide > 0 ? NSMakeSize(rep.pixelsWide, rep.pixelsHigh) : image.size;
+    CGFloat k = MIN(MIN(box.width / full.width, box.height / full.height), 1.0);
+    self.fitted  = NSMakeSize(floor(full.width * k), floor(full.height * k));
+    self.fit_box = box;
+    [self arrange];                       /* the view is at its size before it gets the image */
+    self.picture.image = image;
+}
+
+/* ── Clicks ───────────────────────────────────────────────────────────── */
+
+/*
+ * nav_delta:live: — what a point in the Previous | Next row means: the
+ * left half steps back, the right half forward (THE one reading of the
+ * row, for the click and the cursor alike).
+ *
+ * Inputs:
+ *   x    — the point's x, in the viewer
+ *   live — receives whether that way leads anywhere
+ *
+ * Output: -1 or +1.
+ */
+- (NSInteger)
+nav_delta:(CGFloat)x live:(BOOL *)live
+{
+    NSInteger delta = x < NSMidX(self.nav.frame) ? -1 : +1;
+    NSInteger count = self.count_handler ? self.count_handler() : 0;
+    *live = delta < 0 ? self.idx > 0 : self.idx + 1 < count;
+    return delta;
+}
+
+/*
+ * step: — move by delta pictures; past either end nothing happens.
+ *
+ * Inputs:
+ *   delta — -1 back, +1 forward
+ */
+- (void)
+step:(NSInteger)delta
+{
+    NSInteger to    = self.idx + delta;
+    NSInteger count = self.count_handler ? self.count_handler() : 0;
+    if (self.idx >= 0 && to >= 0 && to < count) on_image_viewer_open(self, to);
+}
+
+/*
+ * hits:at: — is a point on a visible part of the viewer?
+ *
+ * Inputs:
+ *   view — a label or the row, or nil
+ *   p    — the point, in the viewer
+ *
+ * Output: YES when it is.
+ */
+- (BOOL)
+hits:(NSView *)view at:(NSPoint)p
+{
+    return view != nil && !view.hidden && NSPointInRect(p, view.frame);
+}
+
+/*
+ * mouseDown: — the row steps, the link runs the host's action (the
+ * viewer closes first, so the host may do anything), anywhere else closes.
+ * Every press counts, so a quick Next, Next is two steps.
+ *
+ * Inputs:
+ *   event — the press
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if ([self hits:self.nav at:p]) {
+        BOOL live;
+        NSInteger delta = [self nav_delta:p.x live:&live];
+        if (live) [self step:delta];
         return;
     }
-    /* Resize the image view to the displayed image size (aspect-fit). */
-    NSSize  img_size = img.size;
-    CGFloat scale_w  = box.size.width  / img_size.width;
-    CGFloat scale_h  = box.size.height / img_size.height;
-    CGFloat scale    = MIN(scale_w, scale_h);
-    if (scale > 1.0) scale = 1.0;              /* never upscale */
-    CGFloat disp_w = img_size.width  * scale;
-    CGFloat disp_h = img_size.height * scale;
-    CGFloat disp_x = box.origin.x + (box.size.width  - disp_w) / 2;
-    CGFloat disp_y = box.origin.y + (box.size.height - disp_h) / 2;
-    self.image_view.frame = NSMakeRect(disp_x, disp_y, disp_w, disp_h);
-    self.image_view.image = img;
-
-    NSString *cap = self.caption_handler ? self.caption_handler(index) : @"";
-    self.caption_view.stringValue = cap ?: @"";
-    self.action_button.hidden = (self.action_handler == nil);
-}
-
-/* ── Private construction (called by on_image_viewer_new) ─────────────── */
-
-/*
- * build_subviews_label:tip: — add chrome subviews.
- *
- * Inputs:
- *   label — action link text (nil = no link)
- *   tip   — tooltip for the action link (nil = none)
- *
- * Output: none.
- */
-- (void)
-build_subviews_label:(NSString *)label tip:(NSString *)tip
-{
-    self.action_label = label;
-    self.action_tip   = tip;
-
-    /* Image view — created with a placeholder frame; load_image_at: sets the
-     * real frame.  The frame must be non-zero before setting .image per
-     * ui_util.h "THE RULE". */
-    NSImageView *iv = on_ui_image_view(nil, on_look_viewer_min_box, on_look_viewer_min_box);
-    iv.tag = tag_image_view;
-    iv.imageScaling = NSImageScaleProportionallyUpOrDown;
-    [self addSubview:iv];
-    self.image_view = iv;
-
-    /* Caption */
-    NSTextField *cap = [NSTextField labelWithString:@""];
-    cap.tag           = tag_caption;
-    cap.font          = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    cap.textColor     = NSColor.secondaryLabelColor;
-    cap.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self addSubview:cap];
-    self.caption_view = cap;
-
-    /* Action link — an NSButton styled as a hyperlink */
-    NSButton *act = [NSButton buttonWithTitle:label ?: @""
-                                       target:self
-                                       action:@selector(action_clicked:)];
-    act.tag              = tag_action_link;
-    act.bezelStyle       = NSBezelStyleInline;
-    act.buttonType       = NSButtonTypeMomentaryLight;
-    act.font             = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    act.alignment        = NSTextAlignmentRight;
-    act.hidden           = (label == nil);
-    if (tip) act.toolTip = tip;
-    [self addSubview:act];
-    self.action_button = act;
-
-    /* Nav labels — left and right halves of the nav row; click areas are
-     * handled by mouseDown:, but we use NSButton for the visual tap style. */
-    NSButton *prev_btn = [NSButton buttonWithTitle:@"Previous"
-                                            target:self
-                                            action:@selector(nav_prev_clicked:)];
-    prev_btn.tag        = tag_nav_prev;
-    prev_btn.bezelStyle = NSBezelStyleInline;
-    prev_btn.font       = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    prev_btn.alignment  = NSTextAlignmentCenter;
-    [self addSubview:prev_btn];
-    self.nav_prev = (NSTextField *)(NSView *)prev_btn;
-
-    NSButton *next_btn = [NSButton buttonWithTitle:@"Next"
-                                            target:self
-                                            action:@selector(nav_next_clicked:)];
-    next_btn.tag        = tag_nav_next;
-    next_btn.bezelStyle = NSBezelStyleInline;
-    next_btn.font       = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    next_btn.alignment  = NSTextAlignmentCenter;
-    [self addSubview:next_btn];
-    self.nav_next = (NSTextField *)(NSView *)next_btn;
-}
-
-/* ── Nav button targets ──────────────────────────────────────────────────── */
-
-/*
- * action_clicked: — run the host's action and close.
- *
- * Inputs:
- *   sender — the action button (unused)
- *
- * Output: none.
- */
-- (void)
-action_clicked:(id)sender
-{
-    (void)sender;
-    if (!self.action_handler) return;
-    NSInteger idx = self.idx;
-    on_image_viewer_close(self);          /* close first, as per the contract */
-    self.action_handler(idx);
+    if ([self hits:self.link at:p]) {
+        NSInteger idx = self.idx;
+        on_image_viewer_close(self);
+        self.action_handler(idx);
+        return;
+    }
+    on_image_viewer_close(self);
 }
 
 /*
- * nav_prev_clicked: / nav_next_clicked: — step to previous / next image.
+ * scrollWheel: — swallowed: the view hidden behind does not scroll.
  *
  * Inputs:
- *   sender — the button (unused)
- *
- * Output: none.
+ *   event — the scroll (unused)
  */
 - (void)
-nav_prev_clicked:(id)sender
+scrollWheel:(NSEvent *)event
 {
-    (void)sender;
-    NSInteger count = self.count_handler ? self.count_handler() : 0;
-    if (count <= 1) return;
-    NSInteger next = (self.idx - 1 + count) % count;
-    on_image_viewer_open(self, next);
 }
 
+/*
+ * resetCursorRects — the hand over the link and over the live half of the
+ * row, exactly where a click acts.
+ */
 - (void)
-nav_next_clicked:(id)sender
+resetCursorRects
 {
-    (void)sender;
-    NSInteger count = self.count_handler ? self.count_handler() : 0;
-    if (count <= 1) return;
-    NSInteger next = (self.idx + 1) % count;
-    on_image_viewer_open(self, next);
+    if (self.idx < 0) return;
+    if (self.link && !self.link.hidden) [self addCursorRect:self.link.frame cursor:NSCursor.pointingHandCursor];
+    if (self.nav.hidden) return;
+    NSRect left, right;
+    NSDivideRect(self.nav.frame, &left, &right, NSWidth(self.nav.frame) / 2.0, NSMinXEdge);
+    BOOL live;
+    [self nav_delta:NSMidX(left) live:&live];
+    if (live) [self addCursorRect:left cursor:NSCursor.pointingHandCursor];
+    [self nav_delta:NSMidX(right) live:&live];
+    if (live) [self addCursorRect:right cursor:NSCursor.pointingHandCursor];
+}
+
+/* ── Building ─────────────────────────────────────────────────────────── */
+
+/*
+ * build_action:tip: — the picture's view, the caption, the action link and
+ * the Previous | Next row, all laid out by frame (arrange).
+ *
+ * Inputs:
+ *   label — the action link's text, or nil for none
+ *   tip   — its tooltip, or nil
+ */
+- (void)
+build_action:(NSString *)label tip:(NSString *)tip
+{
+    /* Made at a real size before it ever gets a picture (ui_util.h: THE
+     * RULE); arrange sizes it to the fitted picture before render sets it. */
+    self.picture = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 0, on_look_viewer_min_box,
+                                                                 on_look_viewer_min_box)];
+    self.picture.imageScaling = NSImageScaleProportionallyUpOrDown;   /* the view IS the fitted size */
+    [self addSubview:self.picture];
+
+    self.caption = viewer_label(@"");
+    self.caption.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self addSubview:self.caption];
+
+    if (label) {
+        self.link = viewer_label(label);
+        self.link.toolTip = tip;
+        [self addSubview:self.link];
+    }
+
+    self.nav_prev = viewer_label(@"Previous");
+    self.nav_next = viewer_label(@"Next");
+    self.nav_bar  = viewer_label(@"|");
+    NSStackView *row = [NSStackView stackViewWithViews:@[self.nav_prev, self.nav_bar, self.nav_next]];
+    row.spacing = on_look_viewer_nav_gap;
+    row.toolTip = @"Show the previous or next image (or press the ← and → keys)";
+    row.hidden  = YES;
+    [row setFrameSize:NSMakeSize(row.fittingSize.width, MAX(row.fittingSize.height, on_look_viewer_nav_h))];
+    self.nav = row;
+    [self addSubview:row];
 }
 
 @end
@@ -381,39 +401,51 @@ NotesImageViewer *
 on_image_viewer_new(NSView *over, NSString *action_label, NSString *action_tip)
 {
     NotesImageViewer *viewer = [[NotesImageViewer alloc] initWithFrame:over.bounds];
-    viewer.hidden           = YES;
-    viewer.idx              = -1;
+    viewer.wantsLayer = YES;             /* above the host's own layers (a scroll view's) */
+    viewer.hidden = YES;
+    viewer.idx    = -1;
     [over addSubview:viewer];
 
-    /* Cover `over` whatever its size.  Autoresizing is not enough: `over`
-     * may be laid out by constraints after this, from a zero frame, and an
-     * NSScrollView tiles its own parts without resizing other subviews. */
+    /* Cover `over` whatever its size: it may be laid out by constraints from
+     * a zero frame after this, and an NSScrollView tiles its own parts
+     * without resizing other subviews. */
     over.postsFrameChangedNotifications = YES;
     __weak NotesImageViewer *wv = viewer;
     __weak NSView           *wo = over;
     viewer.frame_observer = [NSNotificationCenter.defaultCenter
         addObserverForName:NSViewFrameDidChangeNotification object:over queue:nil
                 usingBlock:^(NSNotification *note) {
-        (void)note;
         if (wv && wo) wv.frame = wo.bounds;
     }];
-    [viewer build_subviews_label:action_label tip:action_tip];
+    [viewer build_action:action_label tip:action_tip];
     return viewer;
 }
 
 /*
- * on_image_viewer_open — see image_viewer.h.
+ * on_image_viewer_open — see image_viewer.h.  The caption is the host's
+ * description and the viewer's own key hint (the arrows only when there
+ * is somewhere to go).
  */
 void
 on_image_viewer_open(NotesImageViewer *viewer, NSInteger index)
 {
+    NSInteger count = viewer.count_handler ? viewer.count_handler() : 0;
+    if (viewer == nil || index < 0 || index >= count) return;
     viewer.idx   = index;
     viewer.frame = viewer.superview.bounds;
-    [viewer load_image_at:index];
-    [viewer layout_chrome];
-    [viewer update_nav];
+    NSString *what = viewer.caption_handler ? viewer.caption_handler(index) : nil;
+    if (what.length > caption_max_chars)
+        what = [[what substringToIndex:caption_max_chars] stringByAppendingString:@"…"];
+    viewer.caption.stringValue = [NSString stringWithFormat:@"%@      %@ESC to close", what ?: @"",
+                                  count > 1 ? @"← → to move, " : @""];
+    viewer.caption.textColor = on_ui_color(on_look_viewer_text);
+    viewer.link.hidden = viewer.action_handler == nil;
+    if (viewer.link) link_look(viewer.link, YES);
+    link_look(viewer.nav_bar, NO);
+    on_image_viewer_nav_sync(viewer);
     viewer.hidden = NO;
-    [viewer setNeedsDisplay:YES];
+    [viewer render];
+    viewer.needsDisplay = YES;
 }
 
 /*
@@ -422,11 +454,13 @@ on_image_viewer_open(NotesImageViewer *viewer, NSInteger index)
 void
 on_image_viewer_close(NotesImageViewer *viewer)
 {
+    if (viewer == nil || viewer.idx < 0) return;
     [viewer.resize_timer invalidate];
-    viewer.resize_timer        = nil;
-    viewer.idx                 = -1;
-    viewer.image_view.image    = nil;
-    viewer.hidden              = YES;
+    viewer.resize_timer  = nil;
+    viewer.idx           = -1;
+    viewer.picture.image = nil;
+    viewer.hidden        = YES;
+    [viewer.window invalidateCursorRectsForView:viewer];
 }
 
 /*
@@ -448,39 +482,35 @@ on_image_viewer_index(NotesImageViewer *viewer)
 }
 
 /*
- * on_image_viewer_key_down — see image_viewer.h.
+ * on_image_viewer_key_down — see image_viewer.h.  An arrow at either end
+ * is taken and does nothing, so it cannot move the caret behind.
  */
 BOOL
 on_image_viewer_key_down(NotesImageViewer *viewer, NSEvent *event)
 {
-    if (!viewer || viewer.idx < 0) return NO;
-
-    unsigned short kc = event.keyCode;
-    if (kc == kEscape) {
-        on_image_viewer_close(viewer);
-        return YES;
+    if (!on_image_viewer_is_open(viewer)) return NO;
+    switch (event.keyCode) {
+    case key_escape: on_image_viewer_close(viewer); return YES;
+    case key_left:   [viewer step:-1];              return YES;
+    case key_right:  [viewer step:+1];              return YES;
+    default:         return NO;
     }
-    if (kc == kLeftArrow) {
-        NSInteger count = viewer.count_handler ? viewer.count_handler() : 1;
-        NSInteger next  = (viewer.idx - 1 + count) % count;
-        on_image_viewer_open(viewer, next);
-        return YES;
-    }
-    if (kc == kRightArrow) {
-        NSInteger count = viewer.count_handler ? viewer.count_handler() : 1;
-        NSInteger next  = (viewer.idx + 1) % count;
-        on_image_viewer_open(viewer, next);
-        return YES;
-    }
-    /* Viewer is open: swallow the key so typing doesn't reach the note. */
-    return YES;
 }
 
 /*
- * on_image_viewer_nav_sync — see image_viewer.h.
+ * on_image_viewer_nav_sync — see image_viewer.h.  At either end the word
+ * stays where it is, dimmed, so the row never changes width under the
+ * pointer.
  */
 void
 on_image_viewer_nav_sync(NotesImageViewer *viewer)
 {
-    if (viewer && viewer.idx >= 0) [viewer update_nav];
+    if (!on_image_viewer_is_open(viewer)) return;
+    NSInteger count = viewer.count_handler ? viewer.count_handler() : 0;
+    viewer.nav.hidden = count <= 1;
+    if (count > 1) {
+        link_look(viewer.nav_prev, viewer.idx > 0);
+        link_look(viewer.nav_next, viewer.idx + 1 < count);
+    }
+    [viewer arrange];
 }

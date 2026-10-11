@@ -31,10 +31,9 @@
  * (The GTK build's render op returned a GdkPaintable; here it returns an
  * NSImage, so no Core Foundation ownership crosses a block.)
  *
- * STATUS: image_viewer.m is a STUB for work package D.  The specification
- * is porting/gtk_reference/src/image_viewer.c; the geometry constants are
- * in look.h (on_look_viewer_*).  This header is FROZEN: the media window
- * (package H) is written against it.
+ * The specification is porting/gtk_reference/src/image_viewer.c; the
+ * geometry and colours are in look.h (on_look_viewer_*).  This header is
+ * FROZEN: the editor and the media window are written against it.
  */
 @interface NotesImageViewer : NSView
 

@@ -175,6 +175,12 @@ static const double on_look_media_thumb      = 144.0;  /* media browser cell, sq
 /* ── Image viewer overlay ─────────────────────────────────────────────────── */
 
 static const on_look_color_t on_look_viewer_backdrop = { { 0.063, 0.063, 0.063, 0.88 }, { 0.063, 0.063, 0.063, 0.88 } };
+static const on_look_color_t on_look_viewer_text     = { { 0.949, 0.949, 0.949, 1.0 },  { 0.949, 0.949, 0.949, 1.0 } };  /* on the backdrop, either appearance */
+static const on_look_color_t on_look_viewer_link     = { { 0.541, 0.706, 0.973, 1.0 },  { 0.541, 0.706, 0.973, 1.0 } };  /* a clickable word                   */
+static const double on_look_viewer_dim_alpha = 0.40;   /* a word that leads nowhere            */
+static const double on_look_viewer_gap       = 18.0;   /* caption to action link               */
+static const double on_look_viewer_row_gap   = 4.0;    /* picture to caption row, row to nav   */
+static const double on_look_viewer_nav_gap   = 12.0;   /* Previous, |, Next                    */
 static const double on_look_viewer_inset     = 20.0;   /* image clear of the overlay's edge      */
 static const double on_look_viewer_caption_h = 30.0;
 static const double on_look_viewer_nav_h     = 24.0;

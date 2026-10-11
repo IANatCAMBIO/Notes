@@ -213,6 +213,29 @@ on_text_add_image(OnText *t, gsize off, GBytes *png, guint32 display_width)
  * BLOCKS
  * ======================================================================== */
 
+void
+on_text_walk(const OnText *t, const OnTextWalk *walk, gpointer data)
+{
+    gsize at = 0;                    /* start of the current run            */
+    guint k  = 0;                    /* next inline image                   */
+    for (guint i = 0; i < t->runs->len; i++) {
+        const OnRun *r = &g_array_index(t->runs, OnRun, i);
+        gsize cur = at, end = at + r->len;
+        while (k < t->images->len &&
+               g_array_index(t->images, OnInlineImage, k).offset < end) {
+            const OnInlineImage *img =
+                &g_array_index(t->images, OnInlineImage, k);
+            walk->text(t->text->str + cur, img->offset - cur, r->flags, data);
+            if (walk->image != NULL)
+                walk->image(img, data);
+            cur = img->offset + ON_OBJ_CHAR_LEN;
+            k++;
+        }
+        walk->text(t->text->str + cur, end - cur, r->flags, data);
+        at = end;
+    }
+}
+
 gboolean
 on_block_kind_is_text(OnBlockKind kind)
 {
@@ -224,6 +247,12 @@ on_block_kind_is_list(OnBlockKind kind)
 {
     return kind == ON_BLOCK_BULLET || kind == ON_BLOCK_NUMBER ||
            kind == ON_BLOCK_CHECK;
+}
+
+gint
+on_block_number(gint previous, OnBlockKind kind)
+{
+    return kind == ON_BLOCK_NUMBER ? previous + 1 : 0;
 }
 
 guint32
@@ -667,7 +696,7 @@ finish_line(Loader *L)
         L->rep->action_stray++;      /* kept on the block, not written back */
     L->pending_uid = 0;
 
-    L->number_run = (b->kind == ON_BLOCK_NUMBER) ? L->number_run + 1 : 0;
+    L->number_run = on_block_number(L->number_run, b->kind);
     g_ptr_array_add(L->doc->blocks, b);
     L->cur        = NULL;
     L->line_para  = 0;
@@ -1036,28 +1065,33 @@ sv_image(Saver *S, GBytes *png, guint32 display_width)
     on_bnbf_write_image(&S->w, display_width, bytes, n);
 }
 
+/* What sv_runs' walk callbacks write into.                                 */
+typedef struct {
+    Saver   *S;
+    guint32  para;                   /* the line's paragraph bit            */
+} SvRuns;
+
+/* sv_runs_text() / sv_runs_image() — on_text_walk callbacks for sv_runs.    */
+static void
+sv_runs_text(const gchar *s, gsize n, guint32 flags, gpointer data)
+{
+    SvRuns *w = data;
+    sv_text(w->S, w->para | flags, s, n);
+}
+
+static void
+sv_runs_image(const OnInlineImage *img, gpointer data)
+{
+    sv_image(((SvRuns *)data)->S, img->png, img->display_width);
+}
+
 /* sv_runs() — a text's runs under `para`, its inline images as records.     */
 static void
 sv_runs(Saver *S, const OnText *t, guint32 para)
 {
-    gsize at = 0;                    /* start of the current run            */
-    guint k  = 0;                    /* next inline image                   */
-    for (guint i = 0; i < t->runs->len; i++) {
-        const OnRun *r = &g_array_index(t->runs, OnRun, i);
-        gsize cur = at, end = at + r->len;
-        while (k < t->images->len &&
-               g_array_index(t->images, OnInlineImage, k).offset < end) {
-            const OnInlineImage *img =
-                &g_array_index(t->images, OnInlineImage, k);
-            sv_text(S, para | r->flags, t->text->str + cur,
-                    img->offset - cur);
-            sv_image(S, img->png, img->display_width);
-            cur = img->offset + ON_OBJ_CHAR_LEN;
-            k++;
-        }
-        sv_text(S, para | r->flags, t->text->str + cur, end - cur);
-        at = end;
-    }
+    static const OnTextWalk walk = { sv_runs_text, sv_runs_image };
+    SvRuns w = { S, para };
+    on_text_walk(t, &walk, &w);
 }
 
 guint8 *
@@ -1072,7 +1106,7 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
     for (guint i = 0; i < d->blocks->len; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         guint32 para = on_block_kind_para_flag(b->kind);
-        number_run = (b->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+        number_run = on_block_number(number_run, b->kind);
 
         /* A real action line's identity precedes its text; a uid left on
          * any other block (the '!' was deleted, the line became a bullet)
@@ -2385,19 +2419,21 @@ on_document_take_actions_modified(OnDocument *d)
  * DERIVED READS
  * ======================================================================== */
 
+/* append_text_piece() — on_text_walk callback: the characters, into the
+ * GString `data`.                                                           */
+static void
+append_text_piece(const gchar *s, gsize n, guint32 flags, gpointer data)
+{
+    (void)flags;
+    g_string_append_len(data, s, (gssize)n);
+}
+
 /* append_text_line() — a text's characters minus every U+FFFC.              */
 static void
 append_text_line(GString *out, const OnText *t)
 {
-    gsize cur = 0;
-    for (guint k = 0; k < t->images->len; k++) {
-        const OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
-        g_string_append_len(out, t->text->str + cur,
-                            (gssize)(img->offset - cur));
-        cur = img->offset + ON_OBJ_CHAR_LEN;
-    }
-    g_string_append_len(out, t->text->str + cur,
-                        (gssize)(t->text->len - cur));
+    static const OnTextWalk walk = { append_text_piece, NULL };
+    on_text_walk(t, &walk, out);
 }
 
 gchar *
@@ -2407,7 +2443,7 @@ on_document_plain_text(const OnDocument *d)
     gint number_run = 0;
     for (guint i = 0; i < d->blocks->len; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        number_run = (b->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+        number_run = on_block_number(number_run, b->kind);
         if (i > 0)
             g_string_append_c(out, '\n');
         switch (b->kind) {

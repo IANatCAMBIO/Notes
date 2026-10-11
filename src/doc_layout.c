@@ -1442,7 +1442,7 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
         const BL *b = &L->bl[i];
         if (b->y > p->clip.y + p->clip.h) break;
         const OnBlock *blk = on_document_block(L->doc, (guint)i);
-        number_run = (blk->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+        number_run = on_block_number(number_run, blk->kind);
         code_run   = (blk->kind == ON_BLOCK_CODE)   ? code_run + 1   : 0;
         bool whole;
         size_t s, e;

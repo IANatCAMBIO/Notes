@@ -154,6 +154,16 @@ guint32 on_text_flags_at(const OnText *t, gsize off);
 void on_text_add_image(OnText *t, gsize off, GBytes *png,
                        guint32 display_width);
 
+/* on_text_walk() — a text in order, as THE writers see it: `text` gets each
+ * stretch of a run between inline images, with the run's flags (a stretch
+ * may be empty), `image` each inline image where it sits; the U+FFFC
+ * placeholders themselves are passed to neither.  `image` may be NULL.    */
+typedef struct {
+    void (*text)(const gchar *s, gsize n, guint32 flags, gpointer data);
+    void (*image)(const OnInlineImage *img, gpointer data);
+} OnTextWalk;
+void on_text_walk(const OnText *t, const OnTextWalk *walk, gpointer data);
+
 /* ---------------------------------------------------------------------------
  * BLOCK constructors / destructor
  * ------------------------------------------------------------------------- */
@@ -178,6 +188,11 @@ gboolean on_block_kind_is_text(OnBlockKind kind);
 
 /* on_block_kind_is_list() — BULLET/NUMBER/CHECK: a list line.             */
 gboolean on_block_kind_is_list(OnBlockKind kind);
+
+/* on_block_number() — THE numbering of a numbered list, carried along a
+ * walk of the blocks: a NUMBER line's number given the number of the line
+ * before it (0 for none), or 0 for any other kind, which ends the run.    */
+gint on_block_number(gint previous, OnBlockKind kind);
 
 /* on_block_cell() — a table's cell (row r, column c); NULL out of range.  */
 OnText *on_block_cell(const OnBlock *b, gint r, gint c);

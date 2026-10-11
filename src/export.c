@@ -194,6 +194,27 @@ emit_text_run(OnExportCtx *ctx, const gchar *text, gsize n, guint32 flags,
     }
 }
 
+/* What render_inline's walk callbacks write into.                          */
+typedef struct {
+    OnExportCtx *ctx;
+    gboolean     raw;                /* inside a code block: no styling     */
+} RenderInline;
+
+/* render_inline_text() / render_inline_image() — on_text_walk callbacks for
+ * render_inline.                                                            */
+static void
+render_inline_text(const gchar *s, gsize n, guint32 flags, gpointer data)
+{
+    RenderInline *r = data;
+    emit_text_run(r->ctx, s, n, r->raw ? 0 : (flags & EXPORT_INLINE_MASK), r->raw);
+}
+
+static void
+render_inline_image(const OnInlineImage *img, gpointer data)
+{
+    emit_image(((RenderInline *)data)->ctx, img->png);
+}
+
 /* ---------------------------------------------------------------------------
  * render_inline() — a text block's runs in order, its inline images where
  * they sit (the U+FFFC placeholders themselves are not emitted).
@@ -204,25 +225,9 @@ emit_text_run(OnExportCtx *ctx, const gchar *text, gsize n, guint32 flags,
 static void
 render_inline(OnExportCtx *ctx, const OnText *t, gboolean raw)
 {
-    gsize at = 0;                    /* start of the current run            */
-    guint k  = 0;                    /* next inline image                   */
-    for (guint i = 0; i < t->runs->len; i++) {
-        const OnRun *r = &g_array_index(t->runs, OnRun, i);
-        guint32 flags = raw ? 0 : (r->flags & EXPORT_INLINE_MASK);
-        gsize cur = at, end = at + r->len;
-        while (k < t->images->len &&
-               g_array_index(t->images, OnInlineImage, k).offset < end) {
-            const OnInlineImage *img =
-                &g_array_index(t->images, OnInlineImage, k);
-            emit_text_run(ctx, t->text->str + cur, img->offset - cur, flags,
-                          raw);
-            emit_image(ctx, img->png);
-            cur = img->offset + ON_OBJ_CHAR_LEN;
-            k++;
-        }
-        emit_text_run(ctx, t->text->str + cur, end - cur, flags, raw);
-        at = end;
-    }
+    static const OnTextWalk walk = { render_inline_text, render_inline_image };
+    RenderInline r = { ctx, raw };
+    on_text_walk(t, &walk, &r);
 }
 
 /* ---------------------------------------------------------------------------
@@ -280,7 +285,7 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
 
     for (guint i = 0; i < on_document_n_blocks(doc); i++) {
         const OnBlock *b = on_document_block(doc, i);
-        number_run = (b->kind == ON_BLOCK_NUMBER) ? number_run + 1 : 0;
+        number_run = on_block_number(number_run, b->kind);
 
         /* Blocks (lists, code) persist across lines; close the open one
          * when the kind changes.                                           */

@@ -1525,6 +1525,27 @@ right_click(NSTableView *outline, NSInteger row)
 }
 
 /*
+ * press — the selection step of a left mouse-down on a table row
+ * (on_ui_select_on_mouse_down), without NSTableView's tracking loop,
+ * which a synthetic event cannot drive.
+ *
+ * Inputs:
+ *   table — the table or outline
+ *   row   — the row
+ *   mods  — the modifier flags held
+ */
+static void
+press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
+{
+    NSRect   rect  = [table rectOfRow:row];
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                        location:[table convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil]
+                                   modifierFlags:mods timestamp:0 windowNumber:table.window.windowNumber
+                                         context:nil eventNumber:0 clickCount:1 pressure:1];
+    on_ui_select_on_mouse_down(table, event);
+}
+
+/*
  * test_sidebar — the sidebar's rows, menus, commands and drops, as the
  * GTK app has them; the status bar follows the selection; the sidebar
  * fits its widest row.
@@ -1562,6 +1583,16 @@ test_sidebar(NotesLibrary *lib)
           "a right click on a folder selects it and offers its menu");
     check([lib.window.contentView.subviews count] > 0 && label_with_text(lib.window.contentView, @"/Box") != nil,
           "the status bar shows the selected folder's path");
+
+    /* Mouse-down selection: a plain press selects, the delegate's veto holds. */
+    press(outline, all, NSEventModifierFlagCommand);
+    check(lib.sel_kind == on_sb_folder && lib.sel_id == box, "a ⌘-press is left to the outline");
+    press(outline, all, 0);
+    check(lib.sel_kind == on_sb_all, "a plain press selects its row on the mouse-down");
+    NSInteger tags = sidebar_row(outline, @"Tags");
+    press(outline, tags, 0);
+    check(tags >= 0 && lib.sel_kind == on_sb_all, "a press on the Tags header leaves it unselected");
+    press(outline, box_row, 0);
 
     /* Sort Subfolders: Zeta, Alpha (and Inner) become Alpha, Inner, Zeta. */
     on_library_run_command(lib, command_item(@"sort-subfolders"));
@@ -1839,6 +1870,9 @@ test_notes_pane(NotesLibrary *lib)
 
     /* Columns. */
     NSTableView *table = pane_table(lib);
+    NSClipView  *clip  = table.enclosingScrollView.contentView;
+    check(NSMinY(clip.bounds) <= NSMinY([table rectOfRow:0]) - clip.contentInsets.top,
+          "a navigation starts at the top: the first row is below the column headers");
     check([visible_columns(table) isEqualToArray:@[@"title", @"modified"]],
           "the list shows Title and Modified by default (Path and Created hidden)");
     check(table.doubleAction != NULL && table.target != nil && table.allowsColumnReordering,
@@ -1883,6 +1917,18 @@ test_notes_pane(NotesLibrary *lib)
     on_library_notes_note_saved(lib, bravo);
     check([cell_text(table, @"title", 0) isEqualToString:@"Bravo renamed"],
           "a saved note's row takes its new title and moves to the top (Modified, newest first)");
+
+    /* Mouse-down selection in the list: a selected row keeps the whole
+     * selection (for a drag), another row replaces it, ⇧ is left alone. */
+    NSIndexSet *two = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)];
+    [table selectRowIndexes:two byExtendingSelection:NO];
+    press(table, 0, 0);
+    check([table.selectedRowIndexes isEqualToIndexSet:two], "a press on a selected row keeps the selection");
+    press(table, 2, NSEventModifierFlagShift);
+    check([table.selectedRowIndexes isEqualToIndexSet:two], "a ⇧-press is left to the table");
+    press(table, 2, 0);
+    check([table.selectedRowIndexes isEqualToIndexSet:[NSIndexSet indexSetWithIndex:2]],
+          "a plain press on another row selects only it, on the mouse-down");
 
     /* The one selection: kept across refreshes and views, dropped on navigation. */
     NSInteger alpha_row = row_with_text(table, @"title", @"alpha");

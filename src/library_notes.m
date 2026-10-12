@@ -926,7 +926,7 @@ refresh
     on_library_view_t  mode = on_library_view(lib);
     NSScrollView *scroll = mode == on_library_view_actions ? self.actions_scroll
                          : mode == on_library_view_grid    ? self.grid_scroll : self.list_scroll;
-    NSPoint origin = keep ? scroll.contentView.bounds.origin : NSZeroPoint;
+    NSPoint origin = scroll.contentView.bounds.origin;   /* kept on a content refresh */
 
     [self.card_queue removeAllObjects];
     self.card_gen++;                 /* cards in flight are for the old listing */
@@ -943,6 +943,13 @@ refresh
         if (mode == on_library_view_grid) [self queue_cards];
     }
     [self show_view:scroll];
+    if (!keep) {
+        /* The top is above zero: the column headers float over the
+         * content, and the clip view's top inset makes room for them. */
+        [scroll layoutSubtreeIfNeeded];
+        NSEdgeInsets insets = scroll.contentView.contentInsets;
+        origin = NSMakePoint(-insets.left, -insets.top);
+    }
     [scroll.contentView scrollToPoint:origin];
     [scroll reflectScrolledClipView:scroll.contentView];
     self.shown_kind = lib.sel_kind;

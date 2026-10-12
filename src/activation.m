@@ -2,6 +2,7 @@
  * activation.m — see activation.h.
  */
 #import "activation.h"
+#import "ui_util.h"
 
 /*
  * activation_is_key — is this key event Return or keypad Enter, with no
@@ -24,6 +25,21 @@ activation_is_key(NSEvent *event)
 }
 
 @implementation NotesActivatingTable
+
+/*
+ * mouseDown: — a plain click selects its row at once
+ * (on_ui_select_on_mouse_down); NSTableView then tracks the click as
+ * usual (drags, double-clicks).
+ *
+ * Inputs:
+ *   event — the mouse event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    on_ui_select_on_mouse_down(self, event);
+    [super mouseDown:event];
+}
 
 /*
  * keyDown: — Return or Enter with a selection sends the doubleAction;

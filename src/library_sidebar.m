@@ -166,8 +166,9 @@ add_folder_items(gint64 parent_id, NSMutableArray<SidebarItem *> *into,
 @class NotesSidebarController;
 
 /*
- * NotesSidebarOutline — the outline view; a right click (or Control-click)
- * selects the row under it and shows that row's menu.
+ * NotesSidebarOutline — the outline view; a click selects its row on the
+ * mouse-down, and a right click (or Control-click) selects the row under it
+ * and shows that row's menu.
  */
 @interface NotesSidebarOutline : NSOutlineView
 @property (nonatomic, weak) NotesSidebarController *controller;
@@ -196,6 +197,21 @@ typedef struct {
 @end
 
 @implementation NotesSidebarOutline
+
+/*
+ * mouseDown: — a plain click selects its row at once
+ * (on_ui_select_on_mouse_down); NSOutlineView then tracks the click as
+ * usual (folder drags, double-clicks).
+ *
+ * Inputs:
+ *   event — the mouse event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    on_ui_select_on_mouse_down(self, event);
+    [super mouseDown:event];
+}
 
 /*
  * menuForEvent: — select the row clicked and show its menu (none for the

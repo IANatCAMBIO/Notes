@@ -297,6 +297,24 @@ extern NSAttributedStringKey const on_ui_strike_key;
 NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
 
 /*
+ * on_ui_select_on_mouse_down — select the row under a plain click on the
+ * mouse-DOWN, as Finder does (a stock table or outline selects only on
+ * mouse-up, once it knows the click is not a drag).  Every table's and
+ * outline's mouseDown: calls this, then super, whose tracking loop still
+ * tells clicks from drags and sends double-clicks.  An already-selected
+ * row is left alone, so a multi-row selection can still be dragged, as
+ * are ⌘-, ⇧- and ^-clicks.  The delegate is asked first, as a click
+ * would ask it (selectionShouldChange…, then …selectionIndexesFor-
+ * ProposedSelection: or else shouldSelectRow: / shouldSelectItem:), so a
+ * row it refuses — the sidebar's Tags header — stays unselectable.
+ *
+ * Inputs:
+ *   table — the table or outline receiving the click
+ *   event — its mouse-down event
+ */
+void on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event);
+
+/*
  * NotesFlippedView — a plain container whose y grows downward: the
  * document view of a scroll view whose content should start at the top
  * (a scroll view shows a non-flipped document's BOTTOM first).

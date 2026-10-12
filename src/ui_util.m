@@ -445,6 +445,56 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
 }
 
 /*
+ * vetted_selection — the selection a click on one row would make, after
+ * the delegate's say; an outline's delegate is asked its own questions.
+ *
+ * Inputs:
+ *   table — the table or outline
+ *   row   — the clicked row, >= 0
+ *
+ * Output: the rows to select; empty when the delegate refuses.
+ */
+static NSIndexSet *
+vetted_selection(NSTableView *table, NSInteger row)
+{
+    NSIndexSet *rows = [NSIndexSet indexSetWithIndex:(NSUInteger)row];
+    id          d    = table.delegate;
+    if ([table isKindOfClass:NSOutlineView.class]) {
+        NSOutlineView *outline = (NSOutlineView *)table;
+        if ([d respondsToSelector:@selector(selectionShouldChangeInOutlineView:)] &&
+            ![d selectionShouldChangeInOutlineView:outline]) return [NSIndexSet indexSet];
+        if ([d respondsToSelector:@selector(outlineView:selectionIndexesForProposedSelection:)])
+            return [d outlineView:outline selectionIndexesForProposedSelection:rows];
+        if ([d respondsToSelector:@selector(outlineView:shouldSelectItem:)] &&
+            ![d outlineView:outline shouldSelectItem:[outline itemAtRow:row]]) return [NSIndexSet indexSet];
+        return rows;
+    }
+    if ([d respondsToSelector:@selector(selectionShouldChangeInTableView:)] &&
+        ![d selectionShouldChangeInTableView:table]) return [NSIndexSet indexSet];
+    if ([d respondsToSelector:@selector(tableView:selectionIndexesForProposedSelection:)])
+        return [d tableView:table selectionIndexesForProposedSelection:rows];
+    if ([d respondsToSelector:@selector(tableView:shouldSelectRow:)] &&
+        ![d tableView:table shouldSelectRow:row]) return [NSIndexSet indexSet];
+    return rows;
+}
+
+/*
+ * on_ui_select_on_mouse_down — select the clicked row before super tracks.
+ * Inputs/output are documented in ui_util.h.
+ */
+void
+on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event)
+{
+    NSEventModifierFlags mods = event.modifierFlags & (NSEventModifierFlagCommand |
+                                                       NSEventModifierFlagShift |
+                                                       NSEventModifierFlagControl);
+    NSInteger row = [table rowAtPoint:[table convertPoint:event.locationInWindow fromView:nil]];
+    if (mods != 0 || event.clickCount != 1 || row < 0 || [table isRowSelected:row]) return;
+    NSIndexSet *rows = vetted_selection(table, row);
+    if (rows.count > 0) [table selectRowIndexes:rows byExtendingSelection:NO];
+}
+
+/*
  * on_ui_toolbar_search_field — toolbar search field without a focus ring.
  * Inputs/output are documented in ui_util.h.
  */

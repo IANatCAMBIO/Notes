@@ -10,8 +10,9 @@
 
 /*
  * NotesActivatingTable — a table whose Return/Enter key sends its
- * doubleAction, as a double-click does.  The action reads which rows it
- * applies to with on_activated_rows.
+ * doubleAction, as a double-click does, and which selects a clicked row on
+ * the mouse-down (on_ui_select_on_mouse_down).  The action reads which
+ * rows it applies to with on_activated_rows.
  */
 @interface NotesActivatingTable : NSTableView
 @property (nonatomic, readonly) BOOL by_key;   /* YES while Return/Enter sends */

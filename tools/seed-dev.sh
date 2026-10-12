@@ -113,7 +113,7 @@ pictures=$(note "Trip photos
 
 Two pictures appended from files." "Home")
 "$NOTES" note add-image "$pictures" "$IMAGE" >/dev/null
-"$NOTES" note add-image "$pictures" "$(dirname "$IMAGE")/folder.png" >/dev/null
+"$NOTES" note add-image "$pictures" "$ROOT/tests/fixtures/folder.png" >/dev/null
 
 long=$(note "A long note
 

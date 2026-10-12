@@ -10,7 +10,7 @@
  * the database directly.  The socket both DETECTS a running app (connect
  * succeeds) and CARRIES the command to it.
  *
- * WHERE.  <data dir>/notes-appkit.sock (config.h, identity.h): inside this
+ * WHERE.  <data dir>/notes.sock (config.h, identity.h): inside this
  * build's own data directory, under a name the GTK build never uses (that
  * build's sockets are ~/.cache/notes-<hash>.sock).  The two builds can
  * therefore never serve each other's commands, and NOTES_DATA_DIR
@@ -20,7 +20,7 @@
  * notes.ini, whatever database that app has open.
  *
  * WHETHER AN APP IS RUNNING is decided by a lock, not by the socket: the
- * app holds an exclusive flock on <data dir>/notes-appkit.lock for its
+ * app holds an exclusive flock on <data dir>/notes.lock for its
  * whole life (the kernel releases it if the app dies).  A client that
  * cannot connect runs headless only when that lock is free.  If the lock
  * is held — the app is starting, is busy, or could not create its socket —

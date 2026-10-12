@@ -49,7 +49,7 @@
 /* ===========================================================================
  * the socket's address
  *
- * The socket file is <data dir>/notes-appkit.sock.  A Unix socket address
+ * The socket file is <data dir>/notes.sock.  A Unix socket address
  * holds at most 103 bytes of path, and a data directory under a deep
  * development checkout is longer than that, so the path is never passed
  * whole: bind() and connect() are made with the data directory as the
@@ -156,7 +156,7 @@ ipc_set_timeout(int fd, int seconds)
  * full refuses connections exactly as a dead socket file does, and a
  * client that took that for "no app" would open the database behind the
  * app's back.  The app holds an exclusive flock on <data dir>/
- * notes-appkit.lock from on_ipc_server_start to on_ipc_server_stop; the
+ * notes.lock from on_ipc_server_start to on_ipc_server_stop; the
  * kernel drops it if the app dies.  A client that cannot connect asks the
  * lock: free means no app, held means the app is there and the client
  * waits or gives up — it never runs headless.

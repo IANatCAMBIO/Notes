@@ -155,7 +155,7 @@ test_policy(const char *test_dir)
              pw->pw_dir, ON_DATA_DIR_NAME);
     dir = on_paths_data_dir();
     check(strcmp(dir, expect) == 0,
-          "the default is ~/Library/Application Support/NotesAppKit");
+          "the default is ~/Library/Application Support/Notes");
     check(strstr(dir, ".local/share") == NULL && strstr(dir, ".config") == NULL &&
           strstr(dir, ".cache") == NULL && strstr(dir, "Mobile Documents") == NULL &&
           strstr(dir, ".app") == NULL,

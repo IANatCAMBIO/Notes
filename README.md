@@ -13,7 +13,7 @@ talking to the running app.  The document model, database and CLI are the
 GTK build's, and the CLI's output is checked byte for byte against it.
 
 It is a separate application from the GTK Notes: its own bundle identifier
-(`com.cambio.notes-appkit`), its own data folder and its own socket.  It
+(`com.cambio.notes`), its own data folder and its own socket.  It
 never reads or writes the GTK app's database, settings or socket.  Both
 bundles are called `Notes.app`, so `make install` replaces a GTK copy in
 `~/Applications` (the GTK build is on branch `gtk4`).
@@ -40,10 +40,10 @@ bundle, so reinstalling never touches them.
 
 | What | Where |
 |---|---|
-| Settings | `~/Library/Application Support/NotesAppKit/notes.ini` |
-| Database (default) | `~/Library/Application Support/NotesAppKit/notes.db` |
-| Backups (default, when enabled) | `~/Library/Application Support/NotesAppKit/backups/` |
-| App ↔ command-line socket and lock | `~/Library/Application Support/NotesAppKit/notes-appkit.sock`, `notes-appkit.lock` |
+| Settings | `~/Library/Application Support/Notes/notes.ini` |
+| Database (default) | `~/Library/Application Support/Notes/notes.db` |
+| Backups (default, when enabled) | `~/Library/Application Support/Notes/backups/` |
+| App ↔ command-line socket and lock | `~/Library/Application Support/Notes/notes.sock`, `notes.lock` |
 
 Setting the environment variable `NOTES_DATA_DIR` moves all of them to another
 folder; development and tests always do (`dev/` inside the source tree).

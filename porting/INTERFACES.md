@@ -38,7 +38,7 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/Helpers/notes stats`
    (the last line of `stats` prints the database it opened — look at it).
    Without the variable this build uses its own real directory,
-   `~/Library/Application Support/NotesAppKit/`; it cannot reach the GTK
+   `~/Library/Application Support/Notes/`; it cannot reach the GTK
    build's files either way (§10).
 3. **`document.c`, `bnbf.c`, `db.c` are not yours to change.**  The document
    model is the single mutation path of a note (`BLOCK_MODEL.md`).  If you
@@ -483,9 +483,9 @@ its inputs as locals, and never reads `self.…` off the main thread.
 ## 10. Data and test data
 
 - **One data directory** (`config.h`): `$NOTES_DATA_DIR`, else
-  `~/Library/Application Support/NotesAppKit/`.  It holds `notes.ini`, the
+  `~/Library/Application Support/Notes/`.  It holds `notes.ini`, the
   default `notes.db`, the default `backups/`, the socket
-  `notes-appkit.sock` and the app lock `notes-appkit.lock` (held by the
+  `notes.sock` and the app lock `notes.lock` (held by the
   running app; the `notes` tool runs headless only when it is free).  Nothing is resolved from `argv[0]`, the bundle or
   the XDG directories; the home directory comes from the password database,
   not `$HOME`.  The only way out is the `db_dir` key, written by File ▸ Open

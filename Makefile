@@ -305,7 +305,7 @@ bnbf-scan: build/bnbf-scan
 # A running installed copy is asked to quit first (SIGTERM, which the app
 # turns into an ordinary Quit: editors flush, see app_lifecycle.h) and is
 # reopened afterwards. Install stops if it has not exited after 5 s. The
-# data directory (~/Library/Application Support/NotesAppKit) is outside the
+# data directory (~/Library/Application Support/Notes) is outside the
 # bundle, so replacing the bundle never touches settings or notes.
 INSTALL_DIR   = $(HOME)/Applications
 INSTALLED_BIN = $(INSTALL_DIR)/$(BUNDLE)/Contents/MacOS/$(BUNDLE_NAME)

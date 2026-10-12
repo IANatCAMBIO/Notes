@@ -27,7 +27,7 @@
 #define ON_BUNDLE_NAME "Notes"
 
 /* CFBundleIdentifier; also the prefix of the pasteboard types (ui_util.h). */
-#define ON_BUNDLE_ID "com.cambio.notes-appkit"
+#define ON_BUNDLE_ID "com.cambio.notes"
 
 /* The command-line program, in Contents/Helpers (not beside the GUI
  * executable: on a case-insensitive disk `notes` and `Notes` are one file).
@@ -37,7 +37,7 @@
 /* The data directory is ~/Library/Application Support/<ON_DATA_DIR_NAME>:
  * notes.ini, the default notes.db, the default backups/ folder and the IPC
  * socket all live in it (see config.h for the policy).                      */
-#define ON_DATA_DIR_NAME "NotesAppKit"
+#define ON_DATA_DIR_NAME "Notes"
 
 /* Environment variable that replaces the data directory wholesale.  Every
  * development build, run and test sets it to a folder under dev/.           */
@@ -47,7 +47,7 @@
  * ON_DB_FILENAME in db.h: it is part of the on-disk contract, not of this
  * build's identity.)                                                        */
 #define ON_CONFIG_FILENAME "notes.ini"
-#define ON_SOCKET_FILENAME "notes-appkit.sock"
-#define ON_LOCK_FILENAME "notes-appkit.lock"
+#define ON_SOCKET_FILENAME "notes.sock"
+#define ON_LOCK_FILENAME "notes.lock"
 
 #endif /* ON_IDENTITY_H */

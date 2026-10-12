@@ -6,13 +6,13 @@
  * Every file this app keeps — everything but a database the user
  * explicitly opened elsewhere — lives in ONE directory, the data directory:
  *
- *     $NOTES_DATA_DIR                                  when that is set
- *     ~/Library/Application Support/NotesAppKit        otherwise
+ *     $NOTES_DATA_DIR                          when that is set
+ *     ~/Library/Application Support/Notes      otherwise
  *
  *     <data dir>/notes.ini            the settings (this module)
  *     <data dir>/notes.db             the default database (db.h)
  *     <data dir>/backups/             the default backup folder (backup.h)
- *     <data dir>/notes-appkit.sock    the CLI <-> GUI socket (ipc.h)
+ *     <data dir>/notes.sock           the CLI <-> GUI socket (ipc.h)
  *
  * Nothing is ever resolved relative to argv[0], the bundle, or the XDG
  * directories the GTK build used (~/.config/notes, ~/.local/share/notes,

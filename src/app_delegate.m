@@ -446,7 +446,7 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 }
 
 /*
- * show_help: — Help ▸ Notes AppKit Help: open the README that ships in the
+ * show_help: — Help ▸ Notes Help: open the README that ships in the
  * bundle.
  *
  * Inputs:

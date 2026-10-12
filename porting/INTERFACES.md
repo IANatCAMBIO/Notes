@@ -35,7 +35,7 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
 2. **Every run uses test data.**  `make run`, `make seed`, `make test` set
    `NOTES_DATA_DIR` to a folder under `dev/`.  If you start the app or the
    tool by hand, set it yourself:
-   `NOTES_DATA_DIR=$PWD/dev/data NotesAppKit.app/Contents/MacOS/notes stats`
+   `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/Helpers/notes stats`
    (the last line of `stats` prints the database it opened — look at it).
    Without the variable this build uses its own real directory,
    `~/Library/Application Support/NotesAppKit/`; it cannot reach the GTK
@@ -504,7 +504,7 @@ its inputs as locals, and never reads `self.…` off the main thread.
   contexts.  It refuses to run while an app is serving `dev/data`.
 - **`make run`** runs the app on `dev/data` in the foreground (its log, with
   `[status]` lines, on your terminal).
-- **The `notes` tool** is `NotesAppKit.app/Contents/MacOS/notes`.  While the
+- **The `notes` tool** is `Notes.app/Contents/Helpers/notes`.  While the
   app runs on the same data directory, the tool's commands execute inside
   the app (and edit an open editor's live document).
 - **Tests** get their own directory under `dev/test/<name>` (the Makefile

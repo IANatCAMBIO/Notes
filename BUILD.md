@@ -1,4 +1,4 @@
-# Building Notes AppKit
+# Building Notes
 
 ## Toolchain and dependencies
 
@@ -54,7 +54,7 @@ it; objects also depend on the Makefile and on `VERSION`.
 
 | Target | Does |
 |---|---|
-| `make` | builds `NotesAppKit.app`: the app (`Contents/MacOS/NotesAppKit`), the CLI (`Contents/MacOS/notes`), `Info.plist`, the icons and README in `Contents/Resources`; signs it |
+| `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), the CLI (`Contents/Helpers/notes`), `Info.plist`, the icons and README in `Contents/Resources`; signs it |
 | `make run` | runs the app in the foreground on `dev/data` (seeding it first if needed); `NOTES_DATA_DIR` is set for you |
 | `make seed` | wipes and rebuilds the development database `dev/data/notes.db` |
 | `make test` | `build/test_document` (the model, GLib only), every `tests/*_test.c` (core), every `tests/*_test.m` (UI, in-process), then `make golden` |
@@ -68,11 +68,11 @@ it; objects also depend on the Makefile and on `VERSION`.
 ## What is built from what
 
 ```
-NotesAppKit.app/Contents/
+Notes.app/Contents/
   Info.plist            resources/Info.plist + names from src/identity.h,
                         version from VERSION, NotesBuildDate, LSMinimumSystemVersion
-  MacOS/NotesAppKit     every src/*.c except cli_main.c, and every src/*.m
-  MacOS/notes           the core (CORE_SRCS in the Makefile) + src/cli_main.c
+  MacOS/Notes           every src/*.c except cli_main.c, and every src/*.m
+  Helpers/notes         the core (CORE_SRCS in the Makefile) + src/cli_main.c
   Resources/            icons/*.png, README.md
 build/                  objects, dependency files, test programs, dev_seed
 dev/                    (gitignored) data/, test/, snapshots/, golden/, gtk_ref/
@@ -153,8 +153,8 @@ the outside tools remain the stronger check; point them at a running
 
 - arm64 macOS; not sandboxed (arbitrary database locations, a Unix socket in
   Application Support, spawning helper commands).
-- The app must run from its bundle; the CLI finds the app executable beside
-  itself in `Contents/MacOS`.
+- The app must run from its bundle; the CLI, in `Contents/Helpers`, finds
+  the app executable in the sibling `Contents/MacOS`.
 - `[NSApp activate]` is macOS 14 API and is not caught by the availability
   check (messages to `NSApp` are not checked): keep the compile target at
   14.0 or review such calls by hand.

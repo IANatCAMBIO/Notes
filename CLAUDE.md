@@ -19,7 +19,7 @@ data, code style, verification.
   real notes), the sibling repos `../tasks`, `../files`.  Never run a GTK
   `notes` binary (only `make golden` does, in a sandbox).
 - Every run uses test data: `make run`, `make seed`, `make test`.  By hand:
-  `NOTES_DATA_DIR=$PWD/dev/data NotesAppKit.app/Contents/MacOS/notes …`.
+  `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/Helpers/notes …`.
 - Do not change `document.c`, `bnbf.c`, `db.c` behaviour.  The CLI's output
   is a contract (`make golden`).
 - No new GLib in new code; nothing pumps a GLib main loop — use

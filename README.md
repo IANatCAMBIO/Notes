@@ -12,10 +12,11 @@ Search, the media browser, the AI summary, and the command-line tool
 talking to the running app.  The document model, database and CLI are the
 GTK build's, and the CLI's output is checked byte for byte against it.
 
-It is a separate application from the GTK Notes: its own bundle
-(`NotesAppKit.app`, `com.cambio.notes-appkit`), its own data folder and its
-own socket.  It never reads or writes the GTK app's database, settings or
-socket, and the two can be installed side by side.
+It is a separate application from the GTK Notes: its own bundle identifier
+(`com.cambio.notes-appkit`), its own data folder and its own socket.  It
+never reads or writes the GTK app's database, settings or socket.  Both
+bundles are called `Notes.app`, so `make install` replaces a GTK copy in
+`~/Applications` (the GTK build is on branch `gtk4`).
 
 ## Prerequisites
 
@@ -28,7 +29,7 @@ socket, and the two can be installed side by side.
 
 ```sh
 export PATH=/opt/local/bin:$PATH
-make install        # builds NotesAppKit.app and copies it to ~/Applications
+make install        # builds Notes.app and copies it to ~/Applications
 ```
 
 `make install` replaces an installed copy (asking a running one to quit
@@ -59,14 +60,14 @@ another location if the configured database cannot be opened.
 
 ## The command-line tool
 
-`NotesAppKit.app/Contents/MacOS/notes` is the same CLI the GTK app has —
+`Notes.app/Contents/Helpers/notes` is the same CLI the GTK app has —
 every command, flag, output format and exit code (`notes help` lists them;
 `--json` on every listing).  While the app is running, a command is carried
 out *by the app* over its socket, so there is only ever one writer and open
 windows stay current; otherwise the tool works on the database directly.
 
 ```sh
-N=~/Applications/NotesAppKit.app/Contents/MacOS/notes
+N=~/Applications/Notes.app/Contents/Helpers/notes
 $N stats
 $N note list --all --json
 $N action list --open

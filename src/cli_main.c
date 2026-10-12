@@ -5,13 +5,16 @@
  * GUI.  A Cocoa app must run from its bundle to have an identity (Info.plist,
  * Dock tile, menu bar), so here they are two executables in the same bundle:
  *
- *     NotesAppKit.app/Contents/MacOS/NotesAppKit   the app
- *     NotesAppKit.app/Contents/MacOS/notes         this tool
+ *     Notes.app/Contents/MacOS/Notes                the app
+ *     Notes.app/Contents/Helpers/notes             this tool
+ *
+ * (Not side by side: on a case-insensitive disk `Notes` and `notes` in one
+ * folder are the same file.)
  *
  * Every command, flag, output format and exit code is cli.c's, unchanged —
  * a Claude skill and scripts drive it.  The one thing this file adds is
  * what happens when cli.c answers "start the GUI" (-1): the tool launches
- * the app executable that sits beside it, passes its own arguments along
+ * the bundle's app executable, passes its own arguments along
  * (the app runs the same on_cli_run, which queues `quicknote` or
  * `note open PATH` as its pending action) and exits 0.  The app inherits
  * the environment, so NOTES_DATA_DIR reaches it and a development tool can
@@ -43,8 +46,8 @@
 extern char **environ;
 
 /*
- * app_executable — the app executable that sits beside this tool in the
- * bundle's Contents/MacOS.
+ * app_executable — the app executable of the bundle this tool is in:
+ * Contents/MacOS/<ON_BUNDLE_NAME>, beside this tool's Contents/Helpers.
  *
  * Inputs:
  *   out  — receives the absolute path
@@ -67,7 +70,7 @@ app_executable(char *out, size_t size)
     if (dirname_r(real, dir) == NULL) {
         return -1;
     }
-    snprintf(out, size, "%s/%s", dir, ON_BUNDLE_NAME);
+    snprintf(out, size, "%s/../MacOS/%s", dir, ON_BUNDLE_NAME);
     return 0;
 }
 
@@ -87,7 +90,7 @@ launch_app(int argc, char **argv)
 {
     char app[PATH_MAX];
     if (app_executable(app, sizeof app) != 0) {
-        fprintf(stderr, "error: cannot locate %s beside this tool\n",
+        fprintf(stderr, "error: cannot locate %s in this tool's bundle\n",
                 ON_BUNDLE_NAME);
         return 2;
     }

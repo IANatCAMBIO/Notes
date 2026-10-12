@@ -1,7 +1,7 @@
 # =============================================================================
-# Notes AppKit — Makefile
+# Notes — Makefile
 #
-#   make            build NotesAppKit.app (the app and the `notes` tool)
+#   make            build Notes.app (the app and the `notes` tool)
 #   make run        run the app on the development data in dev/data
 #   make seed       (re)create the development database in dev/data
 #   make test       unit tests, then the golden CLI comparison
@@ -36,7 +36,8 @@ CONTENTS = $(BUNDLE)/Contents
 MACOS    = $(CONTENTS)/MacOS
 RSRC     = $(CONTENTS)/Resources
 APP_BIN  = $(MACOS)/$(BUNDLE_NAME)
-CLI_BIN  = $(MACOS)/$(CLI_NAME)
+HELPERS  = $(CONTENTS)/Helpers
+CLI_BIN  = $(HELPERS)/$(CLI_NAME)
 
 CC       = clang
 
@@ -176,7 +177,7 @@ $(APP_BIN): $(CORE_OBJS) $(UI_OBJS)
 	$(CC) $(LDFLAGS) -Wl,-no_adhoc_codesign -o $@ $^ $(APP_LIBS)
 
 $(CLI_BIN): $(CORE_OBJS) $(CLI_OBJS)
-	@mkdir -p $(MACOS)
+	@mkdir -p $(HELPERS)
 	$(CC) $(LDFLAGS) -Wl,-no_adhoc_codesign -o $@ $^ $(CORE_LIBS)
 
 # Objects also depend on the Makefile so flag changes rebuild everything,

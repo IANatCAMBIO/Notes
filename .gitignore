@@ -1,6 +1,6 @@
 # Build artifacts
 build/
-NotesAppKit.app/
+Notes.app/
 
 # Development and test data, and the GTK reference worktree (make seed,
 # make run, make test): never the user's real data directory

@@ -5,8 +5,9 @@
  * was forked from: its own bundle, its own preferences and database
  * directory, its own IPC socket.  Nothing here may ever name a path the GTK
  * build uses (~/.local/share/notes, ~/.config/notes, ~/.cache/notes-*.sock,
- * an ini next to the binary), so the two can be installed side by side and
- * can never open, hand off to, or receive from each other.
+ * an ini next to the binary), so the two can never open, hand off to, or
+ * receive from each other.  The bundle NAME is shared (Notes.app):
+ * installing this build replaces a GTK copy in ~/Applications.
  *
  * Renaming the app is an edit to this file and nothing else: the Makefile
  * reads the bundle name and identifier out of it (see `ident` there), and
@@ -19,17 +20,18 @@
 #define ON_IDENTITY_H
 
 /* The name shown to the user: menu titles, window titles, the About panel. */
-#define ON_APP_NAME "Notes AppKit"
+#define ON_APP_NAME "Notes"
 
 /* The bundle is <ON_BUNDLE_NAME>.app and its GUI executable is
  * Contents/MacOS/<ON_BUNDLE_NAME>.                                          */
-#define ON_BUNDLE_NAME "NotesAppKit"
+#define ON_BUNDLE_NAME "Notes"
 
 /* CFBundleIdentifier; also the prefix of the pasteboard types (ui_util.h). */
 #define ON_BUNDLE_ID "com.cambio.notes-appkit"
 
-/* The command-line program, installed beside the GUI executable in
- * Contents/MacOS.  It is what the Claude skill and scripts call.           */
+/* The command-line program, in Contents/Helpers (not beside the GUI
+ * executable: on a case-insensitive disk `notes` and `Notes` are one file).
+ * It is what the Claude skill and scripts call.                             */
 #define ON_CLI_NAME "notes"
 
 /* The data directory is ~/Library/Application Support/<ON_DATA_DIR_NAME>:

@@ -2786,6 +2786,163 @@ test_outside_changes(void)
     on_db_close(other);
 }
 
+static void (*library_refresh)(OnApp *app);   /* the library's own hook  */
+static int  refreshes_in_txn;        /* library refreshes made inside a write
+                                        transaction (must stay 0)           */
+
+/*
+ * refresh_recorder — OnApp.notify_notes_changed while the sync tests run:
+ * note a refresh made while a write transaction is open, then do it.
+ *
+ * Inputs:
+ *   a — the application context
+ */
+static void
+refresh_recorder(OnApp *a)
+{
+    if (sqlite3_get_autocommit(a->db->handle) == 0) refreshes_in_txn++;
+    library_refresh(a);
+}
+
+/*
+ * task_title_of — the title of the task behind a uid, on the app's
+ * connection.
+ *
+ * Inputs:
+ *   uid — the item
+ *
+ * Output: a new string ("" when there is none); g_free it.
+ */
+static gchar *
+task_title_of(gint64 uid)
+{
+    gchar        *title = NULL;
+    sqlite3_stmt *st    = NULL;
+    sqlite3_prepare_v2(app.db->handle, "SELECT t.title FROM tasks t JOIN note_task n ON n.task_id = t.id"
+                       " WHERE n.uid = ?", -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, uid);
+    if (sqlite3_step(st) == SQLITE_ROW) title = g_strdup((const char *)sqlite3_column_text(st, 0));
+    sqlite3_finalize(st);
+    return title != NULL ? title : g_strdup("");
+}
+
+/*
+ * test_open_note_sync — the pull and the save with the note OPEN:
+ *   - a title the line refuses (blank; ending in a due date) leaves the
+ *     open line alone and the line's text goes back to the task at once
+ *     (live_save pushes every line);
+ *   - the pull refreshes no UI inside its transaction, and an editor whose
+ *     pull transaction rolls back stays dirty: check_outside does not
+ *     reload over its text, and the autosave writes it later;
+ *   - a rewrite by another writer in the same second to the same size is
+ *     still seen (the blob hash): the dirty editor's autosave writes
+ *     nothing and the changed-outside panel asks.
+ */
+static void
+test_open_note_sync(void)
+{
+    OnDatabase *other = on_db_open(app.db->path, NULL);
+    gint64 note = new_note("Open sync\n! Keep this title\nsecond line\nthird line");
+    GList *items = on_db_action_list_for_note(app.db, note);
+    gint64 uid   = ((OnActionItem *)items->data)->uid;
+    on_db_action_list_free(items);
+    on_action_sync_poll(&app);
+    library_refresh          = app.notify_notes_changed;
+    app.notify_notes_changed = refresh_recorder;
+    refreshes_in_txn         = 0;
+
+    on_editor_window_open(&app, note, NotesEditorRevealNone, 0, nil);
+    pump(0.3);
+    NSWindow      *window = editor_window_titled(@"Open sync");
+    NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+    NotesNoteView *view   = scroll.documentView;
+    OnDocument    *live   = on_note_view_document(view);
+
+    static const char *const refused[] = {
+        "UPDATE tasks SET title = '' WHERE id = (SELECT task_id FROM note_task WHERE uid = ?1)",
+        "UPDATE tasks SET title = 'Looks dated due 2026-01-01'"
+        " WHERE id = (SELECT task_id FROM note_task WHERE uid = ?1)",
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(refused); i++) {
+        outside_sql(other, uid, refused[i]);
+        on_action_sync_poll(&app);
+        gchar *title = task_title_of(uid);
+        GArray *pending = on_db_action_pending(app.db, 0);
+        check(strcmp(on_document_block(live, 1)->text->text->str, "! Keep this title") == 0 &&
+              strcmp(title, "Keep this title") == 0 && pending->len == 0,
+              i == 0 ? "open note: a blank title is refused; the line's text goes back to the task at once"
+                     : "open note: a title ending in a due date is refused; the line's text goes back");
+        g_array_unref(pending);
+        g_free(title);
+    }
+    check(refreshes_in_txn == 0, "open note: the pull refreshes nothing inside its transaction");
+
+    /* The pull's transaction rolls back (here: its caller's, as an edit
+     * from the Action Items view does when a later step fails).           */
+    on_note_view_feed_key(view, on_key_down, 0, on_mod_command);
+    on_note_view_feed_key(view, on_key_end, 0, 0);
+    on_note_view_feed_text(view, " kept");
+    outside_sql(other, uid, "UPDATE tasks SET title = 'Renamed, rolled back'"
+                            " WHERE id = (SELECT task_id FROM note_task WHERE uid = ?1)");
+    gboolean own = FALSE;
+    check(on_db_txn_begin(app.db, &own) && own && on_action_sync_note(&app, note),
+          "rolled back: the pull rewrites and writes the open note inside the caller's transaction");
+    on_db_txn_end(app.db, own, FALSE);
+    app.check_editors(&app);
+    gchar *body = on_db_note_body_text(app.db, note);
+    check(strcmp(on_document_block(live, 1)->text->text->str, "! Renamed, rolled back") == 0 &&
+          g_str_has_suffix(on_document_block(live, 3)->text->text->str, " kept") &&
+          body != NULL && strstr(body, " kept") == NULL,
+          "rolled back: the editor keeps its text (no reload over it); nothing was stored");
+    g_free(body);
+    pump(1.8);
+    body = on_db_note_body_text(app.db, note);
+    gchar *title = task_title_of(uid);
+    check(body != NULL && strstr(body, " kept") != NULL && strstr(body, "Renamed, rolled back") != NULL &&
+          strcmp(title, "Renamed, rolled back") == 0,
+          "rolled back: the editor stayed dirty and its autosave stores everything");
+    g_free(body);
+    g_free(title);
+    on_action_sync_poll(&app);
+
+    /* Same second, same size: only the hash tells.                         */
+    on_note_view_feed_text(view, " mine");
+    OnNoteStamp before;
+    on_db_note_stamp(app.db, note, &before);
+    OnDocument *theirs = on_note_document_load(other, note);
+    OnPos       at     = { 2, -1, 0 };
+    on_document_delete_text(theirs, at, 1);
+    on_document_insert_text(theirs, at, "S", 1, 0);
+    on_note_document_save(other, note, theirs, TRUE, NULL);
+    on_document_free(theirs);
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(other->handle, "UPDATE notes SET updated_at = ? WHERE id = ?", -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, before.updated_at);
+    sqlite3_bind_int64(st, 2, note);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+    OnNoteStamp after;
+    on_db_note_stamp(app.db, note, &after);
+    check(after.updated_at == before.updated_at && after.size == before.size && after.hash != before.hash,
+          "same-second rewrite: same updated_at and size, another hash");
+    pump(1.8);                       /* the autosave fires before any poll  */
+    body = on_db_note_body_text(app.db, note);
+    check(body != NULL && strstr(body, "Second line") != NULL && strstr(body, " mine") == NULL,
+          "same-second rewrite: the dirty editor's autosave does not overwrite it");
+    g_free(body);
+    check(answer_panel(@"Keep Mine"), "same-second rewrite: the changed-outside panel asks");
+    pump(1.8);
+    body = on_db_note_body_text(app.db, note);
+    check(body != NULL && strstr(body, " mine") != NULL,
+          "Keep Mine: the editor's version is then saved over it, deliberately");
+    g_free(body);
+
+    app.notify_notes_changed = library_refresh;
+    on_editor_close_notes(&note, 1);
+    pump(0.2);
+    on_db_close(other);
+}
+
 /*
  * main — run the test.
  *
@@ -2821,6 +2978,7 @@ main(void)
         test_library(lib);
         test_editor();
         test_outside_changes();
+        test_open_note_sync();
         test_editor_commands();
         test_inline_image();
         test_accessibility();

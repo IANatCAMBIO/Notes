@@ -278,8 +278,8 @@ return_key(NSWindow *window)
 }
 
 /*
- * new_note_in — a note in a folder with the given text, saved through
- * THE save.
+ * new_note_in — a note in a folder with the given text
+ * (on_note_new_from_text on the test's database).
  *
  * Inputs:
  *   folder_id — its folder (0 = the top level)
@@ -290,11 +290,7 @@ return_key(NSWindow *window)
 static gint64
 new_note_in(gint64 folder_id, const char *text)
 {
-    gint64      note_id = on_db_note_create(app.db, folder_id);
-    OnDocument *doc     = on_document_from_text(text);
-    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
-    on_document_free(doc);
-    return note_id;
+    return on_note_new_from_text(app.db, folder_id, text);
 }
 
 /*

@@ -157,6 +157,24 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
     return ok;
 }
 
+/*
+ * on_note_new_from_text — see serialize.h.
+ */
+gint64
+on_note_new_from_text(OnDatabase *db, gint64 folder_id, const gchar *text)
+{
+    gint64 id = on_db_note_create(db, folder_id);
+    if (id == 0)
+        return 0;
+    OnDocument *doc = on_document_from_text(text);
+    if (!on_note_document_save(db, id, doc, TRUE, NULL)) {
+        on_db_notes_delete(db, &id, 1);
+        id = 0;
+    }
+    on_document_free(doc);
+    return id;
+}
+
 gboolean
 on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc)
 {

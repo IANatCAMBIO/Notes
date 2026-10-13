@@ -872,30 +872,16 @@ cmd_new_note(OnDatabase *db, const gchar *folder_path, const gchar *content)
     if (text == NULL)
         return 2;
 
-    gint64 id = on_db_note_create(db, folder);
-    if (id == 0) {
+    gint64 id = on_note_new_from_text(db, folder, text);
+    g_free(text);
+    OnNoteMeta *meta = id != 0 ? on_db_note_get(db, id) : NULL;
+    if (meta == NULL) {
         fprintf(stderr, "error: could not create note\n");
-        g_free(text);
         return 2;
     }
-
-    OnDocument *doc = on_document_from_text(text);
-    int rc = 0;                      /* process exit code                   */
-    if (on_note_document_save(db, id, doc, TRUE, NULL)) {
-        gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
-                                         ON_TITLE_MAX_CHARS);
-        printf("note %" G_GINT64_FORMAT "\t%s\n", id, title);
-        g_free(title);
-    } else {
-        /* No empty note left behind in place of the one asked for.         */
-        fprintf(stderr, "error: could not save the new note\n");
-        on_db_notes_delete(db, &id, 1);
-        rc = 2;
-    }
-
-    on_document_free(doc);
-    g_free(text);
-    return rc;
+    printf("note %" G_GINT64_FORMAT "\t%s\n", id, meta->title);
+    on_db_note_meta_free(meta);
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------

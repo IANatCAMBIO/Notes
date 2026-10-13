@@ -71,26 +71,6 @@ fake_flush(OnApp *app)
 }
 
 /*
- * new_note — a note with the given text, saved through THE save.
- *
- * Inputs:
- *   db     — the database
- *   folder — its folder (0 = root)
- *   text   — the content, one block per line
- *
- * Output: the note's id.
- */
-static gint64
-new_note(OnDatabase *db, gint64 folder, const char *text)
-{
-    gint64      id  = on_db_note_create(db, folder);
-    OnDocument *doc = on_document_from_text(text);
-    on_note_document_save(db, id, doc, TRUE, NULL);
-    on_document_free(doc);
-    return id;
-}
-
-/*
  * line_of — the text of a stored note's block.
  *
  * Inputs:
@@ -201,7 +181,7 @@ test_unreadable_note(OnApp *app)
 static void
 test_strict_ids(OnApp *app)
 {
-    gint64 note = new_note(app->db, 0, "Keep me\nbody");
+    gint64 note = on_note_new_from_text(app->db, 0, "Keep me\nbody");
     gchar  arg[48];
     g_snprintf(arg, sizeof arg, "%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT, note, note + 1);
     char *del[] = { "notes", "note", "delete", arg, "--permanent", NULL };
@@ -228,8 +208,8 @@ static void
 test_export_names(OnApp *app, const char *data_dir)
 {
     gint64 up   = on_db_folder_create(app->db, 0, "..", ON_AI_MODE_NORMAL, NULL);
-    new_note(app->db, up, "Plan\nfirst");
-    new_note(app->db, up, "plan\nsecond");
+    on_note_new_from_text(app->db, up, "Plan\nfirst");
+    on_note_new_from_text(app->db, up, "plan\nsecond");
     gchar *dest = g_build_filename(data_dir, "export", "inside", NULL);
     on_export_all(app, dest, ON_EXPORT_MARKDOWN, NULL);
     gchar *dir = g_build_filename(dest, "--", NULL);
@@ -266,7 +246,7 @@ test_export_names(OnApp *app, const char *data_dir)
 static void
 test_action_edit(OnApp *app)
 {
-    gint64 note = new_note(app->db, 0, "Plan\n! Call the bank due 2026-11-02\n! Second");
+    gint64 note = on_note_new_from_text(app->db, 0, "Plan\n! Call the bank due 2026-11-02\n! Second");
     GList *items = on_db_action_list_for_note(app->db, note);
     check(g_list_length(items) == 2, "two action lines became two task rows");
     gint64 uid = ((OnActionItem *)items->data)->uid;
@@ -317,7 +297,7 @@ test_action_edit(OnApp *app)
     g_free(after);
 
     /* A different, closed note still takes the stored path.                */
-    gint64 other = new_note(app->db, 0, "Other\n! Elsewhere");
+    gint64 other = on_note_new_from_text(app->db, 0, "Other\n! Elsewhere");
     items = on_db_action_list_for_note(app->db, other);
     gint64 other_uid = ((OnActionItem *)items->data)->uid;
     on_db_action_list_free(items);
@@ -368,8 +348,8 @@ static void
 test_search_job(OnApp *app)
 {
     gint64 folder = on_db_folder_create(app->db, 0, "Recipes", 0, "");
-    new_note(app->db, folder, "Soup\nleeks and potatoes");
-    new_note(app->db, 0, "Shopping\npotatoes, onions");
+    on_note_new_from_text(app->db, folder, "Soup\nleeks and potatoes");
+    on_note_new_from_text(app->db, 0, "Shopping\npotatoes, onions");
 
     OnQuery *q = on_query_new("potatoes", FALSE, FALSE, NULL);
     on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0, search_landed, NULL);

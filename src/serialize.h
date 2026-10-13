@@ -77,6 +77,21 @@ gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                                gboolean sync_actions, gboolean *changed);
 
 /* ---------------------------------------------------------------------------
+ * on_note_new_from_text() — a new note holding plain text: one PARA block
+ * per line (on_document_from_text), the first line its title, every '!'
+ * line an action item — created and written through THE save.  A note
+ * whose save fails is deleted again, so no empty note is left in place of
+ * the one asked for.  What the development seeder and the tests build
+ * their notes with (it was the command-line tool's `note new`).
+ *   db        — open database.
+ *   folder_id — the folder (0 = top level).
+ *   text      — the content, UTF-8 (invalid bytes become U+FFFD).
+ * Returns the new note's id, or 0 on failure.
+ * ------------------------------------------------------------------------- */
+gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
+                             const gchar *text);
+
+/* ---------------------------------------------------------------------------
  * on_note_document_reconcile() — the task rows are the truth: for every
  * real action line of `doc` whose uid has a live task, re-render the line
  * from the row where the two differ (on_document_action_text / strike /

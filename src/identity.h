@@ -30,17 +30,15 @@
 #define ON_BUNDLE_ID "com.cambio.notes"
 
 /* The data directory is ~/Library/Application Support/<ON_DATA_DIR_NAME>:
- * notes.ini, the default notes.db, the default backups/ folder and the app
- * lock all live in it (see config.h for the policy).                        */
+ * notes.ini and the app lock live in it (see config.h for the policy).  The
+ * notes are in the database shared with Tasks (shared_db.h), not here.     */
 #define ON_DATA_DIR_NAME "Notes"
 
 /* Environment variable that replaces the data directory wholesale.  Every
  * development build, run and test sets it to a folder under dev/.           */
 #define ON_DATA_DIR_ENV "NOTES_DATA_DIR"
 
-/* File names inside the data directory.  (The database file name is
- * ON_DB_FILENAME in db.h: it is part of the on-disk contract, not of this
- * build's identity.)                                                        */
+/* File names inside the data directory.                                    */
 #define ON_CONFIG_FILENAME "notes.ini"
 #define ON_LOCK_FILENAME "notes.lock"   /* one app per data directory
                                            (app_lifecycle.h)                 */

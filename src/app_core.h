@@ -94,7 +94,8 @@
  *                    an edit from outside (any typing undo group closed),
  *                    or NULL when that note is not open.  The caller edits
  *                    the returned document with on_document_* operations
- *                    only, then calls live_edited.  Called by action_edit.c.
+ *                    only, then calls live_edited.  Called by the pull
+ *                    (action_sync.c), for its own and for action edits.
  *   live_edited    — the document live_document returned was just edited:
  *                    the editor redraws (caret and selection clamped, no
  *                    scroll) and queues its autosave.  Called by the pull

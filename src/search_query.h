@@ -1,10 +1,9 @@
 /* ===========================================================================
  * search_query.h — the search query language
  *
- * ONE parsed, immutable query object, shared by the search window's worker
- * thread and the headless `notes search` command so both understand exactly
- * the same syntax.  Replaces the old on_note_text_matches(), which could
- * only test one literal needle.
+ * ONE parsed, immutable query object, used by the search worker
+ * (search_job.h) on behalf of the search window, so every search
+ * understands exactly the same syntax.
  *
  * Literal mode (the default) splits the query into TERMS:
  *

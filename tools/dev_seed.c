@@ -1,7 +1,8 @@
 /* ===========================================================================
  * dev_seed.c — the development database, written through the core API
  *
- * `make seed` (tools/seed-dev.sh) builds dev/data/notes.db with this tool:
+ * `make seed` (tools/seed-dev.sh) builds dev/data/shared_data.db (the file
+ * $CAMBIO_SHARED_DB names) with this tool:
  * nested folders (some with an emoji, one in project AI mode), six tags,
  * pinned notes, two trashed notes and a trashed folder, a note with every
  * block kind (note 1: headings, lists, task boxes, code, a table, block
@@ -15,12 +16,12 @@
  *
  *   dev_seed check                 exit 0 when no app holds the data
  *                                  directory (so it may be wiped)
- *   dev_seed seed IMAGE IMAGE2     fill the (empty) data directory's
- *                                  database; IMAGE and IMAGE2 are any two
+ *   dev_seed seed IMAGE IMAGE2     fill the (new) shared database;
+ *                                  IMAGE and IMAGE2 are any two
  *                                  image files, for the pictures
  *
- * It refuses to run unless NOTES_DATA_DIR is set: this tool only ever
- * writes development data.  It holds the app lock while it runs, so an
+ * It refuses to run unless NOTES_DATA_DIR and CAMBIO_SHARED_DB are set:
+ * this tool only ever writes development data.  It holds the app lock while it runs, so an
  * app cannot start on the database in the middle of it.
  * =========================================================================== */
 

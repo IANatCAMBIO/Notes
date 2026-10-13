@@ -1432,6 +1432,56 @@ task_push(OnDatabase *db, gint64 task_id, guint mask, const gchar *title,
 }
 
 /* ---------------------------------------------------------------------------
+ * task_tombstone() — Notes removed the line of task `task_id`: tombstone
+ * it AND its subtasks, in one statement with one updated_at — the rule
+ * the note_task_tombstone trigger applies when a link row is deleted:
+ *   UPDATE tasks SET deleted = 1, updated_at = now
+ *    WHERE (id = X OR parent_id = X) AND deleted = 0
+ * (a subtask deleted before keeps its own updated_at, so task_revive can
+ * tell the two apart).
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+static gboolean
+task_tombstone(OnDatabase *db, gint64 task_id)
+{
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "UPDATE tasks SET deleted = 1, updated_at = ?1"
+        " WHERE (id = ?2 OR parent_id = ?2) AND deleted = 0");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, task_now());
+    sqlite3_bind_int64(stmt, 2, task_id);
+    return cached_stmt_done(db, stmt);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_revive() — an undo brought back the line of task `task_id`, which
+ * Notes had tombstoned (task_tombstone): revive it and the subtasks that
+ * were tombstoned in that same operation — those still deleted whose
+ * updated_at is the parent's tombstone updated_at — in one statement:
+ *   UPDATE tasks SET deleted = 0, updated_at = now
+ *    WHERE id = X OR (parent_id = X AND deleted = 1 AND updated_at = T)
+ * with T the parent's updated_at read first.  A subtask deleted on its
+ * own (another updated_at) stays deleted.
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+static gboolean
+task_revive(OnDatabase *db, gint64 task_id)
+{
+    gint64 tombstoned_at = query_int64(db,
+        "SELECT updated_at FROM tasks WHERE id = ?", task_id);
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "UPDATE tasks SET deleted = 0, updated_at = ?1"
+        " WHERE id = ?2 OR (parent_id = ?2 AND deleted = 1 AND updated_at = ?3)");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, task_now());
+    sqlite3_bind_int64(stmt, 2, task_id);
+    sqlite3_bind_int64(stmt, 3, tombstoned_at);
+    return cached_stmt_done(db, stmt);
+}
+
+/* ---------------------------------------------------------------------------
  * task_create() — a new task for a '!' line: appended to the managed list
  * as a top-level task, with the line's title, due date and done state
  * (status DONE and completed_at now, else New) and every other column at
@@ -1625,13 +1675,7 @@ push_item(OnDatabase *db, OnActionLink *row, const OnActionItem *it,
     gboolean ok   = TRUE;
     gboolean link = row->note_id != note_id || row->ord != ord;
     if (row->deleted) {              /* Notes tombstoned it; the line is back */
-        sqlite3_stmt *stmt = prepare(db,
-            "UPDATE tasks SET deleted=0, updated_at=? WHERE id=?");
-        if (stmt != NULL) {
-            sqlite3_bind_int64(stmt, 1, task_now());
-            sqlite3_bind_int64(stmt, 2, row->task_id);
-        }
-        ok = stmt_done(db, stmt);
+        ok = task_revive(db, row->task_id);
         *changed = TRUE;
     }
     if (row->seen_deleted) {
@@ -1654,6 +1698,12 @@ push_item(OnDatabase *db, OnActionLink *row, const OnActionItem *it,
         ok = link_update(db, row);
     return ok;
 }
+
+/* One task of a note whose line is gone (on_db_note_save_actions).       */
+typedef struct {
+    gint64 uid;                      /* its note_task row                   */
+    gint64 task_id;                  /* the task to tombstone               */
+} GoneLine;
 
 gboolean
 on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
@@ -1685,35 +1735,31 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
     /* Every live task of this note whose line is gone, that Notes knew as
      * live (seen_deleted = 0): tombstoned, remembered as Notes' doing.     */
     if (ok) {
-        GArray *gone = g_array_new(FALSE, FALSE, sizeof(gint64));
+        GArray *gone = g_array_new(FALSE, FALSE, sizeof(GoneLine));
         sqlite3_stmt *stmt = prepare(db,
-            "SELECT nt.uid FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+            "SELECT nt.uid, nt.task_id FROM note_task nt"
+            " JOIN tasks t ON t.id = nt.task_id"
             " WHERE nt.note_id = ? AND t.deleted = 0 AND nt.seen_deleted = 0");
         if (stmt == NULL) {
             ok = FALSE;
         } else {
             sqlite3_bind_int64(stmt, 1, note_id);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
-                gint64 uid = sqlite3_column_int64(stmt, 0);
-                if (!g_hash_table_contains(kept, &uid))
-                    g_array_append_val(gone, uid);
+                GoneLine line = { sqlite3_column_int64(stmt, 0),
+                                  sqlite3_column_int64(stmt, 1) };
+                if (!g_hash_table_contains(kept, &line.uid))
+                    g_array_append_val(gone, line);
             }
             sqlite3_finalize(stmt);
         }
         for (guint i = 0; i < gone->len && ok; i++) {
-            stmt = prepare(db,
-                "UPDATE tasks SET deleted=1, updated_at=?1 WHERE id ="
-                " (SELECT task_id FROM note_task WHERE uid=?2)");
-            if (stmt != NULL) {
-                sqlite3_bind_int64(stmt, 1, task_now());
-                sqlite3_bind_int64(stmt, 2, g_array_index(gone, gint64, i));
-            }
-            ok = stmt_done(db, stmt);
+            const GoneLine *line = &g_array_index(gone, GoneLine, i);
+            ok = task_tombstone(db, line->task_id);
             if (ok) {
                 stmt = prepare(db,
                     "UPDATE note_task SET seen_deleted=1 WHERE uid=?");
                 if (stmt != NULL)
-                    sqlite3_bind_int64(stmt, 1, g_array_index(gone, gint64, i));
+                    sqlite3_bind_int64(stmt, 1, line->uid);
                 ok = stmt_done(db, stmt);
             }
             *changed = TRUE;

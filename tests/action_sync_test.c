@@ -134,7 +134,37 @@ exec_sql(OnDatabase *db, const char *sql)
 }
 
 /*
- * exec_uid — run one statement with the item's task id bound as ?1.
+ * uid_sql — run one statement with the item's task id bound as ?1.
+ *
+ * Inputs:
+ *   db    — the connection
+ *   uid   — the item
+ *   sql   — one statement using ?1 for the task id
+ *   value — optional; receives the first column of its first row (-1 when
+ *           it returns none)
+ *
+ * Output: TRUE when the statement ran.
+ */
+static gboolean
+uid_sql(OnDatabase *db, gint64 uid, const char *sql, gint64 *value)
+{
+    gint64 task = 0;
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(db->handle, "SELECT task_id FROM note_task WHERE uid=?", -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, uid);
+    if (sqlite3_step(st) == SQLITE_ROW) task = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    sqlite3_prepare_v2(db->handle, sql, -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, task);
+    int rc = sqlite3_step(st);
+    if (value != NULL) *value = rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : -1;
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE || rc == SQLITE_ROW;
+}
+
+/*
+ * exec_uid — run one statement with the item's task id bound as ?1 (an
+ * outside write, in a test).
  *
  * Inputs:
  *   db  — the connection
@@ -146,17 +176,7 @@ exec_sql(OnDatabase *db, const char *sql)
 static gboolean
 exec_uid(OnDatabase *db, gint64 uid, const char *sql)
 {
-    gint64 task = 0;
-    sqlite3_stmt *st = NULL;
-    sqlite3_prepare_v2(db->handle, "SELECT task_id FROM note_task WHERE uid=?", -1, &st, NULL);
-    sqlite3_bind_int64(st, 1, uid);
-    if (sqlite3_step(st) == SQLITE_ROW) task = sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    sqlite3_prepare_v2(db->handle, sql, -1, &st, NULL);
-    sqlite3_bind_int64(st, 1, task);
-    gboolean ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    return uid_sql(db, uid, sql, NULL);
 }
 
 /*
@@ -342,6 +362,55 @@ test_push_delete(OnDatabase *db, OnDatabase *other)
     check(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 1,
           "hard delete: the task row remains, tombstoned");
     sqlite3_finalize(st);
+}
+
+/*
+ * test_push_subtasks — subtasks go with their Notes-born parent: removing
+ * the line tombstones the task and its live subtasks with one updated_at;
+ * an undo revives the task and exactly the subtasks tombstoned with it (a
+ * subtask deleted on its own stays deleted).
+ *
+ * Inputs:
+ *   db    — Notes' connection
+ *   other — a second connection (Tasks adds the subtasks)
+ */
+static void
+test_push_subtasks(OnDatabase *db, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(db, 0, "Subtasks\n! Parent with kids\n! Sibling");
+    gint64 uid  = nth_uid(db, note, 0);
+    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, updated_at)"
+                         " SELECT list_id, id, 'kid', 7 FROM tasks WHERE id = ?1");
+    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, updated_at)"
+                         " SELECT list_id, id, 'kid', 7 FROM tasks WHERE id = ?1");
+    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, deleted, updated_at)"
+                         " SELECT list_id, id, 'gone before', 1, 5 FROM tasks WHERE id = ?1");
+
+    OnDocument *doc = on_note_document_load(db, note);
+    GArray     *bl  = on_document_action_blocks(doc);
+    guint       line = g_array_index(bl, guint, 0);
+    g_array_unref(bl);
+    on_document_clear_undo(doc);
+    on_document_remove_block(doc, line);
+    check(on_note_document_save(db, note, doc, TRUE, NULL), "subtasks: the note without the line is saved");
+    gint64 with_parent = -1, before = -1;
+    uid_sql(db, uid, "SELECT COUNT(*) FROM tasks WHERE parent_id = ?1 AND deleted = 1 AND"
+                     " updated_at = (SELECT updated_at FROM tasks WHERE id = ?1)", &with_parent);
+    uid_sql(db, uid, "SELECT updated_at FROM tasks WHERE parent_id = ?1 AND title = 'gone before'",
+            &before);
+    check(task_int(db, uid, "deleted") == 1 && with_parent == 2 && before == 5,
+          "subtasks: the removed line tombstones its task and both live subtasks, one updated_at; "
+          "the subtask deleted before keeps its own");
+
+    on_document_undo(doc);
+    check(on_note_document_save(db, note, doc, TRUE, NULL), "subtasks: the undo is saved");
+    gint64 live = -1, still = -1;
+    uid_sql(db, uid, "SELECT COUNT(*) FROM tasks WHERE parent_id = ?1 AND deleted = 0", &live);
+    uid_sql(db, uid, "SELECT deleted FROM tasks WHERE parent_id = ?1 AND title = 'gone before'", &still);
+    check(task_int(db, uid, "deleted") == 0 && live == 2 && still == 1,
+          "subtasks: the undo revives the task and the subtasks tombstoned with it, not the one "
+          "deleted before");
+    on_document_free(doc);
 }
 
 /* ── The pull ───────────────────────────────────────────────────────────── */
@@ -737,6 +806,7 @@ main(void)
     test_push_new(db);
     test_push_fields(db, other);
     test_push_delete(db, other);
+    test_push_subtasks(db, other);
 
     OnApp app = { 0 };               /* headless: every hook NULL           */
     app.db = db;

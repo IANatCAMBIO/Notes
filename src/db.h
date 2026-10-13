@@ -517,7 +517,9 @@ typedef struct {
  *     pulled — maybe its line was pasted here from another note): left
  *     alone, for the pull;
  *   - task deleted with seen_deleted = 1 (Notes removed the line, and an
- *     undo brought it back): revived (deleted = 0), seen_deleted = 0;
+ *     undo brought it back): revived (deleted = 0), seen_deleted = 0,
+ *     with the subtasks tombstoned in that same operation (parent_id = the
+ *     task, still deleted, updated_at = the parent's tombstone updated_at);
  *   - then each field whose LINE value differs from its seen_* value —
  *     only those — is written to the task (ON_ACTION_FIELD_*; done folds
  *     into status: done → DONE stamping completed_at on entry, not done →
@@ -526,8 +528,10 @@ typedef struct {
  *     A field equal to its seen_* is never written: a change Tasks made
  *     to it stays (the pull brings it into the line).
  *   - every task of this note whose line is gone, still live and known
- *     live to Notes (seen_deleted = 0), is TOMBSTONED (deleted = 1) and its
- *     row gets seen_deleted = 1 (so an undo can revive it).
+ *     live to Notes (seen_deleted = 0), is TOMBSTONED (deleted = 1) with
+ *     its live subtasks, one statement, one updated_at (`(id = X OR
+ *     parent_id = X) AND deleted = 0`, the note_task_tombstone trigger's
+ *     rule), and its row gets seen_deleted = 1 (so an undo can revive it).
  * `changed` (optional) receives whether any task row was written.
  * Returns TRUE on success.
  * ------------------------------------------------------------------------- */

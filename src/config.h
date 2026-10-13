@@ -12,7 +12,7 @@
  *     <data dir>/notes.ini            the settings (this module)
  *     <data dir>/notes.db             the default database (db.h)
  *     <data dir>/backups/             the default backup folder (backup.h)
- *     <data dir>/notes.sock           the CLI <-> GUI socket (ipc.h)
+ *     <data dir>/notes.lock           the app lock (app_lifecycle.h)
  *
  * Nothing is ever resolved relative to argv[0], the bundle, or the XDG
  * directories the GTK build used (~/.config/notes, ~/.local/share/notes,
@@ -26,10 +26,9 @@
  * by File > Open Database File… > Set as Default: a decision the user makes
  * in the app, never a default.
  *
- * Not in the data directory, and not this module's: the anonymous temporary
- * files ipc.c captures a command's output in (tmpfile), and what AppKit
- * keeps for any app under its bundle identifier (~/Library/Preferences/
- * <bundle id>.plist, saved window state).  Neither holds notes.
+ * Not in the data directory, and not this module's: what AppKit keeps for
+ * any app under its bundle identifier (~/Library/Preferences/<bundle
+ * id>.plist, saved window state).  It holds no notes.
  *
  * SETTINGS
  *
@@ -48,8 +47,8 @@
 
 /* ---------------------------------------------------------------------------
  * on_paths_data_dir() — the data directory (see the policy above).  A
- * relative NOTES_DATA_DIR is resolved against the current directory, so
- * the CLI and the app it launches agree.  Nothing is created.
+ * relative NOTES_DATA_DIR is resolved against the current directory.
+ * Nothing is created.
  *
  * Output: a new absolute path; free() it.  When no directory can be
  *         determined (no password entry, or a relative override with no
@@ -86,7 +85,7 @@ void on_app_config_init(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_config_problem() — why notes.ini could not be loaded at init, for
- * the app to tell the user (the CLI has printed it on stderr).
+ * the app to tell the user (init has also printed it on stderr).
  *
  * Output: the message (owned by the module), or NULL when the ini loaded
  *         or did not exist.

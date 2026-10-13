@@ -17,11 +17,12 @@ data, code style, verification.
   `~/Applications/Notes.app`, the GTK build's `notes` binary, `notes.ini`
   and `dist/` left at the repo root (ignored; `notes.ini` points at the
   real notes), the sibling repos `../tasks`, `../files`.  Never run a GTK
-  `notes` binary (only `make golden` does, in a sandbox).
+  `notes` binary.
 - Every run uses test data: `make run`, `make seed`, `make test`.  By hand:
-  `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/Helpers/notes …`.
-- Do not change `document.c`, `bnbf.c`, `db.c` behaviour.  The CLI's output
-  is a contract (`make golden`).
+  `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/MacOS/Notes`.
+- Do not change `document.c`, `bnbf.c`, `db.c` behaviour.  There is no
+  command-line tool; the core API's behaviour is pinned by
+  `tests/core_api_test.c`.
 - No new GLib in new code; nothing pumps a GLib main loop — use
   `main_service.h`.
 - Do NOT run `leaks`, `vmmap`, `footprint`, `sample`, `lldb` or
@@ -40,7 +41,7 @@ data, code style, verification.
 ```sh
 export PATH=/opt/local/bin:$PATH
 make clean && make      # zero warnings
-make test               # model, core, IPC, UI smoke, golden CLI
+make test               # model, core, UI smoke
 make ui-check           # the UI test alone; light/dark snapshots in dev/snapshots
 make seed && make run   # the app on dev/data
 ```
@@ -51,8 +52,8 @@ make seed && make run   # the app on dev/data
   in the Makefile's `CORE_SRCS`; everything else is the app.
 - `src/identity.h` — every name of this build, defined once.
 - The GTK build — the behavioural SPECIFICATION this port was written
-  from — is in git at its last commit, `51ec5a4` (`GTK_COMMIT` in
-  `tests/cli_golden.sh`): `git show 51ec5a4:src/note_view.c`.  Its
+  from — is in git at its last commit, `51ec5a4`:
+  `git show 51ec5a4:src/note_view.c`.  Its
   `docs/CLAUDE.md` describes the GTK app, not this tree.
 - `porting/GTK_PORTING_MAP.md` — what the GTK app does, feature by feature.
 - `porting/FILES_PLAYBOOK.md` — how AppKit code is written here (the Files

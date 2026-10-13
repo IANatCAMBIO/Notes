@@ -3,7 +3,7 @@
  *
  * What reads or writes a note's BNBF blob WITHOUT building a document:
  * the record walks behind the body_text cache and the image ordinals the
- * media browser and the CLI address, and on_note_document_load /
+ * media browser addresses, and on_note_document_load /
  * on_note_document_save — the document's two ends.
  * =========================================================================== */
 

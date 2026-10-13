@@ -1,21 +1,18 @@
 # =============================================================================
 # Notes — Makefile
 #
-#   make            build Notes.app (the app and the `notes` tool)
+#   make            build Notes.app
 #   make run        run the app on the development data in dev/data
 #   make seed       (re)create the development database in dev/data
-#   make test       unit tests, then the golden CLI comparison
-#   make golden     the golden CLI comparison against the GTK build alone
+#   make test       the model, core and UI tests
 #   make ui-check   the windows built in-process: snapshots in dev/snapshots,
 #                   ownership and memory checks (part of make test)
 #   make bnbf-scan  build/bnbf-scan, the blob round-trip scan (tools/)
 #   make install    install the bundle in ~/Applications
 #   make clean      remove build/ and the bundle (dev/ is kept)
-#   make clean-dev  remove dev/ (development and test data, the GTK reference
-#                   binary)
+#   make clean-dev  remove dev/ (development and test data)
 #
-# Requires the Xcode command-line tools and MacPorts glib2 + pkgconf; the
-# golden test also needs MacPorts gtk4 (it builds the GTK reference binary).
+# Requires the Xcode command-line tools and MacPorts glib2 + pkgconf.
 # See BUILD.md.
 # =============================================================================
 
@@ -25,9 +22,8 @@ ident        = $(shell sed -n 's/^\#define $(1) *"\(.*\)"/\1/p' src/identity.h)
 APP_NAME    := $(call ident,ON_APP_NAME)
 BUNDLE_NAME := $(call ident,ON_BUNDLE_NAME)
 BUNDLE_ID   := $(call ident,ON_BUNDLE_ID)
-CLI_NAME    := $(call ident,ON_CLI_NAME)
 DATA_ENV    := $(call ident,ON_DATA_DIR_ENV)
-ifeq ($(and $(APP_NAME),$(BUNDLE_NAME),$(BUNDLE_ID),$(CLI_NAME),$(DATA_ENV)),)
+ifeq ($(and $(APP_NAME),$(BUNDLE_NAME),$(BUNDLE_ID),$(DATA_ENV)),)
 $(error src/identity.h does not define every name the Makefile reads)
 endif
 
@@ -36,8 +32,6 @@ CONTENTS = $(BUNDLE)/Contents
 MACOS    = $(CONTENTS)/MacOS
 RSRC     = $(CONTENTS)/Resources
 APP_BIN  = $(MACOS)/$(BUNDLE_NAME)
-HELPERS  = $(CONTENTS)/Helpers
-CLI_BIN  = $(HELPERS)/$(CLI_NAME)
 
 CC       = clang
 
@@ -124,26 +118,23 @@ CORE_LIBS = $(GLIB_LIBS) -lsqlite3 \
 APP_LIBS  = $(CORE_LIBS) -framework Cocoa -framework CoreText \
             -framework UniformTypeIdentifiers
 
-# The core: no UI, shared by the app, the `notes` tool and the tests.
+# The core: no UI, shared by the app, the development seeder and the tests.
 CORE_SRCS = src/action_edit.c src/app_core.c src/app_lifecycle.c \
-            src/backup.c src/bnbf.c src/cli.c src/config.c src/db.c \
-            src/document.c src/export.c src/image_io.c src/ipc.c \
+            src/backup.c src/bnbf.c src/config.c src/db.c \
+            src/document.c src/export.c src/image_io.c \
             src/main_service.c src/search_job.c src/search_query.c \
             src/serialize.c src/utf_index.c
-# The tool's own entry point.
-CLI_SRCS  = src/cli_main.c
 # Everything else in src/ is the app: its C (the editor's geometry and
 # editing policy) and its Objective-C.
-UI_C_SRCS = $(filter-out $(CORE_SRCS) $(CLI_SRCS),$(wildcard src/*.c))
+UI_C_SRCS = $(filter-out $(CORE_SRCS),$(wildcard src/*.c))
 UI_M_SRCS = $(wildcard src/*.m)
 
 CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS))
-CLI_OBJS  = $(patsubst src/%.c,build/%.o,$(CLI_SRCS))
 UI_OBJS   = $(patsubst src/%.c,build/%.o,$(UI_C_SRCS)) \
             $(patsubst src/%.m,build/%.o,$(UI_M_SRCS))
-DEPS      = $(CORE_OBJS:.o=.d) $(CLI_OBJS:.o=.d) $(UI_OBJS:.o=.d)
+DEPS      = $(CORE_OBJS:.o=.d) $(UI_OBJS:.o=.d)
 
-.PHONY: all run seed test golden ui-check bnbf-scan install clean clean-dev
+.PHONY: all run seed test ui-check bnbf-scan install clean clean-dev
 
 all: $(BUNDLE)
 
@@ -153,7 +144,7 @@ all: $(BUNDLE)
 # where the app loads it by name, and README.md, which Help opens.
 IMAGES   = $(wildcard icons/*.png)
 
-$(BUNDLE): $(APP_BIN) $(CLI_BIN) resources/Info.plist VERSION src/identity.h $(IMAGES) README.md
+$(BUNDLE): $(APP_BIN) resources/Info.plist VERSION src/identity.h $(IMAGES) README.md
 	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed images do not linger
 	@cp resources/Info.plist $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleName -string "$(APP_NAME)" $(CONTENTS)/Info.plist
@@ -165,20 +156,15 @@ $(BUNDLE): $(APP_BIN) $(CLI_BIN) resources/Info.plist VERSION src/identity.h $(I
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_MACOS)" $(CONTENTS)/Info.plist
 	@plutil -replace NotesBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(CONTENTS)/Info.plist
 	@cp $(IMAGES) README.md $(RSRC)/
-	@$(call sign,$(CLI_BIN))  # nested code first
 	@$(call sign,$(BUNDLE))
 	@touch $(BUNDLE)  # codesign rewrites the binaries; keep the bundle newer
 
-# The two bundle executables are linked WITHOUT the linker's own ad-hoc
-# signature: the bundle rule signs them, and codesign would otherwise report
-# "replacing existing signature" on every build.
+# The app executable is linked WITHOUT the linker's own ad-hoc signature:
+# the bundle rule signs it, and codesign would otherwise report "replacing
+# existing signature" on every build.
 $(APP_BIN): $(CORE_OBJS) $(UI_OBJS)
 	@mkdir -p $(MACOS)
 	$(CC) $(LDFLAGS) -Wl,-no_adhoc_codesign -o $@ $^ $(APP_LIBS)
-
-$(CLI_BIN): $(CORE_OBJS) $(CLI_OBJS)
-	@mkdir -p $(HELPERS)
-	$(CC) $(LDFLAGS) -Wl,-no_adhoc_codesign -o $@ $^ $(CORE_LIBS)
 
 # Objects also depend on the Makefile so flag changes rebuild everything,
 # and on VERSION because ON_VERSION is compiled in.
@@ -195,7 +181,7 @@ build:
 
 # ── Development data ────────────────────────────────────────────────────────
 # Every run and test from this tree sets NOTES_DATA_DIR, so the ini, the
-# database and the socket all live under dev/ (gitignored) and the user's
+# database and the lock all live under dev/ (gitignored) and the user's
 # real data directory is never touched. DEV_DATA is the one a person looks
 # at (`make run`); the tests use their own folders under dev/test.
 DEV_DATA = $(CURDIR)/dev/data
@@ -268,15 +254,8 @@ test: build/test_document $(TEST_BINS) $(UI_TEST_APPS) $(BUNDLE)
 	    name=$$(basename $$t .app); echo "== $$t"; \
 	    case $$t in *.app) run=$$t/Contents/MacOS/$$name ;; *) run=$$t ;; esac; \
 	    rm -rf "$(TEST_DATA)/$$name" && mkdir -p "$(TEST_DATA)/$$name" && \
-	    $(DATA_ENV)="$(TEST_DATA)/$$name" NOTES_TEST_CLI="$(CURDIR)/$(CLI_BIN)" ./$$run || exit 1; \
+	    $(DATA_ENV)="$(TEST_DATA)/$$name" ./$$run || exit 1; \
 	done
-	@$(MAKE) golden
-
-# golden: this build's CLI output compared, byte for byte, with the GTK
-# build's on identical databases (see tests/cli_golden.sh for how the GTK
-# reference binary is built and kept away from every real path).
-golden: $(BUNDLE) build/dev_seed
-	@tests/cli_golden.sh "$(CURDIR)" "$(CLI_BIN)" build/dev_seed
 
 # ui-check: the in-process UI test on its own (tests/ui_smoke_test.m): it
 # builds the real windows on a test database, checks that closed windows

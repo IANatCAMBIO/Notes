@@ -3,7 +3,7 @@
  *
  * The blob-level helpers around a note: the body_text cache
  * (on_note_extract_text, derived through the model), the image ordinals
- * the media browser and the CLI address (on_note_count_images /
+ * the media browser addresses (on_note_count_images /
  * on_note_image_nth_png), and the document's two ends —
  * on_note_document_load, the preamble of every consumer that wants the
  * document, and on_note_document_save, THE one way a document is written
@@ -32,8 +32,7 @@ gchar *on_note_extract_text(const guint8 *data, gsize len);
  * on_note_text_cached() — one note's plain text, read the cheap way: the
  * notes.body_text cache when it is filled, otherwise extracted from the
  * blob with on_note_extract_text() (no images decoded) and written back so
- * the next reader hits the cache.  THE one implementation — the cross-note
- * search and the CLI both used to carry their own identical copy.
+ * the next reader hits the cache.  THE one implementation.
  *   db — open database (written to when the cache was empty).
  *   id — the note.
  * Returns a newly allocated string, "" for a note with no content, or NULL
@@ -45,8 +44,8 @@ gchar *on_note_text_cached(OnDatabase *db, gint64 id);
  * on_note_document_load() — note `id`'s stored content as an OnDocument
  * (document.h): the block model, no image decoded.  A note with no
  * content is an empty document.  THE preamble of every consumer: the
- * editor, the exporter, the CLI's content commands, the headless action
- * rewrites, the grid thumbnail.  Returns the document (on_document_free()
+ * editor, the exporter, the headless action rewrites, the grid
+ * thumbnail.  Returns the document (on_document_free()
  * it), or NULL when the note does not exist, the read failed, or its blob
  * is malformed or from a newer format — never an empty document in its
  * place, which a save would write over the note.
@@ -55,8 +54,8 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_save() — write `doc` back as note `id`: THE one save.
- * Every path that persists a document — the editor's autosave, the CLI's
- * content commands, a headless action rewrite — comes through here, so
+ * Every path that persists a document — the editor's autosave, a
+ * headless action rewrite, a new note from text — comes through here, so
  * what a save consists of is defined once:
  *   1. every real action line (on_document_action_blocks) gets its uid:
  *      a line with none is allocated one (on_db_action_uid_alloc), a uid
@@ -110,8 +109,8 @@ gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
  * real action line of `doc` whose uid has a live task, re-render the line
  * from the row where the two differ (on_document_action_text / strike /
  * due).  Run on every load — an editor opening a note, a headless rewrite
- * about to touch one — so a task edited by the CLI, the Action Items view
- * or (after the merge) the Tasks app while the note was closed shows in
+ * about to touch one — so a task edited by the Action Items view or
+ * (after the merge) the Tasks app while the note was closed shows in
  * the note.  A blank task title is left alone: the line's text is not
  * something the document can hold as empty.
  * Returns TRUE when a line was rewritten (the caller then has an unsaved

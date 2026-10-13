@@ -178,7 +178,7 @@ applicationDidFinishLaunching:(NSNotification *)n
 
     /* First of all: is this the one copy for this data folder?  A second
      * copy never opens the database, nor shows a window to type into.     */
-    if (on_ipc_lock_take() == on_ipc_lock_busy) {
+    if (on_app_lock_take() == on_app_lock_busy) {
         if (raise_running_copy()) {
             [NSApp terminate:nil];       /* the running copy is in front now */
         } else {
@@ -313,17 +313,7 @@ open_database_and_start
 
     on_library_window_show(self.lib);
 
-    /* The lock is held since launch, so the server is never "busy" here. */
-    on_ipc_server_result_t served = on_app_start_services(&_app);
-    if (served == on_ipc_server_failed) {
-        on_ui_show_notice(@"The command-line tool cannot reach this app",
-                          @"The app's socket could not be created. While this app is running, `"
-                          @ON_CLI_NAME @"` commands will be refused rather than work on the "
-                          @"database behind its back.",
-                          self.lib.window, nil);
-    } else {
-        NSLog(@"[launch] serving `%s` commands on the socket", ON_CLI_NAME);
-    }
+    on_app_start_services(&_app);
     return YES;
 }
 
@@ -357,8 +347,9 @@ watch_signals
 
 /*
  * applicationShouldTerminate: — THE way out (Quit, the Dock, logout,
- * SIGTERM, SIGINT and SIGHUP all arrive here): on_app_shutdown stops the socket, closes every
- * editor — each saving its edits first — and closes the database.  See
+ * SIGTERM, SIGINT and SIGHUP all arrive here): on_app_shutdown closes every
+ * editor — each saving its edits first — closes the database and lets go
+ * of the app lock.  See
  * "the flush-on-quit contract" in app_lifecycle.h.
  *
  * Inputs:

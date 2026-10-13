@@ -107,14 +107,6 @@ emit_image(OnExportCtx *ctx, GBytes *png_bytes)
 {
     ctx->img_count++;
 
-    /* The placeholder form needs no bytes at all.                          */
-    if (ctx->format == ON_EXPORT_MARKDOWN && ctx->note_dir == NULL) {
-        /* String render (on_export_note_markdown): there is no directory
-         * for side-car files — leave a numbered placeholder instead.        */
-        g_string_append_printf(ctx->out, "![image %d]()", ctx->img_count);
-        return;
-    }
-
     gsize n_png = 0;                 /* encoded byte count                  */
     const guint8 *png = g_bytes_get_data(png_bytes, &n_png);
 
@@ -655,23 +647,4 @@ on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
     gboolean ok = export_one(app, m, dest_dir, format, NULL);
     on_db_note_meta_free(m);
     return ok;
-}
-
-gchar *
-on_export_note_markdown(OnApp *app, gint64 note_id)
-{
-    OnDocument *doc = on_note_document_load(app->db, note_id);
-    if (doc == NULL)
-        return NULL;
-
-    OnExportCtx ctx = {
-        .format    = ON_EXPORT_MARKDOWN,
-        .out       = g_string_new(NULL),
-        .note_dir  = NULL,           /* string render: no image files       */
-        .base_name = NULL,
-        .img_count = 0,
-    };
-    render_note_body(&ctx, doc);
-    on_document_free(doc);
-    return g_string_free(ctx.out, FALSE);
 }

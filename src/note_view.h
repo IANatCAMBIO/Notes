@@ -76,7 +76,7 @@ OnDocument *on_note_view_document(NotesNoteView *view);
 /*
  * on_note_view_begin_external_edit / on_note_view_end_external_edit — the
  * pair behind OnApp.live_document / live_edited: something outside the view
- * (action_edit.c, for the CLI or the Action Items list) is about to change
+ * (action_edit.c, for the Action Items list) is about to change
  * the open note with on_document_* operations.  begin closes any typing
  * undo group and returns the document; end re-clamps the caret, redraws and
  * calls edited_handler.

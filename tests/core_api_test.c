@@ -26,27 +26,6 @@
 #include "search_query.h"
 #include "serialize.h"
 
-#include <time.h>
-
-/*
- * local_midnight — a calendar date as the local-midnight UNIX time the
- * action-item code stores.
- *
- * Inputs:
- *   year, month, day — the date (month 1-12)
- *
- * Output: the timestamp.
- */
-static gint64
-local_midnight(int year, int month, int day)
-{
-    struct tm tm = { 0 };
-    tm.tm_year  = year - 1900;
-    tm.tm_mon   = month - 1;
-    tm.tm_mday  = day;
-    tm.tm_isdst = -1;
-    return (gint64)mktime(&tm);
-}
 
 /*
  * folder_named — a direct child folder of `parent` by name.
@@ -373,7 +352,7 @@ test_notes(OnDatabase *db)
     GList *items = items_of(db, note);
     OnActionItem *it = items != NULL ? items->data : NULL;
     check(g_list_length(items) == 1 && strcmp(it->text, "replaced action") == 0 &&
-          it->due == local_midnight(2026, 11, 11),
+          it->due == check_midnight(2026, 11, 11),
           "set: the old item is retired and the new line is the note's one item");
     on_db_action_list_free(items);
 
@@ -439,9 +418,9 @@ test_action_lines(OnDatabase *db)
         OnActionItem *a = g_list_nth_data(items, 0);
         OnActionItem *b = g_list_nth_data(items, 1);
         OnActionItem *c = g_list_nth_data(items, 2);
-        check(strcmp(a->text, "Rerun the reports") == 0 && a->due == local_midnight(2026, 9, 30),
+        check(strcmp(a->text, "Rerun the reports") == 0 && a->due == check_midnight(2026, 9, 30),
               "lines: an ISO due date is split off the text");
-        check(strcmp(b->text, "Confirm the version") == 0 && b->due == local_midnight(2026, 10, 3),
+        check(strcmp(b->text, "Confirm the version") == 0 && b->due == check_midnight(2026, 10, 3),
               "lines: so is an M/D/YY one");
         check(strcmp(c->text, "Archive dashboards") == 0 && c->due == 0,
               "lines: the text is trimmed; no suffix, no due date");
@@ -497,11 +476,11 @@ test_action_lines(OnDatabase *db)
     gsize  at  = 0;
     gint64 due = 0;
     check(on_action_split_due("pay due 2027-01-15", &at, &due) &&
-          at == 4 && due == local_midnight(2027, 1, 15), "due: ISO YYYY-MM-DD");
+          at == 4 && due == check_midnight(2027, 1, 15), "due: ISO YYYY-MM-DD");
     check(on_action_split_due("pay due 1/2/2027", &at, &due) &&
-          due == local_midnight(2027, 1, 2), "due: M/D/YYYY");
+          due == check_midnight(2027, 1, 2), "due: M/D/YYYY");
     check(on_action_split_due("due 12/31/26", &at, &due) && at == 0 &&
-          due == local_midnight(2026, 12, 31), "due: M/D/YY");
+          due == check_midnight(2026, 12, 31), "due: M/D/YY");
     check(!on_action_split_due("due 13/45/99", &at, &due), "due: an impossible date is refused");
     check(!on_action_split_due("send due diligence", &at, &due), "due: 'due' with no date is text");
     check(on_action_split_due("due by due 2026-03-04", &at, &due) && at == 7,
@@ -600,7 +579,7 @@ test_action_edit(OnApp *app)
     g_free(line);
 
     /* Due: set (ISO is what is written), then clear.                       */
-    check(on_action_edit_set_due(app, uid, local_midnight(2027, 1, 15)), "due: set");
+    check(on_action_edit_set_due(app, uid, check_midnight(2027, 1, 15)), "due: set");
     line = stored_line(db, note, 1, NULL);
     check(strcmp(line, "! Call the bank due 2027-01-15") == 0, "due: the suffix is rewritten ISO");
     g_free(line);
@@ -611,7 +590,7 @@ test_action_edit(OnApp *app)
 
     /* A done item's due date stays done.                                   */
     on_action_edit_set_done(app, uid, TRUE);
-    on_action_edit_set_due(app, uid, local_midnight(2027, 2, 2));
+    on_action_edit_set_due(app, uid, check_midnight(2027, 2, 2));
     line = stored_line(db, note, 1, &struck);
     check(struck && strcmp(line, "! Call the bank due 2027-02-02") == 0,
           "due: a date added to a done item is struck with it");

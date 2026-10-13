@@ -2,18 +2,17 @@
  * app_core.h — the application context shared by the core and the UI
  *
  * One OnApp exists per process.  The app delegate owns the real one and
- * hands it to every window; the command-line tool builds a zeroed one on
- * its stack holding only the database.
+ * hands it to every window; the development seeder and the tests build a
+ * zeroed one holding only the database.
  *
- * LAYERING.  The core (db, document, serialize, export, backup, cli, ipc,
+ * LAYERING.  The core (db, document, serialize, export, backup,
  * action_edit, search_job) never includes a UI header and never names a UI
  * function.  Everything it needs from the UI it asks for through the HOOKS
  * below, which the UI installs at startup.  These replace the GTK build's
- * four upward calls (cli.c -> editor window, ipc.c -> library window,
- * ipc.c -> editor window, app.c -> alert dialog).
+ * upward calls (cli.c -> editor window, app.c -> alert dialog).
  *
- * THE HEADLESS INVARIANT.  Headless = every hook is NULL.  The CLI's
- * stack OnApp is zeroed and never has a hook installed, and core code
+ * THE HEADLESS INVARIANT.  Headless = every hook is NULL.  A seeder's or
+ * a test's OnApp is zeroed and never has a hook installed, and core code
  * tests the hook it is about to call — `app->live_document != NULL` is
  * what "is there a GUI that might have this note open?" means.  A hook is
  * either NULL or valid for the life of the process; the UI never clears
@@ -26,7 +25,6 @@
 #define ON_APP_CORE_H
 
 #include <glib.h>
-#include <stdio.h>
 
 #include "config.h"
 #include "db.h"
@@ -76,8 +74,8 @@
  * Hooks (see the invariant above; each says who calls it):
  *   notify_notes_changed — the set of notes, folders, tags or action items
  *                    changed: rebuild the sidebar and the notes pane.
- *                    Called by ipc.c after a command that mutates, and by
- *                    the UI itself after structural changes.
+ *                    Called by the UI after structural changes and by
+ *                    on_app_switch_db.
  *   notify_note_saved — ONE note's content was saved; nothing structural
  *                    changed: update that note's row only.  Called by the
  *                    editor.
@@ -91,11 +89,8 @@
  *                    check found damage).  Called by on_app_db_health_start.
  *   open_note      — open the editor for a note, or raise it if it is
  *                    already open, and bring it to the front.  Returns
- *                    FALSE when the note does not exist.  Called by ipc.c
- *                    for `notes note open`.
- *   quicknote      — THE quicknote action: a new note in the root folder,
- *                    its editor in front.  Returns the note's id, 0 on
- *                    failure.  Called by ipc.c for `notes quicknote`.
+ *                    FALSE when the note does not exist.  Called by the
+ *                    notes pane.
  *   live_document  — the document of note_id's OPEN editor, made ready for
  *                    an edit from outside (any typing undo group closed),
  *                    or NULL when that note is not open.  The caller edits
@@ -105,16 +100,6 @@
  *                    the editor redraws, clamps its caret and queues its
  *                    autosave.  Called by action_edit.c, only when it did
  *                    change the document.
- *   save_editors   — every editor with unsaved edits saves NOW; the
- *                    windows stay open.  Returns FALSE when a save failed.
- *                    Called by ipc.c before a command that writes the
- *                    database, so the command works on the current text.
- *   reload_editors — every editor catches up with the database after an
- *                    outside command wrote it: an editor whose note is gone
- *                    closes without saving, an edit made through
- *                    live_document is saved, and an editor whose note was
- *                    rewritten reloads it.  Called by ipc.c after such a
- *                    command.
  *   flush_editors  — close every editor window NOW, each one saving its
  *                    unsaved edits (or deleting its note if it was left
  *                    blank) before the call returns.  An editor whose save
@@ -152,11 +137,8 @@ typedef struct OnApp {
     void        (*show_notice)(struct OnApp *app, const gchar *title,
                                const gchar *message);
     gboolean    (*open_note)(struct OnApp *app, gint64 note_id);
-    gint64      (*quicknote)(struct OnApp *app);
     OnDocument *(*live_document)(struct OnApp *app, gint64 note_id);
     void        (*live_edited)(struct OnApp *app, gint64 note_id);
-    gboolean    (*save_editors)(struct OnApp *app);
-    void        (*reload_editors)(struct OnApp *app);
     gboolean    (*flush_editors)(struct OnApp *app);
 } OnApp;
 
@@ -227,18 +209,5 @@ gchar *on_app_folder_location(OnApp *app, gint64 folder_id);
  * Output: none.
  * ------------------------------------------------------------------------- */
 void on_app_db_health_start(OnApp *app);
-
-/* ---------------------------------------------------------------------------
- * on_app_read_stream() — read a whole stdio stream into a string: the CLI's
- * "-" (stdin) arguments, and a delegated command's captured output.
- *
- * Inputs:
- *   f            — the stream to drain
- *   rewind_first — TRUE to rewind() first (a temp capture file); FALSE to
- *                  read from the current position (stdin)
- *
- * Output: a new NUL-terminated string; g_free it.
- * ------------------------------------------------------------------------- */
-gchar *on_app_read_stream(FILE *f, gboolean rewind_first);
 
 #endif /* ON_APP_CORE_H */

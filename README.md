@@ -4,19 +4,18 @@ An experimental, macOS-only AppKit port of **Notes** — an Apple Notes–style
 app in C over SQLite: nested folders, tags, rich-text notes with images,
 tables, code blocks, task lists, and `!` action items with due dates.  The
 original is a GTK4 app; this fork replaces its user interface with native
-AppKit while keeping its document model, database and command-line tool.
+AppKit while keeping its document model and database.
 
 The whole app is native AppKit: the library (sidebar, list, grid and Action
 Items), the note editor with its own layout and rendering, Settings,
-Search, the media browser, the AI summary, and the command-line tool
-talking to the running app.  The document model, database and CLI are the
-GTK build's, and the CLI's output is checked byte for byte against it.
+Search, the media browser and the AI summary.  The document model and
+database are the GTK build's.  There is no command-line tool.
 
 It is a separate application from the GTK Notes: its own bundle identifier
-(`com.cambio.notes`), its own data folder and its own socket.  It
-never reads or writes the GTK app's database, settings or socket.  Both
-bundles are called `Notes.app`, so `make install` replaces a GTK copy in
-`~/Applications` (the GTK build is on branch `gtk4`).
+(`com.cambio.notes`) and its own data folder.  It never reads or writes
+the GTK app's database or settings.  Both bundles are called `Notes.app`,
+so `make install` replaces a GTK copy in `~/Applications` (the GTK build
+is on branch `gtk4`).
 
 ## Prerequisites
 
@@ -43,7 +42,7 @@ bundle, so reinstalling never touches them.
 | Settings | `~/Library/Application Support/Notes/notes.ini` |
 | Database (default) | `~/Library/Application Support/Notes/notes.db` |
 | Backups (default, when enabled) | `~/Library/Application Support/Notes/backups/` |
-| App ↔ command-line socket and lock | `~/Library/Application Support/Notes/notes.sock`, `notes.lock` |
+| App lock (one running copy per data folder) | `~/Library/Application Support/Notes/notes.lock` |
 
 Setting the environment variable `NOTES_DATA_DIR` moves all of them to another
 folder; development and tests always do (`dev/` inside the source tree).
@@ -58,39 +57,18 @@ database** there or **open an existing `notes.db`** (whose folder is then
 remembered).  It never creates one silently, and it never falls back to
 another location if the configured database cannot be opened.
 
-## The command-line tool
-
-`Notes.app/Contents/Helpers/notes` is the same CLI the GTK app has —
-every command, flag, output format and exit code (`notes help` lists them;
-`--json` on every listing).  While the app is running, a command is carried
-out *by the app* over its socket, so there is only ever one writer and open
-windows stay current; otherwise the tool works on the database directly.
-
-```sh
-N=~/Applications/Notes.app/Contents/Helpers/notes
-$N stats
-$N note list --all --json
-$N action list --open
-printf 'Title\n\n! Call the bank due 2026-11-02' | $N note new --folder Work -
-$N quicknote            # starts the app if needed, opens a new note
-```
-
-Two differences from the GTK tool, both about starting the app: `quicknote`
-and `note open` launch the app and return at once instead of becoming it,
-and an unknown command is an error rather than starting the GUI.
-
 ## Development
 
 ```sh
 make seed     # a realistic test database in dev/data
 make run      # run the app on it
-make test     # model, core, IPC, UI smoke and golden CLI tests
+make test     # model, core and UI tests
 make ui-check # the UI test alone; window snapshots in dev/snapshots
 ```
 
 See [BUILD.md](BUILD.md) for the build and [porting/INTERFACES.md](porting/INTERFACES.md)
 for how the code is organised.  The GTK sources this port is written from
-are in git at the last GTK commit (`GTK_COMMIT` in `tests/cli_golden.sh`).
+are in git at the last GTK commit, `51ec5a4`.
 
 ## License
 

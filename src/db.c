@@ -455,7 +455,7 @@ on_db_open(const gchar *path_override)
     }
 
     /* Wait out short write locks instead of failing instantly — e.g. a
-     * CLI command landing while the GUI is mid-autosave.                   */
+     * write from another connection landing while the GUI is mid-autosave. */
     sqlite3_busy_timeout(db->handle, ON_DB_BUSY_TIMEOUT_MS);
 
     if (!exec_simple(db, SCHEMA_SQL)) {
@@ -959,18 +959,6 @@ on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name,
     return new_id;
 }
 
-gboolean
-on_db_folder_set_ai_mode(OnDatabase *db, gint64 id, gint mode)
-{
-    sqlite3_stmt *stmt =
-        prepare(db, "UPDATE folders SET ai_mode=? WHERE id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_int(stmt, 1, mode);
-        sqlite3_bind_int64(stmt, 2, id);
-    }
-    return stmt_done(db, stmt);
-}
-
 gint
 on_db_folder_get_ai_mode(OnDatabase *db, gint64 id)
 {
@@ -991,31 +979,6 @@ on_db_folder_get_emoji(OnDatabase *db, gint64 id)
         emoji = g_strdup((const gchar *)sqlite3_column_text(stmt, 0));
     sqlite3_finalize(stmt);
     return emoji != NULL ? emoji : g_strdup("");
-}
-
-gboolean
-on_db_folder_set_emoji(OnDatabase *db, gint64 id, const gchar *emoji)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "UPDATE folders SET emoji=? WHERE id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_text(stmt, 1,
-                          emoji != NULL ? emoji : "",
-                          -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, id);
-    }
-    return stmt_done(db, stmt);
-}
-
-gboolean
-on_db_folder_rename(OnDatabase *db, gint64 id, const gchar *name)
-{
-    sqlite3_stmt *stmt = prepare(db, "UPDATE folders SET name=? WHERE id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, id);
-    }
-    return stmt_done(db, stmt);
 }
 
 gboolean
@@ -1671,29 +1634,10 @@ on_db_note_list_free(GList *notes)
  * tags
  * ========================================================================= */
 
-/* on_db_tag_get_or_create() — look up tag `name`, creating it if
- * missing.  Returns the tag id, or 0 on failure.                            */
+/* tag_find() — look up tag `name` WITHOUT creating it.  Returns its id, or
+ * 0.                                                                       */
 static gint64
-on_db_tag_get_or_create(OnDatabase *db, const gchar *name)
-{
-    /* Try the fast path first: the tag already exists.                     */
-    gint64 tag_id = on_db_tag_find(db, name);   /* resulting tag id         */
-    if (tag_id != 0)
-        return tag_id;
-
-    /* Not found: insert it.                                                */
-    sqlite3_stmt *stmt = prepare(db, "INSERT INTO tags (name) VALUES (?)");
-    if (stmt == NULL)
-        return 0;
-    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-        tag_id = sqlite3_last_insert_rowid(db->handle);
-    sqlite3_finalize(stmt);
-    return tag_id;
-}
-
-gint64
-on_db_tag_find(OnDatabase *db, const gchar *name)
+tag_find(OnDatabase *db, const gchar *name)
 {
     sqlite3_stmt *stmt = prepare(db, "SELECT id FROM tags WHERE name=?");
     if (stmt == NULL)
@@ -1706,13 +1650,25 @@ on_db_tag_find(OnDatabase *db, const gchar *name)
     return tag_id;
 }
 
-gboolean
-on_db_tag_delete(OnDatabase *db, gint64 id)
+/* on_db_tag_get_or_create() — look up tag `name`, creating it if
+ * missing.  Returns the tag id, or 0 on failure.                            */
+static gint64
+on_db_tag_get_or_create(OnDatabase *db, const gchar *name)
 {
-    sqlite3_stmt *stmt = prepare(db, "DELETE FROM tags WHERE id=?");
-    if (stmt != NULL)
-        sqlite3_bind_int64(stmt, 1, id);
-    return stmt_done(db, stmt);
+    /* Try the fast path first: the tag already exists.                     */
+    gint64 tag_id = tag_find(db, name);   /* resulting tag id         */
+    if (tag_id != 0)
+        return tag_id;
+
+    /* Not found: insert it.                                                */
+    sqlite3_stmt *stmt = prepare(db, "INSERT INTO tags (name) VALUES (?)");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        tag_id = sqlite3_last_insert_rowid(db->handle);
+    sqlite3_finalize(stmt);
+    return tag_id;
 }
 
 /* run_tag_query() — step a prepared statement whose result columns are
@@ -1814,19 +1770,6 @@ on_db_notes_by_tag(OnDatabase *db, gint64 tag_id)
         return NULL;
     sqlite3_bind_int64(stmt, 1, tag_id);
     return run_meta_query(stmt);
-}
-
-GList *
-on_db_note_tag_list(OnDatabase *db, gint64 note_id)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT t.id, t.name FROM tags t "
-        "JOIN note_tags nt ON nt.tag_id = t.id "
-        "WHERE nt.note_id=? ORDER BY t.name COLLATE NOCASE");
-    if (stmt == NULL)
-        return NULL;
-    sqlite3_bind_int64(stmt, 1, note_id);
-    return run_tag_query(stmt);
 }
 
 /* =========================================================================
@@ -2126,38 +2069,6 @@ on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
         "SELECT nt.task_id FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
         " WHERE nt.uid = ? AND t.deleted = 0", uid);
     return task_id != 0 && task_apply(db, task_id, title, done, due);
-}
-
-gint64
-on_db_action_uid_at(OnDatabase *db, gint64 note_id, gint ord)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT uid FROM " ACTION_CTX_VIEW_NAME " WHERE note_id=? AND ord=?");
-    if (stmt == NULL)
-        return 0;
-    sqlite3_bind_int64(stmt, 1, note_id);
-    sqlite3_bind_int(stmt, 2, ord);
-    gint64 uid = sqlite3_step(stmt) == SQLITE_ROW
-                 ? sqlite3_column_int64(stmt, 0) : 0;
-    sqlite3_finalize(stmt);
-    return uid;
-}
-
-gboolean
-on_db_action_find_uid(OnDatabase *db, gint64 uid, gint64 *note_id, gint *ord)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, ord FROM " ACTION_CTX_VIEW_NAME " WHERE uid=?");
-    if (stmt == NULL)
-        return FALSE;
-    sqlite3_bind_int64(stmt, 1, uid);
-    gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
-    if (found) {
-        *note_id = sqlite3_column_int64(stmt, 0);
-        *ord     = sqlite3_column_int(stmt, 1);
-    }
-    sqlite3_finalize(stmt);
-    return found;
 }
 
 /* The columns both listings read off the action_items_ctx view, in

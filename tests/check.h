@@ -1,5 +1,6 @@
 /* ===========================================================================
- * check.h — the test harness: a failure counter and a run-loop pump
+ * check.h — the test harness: a failure counter, a run-loop pump and a
+ * date helper
  *
  * Each tests/<name>_test.c is a plain main() linked against the core.  It
  * calls check() for every expectation and returns check_result() — non-zero
@@ -20,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "identity.h"
 
@@ -98,6 +100,26 @@ check_pump(const bool *done, double seconds)
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, true);
     }
     return done != NULL && *done;
+}
+
+/*
+ * check_midnight — a calendar date as the local-midnight UNIX time an
+ * action item's due date is stored as.
+ *
+ * Inputs:
+ *   year, month, day — the date (month 1-12)
+ *
+ * Output: the timestamp.
+ */
+static inline long long
+check_midnight(int year, int month, int day)
+{
+    struct tm tm = { 0 };
+    tm.tm_year  = year - 1900;
+    tm.tm_mon   = month - 1;
+    tm.tm_mday  = day;
+    tm.tm_isdst = -1;
+    return (long long)mktime(&tm);
 }
 
 #endif /* ON_TEST_CHECK_H */

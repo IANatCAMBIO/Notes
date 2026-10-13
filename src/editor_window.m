@@ -244,7 +244,6 @@ separator(void)
 - (BOOL)save;
 - (BOOL)close_saved;
 - (void)update_status;
-- (void)reload_if_changed;
 @end
 
 /* ── Commands ───────────────────────────────────────────────────────────── */
@@ -1065,53 +1064,6 @@ save
 }
 
 /*
- * reload_if_changed — after an outside command wrote the database: an
- * editor whose note is gone closes without saving; one holding an edit
- * made through live_document saves it; one whose note was rewritten in
- * the database (its stored blob is no longer the editor's document)
- * reloads it, so the editor never writes a stale copy over the change.
- */
-- (void)
-reload_if_changed
-{
-    OnApp      *app  = self.app;
-    OnNoteMeta *meta = on_db_note_get(app->db, self.note_id);
-    if (meta == NULL) {
-        self.discard = YES;
-        [self.window close];
-        return;
-    }
-    on_db_note_meta_free(meta);
-    if (self.dirty) {
-        [self.autosave_timer invalidate];
-        self.autosave_timer = nil;
-        [self save];
-        return;
-    }
-
-    guint8 *stored = NULL;
-    gsize   stored_len = 0;
-    if (!on_db_note_load(app->db, self.note_id, &stored, &stored_len)) return;
-    gsize   mine_len = 0;
-    guint8 *mine = on_document_to_bnbf(on_note_view_document(self.note_view), &mine_len);
-    BOOL same = stored_len == mine_len && memcmp(stored, mine, mine_len) == 0;
-    g_free(mine);
-    g_free(stored);
-    if (same) return;
-
-    OnDocument *doc = on_note_document_load(app->db, self.note_id);
-    if (doc == NULL) {                 /* now unreadable: leave it alone */
-        self.discard = YES;
-        [self.window close];
-        return;
-    }
-    [self load_content:doc];
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
-    self.window.title = @(title);
-    g_free(title);
-}
-
-/*
  * update_status — refresh the status bar: the note's folder path ("/" at
  * the top level, "/Folder/Sub" below; with the database path in front when
  * statusbar_db_path is on), "id:N" when statusbar_note_id is on, and the
@@ -1369,7 +1321,7 @@ hook_open_note(OnApp *app, gint64 note_id)
 
 /*
  * hook_live_document — OnApp.live_document: an open editor's document, for
- * an edit made from outside (an action ticked in the library or the CLI).
+ * an edit made from outside (an action ticked in the library).
  *
  * Inputs:
  *   app     — the application context (unused)
@@ -1399,43 +1351,6 @@ hook_live_edited(OnApp *app, gint64 note_id)
 }
 
 /*
- * hook_save_editors — OnApp.save_editors: every editor with unsaved edits
- * saves now; the windows stay open.
- *
- * Inputs:
- *   app — the application context (unused)
- *
- * Output: FALSE when any save failed.
- */
-static gboolean
-hook_save_editors(OnApp *app)
-{
-    gboolean ok = TRUE;
-    for (NotesEditorWindow *editor in editors.allValues) {
-        if (!editor.dirty) continue;
-        [editor.autosave_timer invalidate];
-        editor.autosave_timer = nil;
-        if (![editor save]) ok = FALSE;
-    }
-    return ok;
-}
-
-/*
- * hook_reload_editors — OnApp.reload_editors: every editor catches up with
- * a database an outside command just wrote (reload_if_changed).
- *
- * Inputs:
- *   app — the application context (unused)
- */
-static void
-hook_reload_editors(OnApp *app)
-{
-    for (NotesEditorWindow *editor in editors.allValues) {   /* a copy: closing edits editors */
-        [editor reload_if_changed];
-    }
-}
-
-/*
  * hook_flush_editors — OnApp.flush_editors: close every editor, each
  * saving first (the flush-on-quit contract).
  *
@@ -1460,7 +1375,5 @@ on_editor_install(OnApp *app)
     app->open_note      = hook_open_note;
     app->live_document  = hook_live_document;
     app->live_edited    = hook_live_edited;
-    app->save_editors   = hook_save_editors;
-    app->reload_editors = hook_reload_editors;
     app->flush_editors  = hook_flush_editors;
 }

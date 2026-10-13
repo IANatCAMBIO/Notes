@@ -5,7 +5,8 @@
  * The order the app delegate follows (the GTK build's main.c, kept):
  *
  *   1. on_app_config_init()            the ini, before anything reads it
- *   2. on_cli_run(argc, argv)          a command-line invocation ends here
+ *   2. on_app_lock_take()              this copy is THE one on the data
+ *                                      directory, or it quits untouched
  *   3. on_app_prefs_load(app), app->db_dir = on_app_config_load_db_dir()
  *   4. on_app_open_db(app)             — or, when no database file exists
  *                                      at on_app_db_path(), ask the user
@@ -15,6 +16,17 @@
  *   7. on_app_start_services(app)
  *   ...
  *   8. on_app_shutdown(app)            from applicationShouldTerminate:
+ *
+ * ONE APP PER DATA DIRECTORY
+ *
+ * The app holds an exclusive flock on <data dir>/notes.lock
+ * (ON_LOCK_FILENAME) from launch to on_app_shutdown; the kernel drops it
+ * if the process dies.  A second copy started on the same data directory
+ * finds it held before it has opened the database or shown a window, and
+ * quits (raising the first).  Without it, two copies would each hold
+ * notes they believe current and autosave over each other's edits.  The
+ * development seeder takes the same lock, so `make seed` cannot wipe a
+ * database an app is running on.
  *
  * THE FLUSH-ON-QUIT CONTRACT
  *
@@ -30,8 +42,8 @@
  *     and the hook returns FALSE.
  *   - on_app_shutdown() is the ONE way the app ends: it calls
  *     app->flush_editors — and stops there, changing nothing else, when an
- *     editor could not save — then stops the IPC server, removes the
- *     backup timer and closes the database.  It is idempotent.
+ *     editor could not save — then removes the backup timer, closes the
+ *     database and lets go of the app lock.  It is idempotent.
  *   - every route out goes through it: the app delegate calls it from
  *     applicationShouldTerminate: (Quit, the Dock, logout and restart all
  *     arrive there), cancelling the quit when it fails, and turns SIGTERM
@@ -52,7 +64,26 @@
 #define ON_APP_LIFECYCLE_H
 
 #include "app_core.h"
-#include "ipc.h"
+
+/* Outcome of taking the app lock.                                           */
+typedef enum {
+    on_app_lock_held,                /* this process holds it                */
+    on_app_lock_busy,                /* another live process holds it        */
+    on_app_lock_failed,              /* it could not be tried (stderr)       */
+} on_app_lock_result_t;
+
+/* ---------------------------------------------------------------------------
+ * on_app_lock_take() — make this process THE one using the data directory
+ * (see ONE APP PER DATA DIRECTORY above).  A copy that is just quitting
+ * still holds the lock for a moment, so a busy lock is retried briefly
+ * before the answer is "busy".  Held until on_app_shutdown or the end of
+ * the process.
+ *
+ * Output: on_app_lock_held (also when already held), on_app_lock_busy
+ *         when another live process holds it, on_app_lock_failed when it
+ *         could not be tried (reported on stderr).
+ * ------------------------------------------------------------------------- */
+on_app_lock_result_t on_app_lock_take(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_db_path() — where the database is expected: app->db_dir plus the
@@ -82,20 +113,15 @@ gboolean on_app_open_db(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
- * open, the hooks are installed and the library window exists: the IPC
- * server, the integrity check, the backup timer, and any action the
- * command line queued for this launch (quicknote, note open).
+ * open, the hooks are installed and the library window exists: the
+ * integrity check and the backup timer.
  *
  * Inputs:
  *   app — the application context
  *
- * Output: the IPC server's result.  on_ipc_server_busy means another
- *         instance owns this data directory: NOTHING else was started, and
- *         the caller must quit without writing.  on_ipc_server_failed
- *         means everything else started but the command line cannot reach
- *         this app; the caller tells the user.
+ * Output: none.
  * ------------------------------------------------------------------------- */
-on_ipc_server_result_t on_app_start_services(OnApp *app);
+void on_app_start_services(OnApp *app);
 
 /* What on_app_switch_db did. */
 typedef enum {
@@ -136,7 +162,7 @@ on_switch_result_t on_app_switch_db(OnApp *app, const gchar *path,
  *   app — the application context
  *
  * Output: TRUE when the work has ended: no editor is open, no timer is
- *         armed, the socket file is gone and app->db is NULL.  FALSE when an
+ *         armed, app->db is NULL and the app lock is released.  FALSE when an
  *         editor could not save its edits: it is still open, and nothing
  *         else was stopped — the caller must not end the process.
  * ------------------------------------------------------------------------- */

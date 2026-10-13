@@ -3,10 +3,10 @@
  *
  * This fork is deliberately a different application from the GTK Notes it
  * was forked from: its own bundle, its own preferences and database
- * directory, its own IPC socket.  Nothing here may ever name a path the GTK
+ * directory, its own lock.  Nothing here may ever name a path the GTK
  * build uses (~/.local/share/notes, ~/.config/notes, ~/.cache/notes-*.sock,
- * an ini next to the binary), so the two can never open, hand off to, or
- * receive from each other.  The bundle NAME is shared (Notes.app):
+ * an ini next to the binary), so the two can never open each other's
+ * files.  The bundle NAME is shared (Notes.app):
  * installing this build replaces a GTK copy in ~/Applications.
  *
  * Renaming the app is an edit to this file and nothing else: the Makefile
@@ -29,14 +29,9 @@
 /* CFBundleIdentifier; also the prefix of the pasteboard types (ui_util.h). */
 #define ON_BUNDLE_ID "com.cambio.notes"
 
-/* The command-line program, in Contents/Helpers (not beside the GUI
- * executable: on a case-insensitive disk `notes` and `Notes` are one file).
- * It is what the Claude skill and scripts call.                             */
-#define ON_CLI_NAME "notes"
-
 /* The data directory is ~/Library/Application Support/<ON_DATA_DIR_NAME>:
- * notes.ini, the default notes.db, the default backups/ folder and the IPC
- * socket all live in it (see config.h for the policy).                      */
+ * notes.ini, the default notes.db, the default backups/ folder and the app
+ * lock all live in it (see config.h for the policy).                        */
 #define ON_DATA_DIR_NAME "Notes"
 
 /* Environment variable that replaces the data directory wholesale.  Every
@@ -47,7 +42,7 @@
  * ON_DB_FILENAME in db.h: it is part of the on-disk contract, not of this
  * build's identity.)                                                        */
 #define ON_CONFIG_FILENAME "notes.ini"
-#define ON_SOCKET_FILENAME "notes.sock"
-#define ON_LOCK_FILENAME "notes.lock"
+#define ON_LOCK_FILENAME "notes.lock"   /* one app per data directory
+                                           (app_lifecycle.h)                 */
 
 #endif /* ON_IDENTITY_H */

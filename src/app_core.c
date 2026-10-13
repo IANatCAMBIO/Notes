@@ -142,21 +142,3 @@ on_app_db_health_start(OnApp *app)
         app->notify_db_health(app);  /* the plate shows "checking"           */
     }
 }
-
-/*
- * on_app_read_stream — see app_core.h.
- */
-gchar *
-on_app_read_stream(FILE *f, gboolean rewind_first)
-{
-    GString *s = g_string_new(NULL);
-    if (rewind_first) {
-        rewind(f);
-    }
-    gchar buf[4096];
-    gsize n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
-        g_string_append_len(s, buf, (gssize)n);
-    }
-    return g_string_free(s, FALSE);
-}

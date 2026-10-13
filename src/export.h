@@ -48,15 +48,4 @@ gint on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
 gboolean on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
                         OnExportFormat format);
 
-/* ---------------------------------------------------------------------------
- * on_export_note_markdown() — render a single note's body to a Markdown
- * STRING.  No files are written: embedded images become numbered
- * "![image N]()" placeholders.  Used by the CLI's "note cat --md".
- *   app     — global application context.
- *   note_id — the note to render.
- * Returns a newly allocated string (g_free() it), empty for an empty
- * note; NULL when the note does not exist or cannot be read.
- * ------------------------------------------------------------------------- */
-gchar *on_export_note_markdown(OnApp *app, gint64 note_id);
-
 #endif /* BLUE_EXPORT_H */

@@ -38,7 +38,7 @@
  * slow or unreachable destination — a network mount, a sleeping external
  * disk — never blocks the UI.  Completion is marshalled back with
  * on_main_post (main_service.h), and the periodic timer is an on_timer: a
- * process with no main run loop (the command-line tool) can neither finish
+ * process with no main run loop (the development seeder) can neither finish
  * a pass nor tick, and never starts one.
  *
  * Config keys (all in the [notes] group):

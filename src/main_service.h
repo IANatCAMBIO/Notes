@@ -12,8 +12,8 @@
  *
  * The main queue is drained by the Cocoa run loop in the app, and by
  * CFRunLoopRun / dispatch_main in a test.  A process that never runs
- * either (the command-line tool) must not rely on on_main_post or a timer:
- * nothing it calls does.
+ * either (the development seeder) must not rely on on_main_post or a
+ * timer: nothing it calls does.
  *
  * Threading rule that goes with it: one SQLite connection per thread.  A
  * worker opens its own connection (on_db_open) and closes it before it

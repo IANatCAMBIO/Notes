@@ -28,7 +28,6 @@
 #include "app_lifecycle.h"
 #include "identity.h"
 #include "image_io.h"
-#include "ipc.h"
 #include "serialize.h"
 
 #include <stdio.h>
@@ -449,26 +448,15 @@ main(int argc, char **argv)
     on_app_config_init();
 
     /* Either command needs the data directory to itself: with an app on
-     * it, this tool would be a second writer.  The lock is held until the
-     * process ends.                                                        */
-    if (on_ipc_lock_take() != on_ipc_lock_held) {
+     * it, this tool would be a second writer.  The lock is held until
+     * on_app_shutdown (or the end of the process).                         */
+    if (on_app_lock_take() != on_app_lock_held) {
         fprintf(stderr, "dev_seed: an app is running on this data directory; "
                         "quit it first\n");
         return 2;
     }
     if (argc == 2 && strcmp(argv[1], "check") == 0) {
         return 0;
-    }
-    if (argc == 4 && strcmp(argv[1], "rich") == 0) {
-        /* tests/cli_golden.sh's rich note; goes with that suite.           */
-        GBytes *image = file_png(argv[3]);
-        OnApp   app   = { 0 };
-        app.db_dir    = on_app_config_load_db_dir();
-        gboolean ok   = image != NULL && on_app_open_db(&app) &&
-                        seed_rich(app.db, g_ascii_strtoll(argv[2], NULL, 10), image);
-        on_app_shutdown(&app);
-        if (image != NULL) g_bytes_unref(image);
-        return ok ? 0 : 2;
     }
     if (argc != 4 || strcmp(argv[1], "seed") != 0) {
         fprintf(stderr, "usage: dev_seed check | dev_seed seed IMAGE IMAGE2\n");

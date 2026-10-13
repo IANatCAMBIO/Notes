@@ -9,7 +9,6 @@
 | GLib | 2.88 | MacPorts: `sudo port install glib2 pkgconf` | the ONE non-system dependency; the core still uses it (containers, strings, GKeyFile, GRegex) and it is to be removed in a later phase |
 | SQLite | 3.51 (system) | macOS: SDK header, `/usr/lib/libsqlite3.dylib` | not MacPorts' — see below |
 | Cocoa, CoreText, CoreGraphics, ImageIO, UniformTypeIdentifiers | system | macOS SDK | |
-| GTK 4 | 4.22 | MacPorts: `gtk4 +quartz` | **only** for `make golden`, which builds the GTK reference binary; not needed to build or run the app |
 
 ```sh
 export PATH=/opt/local/bin:$PATH    # MacPorts pkg-config
@@ -17,7 +16,7 @@ make
 ```
 
 No GTK, GDK, Pango, cairo or gdk-pixbuf is compiled or linked.  `otool -L`
-on either executable shows `libglib-2.0` as the only library outside
+on the executable shows `libglib-2.0` as the only library outside
 `/usr/lib` and `/System`.
 
 **System SQLite on purpose.**  pkg-config's `-I/opt/local/include` and
@@ -54,16 +53,15 @@ it; objects also depend on the Makefile and on `VERSION`.
 
 | Target | Does |
 |---|---|
-| `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), the CLI (`Contents/Helpers/notes`), `Info.plist`, the icons and README in `Contents/Resources`; signs it |
+| `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), `Info.plist`, the icons and README in `Contents/Resources`; signs it |
 | `make run` | runs the app in the foreground on `dev/data` (seeding it first if needed); `NOTES_DATA_DIR` is set for you |
-| `make seed` | wipes and rebuilds the development database `dev/data/notes.db` |
-| `make test` | `build/test_document` (the model, GLib only), every `tests/*_test.c` (core), every `tests/*_test.m` (UI, in-process), then `make golden` |
-| `make golden` | this build's CLI against the GTK build's, byte for byte (needs MacPorts gtk4; says SKIPPED without it) |
+| `make seed` | wipes and rebuilds the development database `dev/data/notes.db` with `build/dev_seed` (refuses while an app holds `dev/data`) |
+| `make test` | `build/test_document` (the model, GLib only), every `tests/*_test.c` (core), every `tests/*_test.m` (UI, in-process) |
 | `make ui-check` | the in-process UI test alone: window snapshots (light and dark) in `dev/snapshots`, ownership and memory checks |
 | `make bnbf-scan` | `build/bnbf-scan`, the blob round-trip scan for a database COPY |
 | `make install` | copies the bundle to `~/Applications`, replacing an installed copy (a running one is asked to quit, which saves open notes, and is reopened) |
 | `make clean` | removes `build/` and the bundle |
-| `make clean-dev` | removes `dev/` (development data, test data, snapshots, the GTK reference binary) |
+| `make clean-dev` | removes `dev/` (development data, test data, snapshots) |
 
 ## What is built from what
 
@@ -71,19 +69,18 @@ it; objects also depend on the Makefile and on `VERSION`.
 Notes.app/Contents/
   Info.plist            resources/Info.plist + names from src/identity.h,
                         version from VERSION, NotesBuildDate, LSMinimumSystemVersion
-  MacOS/Notes           every src/*.c except cli_main.c, and every src/*.m
-  Helpers/notes         the core (CORE_SRCS in the Makefile) + src/cli_main.c
+  MacOS/Notes           every src/*.c and every src/*.m
   Resources/            icons/*.png, README.md
 build/                  objects, dependency files, test programs, dev_seed
-dev/                    (gitignored) data/, test/, snapshots/, golden/, gtk_ref/
+dev/                    (gitignored) data/, test/, snapshots/
 ```
 
 Every `src/*.c` and `src/*.m` is compiled — delete a file you no longer use.
-A `.c` file is part of the core (and so of the CLI and the tests) only if it
-is listed in `CORE_SRCS`.
+A `.c` file is part of the core (and so of the seeder and the tests) only if
+it is listed in `CORE_SRCS`.
 
-The names — app name, bundle name, bundle identifier, CLI name, data folder,
-environment variable, socket file — are defined once, in `src/identity.h`;
+The names — app name, bundle name, bundle identifier, data folder,
+environment variable, lock file — are defined once, in `src/identity.h`;
 the Makefile reads them from there.
 
 ## Version
@@ -95,8 +92,7 @@ bundle's `CFBundleShortVersionString` / `CFBundleVersion`.
 
 As in the Files app: the bundle is signed with the first "Apple Development"
 identity in the keychain, or ad hoc (`-`) if there is none; override with
-`make CODESIGN_IDENTITY="…"`.  The nested `notes` tool is signed first, then
-the bundle.  No hardened runtime, no entitlements, no notarisation — a
+`make CODESIGN_IDENTITY="…"`.  No hardened runtime, no entitlements, no notarisation — a
 locally built personal app.  `build/codesign.id` records the identity so a
 change forces a re-sign.
 
@@ -108,36 +104,22 @@ change forces a re-sign.
 | `config_test` | the data-directory policy (override, default, `$HOME`/XDG ignored), ini round trip through a second process, a malformed ini kept aside |
 | `main_service_test` | main-thread posts, timers, workers; the async integrity check and a backup pass landing under the Cocoa-side run loop; a backup paced against a concurrent writer, partial copies, the open database never pruned |
 | `image_io_test` | capped decode, header probe, PNG encode, file → PNG, a note's image bytes by ordinal |
-| `ipc_test` | the socket between real processes: wire format byte for byte, the real `notes` tool served by a stand-in app, relative paths in the tool's directory, the app lock (busy, stale socket, lock held with nothing accepting → the tool refuses, held through a headless run), a data directory longer than a socket path |
-| `lifted_logic_test` | `action_edit` (headless and live), `search_job`, open policy, shutdown order (and its refusal while an editor cannot save), an unreadable note never treated as empty, strict CLI ids, export file names |
+| `core_api_test` | the core API end to end on one database: notes from text, the `!` action-line rules and their task rows (uids, ISO and M/D/YY due dates, done/undone/due, a renamed row re-rendered into the line), folders (paths, Info fields, move, sort, counts), tags, pins, the Trash, the search query language, the whole-database counts, images by ordinal, Markdown/HTML export, backup |
+| `lifted_logic_test` | the app lock between real processes (busy while held, free once the holder dies, released by shutdown), `action_edit` (headless and live), `search_job`, open policy, shutdown order (and its refusal while an editor cannot save), an unreadable note never treated as empty, export file names |
 | `utf_index_test` | UTF-8 byte ↔ UTF-16 unit offsets |
 | `ui_probe_test` (app objects, in-process) | the `tests/ui/*.txt` scripts replayed against the note view: typing, keys, clicks, the input method, tables, find, tags |
-| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, an unreadable note refused, CLI writes to open notes, a failed save never dropped, permanent delete only of what is still in the Trash, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); writes light and dark snapshots to `dev/snapshots` |
-| `tests/cli_golden.sh` | ~740 CLI comparisons against the GTK build, plain and `--json`, reads and mutations, on databases seeded by each build |
+| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, an unreadable note refused, Quick Note, a failed save never dropped, permanent delete only of what is still in the Trash, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); writes light and dark snapshots to `dev/snapshots` |
 
 Each test runs with `NOTES_DATA_DIR` set to its own folder under
 `dev/test/`; `tests/check.h` refuses to run without it.  Run one `make test`
-at a time: concurrent runs share those folders and `dev/golden`.
+at a time: concurrent runs share those folders.
 
 **Tools.**  `tools/dev_seed.c` and `tools/seed-dev.sh` fill `dev/data`
-(`make seed`); `tools/bnbf-scan.c` round-trips every note of a database
-COPY through the model and reports what the loader repaired (`make
-bnbf-scan`); `tools/icon-prep.py` normalises a new toolbar icon (see
-`icons/README.md`); `tools/import-apple-notes.sh` imports Apple Notes
-through the `notes` command-line tool.
-
-**The golden test and the GTK reference binary.**  `tests/cli_golden.sh`
-exports this repository's last GTK commit (pinned in the script as
-`GTK_COMMIT`, so it keeps working once the port is merged into `main`) with
-`git archive` into a scratch folder, builds the GTK app there, keeps only the binary — at
-`dev/gtk_ref/notes`, without its execute bit — and deletes the scratch
-folder (so no GTK Makefile, whose `install` target replaces the installed
-GTK app, is left around).  The binary only ever runs as a *copy* inside a
-per-case folder under `dev/golden` that already holds a `notes.ini` pointing
-into the same folder — under `env -i` with `HOME` and the XDG directories
-redirected into `dev/golden`, and after confirming with `stats` which
-database it opened.  The executable copies are deleted when the script
-exits.  Do not run that binary any other way.
+(`make seed`) through the core API, holding the app lock while they write;
+`tools/bnbf-scan.c` round-trips every note of a database COPY through the
+model and reports what the loader repaired (`make bnbf-scan`);
+`tools/icon-prep.py` normalises a new toolbar icon (see
+`icons/README.md`).
 
 **Memory tools.**  Apple's `leaks`, `vmmap`, `footprint`, `sample` and `lldb`
 need to inspect another process; on a Mac with developer mode off
@@ -151,10 +133,9 @@ the outside tools remain the stronger check; point them at a running
 
 ## Platform notes
 
-- arm64 macOS; not sandboxed (arbitrary database locations, a Unix socket in
+- arm64 macOS; not sandboxed (arbitrary database locations, a lock file in
   Application Support, spawning helper commands).
-- The app must run from its bundle; the CLI, in `Contents/Helpers`, finds
-  the app executable in the sibling `Contents/MacOS`.
+- The app must run from its bundle.
 - `[NSApp activate]` is macOS 14 API and is not caught by the availability
   check (messages to `NSApp` are not checked): keep the compile target at
   14.0 or review such calls by hand.

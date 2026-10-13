@@ -2,7 +2,7 @@
  * image_io.h — the one image type of the core, and its four operations
  *
  * An image inside a note is PNG bytes (OnBlock.png, OnInlineImage.png): the
- * model, the database, the exporter and the CLI never hold anything else,
+ * model, the database and the exporter never hold anything else,
  * and stored bytes are written back verbatim, never re-encoded.  Pixels are
  * needed only to draw, and for that there is exactly one decoded type, a
  * CGImageRef, produced and consumed here through ImageIO.  (The GTK build

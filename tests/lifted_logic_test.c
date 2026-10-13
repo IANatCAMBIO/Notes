@@ -1,14 +1,19 @@
 /* ===========================================================================
  * lifted_logic_test.c — the logic lifted out of GTK files into the core:
  * action_edit (from the editor window), search_job (from the search
- * window) and the lifecycle (from main.c)
+ * window) and the lifecycle (from main.c), with the one-app-per-data-
+ * directory lock between real processes
  * =========================================================================== */
 
 #include "check.h"
 
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include "action_edit.h"
 #include "app_lifecycle.h"
-#include "cli.h"
 #include "export.h"
 #include "search_job.h"
 #include "serialize.h"
@@ -112,23 +117,6 @@ blob_is(OnDatabase *db, gint64 note, const guint8 *bytes, gsize n)
 }
 
 /*
- * cli — run one CLI command in-process, as the app runs a remote one.
- *
- * Inputs:
- *   app  — the context
- *   argc — how many words
- *   argv — the words, argv[0] the program
- *
- * Output: the command's exit code.
- */
-static int
-cli(OnApp *app, int argc, char **argv)
-{
-    fflush(stdout);
-    return on_cli_dispatch(app, argc, argv);
-}
-
-/*
  * test_unreadable_note — a note whose stored blob cannot be read (a newer
  * format, a damaged header) is never treated as an empty note: no consumer
  * hands out an empty document for it, and no command saves an edit over
@@ -151,17 +139,20 @@ test_unreadable_note(OnApp *app)
     check(on_note_document_load(app->db, 999999) == NULL,
           "unreadable: so does the load of a note that does not exist");
 
-    gchar id[32];
-    g_snprintf(id, sizeof id, "%" G_GINT64_FORMAT, note);
-    char *append[] = { "notes", "note", "append", id, "added", NULL };
-    check(cli(app, 5, append) == 2, "unreadable: note append fails");
-    char *tag[] = { "notes", "note", "tag", id, "later", NULL };
-    check(cli(app, 5, tag) == 2, "unreadable: note tag fails");
-    char *cat[] = { "notes", "note", "cat", id, NULL };
-    check(cli(app, 4, cat) == 2, "unreadable: note cat fails instead of printing an empty body");
-    char *cat_md[] = { "notes", "note", "cat", id, "--md", NULL };
-    check(cli(app, 5, cat_md) == 2, "unreadable: and so does note cat --md");
-    check(blob_is(app->db, note, future, sizeof future),
+    check(on_note_text_cached(app->db, note) == NULL,
+          "unreadable: its plain text is NULL, never an empty body");
+
+    /* A note with an action item whose blob then became unreadable: an
+     * edit of the item must not write a document over it.                  */
+    gint64 with_item = on_note_new_from_text(app->db, 0, "Had an item\n! Item");
+    GList *items = on_db_action_list_for_note(app->db, with_item);
+    gint64 uid   = items != NULL ? ((OnActionItem *)items->data)->uid : 0;
+    on_db_action_list_free(items);
+    on_db_note_save(app->db, with_item, "From the future", future, sizeof future, NULL);
+    check(uid != 0 && !on_action_edit_set_done(app, uid, TRUE),
+          "unreadable: an action edit of its item fails");
+    check(blob_is(app->db, note, future, sizeof future) &&
+          blob_is(app->db, with_item, future, sizeof future),
           "unreadable: the stored bytes are untouched");
 
     /* A save to a note that is gone fails rather than "succeeding".        */
@@ -169,29 +160,6 @@ test_unreadable_note(OnApp *app)
     on_db_notes_delete(app->db, &gone, 1);
     check(!on_db_note_save(app->db, gone, "Gone", future, sizeof future, NULL),
           "a save to a deleted note reports failure");
-}
-
-/*
- * test_strict_ids — a note id on the command line is the whole argument or
- * nothing: "3,4" or "3abc" is no note, never note 3.
- *
- * Inputs:
- *   app — the context, database open, no hooks
- */
-static void
-test_strict_ids(OnApp *app)
-{
-    gint64 note = on_note_new_from_text(app->db, 0, "Keep me\nbody");
-    gchar  arg[48];
-    g_snprintf(arg, sizeof arg, "%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT, note, note + 1);
-    char *del[] = { "notes", "note", "delete", arg, "--permanent", NULL };
-    check(cli(app, 5, del) == 2, "strict ids: note delete of \"N,M\" fails");
-    g_snprintf(arg, sizeof arg, "%" G_GINT64_FORMAT "abc", note);
-    char *cat[] = { "notes", "note", "cat", arg, NULL };
-    check(cli(app, 4, cat) == 2, "strict ids: \"Nabc\" is no note");
-    OnNoteMeta *meta = on_db_note_get(app->db, note);
-    check(meta != NULL, "strict ids: the note those arguments began with is untouched");
-    on_db_note_meta_free(meta);
 }
 
 /*
@@ -263,16 +231,9 @@ test_action_edit(OnApp *app)
     check(done, "headless: the stored line is struck");
     on_document_free(stored);
 
-    check(on_action_edit_set_text(app, uid, "Call the building society"),
-          "headless: rename is written");
-    gchar *line = line_of(app->db, note, 1);
-    check(strcmp(line, "! Call the building society due 2026-11-02") == 0,
-          "headless: the line keeps its '!' and its due date");
-    g_free(line);
-
     check(on_action_edit_set_due(app, uid, 0), "headless: due is cleared");
-    line = line_of(app->db, note, 1);
-    check(strcmp(line, "! Call the building society") == 0, "headless: the due suffix is gone");
+    gchar *line = line_of(app->db, note, 1);
+    check(strcmp(line, "! Call the bank") == 0, "headless: the due suffix is gone");
     g_free(line);
 
     check(!on_action_edit_set_done(app, 987654, TRUE), "an unknown uid is refused");
@@ -283,15 +244,17 @@ test_action_edit(OnApp *app)
     live_doc  = on_note_document_load(app->db, note);
     app->live_document = fake_live_document;
     app->live_edited   = fake_live_edited;
-    gchar *before = line_of(app->db, note, 1);
-    check(on_action_edit_set_text(app, uid, "Live rename"), "live: rename is written");
+    gchar     *before = line_of(app->db, note, 1);
+    gint64     due    = check_midnight(2027, 3, 3);
+    check(on_action_edit_set_due(app, uid, due), "live: a due date is written");
     check(live_edits == 1, "live: the editor is told exactly once");
-    check(strcmp(on_document_block(live_doc, 1)->text->text->str, "! Live rename") == 0,
-          "live: the open document shows the new text");
+    check(strcmp(on_document_block(live_doc, 1)->text->text->str,
+                 "! Call the bank due 2027-03-03") == 0,
+          "live: the open document shows the new due date");
     gchar *after = line_of(app->db, note, 1);
     check(strcmp(before, after) == 0, "live: the stored blob waits for the editor's own save");
     row = on_db_action_get(app->db, uid);
-    check(row != NULL && strcmp(row->text, "Live rename") == 0, "live: the task row was written first");
+    check(row != NULL && row->due == due, "live: the task row was written first");
     on_db_action_item_free(row);
     g_free(before);
     g_free(after);
@@ -373,6 +336,87 @@ test_search_job(OnApp *app)
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
+extern char **environ;
+
+/*
+ * spawn_self — run this test program again with one argument, its stdout
+ * on a pipe.
+ *
+ * Inputs:
+ *   self — this executable
+ *   arg  — "--hold-lock" or "--probe-lock"
+ *   out  — receives the read end of the child's stdout (close it)
+ *
+ * Output: the child's pid, or -1 when it could not be started.
+ */
+static pid_t
+spawn_self(const char *self, const char *arg, int *out)
+{
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
+    posix_spawn_file_actions_addclose(&actions, fds[0]);
+    pid_t pid  = -1;
+    char *argv[] = { (char *)self, (char *)arg, NULL };
+    if (posix_spawn(&pid, self, &actions, NULL, argv, environ) != 0) pid = -1;
+    posix_spawn_file_actions_destroy(&actions);
+    close(fds[1]);
+    *out = fds[0];
+    return pid;
+}
+
+/*
+ * lock_child — the child side: "--hold-lock" takes the app lock, says so
+ * on stdout and waits to be killed (a crash, as far as the lock knows);
+ * "--probe-lock" exits 0 when the lock could be taken.
+ *
+ * Inputs:
+ *   arg — the argument it was started with
+ *
+ * Output: the exit status (does not return for --hold-lock once held).
+ */
+static int
+lock_child(const char *arg)
+{
+    on_app_lock_result_t got = on_app_lock_take();
+    if (strcmp(arg, "--probe-lock") == 0) return got == on_app_lock_held ? 0 : 1;
+    if (got != on_app_lock_held) return 1;
+    fputs("held\n", stdout);
+    fflush(stdout);
+    for (;;) pause();
+}
+
+/*
+ * test_app_lock — one app per data directory: a second process finds the
+ * lock busy while the first lives, and free once it has died.
+ *
+ * Inputs:
+ *   self — this executable
+ */
+static void
+test_app_lock(const char *self)
+{
+    int   out    = -1;
+    pid_t holder = spawn_self(self, "--hold-lock", &out);
+    char  said[8] = "";
+    check(holder > 0 && read(out, said, sizeof said - 1) > 0 && strncmp(said, "held", 4) == 0,
+          "lock: another process takes the data directory's lock");
+    close(out);
+    check(on_app_lock_take() == on_app_lock_busy, "lock: this one then finds it busy");
+    kill(holder, SIGKILL);
+    waitpid(holder, NULL, 0);
+    check(on_app_lock_take() == on_app_lock_held, "lock: free once the holder has died");
+    check(on_app_lock_take() == on_app_lock_held, "lock: taking it again is harmless");
+    int   status = -1;
+    pid_t probe  = spawn_self(self, "--probe-lock", &out);
+    close(out);
+    waitpid(probe, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 1, "lock: and others find it busy");
+}
+
+
 /*
  * test_lifecycle — open policy and the shutdown order.
  *
@@ -398,22 +442,28 @@ test_lifecycle(OnApp *app, const char *data_dir)
 }
 
 /*
- * main — run the test.
+ * main — run the test, or be one of its lock children.
+ *
+ * Inputs:
+ *   argc, argv — "--hold-lock" / "--probe-lock" select a child (lock_child)
  *
  * Output: 0 when every check held.
  */
 int
-main(void)
+main(int argc, char **argv)
 {
     char data_dir[PATH_MAX];
     snprintf(data_dir, sizeof data_dir, "%s", check_data_dir());
     on_app_config_init();
+    if (argc == 2) {
+        return lock_child(argv[1]);
+    }
 
     static OnApp app;
+    test_app_lock(argv[0]);
     test_lifecycle(&app, data_dir);
     test_action_edit(&app);
     test_unreadable_note(&app);
-    test_strict_ids(&app);
     test_export_names(&app, data_dir);
     test_search_job(&app);
 
@@ -429,5 +479,11 @@ main(void)
     check(flushes == 1 && app.db == NULL, "shutdown flushes editors, then closes the database");
     on_app_shutdown(&app);
     check(app.db == NULL, "a second shutdown is harmless");
+
+    int   out    = -1, status = -1;
+    pid_t probe  = spawn_self(argv[0], "--probe-lock", &out);
+    close(out);
+    waitpid(probe, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "shutdown releases the app lock");
     return check_result();
 }

@@ -15,7 +15,7 @@
 
 /*
  * on_library_commands_install — register these commands with the library
- * and set OnApp.quicknote.  Called once at startup by the app delegate.
+ * (Called once at startup by the app delegate.)
  *
  * Inputs:
  *   lib — the library

@@ -30,22 +30,22 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    and `dist/` left at the repo root (ignored; `notes.ini` points at the
    real notes), and the sibling repositories `../tasks`, `../files`
    (read-only references; never build or run there).
-   Never run a GTK `notes` binary except through `tests/cli_golden.sh`,
-   which sandboxes it.
+   Never run a GTK `notes` binary.
 2. **Every run uses test data.**  `make run`, `make seed`, `make test` set
-   `NOTES_DATA_DIR` to a folder under `dev/`.  If you start the app or the
-   tool by hand, set it yourself:
-   `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/Helpers/notes stats`
-   (the last line of `stats` prints the database it opened — look at it).
+   `NOTES_DATA_DIR` to a folder under `dev/`.  If you start the app by
+   hand, set it yourself:
+   `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/MacOS/Notes`
+   (its log's first `[launch]` line names the database it opened — look
+   at it).
    Without the variable this build uses its own real directory,
    `~/Library/Application Support/Notes/`; it cannot reach the GTK
    build's files either way (§10).
 3. **`document.c`, `bnbf.c`, `db.c` are not yours to change.**  The document
    model is the single mutation path of a note (`BLOCK_MODEL.md`).  If you
    think the model needs a change, raise it.
-4. **The CLI's output is a contract** (a Claude skill drives it).
-   `make golden` compares it byte for byte with the GTK build's; it must
-   stay green.
+4. **The core API's behaviour is pinned** by `tests/core_api_test.c`
+   (what the removed command-line tool's golden suite used to cover); it
+   must stay green.
 5. **No new GLib** in new code.  GLib stays in the carried core for this
    phase and is removed later.  Objective-C and new C use Foundation and
    plain C; you will still *call* GLib-typed core functions (`gchar *`,
@@ -60,21 +60,20 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
 
 ```
 src/                 flat; one module = one .h + one .c or .m
-  identity.h         every name of this build (bundle id, data dir, socket)
-  -- core (C, no UI; linked into the app, the `notes` tool and the tests) --
+  identity.h         every name of this build (bundle id, data dir, lock)
+  -- core (C, no UI; linked into the app, the dev seeder and the tests) --
   document.[ch] bnbf.[ch]   the block model and its blob format   (carried)
-  db.[ch] serialize.[ch] export.[ch] search_query.[ch] cli.[ch]   (carried)
+  db.[ch] serialize.[ch] export.[ch] search_query.[ch]   (carried)
   backup.[ch]               rotating backups, on main_service
   config.[ch]               the data-directory policy + notes.ini
   main_service.[ch]         main-thread posts, timers, workers (GCD)
   image_io.[ch]             the one decoded image type: CGImageRef
-  ipc.[ch]                  CLI <-> app socket (BSD sockets)
   app_core.[ch]             OnApp: state, preferences, the hooks
-  app_lifecycle.[ch]        open the database, start services, shut down
+  app_lifecycle.[ch]        the app lock, open the database, start
+                            services, shut down
   action_edit.[ch]          edit an action item from outside its note
   search_job.[ch]           a search on a worker
   utf_index.[ch]            UTF-8 byte <-> UTF-16 unit offsets
-  cli_main.c                the `notes` tool's main()
   -- UI (C and Objective-C; the app only) --
   look.h  paint.[ch]  text_layout.[ch]  doc_layout.[ch]          (B)
   note_edit.[ch]  note_view.[hm]                                 (C)
@@ -84,12 +83,12 @@ src/                 flat; one module = one .h + one .c or .m
   library_sidebar.[hm]                                           (F)
   library_notes.[hm]                                             (G)
   settings_window.[hm] search_window.[hm] media_window.[hm] library_ai.[hm]  (H)
-tests/               *_test.c (core), *_test.m (UI), cli_golden.sh, check.h, ui/*.txt
+tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
 resources/           Info.plist
 icons/               PNG artwork, copied into Contents/Resources
 porting/             this file and the two research documents
-dev/                 (gitignored) data/, test/, snapshots/, golden/, gtk_ref/
+dev/                 (gitignored) data/, test/, snapshots/
 ```
 
 The Makefile compiles **every** `src/*.c` and `src/*.m` (a file you add is
@@ -110,10 +109,10 @@ Everything in map §2.3 is still there with the same signatures
 | `on_app_config_init(argv0)`, ini beside the binary, `notes.ini.defaults` | `config.h`: `on_app_config_init()`, one data directory; no defaults file — defaults are the table in `app_core.c` |
 | `g_idle_add` / `g_timeout_add` / `g_thread_new` | `main_service.h`: `on_main_post`, `on_timer_add` / `on_timer_remove`, `on_worker_run` |
 | `GdkPixbuf`, `on_png_decode_capped`, `on_image_png_bytes`, `on_png_probe_size`, `gdk_pixbuf_new_from_file` | `image_io.h`: `on_image_decode_capped` → `CGImageRef` (+1), `on_image_png_encode`, `on_image_probe_size`, `on_image_file_to_png`; `on_note_image_nth_png` gives one image's PNG bytes |
-| `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due/text` |
+| `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due` (a rename reaches the line through `on_note_document_reconcile`) |
 | the search worker inside search_window.c, `OnSearchScope` | `search_job.h`: `on_search_job_start` / `_cancel`, `OnSearchScope` |
 | main.c's sequence, `on_app_switch_database`, quit by destroying windows | `app_lifecycle.h`: `on_app_db_path`, `on_app_open_db`, `on_app_start_services`, `on_app_switch_db`, `on_app_shutdown` |
-| `on_library_quicknote`, `on_editor_window_open` called from ipc.c | hooks `OnApp.quicknote`, `OnApp.open_note` |
+| `on_editor_window_open` called from the notes pane | hook `OnApp.open_note` |
 | `app->editors` hash table, `app->editors == NULL` = headless | the editor registry is private to `editor_window.m`; **headless = every hook NULL** |
 
 ### The hooks (`OnApp`, `app_core.h`)
@@ -124,14 +123,13 @@ module that owns it and never cleared:
 
 | Hook | Installed by | Called by | Meaning |
 |---|---|---|---|
-| `notify_notes_changed(app)` | library_window.m | ipc.c after a mutating command; UI after structural changes | full refresh: sidebar + notes pane |
+| `notify_notes_changed(app)` | library_window.m | UI after structural changes; `on_app_switch_db` | full refresh: sidebar + notes pane |
 | `notify_note_saved(app, id)` | library_window.m | the editor after a plain save | update that one row |
 | `notify_status(app, msg)` | library_window.m | `on_app_status()` (printf-style) | status-bar event message |
 | `notify_ai_changed(app)` | library_ai.m (H) | Settings | `ai_enabled` changed |
 | `notify_db_health(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
 | `show_notice(app, title, msg)` | app_delegate.m | the integrity check, on damage | modal message |
-| `open_note(app, id)` | editor_window.m | ipc.c (`notes note open`) | open/raise the editor |
-| `quicknote(app)` | library_commands.m | ipc.c (`notes quicknote`) | new root note, editor in front |
+| `open_note(app, id)` | editor_window.m | library_notes.m | open/raise the editor |
 | `live_document(app, id)` / `live_edited(app, id)` | editor_window.m | action_edit.c | edit an OPEN note's document |
 | `flush_editors(app)` | editor_window.m | `on_app_shutdown`, `on_app_switch_db` | close every editor, each saving first |
 
@@ -142,8 +140,8 @@ A hook is handed only the `OnApp`; UI state is reached through
 
 An editor holds unsaved edits for up to its autosave delay.  Nothing may end
 the process, or close or switch the database, while one does.  So:
-`on_app_shutdown()` is the one way out (`flush_editors` → stop the socket →
-remove the backup timer → close the database); the app delegate calls it
+`on_app_shutdown()` is the one way out (`flush_editors` → remove the
+backup timer → close the database → release the app lock); the app delegate calls it
 from `applicationShouldTerminate:`; SIGTERM is turned into `[NSApp
 terminate:]`; `flush_editors` closes every editor **synchronously**, each
 saving first.  A save that fails is never dropped: that editor stays open,
@@ -164,7 +162,7 @@ one package.
 | Header | State of the `.c`/`.m` | Owner | Used by |
 |---|---|---|---|
 | `identity.h` | real | A | everyone |
-| `app_core.h`, `app_lifecycle.h`, `config.h`, `main_service.h`, `image_io.h`, `ipc.h`, `action_edit.h`, `search_job.h`, `utf_index.h` | real, tested | A | everyone |
+| `app_core.h`, `app_lifecycle.h`, `config.h`, `main_service.h`, `image_io.h`, `action_edit.h`, `search_job.h`, `utf_index.h` | real, tested | A | everyone |
 | `look.h` | real (constants) | A; add entries for your package | everyone |
 | `ui_util.h` | real | A | everyone |
 | `commands.h` | real (table + dispatch) | E owns the table | everyone |
@@ -357,10 +355,9 @@ proposal for the owner; changing one is editing one row of the table.
   `dispatch_after` per event is not a debounce — re-arm one timer.
 - **No synchronous long work on the main thread**: the integrity check,
   backups and search already run on workers; thumbnails and the media scan
-  must too (decode with `on_ui_thumbnail` on a worker).  IPC commands are
-  the deliberate exception: they run on the main thread, like the GTK build.
-- The command-line tool runs no run loop: nothing it calls may rely on
-  `on_main_post` or a timer.
+  must too (decode with `on_ui_thumbnail` on a worker).
+- The development seeder (`tools/dev_seed.c`) runs no run loop: nothing it
+  calls may rely on `on_main_post` or a timer.
 
 ---------------------------------------------------------------------------
 
@@ -448,8 +445,7 @@ singletons never remove theirs — do not copy that into per-window objects.
 pointer (`(__bridge void *)self`); that is safe only because the owner calls
 `on_timer_remove` in `windowWillClose:` — do so.  A repeating `NSTimer`
 retains its target: invalidate it at teardown.  A dispatch source owns its
-context and releases it in its cancel handler (`ipc.c` is the model);
-cancel, then release.
+context and releases it in its cancel handler; cancel, then release.
 
 **Core Foundation across the C/ObjC boundary** — the Create rule, no
 exceptions:
@@ -484,9 +480,10 @@ its inputs as locals, and never reads `self.…` off the main thread.
 
 - **One data directory** (`config.h`): `$NOTES_DATA_DIR`, else
   `~/Library/Application Support/Notes/`.  It holds `notes.ini`, the
-  default `notes.db`, the default `backups/`, the socket
-  `notes.sock` and the app lock `notes.lock` (held by the
-  running app; the `notes` tool runs headless only when it is free).  Nothing is resolved from `argv[0]`, the bundle or
+  default `notes.db`, the default `backups/` and the app lock `notes.lock`
+  (held by the running app from launch to quit, so a second copy on the
+  same data directory quits before it opens the database; `make seed`
+  takes it too).  Nothing is resolved from `argv[0]`, the bundle or
   the XDG directories; the home directory comes from the password database,
   not `$HOME`.  The only way out is the `db_dir` key, written by File ▸ Open
   Database File… ▸ Set as Default.
@@ -501,12 +498,10 @@ its inputs as locals, and never reads `self.…` off the main thread.
   six tags, pinned notes, trashed notes and a trashed folder, a note with
   every block kind (note 1), images, a 200-line note, 40 dated filler notes,
   and 13 action items — open, done, overdue, due today, undated — in several
-  contexts.  It refuses to run while an app is serving `dev/data`.
+  contexts, with due dates relative to today — all through the core API
+  (`tools/dev_seed.c`).  It refuses to run while an app holds `dev/data`.
 - **`make run`** runs the app on `dev/data` in the foreground (its log, with
   `[status]` lines, on your terminal).
-- **The `notes` tool** is `Notes.app/Contents/Helpers/notes`.  While the
-  app runs on the same data directory, the tool's commands execute inside
-  the app (and edit an open editor's live document).
 - **Tests** get their own directory under `dev/test/<name>` (the Makefile
   sets it; `tests/check.h` refuses to run otherwise).
 
@@ -580,14 +575,14 @@ its inputs as locals, and never reads `self.…` off the main thread.
 ```sh
 export PATH=/opt/local/bin:$PATH      # MacPorts pkg-config
 make clean && make                    # zero warnings
-make test                             # model, core, IPC, UI smoke, golden CLI
+make test                             # model, core, UI smoke
 make seed && make run                 # look at it, on dev/data
 make ui-check                         # the UI test alone; snapshots in dev/snapshots
 ```
 
 - `make test` = `build/test_document` (the model tests, GLib only), every
   `tests/*_test.c` against the core, every `tests/*_test.m` against the app
-  objects (run from a small bundle so icons load), then `make golden`.
+  objects (run from a small bundle so icons load).
 - **`tests/ui_smoke_test.m`** builds the library window and editors
   in-process and checks: closed windows are deallocated (weak references go
   nil), an unsaved live edit is saved on close and by `flush_editors`, a
@@ -624,7 +619,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 | §10.6 item | What was done instead | Why |
 |---|---|---|
 | 2: hooks `close_editors(ids,n)`, `close_all_editors`, `editors_settings_changed(what)` | `flush_editors` is the only hook; `on_editor_close_notes`, `on_editor_close_all`, `on_editor_settings_changed()` are plain functions in editor_window.h | only the core needs a hook; UI modules may call the editor module directly.  One "settings changed" replaces five `*_all` refreshers |
-| 2: `open_note(app, id, reveal_kind, ord, search_term)` | hook is `open_note(app, id)`; the full form is `on_editor_window_open` | the core (ipc.c) only ever opens plainly |
+| 2: `open_note(app, id, reveal_kind, ord, search_term)` | hook is `open_note(app, id)`; the full form is `on_editor_window_open` | the hook's callers only ever open plainly |
 | 3: `on_timer_add(seconds, repeating, fn, data)` | plus a `destroy` callback | the backup timer owns its payload |
 | 4: `on_note_view_insert_image` takes PNG bytes; `render` returns the neutral image | insert takes PNG bytes; the viewer's `image_handler` returns an `NSImage` | no CF ownership crosses a block; `on_note_view_image` (C function) still returns a borrowed `CGImageRef` |
 | 5: `on_doc_layout_new(doc, font spec)`, `image(L, block, inline_ord)` | `font_size` (double); all geometry in `double`; `on_doc_layout_invalidate_all` dropped; `set_hits` takes an array + count | CoreText is fractional; `set_style`/`set_width` already invalidate everything; no GLib container in a new header |
@@ -633,7 +628,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 | 8: four open variants, five `*_all` refreshers | one `on_editor_window_open` with reveal + search term; one `on_editor_settings_changed` | no near-duplicates |
 | 9: plain-C row structs, `library_set_selection`, `trash_notes_core` in library_state.h | rows are private record classes of F and G; selection is set by `on_library_sidebar_select`; trash functions are in library_commands.h; `folder_path_cache` left to G | table/outline items must be objects; one module per function |
 | 10: "existing action names as command ids" | kept, except: the `sidebar-hide/show` and `done-hide/show` pairs became `toggle-sidebar` / `toggle-done` with a state function; `inline(s)` / `para(s)` became one id per value; `show-library`, `find-next`, `find-previous`, `find-selection`, `inline-strike` added (New Subfolder… on a folder's menu is `new-folder`, which makes the folder under the selection); `quit` is AppKit's; `insert-emoji` (the editor's Insert menu, as in GTK) opens AppKit's character palette, which inserts through the note view's text input | the two-item device was a GTK workaround; AppKit items carry no parameter |
-| 11: adoption of the bundle-adjacent ini; shared socket hash | none: new identity, new directory, fixed socket name per data directory | owner's decision: the fork must not be able to reach the GTK build |
+| 11: adoption of the bundle-adjacent ini; shared socket hash | none: new identity, new directory | owner's decision: the fork must not be able to reach the GTK build |
 | note_edit.h | minimal: key vocabulary + the blank-note rule | it is package C's internal seam; freezing forty signatures C must then reshape helps nobody |
 
 Also not in the map: `utf_index.h`, `app_lifecycle.h`, `ui_util.h`'s image
@@ -647,23 +642,17 @@ only the `OnApp`).
 1. **A note that fails to load is never a blank note** (fixed).
    `on_note_document_load` returns NULL when the read fails or the blob is
    malformed or from a newer format; the editor then refuses to open (a
-   tool panel says so), and the CLI's read-modify-write commands and
-   `note cat` exit 2.  An empty document is never handed out in its place,
+   tool panel says so), and a headless action edit fails.  An empty
+   document is never handed out in its place,
    so neither the blank-means-delete rule nor a save can reach the note.
-2. **Two writers on one data directory** (fixed).  The app takes the
-   data directory's lock (`on_ipc_lock_take`) first thing at launch, before
-   it opens the database or shows a window, so a second copy never has the
-   database open; a headless `notes` command keeps the lock it probed until
-   its database is closed, so an app cannot start in the middle of it.
-3. **A CLI command that writes a note open in an editor** (fixed).  The
-   app runs such a command through `on_ipc_run_command`: open editors save
-   first (`save_editors`; the command is refused if one cannot), then catch
-   up (`reload_editors`): an editor whose note was deleted closes without
-   saving, and one whose note was rewritten reloads it.
-4. **IPC commands run on the main thread** with a 10 s socket timeout; a
-   long export blocks the UI for its duration (as in the GTK build).
-5. **Search semantics** still come from GLib (`GRegex`, `g_utf8_casefold`);
+2. **Two copies of the app on one data directory** (fixed).  The app
+   takes the data directory's lock (`on_app_lock_take`, app_lifecycle.h)
+   first thing at launch, before it opens the database or shows a window,
+   so a second copy never has the database open; the development seeder
+   holds the same lock while it writes, so an app cannot start in the
+   middle of it.
+3. **Search semantics** still come from GLib (`GRegex`, `g_utf8_casefold`);
    they change when GLib is removed, not before.
-6. **LSMinimumSystemVersion** is the macOS version MacPorts built GLib for
+4. **LSMinimumSystemVersion** is the macOS version MacPorts built GLib for
    (26.0 here), not 14.0, until GLib is gone; sources still compile against
    a 14.0 deployment target, so newer-API use is caught now.

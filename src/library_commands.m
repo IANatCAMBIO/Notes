@@ -23,18 +23,17 @@
  *   lib       — the library
  *   folder_id — where the note goes (0 = the top level)
  *
- * Output: the new note's id, or 0 if it could not be created.
+ * Output: none; nothing happens when the note cannot be created.
  */
-static gint64
+static void
 open_new_note(NotesLibrary *lib, gint64 folder_id)
 {
     gint64 note_id = on_db_note_create(lib.app->db, folder_id);
-    if (note_id == 0) return 0;
+    if (note_id == 0) return;
     /* The full refresh: a new note changes its folder's count as well as
      * the notes pane. */
     on_library_refresh_all(lib);
     on_editor_window_open(lib.app, note_id, NotesEditorRevealNone, 0, nil);
-    return note_id;
 }
 
 /*
@@ -64,21 +63,6 @@ static void
 run_quicknote(id target, id sender)
 {
     open_new_note(target, 0);
-}
-
-/*
- * hook_quicknote — OnApp.quicknote: `notes quicknote` from the command
- * line.  The same action as the toolbar's.
- *
- * Inputs:
- *   app — the application context (unused: the library is the app's one)
- *
- * Output: the new note's id, or 0 on failure.
- */
-static gint64
-hook_quicknote(OnApp *app)
-{
-    return open_new_note(on_library(), 0);
 }
 
 /*
@@ -342,7 +326,7 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
     if ([path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
         return;
     /* The default is stored as a folder (db_dir) holding the fixed file
-     * name, as the CLI reads it: only a file of that name can be it.      */
+     * name: only a file of that name can be it.                           */
     BOOL can_default = [path.lastPathComponent isEqualToString:@ON_DB_FILENAME];
     NSString *message = can_default
         ? [NSString stringWithFormat:@"Open “%@” as your new default database, or for this session only?",
@@ -697,7 +681,6 @@ void
 on_library_commands_install(NotesLibrary *lib)
 {
     on_library_add_commands(handlers, sizeof handlers / sizeof handlers[0]);
-    lib.app->quicknote = hook_quicknote;
 }
 
 /*

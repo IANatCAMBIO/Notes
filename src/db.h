@@ -52,7 +52,7 @@
  * DB constants
  * ------------------------------------------------------------------------- */
 /* Milliseconds to wait for a write lock before failing — long enough to ride
- * out a CLI command landing while the GUI is mid-autosave.                  */
+ * out another connection's write landing while the GUI is mid-autosave.    */
 #define ON_DB_BUSY_TIMEOUT_MS          5000
 
 /* Default title used for a newly created note and as the fallback when the
@@ -289,24 +289,16 @@ gint64 on_db_folder_create(OnDatabase *db, gint64 parent_id,
 gboolean on_db_folder_update(OnDatabase *db, gint64 id, const gchar *name,
                              gint ai_mode, const gchar *emoji);
 
-/* Rename folder `id` to `name`. Returns TRUE on success.                    */
-gboolean on_db_folder_rename(OnDatabase *db, gint64 id, const gchar *name);
-
 /* ai_mode values stored in folders.ai_mode.                                 */
 #define ON_AI_MODE_NORMAL  0
 #define ON_AI_MODE_PROJECT 1
 #define ON_AI_MODE_CUSTOM  2
 
-gboolean on_db_folder_set_ai_mode(OnDatabase *db, gint64 id, gint mode);
 gint     on_db_folder_get_ai_mode(OnDatabase *db, gint64 id);
 
 /* Get a folder's display emoji. Returns a new string (g_free() it; never
  * NULL — "" when not set).                                                   */
 gchar   *on_db_folder_get_emoji(OnDatabase *db, gint64 id);
-
-/* Set a folder's display emoji (pass "" or NULL to clear it). Returns TRUE
- * on success.                                                                */
-gboolean on_db_folder_set_emoji(OnDatabase *db, gint64 id, const gchar *emoji);
 
 /* Move folder `id` (with its whole subtree, implicitly) under
  * `parent_id` (0 = top level), appending it after that parent's existing
@@ -324,7 +316,7 @@ gboolean on_db_folder_reorder(OnDatabase *db, const gint64 *folder_ids,
 
 /* Order one folder's DIRECT children alphabetically (case-insensitive) and
  * persist that as their sort_order — THE "Sort Subfolders Alphabetically"
- * operation, shared by the folder context menu and the CLI.  One level
+ * operation of the folder context menu.  One level
  * only: each child's own children keep the order they had.
  *   parent_id — whose children to sort (0 = the top level).
  * Returns how many children were sorted, or -1 on failure.                  */
@@ -333,7 +325,7 @@ gint on_db_folder_sort_children(OnDatabase *db, gint64 parent_id);
 /* PERMANENTLY delete folder `id`; all descendant folders and contained
  * notes are removed by ON DELETE CASCADE and orphaned tags are pruned.
  * The GUI trashes folders instead (on_db_folder_trash); this is the
- * empty-trash / CLI path. Returns TRUE on success.                          */
+ * delete-from-the-Trash path. Returns TRUE on success.                      */
 gboolean on_db_folder_delete(OnDatabase *db, gint64 id);
 
 /* List the *direct* children of `parent_id` (0 = top level), ordered by
@@ -434,7 +426,7 @@ GList *on_db_note_list(OnDatabase *db, gint64 folder_id);
 /* List ALL notes in the database, ordered by folder then sort_order.
  *   include_trash — TRUE to include trashed notes and notes inside
  *                   trashed folders (search wants them); FALSE for the
- *                   normal visible set (export, CLI listing).
+ *                   normal visible set (export).
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
 GList *on_db_note_list_all(OnDatabase *db, gboolean include_trash);
 
@@ -461,14 +453,6 @@ void on_db_note_list_free(GList *notes);
 
 /* ------------------------------ tags ------------------------------------ */
 
-/* Look up tag `name` WITHOUT creating it. Returns its id, or 0.             */
-gint64 on_db_tag_find(OnDatabase *db, const gchar *name);
-
-/* Delete tag `id` (its note links go with it; the literal #text inside
- * notes is untouched and will recreate the tag when such a note is saved
- * again). Returns TRUE on success.                                          */
-gboolean on_db_tag_delete(OnDatabase *db, gint64 id);
-
 /* List every known tag, ordered by name.
  * Returns a GList of OnTag*; free with on_db_tag_list_free().               */
 GList *on_db_tag_list(OnDatabase *db);
@@ -484,10 +468,6 @@ gboolean on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names);
 /* List all notes labeled with tag `tag_id`, newest first.
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
 GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
-
-/* List the tags labeling note `note_id`, ordered by name.
- * Returns a GList of OnTag*; free with on_db_tag_list_free().               */
-GList *on_db_note_tag_list(OnDatabase *db, gint64 note_id);
 
 /* --------------------------- action items -------------------------------- */
 
@@ -538,17 +518,8 @@ OnActionItem *on_db_action_get(OnDatabase *db, gint64 uid);
 gboolean on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
                           gboolean done, gint64 due);
 
-/* The uid of the item at position `ord` among note `note_id`'s live items
- * (the CLI's NOTEID:ORD form), or 0.                                      */
-gint64 on_db_action_uid_at(OnDatabase *db, gint64 note_id, gint ord);
-
 /* Free one OnActionItem.                                                  */
 void on_db_action_item_free(OnActionItem *it);
-
-/* Resolve a stable uid to the item's current address.  Returns FALSE when
- * no item carries that uid (it was deleted, or never existed).             */
-gboolean on_db_action_find_uid(OnDatabase *db, gint64 uid,
-                               gint64 *note_id, gint *ord);
 
 /* Every action item of every visible (non-trashed) note, newest note
  * first, note order preserved within a note, each with its `context` (the

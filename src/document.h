@@ -499,7 +499,7 @@ OnDocument *on_document_from_text(const gchar *text);
 /* ---------------------------------------------------------------------------
  * on_document_tag_char() — THE rule for a #tag's word: can this character
  * be part of it?  Letters, digits, '_' and '-'.  The editor's tag capture
- * and the CLI's tag names both follow it.
+ * follows it.
  * ------------------------------------------------------------------------- */
 gboolean on_document_tag_char(gunichar c);
 

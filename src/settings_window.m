@@ -257,6 +257,46 @@ shares_fate(NSString *dir, NSString *other)
     return [a isEqualToString:b] || [a hasPrefix:[b stringByAppendingString:@"/"]];
 }
 
+/*
+ * policy_value — one backup-policy integer as the shared module applies it
+ * (shared_backup_policy_get: the stored value or its default, held to its
+ * range).
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *   key — a SHARED_SETTING_BACKUP_* integer key
+ *
+ * Output: the value (the module's default when it cannot be read).
+ */
+static gint64
+policy_value(OnApp *app, const char *key)
+{
+    int64_t value = 0;
+    shared_backup_policy_get(app->db->shared, key, &value, NULL);
+    return value;
+}
+
+/*
+ * policy_store — write one backup-policy integer to shared_settings, where
+ * both apps read it; a failure is posted as a status message.
+ *
+ * Inputs:
+ *   app   — the application context, its database open
+ *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *   value — the new value
+ */
+static void
+policy_store(OnApp *app, const char *key, gint64 value)
+{
+    char  text[32];                  /* the value as shared_settings holds it */
+    char *why = NULL;                /* the module's message                */
+    snprintf(text, sizeof text, "%lld", (long long)value);
+    if (shared_settings_set(app->db->shared, key, text, &why) != 0) {
+        on_app_status(app, "Could not store %s: %s", key, why != NULL ? why : "unknown error");
+    }
+    free(why);
+}
+
 /* ── The window ─────────────────────────────────────────────────────────── */
 
 @interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate>
@@ -285,6 +325,7 @@ shares_fate(NSString *dir, NSString *other)
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
 @property (nonatomic, strong) NSStackView  *backup_buttons;
 - (void)refresh_db;
+- (void)refresh_backup;
 - (void)show_sha:(NSString *)full;
 @end
 
@@ -527,7 +568,7 @@ add_database:(NSMutableArray<NSView *> *)rows
     OnApp *app = self.lib.app;
     self.backup_on = [NSButton checkboxWithTitle:@"Back up the database automatically" target:self
                                           action:@selector(backup_toggled:)];
-    self.backup_on.state = on_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) != 0
+    self.backup_on.state = policy_value(app, SHARED_SETTING_BACKUP_ENABLED) != 0
                            ? NSControlStateValueOn : NSControlStateValueOff;
     self.backup_on.toolTip = @"Writes a verified copy of the database Notes shares with Tasks into a "
                               "folder of your choice on a timer, keeping only the most recent few.  The "
@@ -537,11 +578,12 @@ add_database:(NSMutableArray<NSView *> *)rows
     [rows addObject:indented(self.backup_on, indent)];
 
     self.interval = [self number_field:SHARED_SETTING_BACKUP_INTERVAL_MIN
-                                 value:(int)on_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
-                                   min:0 max:10080 step:15 stepper:&_interval_step];
+                                 value:(int)policy_value(app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
+                                   min:0 max:SHARED_BACKUP_INTERVAL_MIN_MAX
+                                  step:SHARED_BACKUP_INTERVAL_MIN_STEP stepper:&_interval_step];
     self.interval.toolTip = @"Minutes between backups.  0 backs up only when you press Back Up Now.";
     self.keep = [self number_field:SHARED_SETTING_BACKUP_KEEP
-                             value:(int)on_backup_setting(app, SHARED_SETTING_BACKUP_KEEP)
+                             value:(int)policy_value(app, SHARED_SETTING_BACKUP_KEEP)
                                min:SHARED_BACKUP_KEEP_MIN max:SHARED_BACKUP_KEEP_MAX step:1
                            stepper:&_keep_step];
     self.keep.toolTip = @"How many backup files to retain.  The oldest are removed once a NEW backup has "
@@ -772,10 +814,17 @@ refresh_backup
     NSString *dir = @(dir_c);
     g_free(dir_c);
     NSString *db_dir = @(self.lib.app->db->path).stringByDeletingLastPathComponent;
-    self.backup_path.stringValue = shares_fate(dir, db_dir)
+    NSString *text   = shares_fate(dir, db_dir)
         ? [NSString stringWithFormat:@"Backing up to %@\n⚠ alongside the database — change it to survive "
                                       "losing that folder", dir]
         : [NSString stringWithFormat:@"Backing up to %@", dir];
+    char *last_error = NULL;         /* why the last backup failed, if it did */
+    if (shared_settings_get(self.lib.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
+                            &last_error, NULL) == 1 && last_error[0] != '\0') {
+        text = [text stringByAppendingFormat:@"\n⚠ The last backup failed: %@", @(last_error)];
+    }
+    free(last_error);
+    self.backup_path.stringValue = text;
 }
 
 /*
@@ -929,8 +978,8 @@ copy_sha:(id)sender
 - (void)
 backup_toggled:(NSButton *)sender
 {
-    on_backup_set_setting(self.lib.app, SHARED_SETTING_BACKUP_ENABLED,
-                          sender.state == NSControlStateValueOn ? 1 : 0);
+    policy_store(self.lib.app, SHARED_SETTING_BACKUP_ENABLED,
+                 sender.state == NSControlStateValueOn ? 1 : 0);
     [self refresh_backup];
 }
 
@@ -950,7 +999,7 @@ number_changed:(NSControl *)sender
     NSInteger    value       = MAX((NSInteger)stepper.minValue, MIN((NSInteger)stepper.maxValue, sender.integerValue));
     field.integerValue   = value;
     stepper.integerValue = value;
-    on_backup_set_setting(self.lib.app, sender.identifier.UTF8String, value);
+    policy_store(self.lib.app, sender.identifier.UTF8String, value);
 }
 
 /*
@@ -971,10 +1020,10 @@ choose_backup_folder:(id)sender
                     ^(NSString *path) {
         NotesSettingsWindow *s = ws;
         if (path == nil || s == nil) return;
-        gchar *why = NULL;
-        if (!on_backup_set_dir(s.lib.app, path.fileSystemRepresentation, &why)) {
-            on_ui_show_notice(@"That folder cannot be used", @(why), s.window, nil);
-            g_free(why);
+        char *why = NULL;            /* the module's reason for refusing it */
+        if (shared_db_set_backup_dir(s.lib.app->db->shared, path.fileSystemRepresentation, &why) != 0) {
+            on_ui_show_notice(@"That folder cannot be used", why ? @(why) : @"Unknown error.", s.window, nil);
+            free(why);
         }
         [s refresh_backup];
     });
@@ -1027,7 +1076,7 @@ windowWillClose:(NSNotification *)note
 
 /*
  * run_preferences — "preferences": open the Settings window, or bring it
- * forward.
+ * forward with its backup line re-read (the last backup's outcome).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -1036,7 +1085,11 @@ windowWillClose:(NSNotification *)note
 static void
 run_preferences(id target, id sender)
 {
-    if (settings_window == nil) settings_window = [[NotesSettingsWindow alloc] init_with_lib:target];
+    if (settings_window == nil) {
+        settings_window = [[NotesSettingsWindow alloc] init_with_lib:target];
+    } else {
+        [settings_window refresh_backup];   /* a pass may have failed since */
+    }
     [settings_window showWindow:nil];
     [settings_window.window makeKeyAndOrderFront:nil];
 }

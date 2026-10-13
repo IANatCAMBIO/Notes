@@ -203,7 +203,7 @@ test_push_new(OnDatabase *db)
     gint64 note = on_note_new_from_text(db, 0, "Push\n! Call the bank due 2026-11-02\n! Done one");
     gint64 uid  = nth_uid(db, note, 0);
     check(uid != 0, "push: the line has a uid");
-    check(task_int(db, uid, "status") == 0 && task_int(db, uid, "due") == check_midnight(2026, 11, 2) &&
+    check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_NEW && task_int(db, uid, "due") == check_midnight(2026, 11, 2) &&
           task_int(db, uid, "completed_at") == 0,
           "push: a new open line is a New task with its due date");
     check(task_int(db, uid, "due_time") == SHARED_DB_TASK_DUE_TIME_DEFAULT &&
@@ -268,14 +268,14 @@ test_push_fields(OnDatabase *db, OnDatabase *other)
 
     /* Status: In Progress set by Tasks survives a rename; strike → DONE
      * with completed_at; unstrike → In Progress; New stays New.            */
-    exec_uid(other, uid, "UPDATE tasks SET status = 1 WHERE id = ?1");
+    exec_uid(other, uid, "UPDATE tasks SET status = " SHARED_DB_STR(SHARED_DB_TASK_STATUS_IN_PROGRESS) " WHERE id = ?1");
     edit_note(db, note, 0, "Write the final report today", -1, NULL);
-    check(task_int(db, uid, "status") == 1, "fields: In Progress survives a Notes rename");
+    check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_IN_PROGRESS, "fields: In Progress survives a Notes rename");
     edit_note(db, note, 0, NULL, 1, NULL);
-    check(task_int(db, uid, "status") == ON_TASK_STATUS_DONE && task_int(db, uid, "completed_at") > 0,
+    check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_DONE && task_int(db, uid, "completed_at") > 0,
           "fields: a strike makes it DONE and stamps completed_at");
     edit_note(db, note, 0, NULL, 0, NULL);
-    check(task_int(db, uid, "status") == 1, "fields: un-striking a DONE task makes it In Progress");
+    check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_IN_PROGRESS, "fields: un-striking a DONE task makes it In Progress");
 
     /* Moved to another list in Tasks: Notes never writes list_id again.    */
     exec_sql(other, "INSERT INTO lists (name, emoji) VALUES ('Work', '')");
@@ -461,7 +461,7 @@ static void
 outside_writes(OnDatabase *other, const gint64 uids[4])
 {
     exec_uid(other, uids[0], "UPDATE tasks SET title = 'Renamed in Tasks', updated_at = 1 WHERE id = ?1");
-    exec_uid(other, uids[1], "UPDATE tasks SET status = 2, completed_at = 1 WHERE id = ?1");
+    exec_uid(other, uids[1], "UPDATE tasks SET status = " SHARED_DB_STR(SHARED_DB_TASK_STATUS_DONE) ", completed_at = 1 WHERE id = ?1");
     gchar *redate = g_strdup_printf("UPDATE tasks SET due = %lld WHERE id = ?1",
                                     (long long)check_midnight(2027, 4, 9));
     exec_uid(other, uids[2], redate);
@@ -544,7 +544,7 @@ check_pulled(OnDatabase *db, const gint64 notes[4], const gint64 uids[4], const 
         link_of(db, uids[i], notes[i], &row);
         gchar *title = task_title(db, uids[i]);
         gboolean agreed = strcmp(row.seen_title, title) == 0 &&
-                          row.seen_done == (task_int(db, uids[i], "status") == 2) &&
+                          row.seen_done == (task_int(db, uids[i], "status") == SHARED_DB_TASK_STATUS_DONE) &&
                           row.seen_due == task_int(db, uids[i], "due");
         g_free(title);
         on_db_action_link_clear(&row);

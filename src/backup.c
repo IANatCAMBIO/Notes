@@ -6,48 +6,8 @@
 #include "db.h"
 #include "main_service.h"            /* the worker, its hand-back, the timer */
 
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
-#include <unistd.h>
-
-/*
- * on_backup_setting — see backup.h.
- */
-gint64
-on_backup_setting(OnApp *app, const gchar *key)
-{
-    gint64 def = 0;                  /* the module's default for `key`      */
-    if (strcmp(key, SHARED_SETTING_BACKUP_ENABLED) == 0)
-        def = SHARED_BACKUP_ENABLED_DEFAULT;
-    else if (strcmp(key, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 0)
-        def = SHARED_BACKUP_INTERVAL_MIN_DEFAULT;
-    else if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
-        def = SHARED_BACKUP_KEEP_DEFAULT;
-
-    int64_t value = def;             /* what the setting says               */
-    if (shared_settings_get_int(app->db->shared, key, def, &value, NULL) != 0)
-        value = def;
-    if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
-        value = CLAMP(value, SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX);
-    return value;
-}
-
-/*
- * on_backup_set_setting — see backup.h.
- */
-void
-on_backup_set_setting(OnApp *app, const gchar *key, gint64 value)
-{
-    char  text[32];                  /* the value as shared_settings holds it */
-    char *why = NULL;                /* the module's message                */
-    snprintf(text, sizeof text, "%lld", (long long)value);
-    if (shared_settings_set(app->db->shared, key, text, &why) != 0) {
-        g_warning("backup: cannot store %s: %s", key, why != NULL ? why : "?");
-        free(why);
-    }
-}
 
 /*
  * module_message — move a message the shared module malloc'd into a
@@ -83,34 +43,6 @@ on_backup_dir(OnApp *app, gchar **why)
     gchar *out = g_strdup(dir);
     free(dir);
     return out;
-}
-
-/*
- * on_backup_set_dir — see backup.h.
- */
-gboolean
-on_backup_set_dir(OnApp *app, const gchar *dir, gchar **why)
-{
-    const gchar *refusal = NULL;     /* why the folder cannot be used       */
-    if (dir == NULL || dir[0] != '/')
-        refusal = "The backup folder must be an absolute path";
-    else if (!g_file_test(dir, G_FILE_TEST_IS_DIR))
-        refusal = "That is not a folder";
-    else if (access(dir, W_OK) != 0)
-        refusal = "That folder is not writable";
-    if (refusal != NULL) {
-        if (why != NULL)
-            *why = g_strdup(refusal);
-        return FALSE;
-    }
-    char *err = NULL;                /* the module's message                */
-    if (shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, dir,
-                            &err) != 0) {
-        gchar *m = module_message(err, "cannot store the backup folder");
-        if (why != NULL) *why = m; else g_free(m);
-        return FALSE;
-    }
-    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -257,6 +189,6 @@ void
 on_backup_auto_start(OnApp *app)
 {
     on_timer_remove(app->backup_timer);
-    app->backup_timer = on_timer_add(ON_BACKUP_POLL_MIN * 60.0, true,
+    app->backup_timer = on_timer_add(SHARED_BACKUP_POLL_MIN * 60.0, true,
                                      backup_tick, app, NULL);
 }

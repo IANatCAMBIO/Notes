@@ -107,6 +107,6 @@ on_action_sync_start(OnApp *app)
 {
     on_action_sync_run(app);
     if (app->sync_timer == 0) {
-        app->sync_timer = on_timer_add(ON_ACTION_SYNC_POLL_S, true, sync_tick, app, NULL);
+        app->sync_timer = on_timer_add(SHARED_DB_POLL_SECONDS, true, sync_tick, app, NULL);
     }
 }

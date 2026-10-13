@@ -123,7 +123,7 @@ gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
  *     nothing (Notes' own tombstone; a task restored elsewhere whose line
  *     is gone);
  *   - otherwise, in the order text, strike, due: where the task's value
- *     differs from seen_* (title vs seen_title byte for byte; status = 2 vs
+ *     differs from seen_* (title vs seen_title byte for byte; status DONE vs
  *     seen_done; due vs seen_due), the line is rewritten to the task's
  *     value if it differs (on_document_action_text / _strike / _due: the
  *     '!', spacing, due suffix and strike of the line are kept; a due date

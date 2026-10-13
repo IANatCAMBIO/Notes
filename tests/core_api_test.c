@@ -177,7 +177,7 @@ action_list_has_note(OnDatabase *db, gint64 note)
  *   uid       — the item
  *   completed — receives completed_at (may be NULL)
  *
- * Output: the status (0 new, 1 in progress, 2 done), or -1 when no task
+ * Output: the status (SHARED_DB_TASK_STATUS_*), or -1 when no task
  *         row is linked to the uid.
  */
 static int
@@ -565,7 +565,7 @@ test_action_edit(OnApp *app)
     gint64 completed = 0;
     gboolean struck  = FALSE;
     gchar *line = stored_line(db, note, 1, &struck);
-    check(task_status(db, uid, &completed) == ON_TASK_STATUS_DONE && completed != 0,
+    check(task_status(db, uid, &completed) == SHARED_DB_TASK_STATUS_DONE && completed != 0,
           "done: the task's status is DONE, completed_at stamped");
     check(struck && strcmp(line, "! Call the bank due 2026-11-02") == 0,
           "done: the line is struck, its text unchanged");
@@ -575,7 +575,7 @@ test_action_edit(OnApp *app)
 
     check(on_action_edit_set_done(app, uid, FALSE), "undone: written");
     line = stored_line(db, note, 1, &struck);
-    check(!struck && task_status(db, uid, NULL) == 1,
+    check(!struck && task_status(db, uid, NULL) == SHARED_DB_TASK_STATUS_IN_PROGRESS,
           "undone: the line is un-struck, the task back IN PROGRESS");
     g_free(line);
 

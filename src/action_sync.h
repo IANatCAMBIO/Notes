@@ -10,7 +10,7 @@
  *
  * WHEN: at launch (on_action_sync_start), then whenever the shared module
  * reports that ANOTHER connection committed to the file (shared_db_changed
- * on the app's connection, polled every ON_ACTION_SYNC_POLL_S seconds and
+ * on the app's connection, polled every SHARED_DB_POLL_SECONDS seconds and
  * when the app becomes active).  Notes' own commits on the app connection
  * never count, so a pull's own saves do not trigger another pull; a pull
  * that finds nothing to change writes nothing.
@@ -35,9 +35,6 @@
 #define ON_ACTION_SYNC_H
 
 #include "app_core.h"
-
-/* Seconds between polls of shared_db_changed.                               */
-#define ON_ACTION_SYNC_POLL_S 1.0
 
 /* ---------------------------------------------------------------------------
  * on_action_sync_note() — the pull for one note, in one write transaction

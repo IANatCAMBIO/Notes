@@ -201,6 +201,26 @@ status_hook(OnApp *app, const gchar *message)
 }
 
 /*
+ * backup_name_is_utc — is `name` a backup file name of the module's shape,
+ * SHARED_DB_BACKUP_PREFIX "YYYYMMDD-HHMMSS" "Z" [ "_NN" ] ".db" (the time in
+ * UTC)?
+ *
+ * Inputs:
+ *   name — a file name
+ *
+ * Output: TRUE when it has that shape.
+ */
+static gboolean
+backup_name_is_utc(const gchar *name)
+{
+    GRegex  *re = g_regex_new("^" SHARED_DB_BACKUP_PREFIX "[0-9]{8}-[0-9]{6}Z(_[0-9]{2})?\\.db$",
+                              0, 0, NULL);
+    gboolean ok = g_regex_match(re, name, 0, NULL);
+    g_regex_unref(re);
+    return ok;
+}
+
+/*
  * test_core_jobs — the two core jobs that hand back through this service:
  * the async integrity check and a rotating-backup pass.
  *
@@ -239,19 +259,28 @@ test_core_jobs(const char *data_dir)
      * shared_settings.                                                     */
     gchar *backups = g_build_filename(data_dir, "backup-out", NULL);
     g_mkdir_with_parents(backups, 0700);
-    gchar *why = NULL;
-    check(on_backup_set_dir(&app, backups, &why) && why == NULL,
+    gchar *dir     = on_backup_dir(&app, NULL);
+    gchar *db_dir  = g_path_get_dirname(app.db->path);
+    gchar *beside  = g_build_filename(db_dir, SHARED_DB_BACKUP_DIR_NAME, NULL);
+    check(g_strcmp0(dir, beside) == 0,
+          "with no folder chosen, backups go to \"backups\" beside the open database file");
+    g_free(dir);
+    g_free(db_dir);
+    g_free(beside);
+    char *why = NULL;
+    check(shared_db_set_backup_dir(app.db->shared, backups, &why) == 0 && why == NULL,
           "a writable folder becomes the backup destination");
-    gchar *dir = on_backup_dir(&app, NULL);
+    dir = on_backup_dir(&app, NULL);
     check(g_strcmp0(dir, backups) == 0, "and is where backups go");
     g_free(dir);
-    check(!on_backup_set_dir(&app, "relative/folder", &why) && why != NULL,
+    check(shared_db_set_backup_dir(app.db->shared, "relative/folder", &why) != 0 && why != NULL,
           "a relative folder is refused, with a reason");
-    g_free(why);
-    on_backup_set_setting(&app, SHARED_SETTING_BACKUP_KEEP, 100000);
-    check(on_backup_setting(&app, SHARED_SETTING_BACKUP_KEEP) == SHARED_BACKUP_KEEP_MAX,
-          "backup_keep reads back held to the module's range");
-    on_backup_set_setting(&app, SHARED_SETTING_BACKUP_KEEP, 2);
+    free(why);
+    int64_t keep = 0;
+    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "100000", NULL);
+    check(shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_KEEP, &keep, NULL) == 0 &&
+          keep == SHARED_BACKUP_KEEP_MAX, "backup_keep reads back held to the module's range");
+    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "2", NULL);
 
     gchar *wal = g_strconcat(app.db->path, "-wal", NULL);
     for (int pass = 0; pass < 3; pass++) {
@@ -268,16 +297,21 @@ test_core_jobs(const char *data_dir)
     }
     GDir *d = g_dir_open(backups, 0, NULL);
     int   n = 0;
+    int   utc = 0;                   /* names of the UTC shape             */
     for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
-        n += g_str_has_prefix(name, SHARED_DB_BACKUP_PREFIX) && g_str_has_suffix(name, ".db");
+        n   += g_str_has_prefix(name, SHARED_DB_BACKUP_PREFIX) && g_str_has_suffix(name, ".db");
+        utc += backup_name_is_utc(name);
     }
     if (d != NULL) g_dir_close(d);
     check(n == 2, "three passes with backup_keep 2 leave two backups");
+    check(utc == 2, "backup names carry the time in UTC: " SHARED_DB_BACKUP_PREFIX
+                    "YYYYMMDD-HHMMSSZ[_NN].db");
     check(g_file_test(app.db->path, G_FILE_TEST_EXISTS) && g_file_test(wal, G_FILE_TEST_EXISTS),
           "the live database and its -wal are untouched");
     g_free(wal);
-    check(on_backup_setting(&app, SHARED_SETTING_BACKUP_LAST_AT) > 0,
-          "the module recorded the time of the last backup");
+    int64_t last_at = 0;
+    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
+    check(last_at > 0, "the module recorded the time of the last backup");
 
     /* The periodic poll arms through the same service.                     */
     on_backup_auto_start(&app);

@@ -25,7 +25,7 @@
  *   action_uid_seq (id, next)                            -- uid high-water mark
  *
  * An ACTION ITEM is a TASK ROW: a '!' line in a note is a rendering of its
- * task's title, done state (status 2) and due date, linked through
+ * task's title, done state (status DONE) and due date, linked through
  * note_task by the uid the line carries in the blob (BNBF ACTION record).
  * Both apps edit those three fields; the seen_* columns are the baseline
  * that tells whose side changed (serialize.h: the push on save, the pull
@@ -466,11 +466,10 @@ GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
 
 /* --------------------------- action items -------------------------------- */
 
-/* tasks.status of a done task (== struck in the note); 0 is New, 1 In
- * Progress — the Tasks app's encoding, which shared_db.h does not name.
- * New items go into the managed list SHARED_DB_ACTION_LIST_NAME /
- * SHARED_DB_ACTION_LIST_EMOJI (shared_db.h).                              */
-#define ON_TASK_STATUS_DONE        2
+/* A struck line is a task with status SHARED_DB_TASK_STATUS_DONE; every
+ * other status is "not done" (shared_db.h names them).  New items go into
+ * the managed list SHARED_DB_ACTION_LIST_NAME / SHARED_DB_ACTION_LIST_EMOJI
+ * (shared_db.h).                                                          */
 
 /* Allocate a fresh uid from the action_uid_seq high-water mark: only ever
  * incremented, so a uid retired with a deleted item is never handed out
@@ -481,7 +480,7 @@ gint64 on_db_action_uid_alloc(OnDatabase *db);
 
 /* The three fields a '!' line and its task share, as bits of a mask.     */
 #define ON_ACTION_FIELD_TEXT 1u      /* line text  <-> tasks.title          */
-#define ON_ACTION_FIELD_DONE 2u      /* struck     <-> tasks.status = 2     */
+#define ON_ACTION_FIELD_DONE 2u      /* struck     <-> tasks.status DONE    */
 #define ON_ACTION_FIELD_DUE  4u      /* due suffix <-> tasks.due            */
 
 /* ---------------------------------------------------------------------------
@@ -512,7 +511,7 @@ typedef struct {
  * blob must hold the uid before it is written).  Joins the caller's
  * transaction (on_db_txn_begin) or runs in its own.  Per line:
  *   - no note_task row for the uid: a new task in the managed list (title,
- *     due, done → status 2 + completed_at now, else status 0; every other
+ *     due, done → status DONE + completed_at now, else NEW; every other
  *     column the schema's default) and its row, seen_* = the line;
  *   - task deleted with seen_deleted = 0 (deleted elsewhere, not yet
  *     pulled — maybe its line was pasted here from another note): left
@@ -521,8 +520,8 @@ typedef struct {
  *     undo brought it back): revived (deleted = 0), seen_deleted = 0;
  *   - then each field whose LINE value differs from its seen_* value —
  *     only those — is written to the task (ON_ACTION_FIELD_*; done folds
- *     into status: done → 2 stamping completed_at on entry, not done → 1
- *     only if it was 2), updated_at stamped, and seen_* := the line's
+ *     into status: done → DONE stamping completed_at on entry, not done →
+ *     SHARED_DB_SQL_UNTICK_STATUS), updated_at stamped, and seen_* := the line's
  *     values; the row is re-pointed / re-numbered when the line moved.
  *     A field equal to its seen_* is never written: a change Tasks made
  *     to it stays (the pull brings it into the line).
@@ -559,9 +558,10 @@ gboolean on_db_action_link_delete(OnDatabase *db, gint64 uid);
 void on_db_action_link_clear(OnActionLink *row);
 
 /* on_db_action_pending() — the notes the pull has work in: those with a
- * note_task row (seen_deleted = 0) whose task differs from seen_* (title,
- * status = 2 vs seen_done, due) or is deleted.  `note_id` 0 asks about
- * every note, else about that one.  Returns a GArray of gint64 note ids,
+ * note_task row matching SHARED_DB_SQL_ACTION_PENDING (seen_deleted = 0,
+ * and the task differs from seen_* — title, status DONE vs seen_done, due
+ * — or is deleted).  `note_id` 0 asks about every note, else about that
+ * one.  Returns a GArray of gint64 note ids,
  * ascending; g_array_unref() it.                                          */
 GArray *on_db_action_pending(OnDatabase *db, gint64 note_id);
 

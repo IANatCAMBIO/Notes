@@ -19,7 +19,7 @@ static void on_db_health_abandon(OnDatabase *db);
 
 /* The action_items_ctx view (shared_db.c creates it): every LIVE action
  * item as a task row with its note's placement — note_id, ord, text (the
- * task's title), done (status = 2), due, uid, folder_id, updated_at (the
+ * task's title), done (status DONE), due, uid, folder_id, updated_at (the
  * note's), visible (the note is outside the Trash) and context (the name
  * of the note's folder, "" at the root).  Every listing reads it.          */
 #define ACTION_CTX_VIEW_NAME "action_items_ctx"
@@ -305,57 +305,6 @@ on_db_close(OnDatabase *db)
  * health: is this database structurally sound, and what file is it?
  * ========================================================================= */
 
-/* db_check_file() — shared_db_check (integrity_check, foreign_key_check,
- * the stamps, WAL, the cross-table invariants) over a fresh READ-ONLY
- * connection to `path`: the async pass over the live file, on a worker
- * thread's own connection.
- *   ran    — optional out: TRUE when the checks ran (a file that cannot be
- *            opened, or a check that could not run, is "did not run");
- *   detail — optional out: the findings, one per line, or why it did not
- *            run (g_free); NULL when clean.
- * Returns TRUE only when the checks RAN and found nothing.               */
-static gboolean
-db_check_file(const gchar *path, gboolean *ran, gchar **detail)
-{
-    if (ran != NULL)
-        *ran = FALSE;
-    if (detail != NULL)
-        *detail = NULL;
-    char      *err = NULL;           /* the module's message                */
-    shared_db *sq  = shared_db_open_readonly(path, &err);
-    if (sq == NULL) {
-        if (detail != NULL)
-            *detail = g_strdup_printf("cannot open %s: %s", path,
-                                      err != NULL ? err : "?");
-        free(err);
-        return FALSE;
-    }
-    shared_db_findings found;        /* what the checks reported            */
-    int rc = shared_db_check(sq, 1, &found, &err);
-    shared_db_close(sq);
-    if (rc != 0) {
-        if (detail != NULL)
-            *detail = g_strdup(err != NULL ? err : "the check could not run");
-        free(err);
-        shared_db_findings_free(&found);
-        return FALSE;
-    }
-    if (ran != NULL)
-        *ran = TRUE;
-    gboolean ok = found.count == 0;
-    if (!ok && detail != NULL) {
-        GString *text = g_string_new(NULL);
-        for (size_t i = 0; i < found.count; i++) {
-            if (text->len > 0)
-                g_string_append_c(text, '\n');
-            g_string_append(text, found.items[i].message);
-        }
-        *detail = g_string_free(text, FALSE);
-    }
-    shared_db_findings_free(&found);
-    return ok;
-}
-
 /* health_record() — write one pass's verdict onto the connection.          */
 static void
 health_record(OnDatabase *db, gboolean ok, gboolean ran, gchar *detail)
@@ -413,13 +362,27 @@ health_job_done(void *user_data)
     g_free(job);
 }
 
-/* health_worker() — the worker (on_worker_run): the pass over its own
- * connection, then the hand-back to the main thread.                     */
+/* health_worker() — the worker (on_worker_run): the pass over a fresh
+ * READ-ONLY connection of its own (shared_db_check_file: integrity_check,
+ * foreign_key_check, the stamps, WAL, the cross-table invariants), then
+ * the hand-back to the main thread.                                       */
 static void
 health_worker(void *user_data)
 {
-    HealthJob *job = user_data;
-    job->ok = db_check_file(job->path, &job->ran, &job->detail);
+    HealthJob *job    = user_data;
+    int        ran    = 0;           /* the checks executed                 */
+    char      *detail = NULL;        /* the findings, one per line          */
+    char      *err    = NULL;        /* why the checks did not run          */
+    int        rc     = shared_db_check_file(job->path, 1, &ran, &detail, &err);
+    job->ok  = rc == 0;
+    job->ran = ran != 0;
+    if (rc == 1)
+        job->detail = g_strdup(detail);
+    else if (rc < 0)
+        job->detail = g_strdup_printf("cannot check %s: %s", job->path,
+                                      err != NULL ? err : "unknown error");
+    free(detail);
+    free(err);
     on_main_post(health_job_done, job);
 }
 
@@ -1420,10 +1383,12 @@ task_list_managed(OnDatabase *db)
  * line onto task `task_id`, and only those: THE one statement Notes
  * changes a task with, so a field Tasks changed meanwhile is never written
  * back.  Done folds into status the way a done-only source must: done →
- * DONE, stamping completed_at on entry; not done → IN_PROGRESS only if it
- * was DONE, else unchanged (New and In Progress are never pushed).
- * updated_at is stamped.  Every other column is the Tasks app's alone.
- * Every CASE reads the row as it was, so completed_at sees the old status.
+ * SHARED_DB_TASK_STATUS_DONE, stamping completed_at on entry; not done →
+ * SHARED_DB_SQL_UNTICK_STATUS (IN_PROGRESS only if it was DONE, else
+ * unchanged: New and In Progress are never pushed), a second statement in
+ * the same transaction.  updated_at is stamped.  Every other column is the
+ * Tasks app's alone.  Every CASE reads the row as it was, so completed_at
+ * sees the old status.
  * Returns TRUE on success (a mask of 0 writes nothing).
  * ------------------------------------------------------------------------- */
 static gboolean
@@ -1436,11 +1401,12 @@ task_push(OnDatabase *db, gint64 task_id, guint mask, const gchar *title,
         "UPDATE tasks SET"
         "  title = CASE WHEN ?1 THEN ?2 ELSE title END,"
         "  due   = CASE WHEN ?3 THEN ?4 ELSE due END,"
-        "  completed_at = CASE WHEN ?5 AND ?6 = 1 AND status <> 2 THEN ?7"
+        "  completed_at = CASE WHEN ?5 AND ?6 = 1 AND status <> "
+                               SHARED_DB_STR(SHARED_DB_TASK_STATUS_DONE) " THEN ?7"
         "                      ELSE completed_at END,"
-        "  status = CASE WHEN NOT ?5 THEN status"
-        "                WHEN ?6 = 1 THEN 2"
-        "                WHEN status = 2 THEN 1 ELSE status END,"
+        "  status = CASE WHEN ?5 AND ?6 = 1 THEN "
+                         SHARED_DB_STR(SHARED_DB_TASK_STATUS_DONE)
+        "                ELSE status END,"
         "  updated_at = ?7"
         " WHERE id = ?8");
     if (stmt == NULL)
@@ -1453,6 +1419,15 @@ task_push(OnDatabase *db, gint64 task_id, guint mask, const gchar *title,
     sqlite3_bind_int(stmt, 6, done ? 1 : 0);
     sqlite3_bind_int64(stmt, 7, task_now());
     sqlite3_bind_int64(stmt, 8, task_id);
+    if (!cached_stmt_done(db, stmt))
+        return FALSE;
+    if ((mask & ON_ACTION_FIELD_DONE) == 0 || done)
+        return TRUE;
+    stmt = cached_prepare(db,
+        "UPDATE tasks SET " SHARED_DB_SQL_UNTICK_STATUS " WHERE id = ?");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, task_id);
     return cached_stmt_done(db, stmt);
 }
 
@@ -1482,7 +1457,7 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
     sqlite3_bind_int64(stmt, 1, list_id);
     sqlite3_bind_text(stmt, 2, it->text, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, it->due);
-    sqlite3_bind_int(stmt, 4, it->done ? ON_TASK_STATUS_DONE : 0);
+    sqlite3_bind_int(stmt, 4, it->done ? SHARED_DB_TASK_STATUS_DONE : SHARED_DB_TASK_STATUS_NEW);
     sqlite3_bind_int64(stmt, 5, it->done ? now : 0);
     sqlite3_bind_int64(stmt, 6, now);
     if (!stmt_done(db, stmt))
@@ -1522,7 +1497,7 @@ link_from_row(sqlite3_stmt *stmt, OnActionLink *row)
     row->seen_due     = sqlite3_column_int64(stmt, 6);
     row->seen_deleted = sqlite3_column_int(stmt, 7) != 0;
     row->title        = g_strdup((const gchar *)sqlite3_column_text(stmt, 8));
-    row->done         = sqlite3_column_int(stmt, 9) == ON_TASK_STATUS_DONE;
+    row->done         = sqlite3_column_int(stmt, 9) == SHARED_DB_TASK_STATUS_DONE;
     row->due          = sqlite3_column_int64(stmt, 10);
     row->deleted      = sqlite3_column_int(stmt, 11) != 0;
     return TRUE;
@@ -1767,9 +1742,7 @@ on_db_action_pending(OnDatabase *db, gint64 note_id)
     sqlite3_stmt *stmt = prepare(db,
         "SELECT DISTINCT nt.note_id FROM note_task nt"
         " JOIN tasks t ON t.id = nt.task_id"
-        " WHERE (?1 = 0 OR nt.note_id = ?1) AND nt.seen_deleted = 0 AND"
-        "  (t.deleted = 1 OR t.title <> nt.seen_title OR"
-        "   (t.status = 2) <> (nt.seen_done <> 0) OR t.due <> nt.seen_due)"
+        " WHERE (?1 = 0 OR nt.note_id = ?1) AND " SHARED_DB_SQL_ACTION_PENDING
         " ORDER BY nt.note_id");
     if (stmt == NULL)
         return ids;

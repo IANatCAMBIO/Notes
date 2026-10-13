@@ -2154,6 +2154,7 @@ test_secondary_windows(NotesLibrary *lib)
                                                            action:NULL
                                                     keyEquivalent:@""];
         pref_item.identifier = @"preferences";
+        shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, "the disk is full", NULL);
         on_library_run_command(lib, pref_item);
         pump(0.3);
 
@@ -2228,10 +2229,14 @@ test_secondary_windows(NotesLibrary *lib)
                                                  n_notes, n_folders]],
               "the plate counts the notes and folders");
         NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
+        int64_t backup_enabled = 0;
+        shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_ENABLED, &backup_enabled, NULL);
         check([backup_path.stringValue hasPrefix:@"Backing up to "] &&
-              button_titled(root, @"Back Up Now").enabled ==
-                  (on_backup_setting(&app, SHARED_SETTING_BACKUP_ENABLED) != 0),
+              button_titled(root, @"Back Up Now").enabled == (backup_enabled != 0),
               "the backup line names the folder, and its buttons follow the switch");
+        check([backup_path.stringValue containsString:@"The last backup failed: the disk is full"],
+              "and says why the last backup failed (backup_last_error)");
+        shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
 
         NSButton    *ai     = button_titled(root, @"Enable AI features");
         NSTextField *ai_cmd = (NSTextField *)view_with_identifier(root, @"ai-command");

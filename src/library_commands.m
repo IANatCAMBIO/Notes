@@ -325,16 +325,10 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
     NSWindow *win = lib.window;
     if ([path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
         return;
-    /* While $CAMBIO_SHARED_DB names the file, the default cannot change. */
-    BOOL can_default = on_app_can_set_default();
-    NSString *message = can_default
-        ? [NSString stringWithFormat:@"Open “%@” as the default database of Notes and Tasks, "
-                                     @"or for this session only?", path.lastPathComponent]
-        : [NSString stringWithFormat:@"Open “%@” for this session only? $" SHARED_DB_ENV_VAR
-                                     @" names the database for this run, so the default "
-                                     @"cannot change.", path.lastPathComponent];
-    NSArray<NSString *> *buttons = can_default ? @[@"Set as Default", @"Session Only", @"Cancel"]
-                                               : @[@"Session Only", @"Cancel"];
+    NSString *message = [NSString stringWithFormat:@"Open “%@” as the default database of Notes "
+                                                    @"and Tasks, or for this session only?",
+                                                    path.lastPathComponent];
+    NSArray<NSString *> *buttons = @[@"Set as Default", @"Session Only", @"Cancel"];
     [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
                          buttons:buttons
                             over:win

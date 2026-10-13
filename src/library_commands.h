@@ -71,8 +71,8 @@ void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);
 /*
  * on_library_open_db — switch to a shared database file already chosen: a
  * tool panel asks whether for this session only or as the new default of
- * both apps (offered only while on_app_can_set_default: not when
- * $CAMBIO_SHARED_DB fixes the file for the run); a file the shared module
+ * both apps; a file the shared module refuses, or a default it will not
+ * set (while $CAMBIO_SHARED_DB fixes the file for the run), or a file it
  * refuses (not a shared database, on a network or synced folder) is
  * reported in its words and the previous database stays open
  * (on_app_switch_db).  The file already open needs nothing.  The

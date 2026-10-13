@@ -51,6 +51,7 @@
 #include "action_edit.h"
 #include "look.h"
 #include "app_lifecycle.h"
+#include "backup.h"
 #include "serialize.h"
 #include "image_io.h"
 
@@ -927,10 +928,16 @@ test_trash(NotesLibrary *lib)
      * cannot change: a database is offered for this session only.  A file
      * that is not a shared database (an old notes.db) is refused untouched,
      * in the shared module's words, and the app stays on its database.    */
-    on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"]);
-    pump(0.2);
-    check(!answer_panel(@"Set as Default") && answer_panel(@"Cancel"),
-          "with $CAMBIO_SHARED_DB set, Set as Default is not offered");
+    {
+        gchar *was = g_strdup(app.db->path);
+        on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"]);
+        pump(0.2);
+        check(answer_panel(@"Set as Default"), "Open Database offers Set as Default");
+        pump(0.3);
+        check(answer_panel(@"OK") && strcmp(app.db->path, was) == 0,
+              "which the shared module refuses under $CAMBIO_SHARED_DB: a notice, the old file stays");
+        g_free(was);
+    }
     {
         NSString *old = [@(check_data_dir()) stringByAppendingPathComponent:@"notes.db"];
         sqlite3  *sq  = NULL;
@@ -2216,7 +2223,8 @@ test_secondary_windows(NotesLibrary *lib)
               "the plate counts the notes and folders");
         NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
         check([backup_path.stringValue hasPrefix:@"Backing up to "] &&
-              button_titled(root, @"Back Up Now").enabled == on_app_config_get_bool("backup_enabled", FALSE),
+              button_titled(root, @"Back Up Now").enabled ==
+                  (on_backup_setting(&app, SHARED_SETTING_BACKUP_ENABLED) != 0),
               "the backup line names the folder, and its buttons follow the switch");
 
         NSButton    *ai     = button_titled(root, @"Enable AI features");

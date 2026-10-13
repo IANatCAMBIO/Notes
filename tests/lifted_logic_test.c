@@ -431,8 +431,6 @@ test_lifecycle(OnApp *app, const char *data_dir)
     check(path != NULL && strcmp(path, getenv(SHARED_DB_ENV_VAR)) == 0,
           "the database is the one $CAMBIO_SHARED_DB names");
     g_free(path);
-    check(!on_app_can_set_default(),
-          "while $CAMBIO_SHARED_DB names the file, the default cannot change");
 
     /* An old notes.db (no stamps, tables) is refused untouched, with the
      * module's reason — never opened, never "upgraded".                    */
@@ -462,6 +460,21 @@ test_lifecycle(OnApp *app, const char *data_dir)
     sqlite3_finalize(mode);
     check(wal && strcmp(app->db->path, getenv(SHARED_DB_ENV_VAR)) == 0,
           "it is the shared file, in WAL mode through the shared module");
+
+    /* Set as Default while $CAMBIO_SHARED_DB fixes the file: the module
+     * refuses, the reason comes back, and the app is on its old file.      */
+    gchar *other = g_build_filename(data_dir, "other.db", NULL);
+    gchar *was   = g_strdup(app->db->path);
+    why = NULL;
+    check(on_app_switch_db(app, other, TRUE, &why) == ON_SWITCH_FAILED && why != NULL &&
+          app->db != NULL && strcmp(app->db->path, was) == 0,
+          "Set as Default under $CAMBIO_SHARED_DB is refused with a reason; the old file stays open");
+    g_free(why);
+    check(on_app_switch_db(app, other, FALSE, NULL) == ON_SWITCH_DONE &&
+          strcmp(app->db->path, other) == 0, "Session Only opens (creates) another shared file");
+    check(on_app_switch_db(app, was, FALSE, NULL) == ON_SWITCH_DONE, "and back");
+    g_free(other);
+    g_free(was);
 }
 
 /*

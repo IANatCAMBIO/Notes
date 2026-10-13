@@ -268,7 +268,7 @@ first_run_picked:(NSString *)path
         return;
     }
     gchar      *why   = NULL;
-    OnDatabase *trial = on_app_can_set_default() ? on_db_open(path.fileSystemRepresentation, &why) : NULL;
+    OnDatabase *trial = on_db_open(path.fileSystemRepresentation, &why);
     char       *set_err = NULL;
     if (trial != NULL) {
         on_db_close(trial);
@@ -277,9 +277,7 @@ first_run_picked:(NSString *)path
             return;
         }
     }
-    NSString *reason = why     ? @(why)
-                     : set_err ? @(set_err)
-                     : @"$" SHARED_DB_ENV_VAR @" names the database for this run.";
+    NSString *reason = why ? @(why) : set_err ? @(set_err) : @"Unknown error.";
     g_free(why);
     free(set_err);
     /* The welcome panel comes back once this one is answered. */

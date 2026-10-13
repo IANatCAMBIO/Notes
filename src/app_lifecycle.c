@@ -114,15 +114,6 @@ on_app_open_db(OnApp *app, gchar **err)
     return app->db != NULL;
 }
 
-/*
- * on_app_can_set_default — see app_lifecycle.h.
- */
-gboolean
-on_app_can_set_default(void)
-{
-    const char *env = getenv(SHARED_DB_ENV_VAR);
-    return env == NULL || env[0] == '\0';
-}
 
 /*
  * on_app_start_services — see app_lifecycle.h.
@@ -132,7 +123,7 @@ on_app_start_services(OnApp *app)
 {
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);
-    on_backup_auto_start(app, app->db->path);
+    on_backup_auto_start(app);
 }
 
 /*
@@ -150,12 +141,9 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
     app->db = on_db_open(path, err);
     char *module_err = NULL;         /* why the default could not be set    */
     if (app->db != NULL && set_default &&
-        (!on_app_can_set_default() ||
-         shared_db_set_default_path(app->db->path, &module_err) != 0)) {
+        shared_db_set_default_path(app->db->path, &module_err) != 0) {
         if (err != NULL) {
-            *err = g_strdup(module_err != NULL ? module_err
-                            : "$" SHARED_DB_ENV_VAR " names the database for "
-                              "this run, so the default cannot be changed");
+            *err = g_strdup(module_err != NULL ? module_err : "unknown error");
         }
         free(module_err);
         on_db_close(app->db);
@@ -168,9 +156,8 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
     }
     g_free(old_path);
 
-    /* The backup timer carries the database path, so it is re-armed onto
-     * the file that is now open.                                           */
-    on_backup_auto_start(app, app->db->path);
+    /* A pass in flight carries the old path; the timer reads app->db.    */
+    on_backup_auto_start(app);
     if (app->notify_notes_changed != NULL) {
         app->notify_notes_changed(app);
     }

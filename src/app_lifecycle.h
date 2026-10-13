@@ -117,15 +117,7 @@ gchar *on_app_db_path(gchar **err);
  * ------------------------------------------------------------------------- */
 gboolean on_app_open_db(OnApp *app, gchar **err);
 
-/* ---------------------------------------------------------------------------
- * on_app_can_set_default() — whether "Set as Default" may change which
- * file both apps open: not while $CAMBIO_SHARED_DB names the file for this
- * run (every development run and test), whose pointer file would be the
- * user's real one and would not even be read.
- *
- * Output: TRUE when the default can be changed.
- * ------------------------------------------------------------------------- */
-gboolean on_app_can_set_default(void);
+
 
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
@@ -158,8 +150,9 @@ typedef enum {
  *   app         — the application context
  *   path        — the database file to open
  *   set_default — TRUE to make it the default both apps open
- *                 (shared_db_set_default_path; only when
- *                 on_app_can_set_default); FALSE for this session only
+ *                 (shared_db_set_default_path, which refuses while
+ *                 $CAMBIO_SHARED_DB fixes the file); FALSE for this
+ *                 session only
  *   err         — optional; on ON_SWITCH_FAILED receives the reason, the
  *                 shared module's words (g_free it)
  *

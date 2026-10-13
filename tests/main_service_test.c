@@ -234,140 +234,59 @@ test_core_jobs(const char *data_dir)
     check_pump(NULL, 0.5);
     check(!health_done, "a pass abandoned by on_db_close never reports");
 
-    /* A backup pass: worker, verify, hand-back, status line.               */
+    /* Back Up Now: the shared module's backup on a worker, its own
+     * connection, the hand-back and a status line.  The policy is in
+     * shared_settings.                                                     */
     gchar *backups = g_build_filename(data_dir, "backup-out", NULL);
     g_mkdir_with_parents(backups, 0700);
-    gchar *leftover = g_build_filename(backups, "notes-19990101-000000.db.partial", NULL);
-    gchar *journal  = g_strconcat(leftover, "-journal", NULL);
-    g_file_set_contents(leftover, "cut short", -1, NULL);
-    g_file_set_contents(journal, "cut short", -1, NULL);
-    on_app_config_set("backup_enabled", "1");
-    on_app_config_set("backup_dir", backups);
-    on_backup_start(&app, app.db->path);
-    check(app.backup_running, "a backup pass is in flight");
-    bool finished = false;
-    for (int i = 0; i < 500 && !finished; i++) {
-        check_pump(NULL, 0.02);
-        finished = !app.backup_running;
+    gchar *why = NULL;
+    check(on_backup_set_dir(&app, backups, &why) && why == NULL,
+          "a writable folder becomes the backup destination");
+    gchar *dir = on_backup_dir(&app, NULL);
+    check(g_strcmp0(dir, backups) == 0, "and is where backups go");
+    g_free(dir);
+    check(!on_backup_set_dir(&app, "relative/folder", &why) && why != NULL,
+          "a relative folder is refused, with a reason");
+    g_free(why);
+    on_backup_set_setting(&app, SHARED_SETTING_BACKUP_KEEP, 100000);
+    check(on_backup_setting(&app, SHARED_SETTING_BACKUP_KEEP) == SHARED_BACKUP_KEEP_MAX,
+          "backup_keep reads back held to the module's range");
+    on_backup_set_setting(&app, SHARED_SETTING_BACKUP_KEEP, 2);
+
+    gchar *wal = g_strconcat(app.db->path, "-wal", NULL);
+    for (int pass = 0; pass < 3; pass++) {
+        on_backup_start(&app);
+        check(app.backup_running, "a backup pass is in flight");
+        bool finished = false;
+        for (int i = 0; i < 500 && !finished; i++) {
+            check_pump(NULL, 0.02);
+            finished = !app.backup_running;
+        }
+        check(finished && strncmp(last_status, "Backed up to " SHARED_DB_BACKUP_PREFIX,
+                                  strlen("Backed up to " SHARED_DB_BACKUP_PREFIX)) == 0,
+              "the pass finishes, releases its guard and reports through on_app_status");
     }
-    check(finished, "the backup pass finishes and releases its guard");
-    check(strncmp(last_status, "Backed up to notes-", 19) == 0,
-          "it reports through on_app_status");
     GDir *d = g_dir_open(backups, 0, NULL);
-    const gchar *name = d != NULL ? g_dir_read_name(d) : NULL;
-    check(name != NULL && g_str_has_prefix(name, "notes-") && g_str_has_suffix(name, ".db"),
-          "the backup file exists in the chosen folder");
-    check(name != NULL && g_dir_read_name(d) == NULL,
-          "it is the only file there: no partial copy is left behind");
-    if (d != NULL) {
-        g_dir_close(d);
+    int   n = 0;
+    for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
+        n += g_str_has_prefix(name, SHARED_DB_BACKUP_PREFIX) && g_str_has_suffix(name, ".db");
     }
-    check(!g_file_test(leftover, G_FILE_TEST_EXISTS) && !g_file_test(journal, G_FILE_TEST_EXISTS),
-          "a partial copy left by a pass cut short is removed by the next");
-    g_free(leftover);
-    g_free(journal);
-    gchar *stamp = on_app_config_get("backup_source_stamp");
-    check(stamp != NULL, "the source stamp was persisted on the main thread");
-    g_free(stamp);
+    if (d != NULL) g_dir_close(d);
+    check(n == 2, "three passes with backup_keep 2 leave two backups");
+    check(g_file_test(app.db->path, G_FILE_TEST_EXISTS) && g_file_test(wal, G_FILE_TEST_EXISTS),
+          "the live database and its -wal are untouched");
+    g_free(wal);
+    check(on_backup_setting(&app, SHARED_SETTING_BACKUP_LAST_AT) > 0,
+          "the module recorded the time of the last backup");
 
-    /* A backup opened as the database (File > Open Database) is never
-     * pruned by a pass over its own folder, however small the rotation.    */
-    gchar *opened = g_build_filename(backups, "notes-20000101-000000.db", NULL);
-    check(on_db_backup_to(app.db, opened), "an old-looking backup exists");
-    OnDatabase *was = app.db;
-    app.db = on_db_open(opened, NULL);
-    on_db_note_create(app.db, 0);    /* a change, so the pass is not skipped */
-    on_app_config_set("backup_keep", "1");
-    on_backup_start(&app, app.db->path);
-    for (int i = 0; i < 500 && app.backup_running; i++) {
-        check_pump(NULL, 0.02);
-    }
-    check(!app.backup_running && g_file_test(opened, G_FILE_TEST_EXISTS),
-          "the prune never deletes the open database, even when it looks like the oldest backup");
-    on_db_close(app.db);
-    app.db = was;
-    g_free(opened);
-
-    /* The periodic timer arms and disarms through the same service.        */
-    on_app_config_set("backup_interval_min", "60");
-    on_backup_auto_start(&app, app.db->path);
-    check(app.backup_timer != 0, "the backup timer is armed while backups are on");
-    on_app_config_set("backup_enabled", "0");
-    on_backup_auto_start(&app, app.db->path);
-    check(app.backup_timer == 0, "and removed when they are switched off");
+    /* The periodic poll arms through the same service.                     */
+    on_backup_auto_start(&app);
+    check(app.backup_timer != 0, "the backup poll timer is armed");
+    on_timer_remove(app.backup_timer);
+    app.backup_timer = 0;
 
     g_free(backups);
     on_db_close(app.db);
-}
-
-/* What the paced-backup worker reports back. */
-typedef struct {
-    OnDatabase *db;                  /* its own connection                   */
-    gchar      *dest;                /* the backup file                      */
-    gboolean    ok;                  /* on_db_backup_to's verdict            */
-    gint        done;                /* set (atomically) when it returns     */
-} paced_backup_t;
-
-/*
- * paced_backup_worker — run one on_db_backup_to on a worker thread, as the
- * backup service does.
- *
- * Inputs:
- *   data — the paced_backup_t
- *
- * Output: NULL.
- */
-static gpointer
-paced_backup_worker(gpointer data)
-{
-    paced_backup_t *job = data;
-    job->ok = on_db_backup_to(job->db, job->dest);
-    g_atomic_int_set(&job->done, 1);
-    return NULL;
-}
-
-/*
- * test_paced_backup — a backup of a database many steps long completes
- * while another connection keeps writing (each write sends the copy back
- * to the start), no write waits long for it, and the copy is whole.
- *
- * Inputs:
- *   data_dir — the test data directory
- */
-static void
-test_paced_backup(const char *data_dir)
-{
-    OnDatabase *writer = on_db_open(NULL, NULL);
-    gint64      note   = on_db_note_create(writer, 0);
-    gsize       big    = 8 * 1024 * 1024;     /* ~2000 pages: four steps    */
-    guint8     *bytes  = g_malloc(big);
-    for (gsize i = 0; i < big; i++) bytes[i] = (guint8)(i * 2654435761u >> 24);
-    check(on_db_note_save(writer, note, "Big", bytes, big, NULL), "a large note is stored");
-
-    paced_backup_t job = { on_db_open(NULL, NULL), g_build_filename(data_dir, "paced.db", NULL), FALSE, 0 };
-    GThread *thread = g_thread_new("paced-backup", paced_backup_worker, &job);
-    gint64   slowest = 0, writes = 0;
-    while (!g_atomic_int_get(&job.done)) {
-        gint64 t0 = g_get_monotonic_time();
-        on_db_note_set_updated_at(writer, note, writes++);
-        slowest = MAX(slowest, g_get_monotonic_time() - t0);
-    }
-    g_thread_join(thread);
-    check(job.ok, "the backup completes while another connection keeps writing");
-    check(slowest < G_USEC_PER_SEC, "no write waits a second for it");
-
-    OnDatabase *copy = on_db_open(job.dest, NULL);
-    guint8     *blob = NULL;
-    gsize       len  = 0;
-    check(copy != NULL && on_db_note_load(copy, note, &blob, &len) &&
-          len == big && memcmp(blob, bytes, big) == 0,
-          "the copy holds the large note whole");
-    g_free(blob);
-    on_db_close(copy);
-    on_db_close(job.db);
-    on_db_close(writer);
-    g_free(job.dest);
-    g_free(bytes);
 }
 
 /*
@@ -382,6 +301,5 @@ main(void)
     test_posts_and_workers();
     test_timers();
     test_core_jobs(data_dir);
-    test_paced_backup(data_dir);
     return check_result();
 }

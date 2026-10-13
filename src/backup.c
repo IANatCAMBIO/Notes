@@ -1,574 +1,262 @@
 /* ===========================================================================
- * backup.c — optional rotating database backups (see backup.h)
+ * backup.c — backups of the shared database (see backup.h)
  * =========================================================================== */
 
 #include "backup.h"
 #include "db.h"
 #include "main_service.h"            /* the worker, its hand-back, the timer */
 
-#include <errno.h>
-#include <glib/gstdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
-/* Backup filenames: sortable, so lexical order IS chronological order and
- * the prune can pick victims without parsing dates or trusting mtimes on a
- * destination that may be a network mount.  The time in the name is UTC:
- * local time goes back on a time-zone or daylight-saving change, and a new
- * backup would then sort as the oldest and be pruned at once.               */
-#define BACKUP_PREFIX "notes-"
-#define BACKUP_SUFFIX ".db"
+/*
+ * on_backup_setting — see backup.h.
+ */
+gint64
+on_backup_setting(OnApp *app, const gchar *key)
+{
+    gint64 def = 0;                  /* the module's default for `key`      */
+    if (strcmp(key, SHARED_SETTING_BACKUP_ENABLED) == 0)
+        def = SHARED_BACKUP_ENABLED_DEFAULT;
+    else if (strcmp(key, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 0)
+        def = SHARED_BACKUP_INTERVAL_MIN_DEFAULT;
+    else if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
+        def = SHARED_BACKUP_KEEP_DEFAULT;
 
-/* A pass writes its copy under this suffix (which the rotation never
- * matches) and renames it into place only once it is verified, so a pass
- * cut short — the app quit, a crash — never leaves a file that looks like
- * a backup.  The next pass deletes such leftovers.                          */
-#define BACKUP_PARTIAL ".partial"
-
-/* The ini key holding the source's identity at the last SUCCESSFUL backup
- * (see the header for why it lives in the ini and not the database).        */
-#define BACKUP_STAMP_KEY "backup_source_stamp"
-
-/* The default destination: a folder of its own inside the default database
- * directory, so the live notes.db does not sit among the copies.            */
-#define BACKUP_SUBDIR "backups"
+    int64_t value = def;             /* what the setting says               */
+    if (shared_settings_get_int(app->db->shared, key, def, &value, NULL) != 0)
+        value = def;
+    if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
+        value = CLAMP(value, SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX);
+    return value;
+}
 
 /*
- * source_stamp — a cheap identity for "the state of the last backup": the
- * DESTINATION and the SOURCE PATH, plus the source file's size and
- * modification time.  Not a hash: this runs on every timer tick, and the
- * question is only "would another backup right now be a duplicate", which
- * mtime answers for a file SQLite has written.
- *
- * The destination is part of it deliberately.  Without it, choosing a new
- * backup folder would produce NO backup there until the database happened
- * to change — the new folder would sit empty and the feature would look
- * broken.  Including it means a changed destination counts as "not backed
- * up yet", which is what the user just asked for by changing it.  The
- * source path is in it for the same reason one level up: the stamp lives in
- * the ini, which outlives any one database, so File → Open Database must
- * not look like "already backed up".
+ * on_backup_set_setting — see backup.h.
+ */
+void
+on_backup_set_setting(OnApp *app, const gchar *key, gint64 value)
+{
+    char  text[32];                  /* the value as shared_settings holds it */
+    char *why = NULL;                /* the module's message                */
+    snprintf(text, sizeof text, "%lld", (long long)value);
+    if (shared_settings_set(app->db->shared, key, text, &why) != 0) {
+        g_warning("backup: cannot store %s: %s", key, why != NULL ? why : "?");
+        free(why);
+    }
+}
+
+/*
+ * module_message — move a message the shared module malloc'd into a
+ * GLib string for this module's callers.
  *
  * Inputs:
- *   path     — the source database file
- *   dest_dir — where its backups go
+ *   msg — the module's message (freed here), or NULL
+ *   def — what to say when there is none
  *
- * Output:
- *   a new string (g_free), or NULL when the file cannot be stat'd.
+ * Output: a new string; g_free it.
  */
 static gchar *
-source_stamp(const gchar *path, const gchar *dest_dir)
+module_message(char *msg, const gchar *def)
 {
-    GStatBuf sb;                     /* the source's size and mtime         */
-    if (g_stat(path, &sb) != 0)
-        return NULL;
-    return g_strdup_printf("%s|%s|%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
-                           dest_dir != NULL ? dest_dir : "",
-                           path != NULL ? path : "",
-                           (gint64)sb.st_size, (gint64)sb.st_mtime);
-}
-
-/*
- * backup_keep — the retention bound, read from config with the shared
- * default and clamped to something sane: a hand-edited ini must not be able
- * to ask for zero retention, which would delete a backup the moment it was
- * made.
- *
- * Output:
- *   how many backup files to retain, 1..500.
- */
-static gint
-backup_keep(void)
-{
-    gchar *v = on_app_config_get("backup_keep");
-    gint   n = v != NULL ? atoi(v) : ON_BACKUP_KEEP_DEFAULT;
-    g_free(v);
-    return CLAMP(n, 1, 500);
-}
-
-/*
- * backup_interval — minutes between passes, from config, with a negative in
- * a hand-edited ini read as "manual only" rather than as a wild timer.
- *
- * Output:
- *   minutes, 0 = only when "Back Up Now" is pressed.
- */
-static gint
-backup_interval(void)
-{
-    gchar *v = on_app_config_get("backup_interval_min");
-    gint   n = v != NULL ? atoi(v) : ON_BACKUP_INTERVAL_DEFAULT;
-    g_free(v);
-    return MAX(n, 0);
-}
-
-gchar *
-on_backup_dir(void)
-{
-    gchar *dir = on_app_config_get("backup_dir");
-    if (dir != NULL && *dir != '\0')
-        return dir;
-    g_free(dir);
-    /* Built off the default database PATH so the two can never drift apart,
-     * and created here so the fallback is usable with no setup at all.  It
-     * is a SUBDIRECTORY rather than the database's own folder because
-     * backups and the live file mixed together is a folder nobody can read
-     * at a glance: the pruning already has to match `notes-*.db` so as not
-     * to touch `notes.db`, and a listing that needs a filename rule to be
-     * understood is one a human will eventually get wrong.  It buys
-     * TIDINESS and nothing else — a subfolder shares the fate of its parent
-     * exactly, so this is no more independent than the database's own
-     * folder, and Settings still says so.                                   */
-    char  *base = on_paths_data_dir();
-    gchar *sub  = g_build_filename(base, BACKUP_SUBDIR, NULL);
-    free(base);
-    g_mkdir_with_parents(sub, 0755);
-    return sub;
-}
-
-/*
- * backup_ready — is the feature usable right now?
- *
- * Inputs:
- *   reason — optional; on FALSE receives which check failed, in words fit
- *            for a status bar (g_free it)
- *
- * Output: TRUE when backups are enabled and on_backup_dir() is a writable
- *         directory.
- */
-static gboolean
-backup_ready(gchar **reason)
-{
-    if (reason != NULL)
-        *reason = NULL;
-    if (!on_app_config_get_bool("backup_enabled", FALSE)) {
-        if (reason != NULL)
-            *reason = g_strdup("Backups are switched off "
-                               "(Settings \xe2\x86\x92 Database)");
-        return FALSE;
-    }
-    /* There is no "no folder chosen" case: on_backup_dir always answers,
-     * and creates the fallback.  What is left is a CHOSEN folder that has
-     * since gone away or turned read-only — a removed external disk, most
-     * likely — which is worth saying plainly rather than silently
-     * redirecting somewhere the user is not looking.                       */
-    gchar    *dir = on_backup_dir();
-    gboolean  ok  = FALSE;           /* is the destination usable?          */
-    if (!g_file_test(dir, G_FILE_TEST_IS_DIR)) {
-        if (reason != NULL)
-            *reason = g_strdup_printf("Backup folder does not exist: %s",
-                                      dir);
-    } else if (g_access(dir, W_OK) != 0) {
-        if (reason != NULL)
-            *reason = g_strdup_printf("Backup folder is not writable: %s",
-                                      dir);
-    } else {
-        ok = TRUE;
-    }
-    g_free(dir);
-    return ok;
-}
-
-/*
- * backup_name_cmp — g_ptr_array_sort comparator over the paths themselves.
- *
- * NOT g_strcmp0 directly: g_ptr_array_sort hands its comparator POINTERS TO
- * THE ELEMENTS (gchar **), so passing g_strcmp0 compares the pointer values
- * as if they were the strings — an ordering that looks plausible and is
- * arbitrary.  That is load-bearing here, because this order is what decides
- * which backup the prune DELETES: measured on a four-file rotation with
- * keep=3, it removed the second-oldest and kept the oldest.
- *
- * Inputs:
- *   a, b — gchar ** into the array.
- *
- * Output:
- *   the usual <0 / 0 / >0.
- */
-static gint
-backup_name_cmp(gconstpointer a, gconstpointer b)
-{
-    return g_strcmp0(*(const gchar * const *)a, *(const gchar * const *)b);
-}
-
-/*
- * backup_list — every backup file in `dir`, sorted oldest first.
- *
- * Matched by our own PREFIX and SUFFIX only, so nothing else the user keeps
- * in that folder is ever a prune candidate — the destination may well be a
- * folder they also use for other things.
- *
- * Inputs:
- *   dir — the destination directory
- *
- * Output:
- *   a GPtrArray of full paths, oldest first; free with
- *   g_ptr_array_free(a, TRUE).  Never NULL; empty when the directory cannot
- *   be read.
- */
-static GPtrArray *
-backup_list(const gchar *dir)
-{
-    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
-    GDir      *d   = g_dir_open(dir, 0, NULL);
-    if (d == NULL)
-        return out;
-    const gchar *name;               /* one directory entry                 */
-    while ((name = g_dir_read_name(d)) != NULL) {
-        if (g_str_has_prefix(name, BACKUP_PREFIX) &&
-            g_str_has_suffix(name, BACKUP_SUFFIX))
-            g_ptr_array_add(out, g_build_filename(dir, name, NULL));
-    }
-    g_dir_close(d);
-    /* Lexical == chronological, by construction of the filename.           */
-    g_ptr_array_sort(out, backup_name_cmp);
+    gchar *out = g_strdup(msg != NULL ? msg : def);
+    free(msg);
     return out;
 }
 
-/* ---------------------------------------------------------------------------
- * same_file — whether two paths name the same file (device and inode, so a
- * symlink or a different spelling of the path still matches).
- *
- * Inputs:
- *   a, b — the paths
- *
- * Output:
- *   TRUE when both exist and are one file.
+/*
+ * on_backup_dir — see backup.h.
  */
-static gboolean
-same_file(const gchar *a, const gchar *b)
+gchar *
+on_backup_dir(OnApp *app, gchar **why)
 {
-    struct stat sa, sb;
-    return stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
-           sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
-}
-
-/* ---------------------------------------------------------------------------
- * remove_with_journal — delete a database file and the rollback journal
- * SQLite may have left beside it.
- *
- * Inputs:
- *   path — the database file
- */
-static void
-remove_with_journal(const gchar *path)
-{
-    gchar *journal = g_strconcat(path, "-journal", NULL);
-    g_unlink(path);
-    g_unlink(journal);
-    g_free(journal);
-}
-
-/* ---------------------------------------------------------------------------
- * remove_partials — delete what passes cut short left in a destination: our
- * own partial files (and their journals), nothing else.
- *
- * Inputs:
- *   dir — the destination directory
- */
-static void
-remove_partials(const gchar *dir)
-{
-    GDir *d = g_dir_open(dir, 0, NULL);
-    if (d == NULL)
-        return;
-    const gchar *name;               /* one directory entry                 */
-    while ((name = g_dir_read_name(d)) != NULL) {
-        if (g_str_has_prefix(name, BACKUP_PREFIX) &&
-            g_str_has_suffix(name, BACKUP_SUFFIX BACKUP_PARTIAL)) {
-            gchar *path = g_build_filename(dir, name, NULL);
-            remove_with_journal(path);
-            g_free(path);
-        }
+    char *err = NULL;                /* the module's message                */
+    char *dir = shared_db_backup_dir(app->db->shared, &err);
+    if (dir == NULL) {
+        gchar *m = module_message(err, "no backup folder");
+        if (why != NULL) *why = m; else g_free(m);
+        return NULL;
     }
-    g_dir_close(d);
+    gchar *out = g_strdup(dir);
+    free(dir);
+    return out;
+}
+
+/*
+ * on_backup_set_dir — see backup.h.
+ */
+gboolean
+on_backup_set_dir(OnApp *app, const gchar *dir, gchar **why)
+{
+    const gchar *refusal = NULL;     /* why the folder cannot be used       */
+    if (dir == NULL || dir[0] != '/')
+        refusal = "The backup folder must be an absolute path";
+    else if (!g_file_test(dir, G_FILE_TEST_IS_DIR))
+        refusal = "That is not a folder";
+    else if (access(dir, W_OK) != 0)
+        refusal = "That folder is not writable";
+    if (refusal != NULL) {
+        if (why != NULL)
+            *why = g_strdup(refusal);
+        return FALSE;
+    }
+    char *err = NULL;                /* the module's message                */
+    if (shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, dir,
+                            &err) != 0) {
+        gchar *m = module_message(err, "cannot store the backup folder");
+        if (why != NULL) *why = m; else g_free(m);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
- * BackupJob — one pass, owned by the worker thread and released on the main
+ * BackupJob — one pass, owned by the worker and released on the main
  * thread in backup_finish().
  *
  * Fields:
- *   app     — application context (status bar, in-flight flag).
- *   db_path — the source, copied so the worker never reads app->db.
- *   dir     — the resolved destination.
- *   keep    — retention bound for the prune.
- *   stamp   — the source identity to persist on success, or NULL; the
- *             worker fills it and the MAIN thread writes it, because the
- *             ini is main-thread state.
- *   message — what to say when it is over, or NULL to say nothing.
+ *   app      — application context (status bar, in-flight flag).
+ *   db_path  — the database, copied so the worker never reads app->db.
+ *   periodic — shared_db_backup_if_due rather than Back Up Now.
+ *   message  — what to say when it is over, or NULL to say nothing.
  * ------------------------------------------------------------------------- */
 typedef struct {
     OnApp    *app;
     gchar    *db_path;
-    gchar    *dir;
-    gint      keep;
-    gchar    *stamp;
+    gboolean  periodic;
     gchar    *message;
 } BackupJob;
 
 /*
- * backup_job_free — release one job and everything it owns.
+ * backup_finish — the pass's main-thread tail (on_main_post): report,
+ * release the in-flight guard, free the job.
  *
  * Inputs:
- *   job — the job; must not be NULL.
+ *   data — the BackupJob
  *
- * Output:
- *   none.
- */
-static void
-backup_job_free(BackupJob *job)
-{
-    g_free(job->db_path);
-    g_free(job->dir);
-    g_free(job->stamp);
-    g_free(job->message);
-    g_free(job);
-}
-
-/*
- * backup_finish — main-thread tail (on_main_post): persist the stamp,
- * report, and release the in-flight guard.
- *
- * Inputs:
- *   data — the BackupJob.
- *
- * Output:
- *   none.
+ * Output: none.
  */
 static void
 backup_finish(void *data)
 {
     BackupJob *job = data;           /* the pass that just ended            */
     job->app->backup_running = FALSE;
-    if (job->stamp != NULL)
-        on_app_config_set(BACKUP_STAMP_KEY, job->stamp);
     if (job->message != NULL)
         on_app_status(job->app, "%s", job->message);
-    backup_job_free(job);
+    g_free(job->message);
+    g_free(job->db_path);
+    g_free(job);
 }
 
 /*
- * backup_thread — the pass itself, on its own SQLite connection.
- *
- * Order is deliberate and is the whole safety argument:
- *   1. copy the source into a fresh, uniquely named partial file;
- *   2. VERIFY it, and delete it again if it does not pass;
- *   3. rename it to its backup name;
- *   4. hand the stamp back for the main thread to record;
- *   5. ONLY NOW prune the oldest beyond `keep`.
- *
- * Step 5 last is what keeps a run of failing backups from eating the good
- * history that is already on disk.  (The "has anything changed?" test is
- * made on the MAIN thread, in on_backup_start, because the ini it reads is
- * main-thread state.)
+ * backup_worker — the pass, on its own connection: the module's backup
+ * (or its due-check-and-claim, for the timer), then the hand-back.
  *
  * Inputs:
- *   data — the BackupJob.
+ *   data — the BackupJob
  *
- * Output:
- *   none; the outcome rides the job back through backup_finish.
+ * Output: none; the outcome rides the job back through backup_finish.
  */
 static void
-backup_thread(void *data)
+backup_worker(void *data)
 {
     BackupJob  *job = data;          /* the pass in flight                  */
-    OnDatabase *db  = on_db_open(job->db_path, NULL);
+    gchar      *why = NULL;          /* why the connection did not open     */
+    OnDatabase *db  = on_db_open(job->db_path, &why);
     if (db == NULL) {
-        job->message = g_strdup("Backup failed: cannot open the database");
-        g_clear_pointer(&job->stamp, g_free);
+        job->message = g_strdup_printf("Backup failed: %s", why);
+        g_free(why);
         on_main_post(backup_finish, job);
         return;
     }
-
-    /* A unique, sortable name.  The seconds-resolution stamp could collide
-     * if two passes landed in the same second (a timer tick racing a manual
-     * press), so a suffix is appended until the name is free — silently
-     * overwriting an existing backup is exactly what this must never do.   */
-    remove_partials(job->dir);
-    GDateTime *now  = g_date_time_new_now_utc();
-    gchar     *when = g_date_time_format(now, "%Y%m%d-%H%M%S");
-    g_date_time_unref(now);
-    gchar *dest = NULL;              /* the file this pass writes           */
-    for (gint n = 0; n < 100; n++) {
-        g_free(dest);
-        dest = n == 0
-            ? g_strdup_printf("%s/%s%s%s", job->dir, BACKUP_PREFIX, when,
-                              BACKUP_SUFFIX)
-            : g_strdup_printf("%s/%s%s-%d%s", job->dir, BACKUP_PREFIX, when,
-                              n, BACKUP_SUFFIX);
-        if (!g_file_test(dest, G_FILE_TEST_EXISTS))
-            break;
-    }
-    g_free(when);
-    gchar *partial = g_strconcat(dest, BACKUP_PARTIAL, NULL);
-
-    if (!on_db_backup_to(db, partial)) {
-        job->message = g_strdup_printf("Backup to %s failed", dest);
-        g_clear_pointer(&job->stamp, g_free);
-        remove_with_journal(partial);   /* a half-written file is not history */
-        g_free(partial);
-        g_free(dest);
-        on_db_close(db);
-        on_main_post(backup_finish, job);
-        return;
-    }
+    char *out = NULL;                /* the new backup's path               */
+    char *err = NULL;                /* the module's message                */
+    int   rc  = job->periodic
+                ? shared_db_backup_if_due(db->shared, time(NULL), &out, &err)
+                : (shared_db_backup(db->shared, &out, &err) == 0 ? 1 : -1);
     on_db_close(db);
-
-    /* Verify before it counts as a backup at all.  An unverifiable copy is
-     * worse than no copy: it would sit in the rotation looking like history
-     * and displace a good one.                                             */
-    gchar *detail = NULL;            /* sqlite's words, when it fails       */
-    if (!on_db_verify_file(partial, &detail)) {
-        remove_with_journal(partial);
-        job->message = g_strdup_printf(
-            "Backup failed verification and was discarded: %s",
-            detail != NULL ? detail : "?");
-        g_free(detail);
-        g_clear_pointer(&job->stamp, g_free);
-        g_free(partial);
-        g_free(dest);
-        on_main_post(backup_finish, job);
-        return;
+    if (rc > 0) {
+        gchar *base = g_path_get_basename(out);
+        job->message = g_strdup_printf("Backed up to %s", base);
+        g_free(base);
+    } else if (rc < 0) {
+        job->message = g_strdup_printf("Backup failed: %s",
+                                       err != NULL ? err : "unknown error");
     }
-    g_free(detail);
-    if (g_rename(partial, dest) != 0) {
-        job->message = g_strdup_printf("Backup to %s failed: %s", dest,
-                                       g_strerror(errno));
-        remove_with_journal(partial);
-        g_clear_pointer(&job->stamp, g_free);
-        g_free(partial);
-        g_free(dest);
-        on_main_post(backup_finish, job);
-        return;
-    }
-    g_free(partial);
-
-    /* Prune — only now, and only our own files.  The database being backed
-     * up may itself be one of them (a backup opened with File > Open
-     * Database): it is never a candidate, nor counted.                     */
-    GPtrArray *have   = backup_list(job->dir);
-    for (guint i = have->len; i > 0; i--) {
-        if (same_file(g_ptr_array_index(have, i - 1), job->db_path))
-            g_ptr_array_remove_index(have, i - 1);
-    }
-    gint       pruned = 0;           /* how many were removed               */
-    for (guint i = 0; have->len - i > (guint)job->keep; i++) {
-        if (g_unlink(g_ptr_array_index(have, i)) == 0)
-            pruned++;
-        else
-            g_warning("backup: could not remove %s",
-                      (const gchar *)g_ptr_array_index(have, i));
-    }
-    guint kept = have->len;          /* before the prune                    */
-    g_ptr_array_free(have, TRUE);
-
-    gchar *base = g_path_get_basename(dest);
-    job->message = pruned > 0
-        ? g_strdup_printf("Backed up to %s (%u kept, %d pruned)", base,
-                          kept - (guint)pruned, pruned)
-        : g_strdup_printf("Backed up to %s (%u kept)", base, kept);
-    g_free(base);
-    g_free(dest);
+    free(out);
+    free(err);
     on_main_post(backup_finish, job);
 }
 
-void
-on_backup_start(OnApp *app, const gchar *db_path)
+/*
+ * backup_launch — start one pass on a worker unless one is in flight or
+ * there is no usable folder.
+ *
+ * Inputs:
+ *   app      — the application context, its database open
+ *   periodic — the timer's due-check (silent when refused) or Back Up Now
+ *              (the refusal is posted as a status message)
+ *
+ * Output: none.
+ */
+static void
+backup_launch(OnApp *app, gboolean periodic)
 {
-    gchar *why = NULL;               /* why the feature is unusable         */
-    if (!backup_ready(&why)) {
-        on_app_status(app, "%s", why != NULL ? why : "Backups unavailable");
+    if (app->backup_running)
+        return;
+    gchar *why = NULL;               /* why there is no usable folder       */
+    gchar *dir = on_backup_dir(app, &why);
+    if (dir == NULL) {
+        if (!periodic)
+            on_app_status(app, "%s", why);
         g_free(why);
         return;
     }
-    g_free(why);
-    if (app->backup_running)
-        return;                      /* a pass is already in flight         */
-
-    gchar *dir   = on_backup_dir();  /* resolved, never NULL                */
-    gchar *stamp = source_stamp(db_path, dir);
-    gchar *last  = on_app_config_get(BACKUP_STAMP_KEY);
-    gboolean same = stamp != NULL && last != NULL &&
-                    g_strcmp0(stamp, last) == 0;
-    g_free(last);
-    if (same) {
-        /* Nothing has changed: silent, because nothing happened.           */
-        g_free(stamp);
-        g_free(dir);
-        return;
-    }
-
+    g_free(dir);
     app->backup_running = TRUE;
     BackupJob *job = g_new0(BackupJob, 1);
-    job->app     = app;
-    job->db_path = g_strdup(db_path);
-    job->dir     = dir;              /* handed over                         */
-    job->keep    = backup_keep();
-    job->stamp   = stamp;            /* handed over; NULL = do not record   */
-    on_worker_run(backup_thread, job);
+    job->app      = app;
+    job->db_path  = g_strdup(app->db->path);
+    job->periodic = periodic;
+    on_worker_run(backup_worker, job);
 }
 
-/* ---------------------------------------------------------------------------
- * The periodic timer.
- *
- * The db path rides the timer in a copy of its own, because the app can be
- * pointed at a different database while the timer is armed (File → Open
- * Database…) — and re-arming is what carries the new path.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    OnApp *app;
-    gchar *db_path;
-} BackupTick;
-
 /*
- * backup_tick_free — release a timer's payload when the source is removed.
- *
- * Inputs:
- *   data — the BackupTick.
- *
- * Output:
- *   none.
+ * on_backup_start — see backup.h.
  */
-static void
-backup_tick_free(void *data)
+void
+on_backup_start(OnApp *app)
 {
-    BackupTick *t = data;            /* the timer's payload                 */
-    g_free(t->db_path);
-    g_free(t);
+    backup_launch(app, FALSE);
 }
 
 /*
- * backup_tick — one timer firing: run a pass.
+ * backup_tick — one timer firing: ask the module whether a backup is due.
  *
  * Inputs:
- *   data — the BackupTick.
+ *   data — the OnApp
  *
- * Output:
- *   none; the timer repeats until on_backup_auto_start re-arms or removes
- *   it.
+ * Output: none; the timer repeats until on_backup_auto_start re-arms it or
+ *         on_app_shutdown removes it.
  */
 static void
 backup_tick(void *data)
 {
-    BackupTick *t = data;            /* the timer's payload                 */
-    on_backup_start(t->app, t->db_path);
+    OnApp *app = data;
+    if (app->db != NULL)
+        backup_launch(app, TRUE);
 }
 
+/*
+ * on_backup_auto_start — see backup.h.
+ */
 void
-on_backup_auto_start(OnApp *app, const gchar *db_path)
+on_backup_auto_start(OnApp *app)
 {
     on_timer_remove(app->backup_timer);
-    app->backup_timer = 0;
-    gint minutes = backup_interval();
-    if (!on_app_config_get_bool("backup_enabled", FALSE) || minutes <= 0)
-        return;                      /* off, or manual-only                 */
-
-    BackupTick *t = g_new0(BackupTick, 1);
-    t->app     = app;
-    t->db_path = g_strdup(db_path);
-    app->backup_timer = on_timer_add((double)minutes * 60.0, true,
-                                     backup_tick, t, backup_tick_free);
+    app->backup_timer = on_timer_add(ON_BACKUP_POLL_MIN * 60.0, true,
+                                     backup_tick, app, NULL);
 }

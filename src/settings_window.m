@@ -524,22 +524,26 @@ add_database:(NSMutableArray<NSView *> *)rows
     plate_box.edgeInsets  = NSEdgeInsetsMake(0, indent, 0, 0);
     [rows addObject:plate_box];
 
+    OnApp *app = self.lib.app;
     self.backup_on = [NSButton checkboxWithTitle:@"Back up the database automatically" target:self
                                           action:@selector(backup_toggled:)];
-    self.backup_on.state = on_app_config_get_bool("backup_enabled", FALSE) ? NSControlStateValueOn
-                                                                          : NSControlStateValueOff;
-    self.backup_on.toolTip = @"Writes a verified copy of the database into a folder of your choice on a "
-                              "timer, keeping only the most recent few.  Worth pointing at a disk "
-                              "INDEPENDENT of wherever the database itself lives, so one mishap cannot "
-                              "take both.";
+    self.backup_on.state = on_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) != 0
+                           ? NSControlStateValueOn : NSControlStateValueOff;
+    self.backup_on.toolTip = @"Writes a verified copy of the database Notes shares with Tasks into a "
+                              "folder of your choice on a timer, keeping only the most recent few.  The "
+                              "policy is stored in that database, so Tasks follows it too, and whichever "
+                              "app is running makes the backup.  Worth pointing at a disk INDEPENDENT of "
+                              "wherever the database itself lives, so one mishap cannot take both.";
     [rows addObject:indented(self.backup_on, indent)];
 
-    self.interval = [self number_field:"backup_interval_min" fallback:ON_BACKUP_INTERVAL_DEFAULT
+    self.interval = [self number_field:SHARED_SETTING_BACKUP_INTERVAL_MIN
+                                 value:(int)on_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
                                    min:0 max:10080 step:15 stepper:&_interval_step];
-    self.interval.toolTip = @"Minutes between backups.  0 backs up only when you press Back Up Now.  A pass "
-                             "whose database has not changed since the last backup writes nothing.";
-    self.keep = [self number_field:"backup_keep" fallback:ON_BACKUP_KEEP_DEFAULT
-                               min:1 max:500 step:1 stepper:&_keep_step];
+    self.interval.toolTip = @"Minutes between backups.  0 backs up only when you press Back Up Now.";
+    self.keep = [self number_field:SHARED_SETTING_BACKUP_KEEP
+                             value:(int)on_backup_setting(app, SHARED_SETTING_BACKUP_KEEP)
+                               min:SHARED_BACKUP_KEEP_MIN max:SHARED_BACKUP_KEEP_MAX step:1
+                           stepper:&_keep_step];
     self.keep.toolTip = @"How many backup files to retain.  The oldest are removed once a NEW backup has "
                          "been verified, never before.";
     [rows addObject:indented(row(@[[NSTextField labelWithString:@"Every"], self.interval, self.interval_step,
@@ -559,12 +563,12 @@ add_database:(NSMutableArray<NSView *> *)rows
 }
 
 /*
- * number_field:fallback:min:max:step:stepper: — a small number field with
- * its stepper, for one integer setting; either writes the setting.
+ * number_field:value:min:max:step:stepper: — a small number field with
+ * its stepper, for one integer backup setting; either writes the setting.
  *
  * Inputs:
- *   key      — the ini key
- *   fallback — the value when unset
+ *   key      — the shared_settings key
+ *   value    — its current value
  *   min, max — the range (the field clamps to it)
  *   step     — the stepper's increment
  *   stepper  — receives the stepper
@@ -572,12 +576,9 @@ add_database:(NSMutableArray<NSView *> *)rows
  * Output: the field (its identifier is the key).
  */
 - (NSTextField *)
-number_field:(const char *)key fallback:(int)fallback min:(int)min max:(int)max step:(int)step
+number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(int)step
      stepper:(NSStepper * __strong *)stepper
 {
-    gchar *cfg   = on_app_config_get(key);
-    int    value = cfg ? atoi(cfg) : fallback;
-    g_free(cfg);
     NSNumberFormatter *fmt = [[NSNumberFormatter alloc] init];
     fmt.minimum = @(min);
     fmt.maximum = @(max);
@@ -761,8 +762,14 @@ refresh_backup
     for (NSControl *c in @[self.interval, self.interval_step, self.keep, self.keep_step,
                            self.backup_choose, self.backup_now])
         c.enabled = on;
-    gchar    *dir_c = on_backup_dir();
-    NSString *dir   = @(dir_c);
+    gchar *why   = NULL;
+    gchar *dir_c = on_backup_dir(self.lib.app, &why);
+    if (dir_c == NULL) {
+        self.backup_path.stringValue = [NSString stringWithFormat:@"No backup folder: %@", @(why)];
+        g_free(why);
+        return;
+    }
+    NSString *dir = @(dir_c);
     g_free(dir_c);
     NSString *db_dir = @(self.lib.app->db->path).stringByDeletingLastPathComponent;
     self.backup_path.stringValue = shares_fate(dir, db_dir)
@@ -913,8 +920,8 @@ copy_sha:(id)sender
 }
 
 /*
- * backup_toggled: — the backup switch: write it and re-arm the timer (no
- * folder prompt: on_backup_dir always has a usable answer).
+ * backup_toggled: — the backup switch, written to shared_settings (the
+ * periodic poll reads it there; Tasks too).
  *
  * Inputs:
  *   sender — the checkbox
@@ -922,14 +929,14 @@ copy_sha:(id)sender
 - (void)
 backup_toggled:(NSButton *)sender
 {
-    on_app_config_set("backup_enabled", sender.state == NSControlStateValueOn ? "1" : "0");
-    on_backup_auto_start(self.lib.app, self.lib.app->db->path);
+    on_backup_set_setting(self.lib.app, SHARED_SETTING_BACKUP_ENABLED,
+                          sender.state == NSControlStateValueOn ? 1 : 0);
     [self refresh_backup];
 }
 
 /*
  * number_changed: — the interval or retention field or stepper: the pair
- * agree, the value is written, and a new interval re-arms the timer.
+ * agree and the value is written to shared_settings.
  *
  * Inputs:
  *   sender — the field or stepper (identifier = key)
@@ -937,19 +944,18 @@ backup_toggled:(NSButton *)sender
 - (void)
 number_changed:(NSControl *)sender
 {
-    BOOL         is_interval = [sender.identifier isEqualToString:@"backup_interval_min"];
+    BOOL         is_interval = [sender.identifier isEqualToString:@SHARED_SETTING_BACKUP_INTERVAL_MIN];
     NSTextField *field       = is_interval ? self.interval : self.keep;
     NSStepper   *stepper     = is_interval ? self.interval_step : self.keep_step;
     NSInteger    value       = MAX((NSInteger)stepper.minValue, MIN((NSInteger)stepper.maxValue, sender.integerValue));
     field.integerValue   = value;
     stepper.integerValue = value;
-    on_app_config_set(sender.identifier.UTF8String, @(value).stringValue.UTF8String);
-    if (is_interval) on_backup_auto_start(self.lib.app, self.lib.app->db->path);
+    on_backup_set_setting(self.lib.app, sender.identifier.UTF8String, value);
 }
 
 /*
  * choose_backup_folder: — pick where backups go, starting where they go
- * now; write it and re-arm.
+ * now, and store it (a refused folder is reported in a tool panel).
  *
  * Inputs:
  *   sender — the button (unused)
@@ -957,16 +963,19 @@ number_changed:(NSControl *)sender
 - (void)
 choose_backup_folder:(id)sender
 {
-    gchar    *dir_c = on_backup_dir();
-    NSString *dir   = @(dir_c);
+    gchar    *dir_c = on_backup_dir(self.lib.app, NULL);
+    NSString *dir   = dir_c ? @(dir_c) : nil;
     g_free(dir_c);
     __weak NotesSettingsWindow *ws = self;
     on_ui_pick_path(NotesPickFolder, @"Choose Backup Folder", @"Select", nil, dir,
                     ^(NSString *path) {
         NotesSettingsWindow *s = ws;
         if (path == nil || s == nil) return;
-        on_app_config_set("backup_dir", path.UTF8String);
-        on_backup_auto_start(s.lib.app, s.lib.app->db->path);
+        gchar *why = NULL;
+        if (!on_backup_set_dir(s.lib.app, path.fileSystemRepresentation, &why)) {
+            on_ui_show_notice(@"That folder cannot be used", @(why), s.window, nil);
+            g_free(why);
+        }
         [s refresh_backup];
     });
 }
@@ -980,7 +989,7 @@ choose_backup_folder:(id)sender
 - (void)
 backup_now:(id)sender
 {
-    on_backup_start(self.lib.app, self.lib.app->db->path);
+    on_backup_start(self.lib.app);
 }
 
 /*

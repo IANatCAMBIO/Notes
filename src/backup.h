@@ -1,62 +1,34 @@
 /* ===========================================================================
- * backup.h — optional rotating database backups for Notes
+ * backup.h — backups of the shared database, through the shared module
  *
- * OFF by default.  Enabled in Settings → Database, where the user may also
- * pick a destination directory — and when they have not, backups go to a
- * `backups/` folder inside the DEFAULT DATABASE DIRECTORY, which is the
- * data directory (config.h).  Switching the feature on
- * therefore always does something; there is no enabled-but-inert state to
- * fall into.
+ * The copy (VACUUM INTO a new timestamped file), its verification, the
+ * retention and the schedule all belong to the shared module (shared_db.h:
+ * shared_db_backup, shared_db_backup_if_due), and the policy lives IN the
+ * database, in shared_settings, so one policy serves Notes and Tasks:
+ * whichever app is running makes the backup when it is due, and it is
+ * made once.  The keys are SHARED_SETTING_BACKUP_*:
  *
- * The reason to choose a folder anyway: the point of the feature is a copy
- * somewhere INDEPENDENT of wherever the live file lives, so one mishap
- * cannot take both.  That matters here because Notes' database is routinely
- * pointed at a shared or synced folder (File → Open Database…), and a sync
- * daemon can replace a file underneath an open SQLite connection.  The
- * default is independent of a database kept elsewhere — but it is a
- * SUBFOLDER of the database's own directory when the database sits at its
- * default location, and Settings says so rather than implying otherwise.
- *
- * Each pass writes "notes-YYYYMMDD-HHMMSS.db" into that directory and then
- * prunes the oldest, keeping at most `backup_keep` files — bounded by
- * design, so an hourly timer cannot fill a disk.  A pass whose source has
- * not changed since the last backup does nothing at all, so an idle app
- * writes nothing.
- *
- * Safety rules this module will not bend:
- *   - the copy goes through on_db_backup_to(), SQLite's online backup API,
- *     never a byte copy: it snapshots a live database consistently and so
- *     cannot capture a torn page;
- *   - every new backup is VERIFIED (on_db_verify_file) before it counts,
- *     and a copy that fails verification is removed rather than left to be
- *     mistaken for a good one;
- *   - PRUNING HAPPENS ONLY AFTER a new backup has verified, so a failing
- *     backup can never erode the history that is already there.
- *
- * Threading: a worker thread with its OWN SQLite connection (a connection
- * must not cross threads — the same rule the search worker follows), so a
- * slow or unreachable destination — a network mount, a sleeping external
- * disk — never blocks the UI.  Completion is marshalled back with
- * on_main_post (main_service.h), and the periodic timer is an on_timer: a
- * process with no main run loop (the development seeder) can neither finish
- * a pass nor tick, and never starts one.
- *
- * Config keys (all in the [notes] group):
- *   backup_enabled       1|0, default 0 — the master switch.
- *   backup_dir           destination directory; absent = a backups/ folder
- *                        inside the default database directory.
- *   backup_interval_min  minutes between passes, default 60; 0 = only when
+ *   backup_enabled       1|0, default SHARED_BACKUP_ENABLED_DEFAULT.
+ *   backup_dir           destination folder; unset = the module's default
+ *                        (~/Library/Application Support/camb.io/backups).
+ *   backup_interval_min  minutes between backups, default
+ *                        SHARED_BACKUP_INTERVAL_MIN_DEFAULT; 0 = only when
  *                        "Back Up Now" is pressed.
- *   backup_keep          how many files to retain, default 10.
- *   backup_source_stamp  the source's identity at the last SUCCESSFUL
- *                        backup, so an unchanged database is not copied
- *                        again.  Written here rather than into the database
- *                        because Notes keeps no key-value table — its
- *                        settings table was dropped in 2026-07 and every
- *                        preference lives in the ini.  The stamp names the
- *                        source PATH as well as its size and mtime, so
- *                        opening a different database simply does not match
- *                        and gets backed up, which is the right answer.
+ *   backup_keep          files retained, SHARED_BACKUP_KEEP_MIN..MAX.
+ *   backup_last_at       when the last backup was made (the module's).
+ *   backup_last_error    why the last one failed (the module's).
+ *
+ * What this module adds is Notes' part: the worker (with its OWN
+ * connection — a connection never crosses threads — so a slow destination
+ * never blocks the UI) and the periodic poll timer.  (A sandboxed run —
+ * $CAMBIO_SHARED_DB set — with no backup_dir backs up into `backups/`
+ * beside that file: the module's rule, so dev and test backups never reach
+ * the per-user folder.)
+ *
+ * The module never deletes a database's -wal / -shm files; nor does this.
+ *
+ * Main thread only, apart from the pass's own worker.  A process with no
+ * main run loop (the development seeder) never finishes a pass or ticks.
  * =========================================================================== */
 
 #ifndef BLUE_BACKUP_H
@@ -64,51 +36,91 @@
 
 #include "app_core.h"
 
-/* Default retention and cadence, shared with the Settings spin buttons so
- * the UI and the timer cannot disagree about what "unset" means.            */
-#define ON_BACKUP_KEEP_DEFAULT     10
-#define ON_BACKUP_INTERVAL_DEFAULT 60
+/* How often, in minutes, the periodic timer asks the module whether a
+ * backup is due.  The module answers from the policy above, so a change in
+ * Settings (or made by Tasks) takes effect at the next poll.               */
+#define ON_BACKUP_POLL_MIN 1
 
 /* ---------------------------------------------------------------------------
- * on_backup_dir() — where backups actually go: `backup_dir` when it names
- * something, otherwise a `backups/` folder inside the default database
- * directory, CREATED if missing so the fallback is always usable.  That
- * default is TIDY, not independent: it shares the fate of the folder
- * holding the database, and Settings says so.
- *
- * Returns a new string (g_free).  Never NULL.  This is the single answer to
- * "where?" — Settings displays it and the worker writes to it, so the label
- * can never disagree with the behaviour.
- * ------------------------------------------------------------------------- */
-gchar *on_backup_dir(void);
-
-/* ---------------------------------------------------------------------------
- * on_backup_start() — run one backup pass on a worker thread.
- *
- * Early-outs, each with a status message: disabled, a destination that is
- * not a writable directory, and "already running".  A pass whose source is
- * unchanged since the last backup writes nothing and says nothing.  Main
- * thread only.
+ * on_backup_setting() — one integer of the backup policy, read from
+ * shared_settings on the app's connection, with the module's default when
+ * it is unset (and backup_keep held to SHARED_BACKUP_KEEP_MIN..MAX).
  *
  * Inputs:
- *   app     — application context, for the status bar and the in-flight flag
- *   db_path — the source database file
+ *   app — the application context, its database open
+ *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN, _KEEP or _LAST_AT
  *
- * Output:
- *   none; the outcome is reported in the library's status bar.
+ * Output: the value; the default (0 for LAST_AT) when unset or unreadable.
  * ------------------------------------------------------------------------- */
-void on_backup_start(OnApp *app, const gchar *db_path);
+gint64 on_backup_setting(OnApp *app, const gchar *key);
 
 /* ---------------------------------------------------------------------------
- * on_backup_auto_start() — (re)install the periodic timer from
- * `backup_interval_min`, or remove it when backups are off.  Safe to call
- * again whenever the settings change; MUST be called again whenever the app
- * opens a different database, since the timer carries the path.
+ * on_backup_set_setting() — write one integer of the backup policy to
+ * shared_settings (a failure is logged).  Both apps read it from there.
  *
- * It does NOT run an immediate pass: an app that has just started has
- * nothing new to preserve, and a backup on every launch would churn the
- * rotation for anyone who opens the app often.
+ * Inputs:
+ *   app   — the application context, its database open
+ *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *   value — the new value
+ *
+ * Output: none.
  * ------------------------------------------------------------------------- */
-void on_backup_auto_start(OnApp *app, const gchar *db_path);
+void on_backup_set_setting(OnApp *app, const gchar *key, gint64 value);
+
+/* ---------------------------------------------------------------------------
+ * on_backup_dir() — where backups go: shared_db_backup_dir (the backup_dir
+ * setting, else the module's default; created when missing).  The single
+ * answer to "where?": Settings shows it and every pass asks it
+ * first, so the label cannot disagree with the behaviour.
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *   why — optional; receives the reason when the answer is NULL (g_free)
+ *
+ * Output: the folder (g_free it), or NULL.
+ * ------------------------------------------------------------------------- */
+gchar *on_backup_dir(OnApp *app, gchar **why);
+
+/* ---------------------------------------------------------------------------
+ * on_backup_set_dir() — make `dir` the backup destination, if it can be:
+ * an absolute path to a writable folder.  A refused folder is not stored.
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *   dir — the folder chosen
+ *   why — optional; receives the reason on refusal (g_free it)
+ *
+ * Output: TRUE when it is now the destination.
+ * ------------------------------------------------------------------------- */
+gboolean on_backup_set_dir(OnApp *app, const gchar *dir, gchar **why);
+
+/* ---------------------------------------------------------------------------
+ * on_backup_start() — "Back Up Now": one backup on a worker, regardless of
+ * the schedule (shared_db_backup).  Refused with a status message when
+ * on_backup_dir refuses; ignored while a pass is in flight.  The outcome
+ * is posted as a status message.
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_backup_start(OnApp *app);
+
+/* ---------------------------------------------------------------------------
+ * on_backup_auto_start() — (re)arm the periodic timer: every
+ * ON_BACKUP_POLL_MIN minutes a worker runs shared_db_backup_if_due, which
+ * backs up only when the shared policy says one is due and claims it, so
+ * a second app polling at once does not make another.  A poll that finds
+ * nothing due, or no usable folder, says nothing; one that backs up or
+ * fails posts a status message.  Call again after opening another
+ * database: the timer carries its path.  on_app_shutdown removes it.
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_backup_auto_start(OnApp *app);
 
 #endif /* BLUE_BACKUP_H */

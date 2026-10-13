@@ -1067,15 +1067,27 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
 static void
 test_backup(OnDatabase *db, const char *data_dir)
 {
-    gchar *dest = g_build_filename(data_dir, "snapshot.db", NULL);
-    gint notes = 0, copied = 0;
+    gchar *dir = g_build_filename(data_dir, "snapshots", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    shared_settings_set(db->shared, SHARED_SETTING_BACKUP_DIR, dir, NULL);
+    gint  notes = 0;
+    gint  copied = -1;
+    char *dest = NULL;
     on_db_totals(db, &notes, NULL, NULL);
-    check(on_db_backup_to(db, dest), "backup: written");
-    OnDatabase *copy = on_db_open(dest, NULL);
-    if (copy != NULL) on_db_totals(copy, &copied, NULL, NULL);
+    check(shared_db_backup(db->shared, &dest, NULL) == 0 && dest != NULL &&
+          g_str_has_prefix(dest, dir), "backup: written into the chosen folder");
+    shared_db *copy = dest != NULL ? shared_db_open_readonly(dest, NULL) : NULL;
+    sqlite3_stmt *stmt = NULL;
+    if (copy != NULL &&
+        sqlite3_prepare_v2(shared_db_handle(copy), "SELECT COUNT(*) FROM notes", -1,
+                           &stmt, NULL) == SQLITE_OK &&
+        sqlite3_step(stmt) == SQLITE_ROW)
+        copied = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
     check(copy != NULL && copied == notes && notes > 0, "backup: it opens with the same notes");
-    on_db_close(copy);
-    g_free(dest);
+    shared_db_close(copy);
+    free(dest);
+    g_free(dir);
 }
 
 /*

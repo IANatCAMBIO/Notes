@@ -209,30 +209,14 @@ typedef struct {
  * Returns a new OnDatabase*, or NULL on failure (also logged).              */
 OnDatabase *on_db_open(const gchar *path, gchar **err);
 
-/* Write a consistent snapshot of the (possibly in-use) database to
- * `dest_path` using SQLite's online backup API, a few megabytes at a time
- * so a writer on another connection is never held up for the whole copy.
- * Returns TRUE on success.                                                  */
-gboolean on_db_backup_to(OnDatabase *db, const gchar *dest_path);
-
 /* Close the database and free the handle.  Safe to call with NULL.         */
 void on_db_close(OnDatabase *db);
 
 /* ---------------------------------------------------------------------------
- * on_db_verify_file() — PRAGMA integrity_check + PRAGMA foreign_key_check
- * against a file NOTHING has open, opened read-only for the purpose.
- *
- * Returns TRUE only when both checks RAN and both came back clean.  On
- * FALSE, *detail (optional; g_free) carries sqlite's own words.  This is
- * what a copy must be verified with before it is trusted — never by
- * merely opening it.
- * ------------------------------------------------------------------------- */
-gboolean on_db_verify_file(const gchar *path, gchar **detail);
-
-/* ---------------------------------------------------------------------------
- * on_db_health_check_async() — the same two checks against the OPEN
- * database, on a worker thread with its own READ-ONLY connection to the
- * file (a connection must not cross threads), so nothing waits for it:
+ * on_db_health_check_async() — shared_db_check (integrity, foreign keys,
+ * stamps, WAL, the cross-table invariants) against the OPEN database, on
+ * a worker thread with its own READ-ONLY connection to the file (a
+ * connection must not cross threads), so nothing waits for it:
  * PRAGMA integrity_check walks every page and every index entry, ~2 s per
  * 600 MB on a warm local disk and longer from a cold iCloud Drive file.
  * on_db_health() reports `pending` until the verdict lands; it is then

@@ -281,63 +281,6 @@ on_db_open(const gchar *path, gchar **err)
     return db;
 }
 
-/* on_db_backup_to's pacing: pages per backup step (2 MB at 4 KB pages),
- * the pause between steps that lets a writer in, and how many times a
- * write may send the copy back to the start before it is finished in one
- * step.                                                                     */
-#define BACKUP_STEP_PAGES    512
-#define BACKUP_STEP_PAUSE_MS 5
-#define BACKUP_MAX_RESTARTS  3
-
-gboolean
-on_db_backup_to(OnDatabase *db, const gchar *dest_path)
-{
-    sqlite3 *dest = NULL;            /* the backup file's connection        */
-    if (sqlite3_open(dest_path, &dest) != SQLITE_OK) {
-        g_warning("db: backup: cannot open %s: %s",
-                  dest_path, sqlite3_errmsg(dest));
-        sqlite3_close(dest);
-        return FALSE;
-    }
-
-    /* The online backup API snapshots a live database safely.  It copies
-     * BACKUP_STEP_PAGES at a time and lets go of the read lock between
-     * steps, so a save on another connection waits milliseconds rather
-     * than for the whole copy (a large file on a slow disk outlasts the
-     * busy timeout).  A write between steps restarts the copy; after
-     * BACKUP_MAX_RESTARTS the rest goes in one step, holding the lock.
-     * Transient SQLITE_BUSY (a writer holding the lock) is retried.        */
-    sqlite3_backup *backup =
-        sqlite3_backup_init(dest, "main", db->handle, "main");
-    gboolean ok = FALSE;             /* overall success                     */
-    if (backup != NULL) {
-        int rc, busy = 0, restarts = 0;
-        int left = -1;               /* pages still to copy, -1 = unknown   */
-        do {
-            int pages = restarts < BACKUP_MAX_RESTARTS ? BACKUP_STEP_PAGES : -1;
-            rc = sqlite3_backup_step(backup, pages);
-            if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
-                busy++;
-                g_usleep(200 * 1000);    /* 200 ms between retries          */
-            } else if (rc == SQLITE_OK) {
-                int now = sqlite3_backup_remaining(backup);
-                if (left >= 0 && now > left - BACKUP_STEP_PAGES)
-                    restarts++;          /* a write sent it back to the start */
-                left = now;
-                sqlite3_sleep(BACKUP_STEP_PAUSE_MS);
-            }
-        } while (rc == SQLITE_OK ||
-                 ((rc == SQLITE_BUSY || rc == SQLITE_LOCKED) && busy < 5));
-        sqlite3_backup_finish(backup);
-        ok = (rc == SQLITE_DONE);
-    }
-    if (!ok)
-        g_warning("db: backup to %s failed: %s",
-                  dest_path, sqlite3_errmsg(dest));
-    sqlite3_close(dest);
-    return ok;
-}
-
 void
 on_db_close(OnDatabase *db)
 {
@@ -364,9 +307,8 @@ on_db_close(OnDatabase *db)
 
 /* db_check_file() — shared_db_check (integrity_check, foreign_key_check,
  * the stamps, WAL, the cross-table invariants) over a fresh READ-ONLY
- * connection to `path`: the one implementation behind on_db_verify_file
- * (a copy) and the async pass over the live file (a worker thread's own
- * connection).
+ * connection to `path`: the async pass over the live file, on a worker
+ * thread's own connection.
  *   ran    — optional out: TRUE when the checks ran (a file that cannot be
  *            opened, or a check that could not run, is "did not run");
  *   detail — optional out: the findings, one per line, or why it did not
@@ -412,12 +354,6 @@ db_check_file(const gchar *path, gboolean *ran, gchar **detail)
     }
     shared_db_findings_free(&found);
     return ok;
-}
-
-gboolean
-on_db_verify_file(const gchar *path, gchar **detail)
-{
-    return db_check_file(path, NULL, detail);
 }
 
 /* health_record() — write one pass's verdict onto the connection.          */

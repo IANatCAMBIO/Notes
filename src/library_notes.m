@@ -1737,7 +1737,8 @@ static BOOL
 validate_toggle_view(id target, id item)
 {
     BOOL grid = ((NotesLibrary *)target).grid_pref;
-    on_command_item_update(item, grid ? @"Show as List" : @"Show as Grid", grid ? @"list" : @"grid", NO);
+    on_command_item_update(item, grid ? @"Show as List" : @"Show as Grid",
+                           grid ? @"list.bullet" : @"square.grid.2x2", NO);
     return YES;
 }
 
@@ -1772,7 +1773,7 @@ validate_toggle_done(id target, id item)
 {
     BOOL shown = ((NotesLibrary *)target).app->show_done_actions;
     on_command_item_update(item, shown ? @"Hide Completed" : @"Show Completed",
-                           shown ? @"hidden" : @"visible", NO);
+                           shown ? @"eye.slash" : @"eye", NO);
     return YES;
 }
 

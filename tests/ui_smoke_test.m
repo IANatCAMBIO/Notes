@@ -3,7 +3,7 @@
  * true data, save on close, and LET GO of what they own
  *
  * Linked against every app object except main.o and run from a small test
- * bundle (so NSBundle finds the icons).  It builds the library window and
+ * bundle (so NSBundle finds the app icon).  It builds the library window and
  * editors on the test database and checks, without any outside tool:
  *
  *   OWNERSHIP  a closed editor's window controller, window and note view
@@ -14,7 +14,7 @@
  *   HEAP       forty open/close cycles of an editor on an image-bearing
  *              note do not grow the heap (a leaked document would add
  *              ~400 KB per cycle);
- *   IMAGES     after the library and its toolbar icons are on screen, no
+ *   IMAGES     after the library and its images are on screen, no
  *              image-backing memory region is megabytes large — the
  *              signature of an NSImageView given a full-size image with no
  *              frame (see ui_util.h, THE RULE);
@@ -77,8 +77,8 @@
 #define HEAP_SLACK_PER_CYCLE (8 * 1024)
 
 /* A decoded-image region this large means a full-size image was rendered
- * for a small view (toolbar icons are a few KB each; the bundled artwork
- * is 512 px square, 1 MB decoded). */
+ * for a small view (the bundled app icon is 1 MB decoded at full size; a
+ * thumbnail decoded at its display size is a few KB). */
 #define IMAGE_REGION_LIMIT (1000 * 1024)
 
 static OnApp app;                    /* the test's application context */
@@ -161,7 +161,8 @@ snapshot_dir(void)
 }
 
 /*
- * save_png — a window's content, as drawn, to a PNG file.
+ * save_png — a window as drawn, title bar and toolbar included, to a PNG
+ * file.
  *
  * Inputs:
  *   window — the window
@@ -175,7 +176,7 @@ save_png(NSWindow *window, NSString *path)
     /* Its own pool: the bitmap is megabytes and must be gone before the
      * image-region check looks. */
     @autoreleasepool {
-        NSView *view = window.contentView;
+        NSView *view = window.contentView.superview;     /* the frame view */
         [view layoutSubtreeIfNeeded];
         NSBitmapImageRep *rep = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
         /* The window's own background is not part of its content view:
@@ -195,8 +196,8 @@ save_png(NSWindow *window, NSString *path)
 }
 
 /*
- * save_snapshots — a window's content as drawn under the light and the
- * dark appearance, to <name>-light.png and <name>-dark.png.
+ * save_snapshots — a window as drawn under the light and the dark
+ * appearance, to <name>-light.png and <name>-dark.png.
  *
  * Inputs:
  *   window — the window
@@ -350,12 +351,20 @@ test_library(NotesLibrary *lib)
         check(window != nil && window.visible, "the library window is on screen");
         check(lib.sel_kind == on_sb_root, "the library opens on the Notes root, as the GTK app does");
         check(window.toolbar.items.count >= 12, "its toolbar is built from the command table");
-        NSImage *icon = on_ui_icon(@"newnote", on_look_toolbar_icon);
-        check(icon != nil, "toolbar icons load from the bundle");
-        NSBitmapImageRep *rep = (NSBitmapImageRep *)icon.representations.firstObject;
-        check(icon.size.width == on_look_toolbar_icon && rep.pixelsWide <= on_look_toolbar_icon * 3,
-              "an icon is decoded at its display size, not at the file's 512 px");
-        check(on_ui_icon(@"newnote", on_look_toolbar_icon) == icon, "and is decoded once");
+        BOOL glyphs = YES;
+        for (NSToolbarItem *ti in window.toolbar.items) {
+            if (ti.view == nil && ti.image != nil) glyphs = glyphs && ti.image.template;
+        }
+        check(glyphs, "toolbar buttons are SF Symbol glyphs, template images tinted by the toolbar");
+        NSImage *icon = on_ui_symbol(@"plus", 0.0);
+        check(icon != nil && icon.template && on_ui_symbol(@"plus", 0.0) == icon,
+              "on_ui_symbol makes a template glyph, once per name and size");
+        check(on_ui_symbol(@"no.such.symbol.notes", 0.0) == nil, "and nil for an unknown name");
+        NSImage *app_icon = on_ui_app_icon();
+        NSBitmapImageRep *rep = (NSBitmapImageRep *)app_icon.representations.firstObject;
+        check(app_icon != nil && app_icon.size.width == on_look_about_icon &&
+              rep.pixelsWide <= on_look_about_icon * 3 && on_ui_app_icon() == app_icon,
+              "the app icon is decoded once, at its display size, not at the file's full size");
         check(save_snapshots(window, @"library"), "library snapshots written, light and dark");
 
         NSImageView *image_view = on_ui_image_view(icon, 24, 24);
@@ -1894,6 +1903,16 @@ test_notes_pane(NotesLibrary *lib)
     }
     all_cards = all_cards && [card_titles isEqualToSet:[NSSet setWithArray:@[@"Bravo renamed", @"Charlie", @"alpha"]]];
     check(all_cards, "every grid card is rendered, with the note's title under it");
+    /* The test has no app delegate, which validates app-scope items in the
+     * app, so the toolbar item is validated the way the delegate does it. */
+    NSToolbarItem *view_toggle = nil;
+    for (NSToolbarItem *ti in lib.window.toolbar.items) {
+        if ([ti.itemIdentifier isEqualToString:@"toggle-view"]) view_toggle = ti;
+    }
+    on_library_validate_command(lib, view_toggle);
+    check(view_toggle.image == on_ui_symbol(@"list.bullet", 0.0) &&
+          [view_toggle.label isEqualToString:@"Show as List"],
+          "in the grid, the view toggle's glyph and label offer the list");
     check(save_snapshots(lib.window, @"library-grid"), "grid snapshots written");
     BOOL follows = YES;
     for (NSInteger dark = 0; dark <= 1; dark++) {

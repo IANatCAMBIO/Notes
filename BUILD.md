@@ -63,7 +63,7 @@ it; objects also depend on the Makefile and on `VERSION`.
 
 | Target | Does |
 |---|---|
-| `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), `Info.plist`, the icons and README in `Contents/Resources`; signs it |
+| `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), `Info.plist`, the app icon and README in `Contents/Resources`; signs it |
 | `make run` | runs the app in the foreground on `dev/data` (seeding it first if needed); `NOTES_DATA_DIR=dev/data` and `CAMBIO_SHARED_DB=dev/data/shared_data.db` are set for you |
 | `make seed` | wipes and rebuilds the development database `dev/data/shared_data.db` with `build/dev_seed` (refuses while an app holds `dev/data`) |
 | `make test` | `build/test_document` (the model, GLib only), every `tests/*_test.c` (core), every `tests/*_test.m` (UI, in-process); each with its own `dev/test/<name>/` and `CAMBIO_SHARED_DB` inside it |
@@ -80,7 +80,7 @@ Notes.app/Contents/
   Info.plist            resources/Info.plist + names from src/identity.h,
                         version from VERSION, NotesBuildDate, LSMinimumSystemVersion
   MacOS/Notes           every src/*.c and every src/*.m
-  Resources/            icons/*.png, README.md
+  Resources/            icons/composition.png (the app icon), README.md
 build/                  objects, dependency files, test programs, dev_seed
 dev/                    (gitignored) data/, test/, snapshots/
 ```
@@ -132,8 +132,12 @@ at a time: concurrent runs share those folders.
 app lock while they write (both refuse without `NOTES_DATA_DIR` and
 `CAMBIO_SHARED_DB`);
 `tools/bnbf-scan.c` round-trips every note of a database COPY through the
-model and reports what the loader repaired (`make bnbf-scan`);
-`tools/icon-prep.py` normalises a new toolbar icon (see
+model and reports what the loader repaired (`make bnbf-scan`).
+
+**Icons.**  The one bundled image is the app icon, `icons/composition.png`.
+Toolbar and format-bar glyphs are SF Symbols drawn by the system
+(`on_ui_symbol`, `src/ui_util.h`), so they need no files and no artwork
+tools; the retired toolbar PNGs are kept in `icons/unused/` (see
 `icons/README.md`).
 
 **Memory tools.**  Apple's `leaks`, `vmmap`, `footprint`, `sample` and `lldb`

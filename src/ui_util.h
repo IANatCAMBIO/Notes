@@ -7,9 +7,9 @@
 
 /*
  * ui_util — small AppKit helpers shared across the app, so each exists
- * exactly once: colours from look.h, images at their display size, alerts,
- * the file pickers, formatting, the pasteboard types.  Most are Files'
- * util.m helpers under this app's prefix.
+ * exactly once: colours from look.h, glyphs, images at their display
+ * size, alerts, the file pickers, formatting, the pasteboard types.  Most
+ * are Files' util.m helpers under this app's prefix.
  *
  * IMAGES: THE RULE.  An image shown in a view is decoded at the size it is
  * shown, and the view that shows it is created at that size.  An
@@ -19,7 +19,7 @@
  * megabytes for a screenful of icons.  So nothing in the app calls
  * [[NSImageView alloc] init] or +imageViewWithImage:, or hands a
  * full-size NSImage to a small view.  Use:
- *   on_ui_icon          a bundled icon, decoded at the point size asked for
+ *   on_ui_app_icon      the bundled app icon, decoded at the size it is shown
  *   on_ui_thumbnail     a note's image, decoded capped at its display size
  *   on_ui_image_view    an image view created at its final frame
  * See porting/INTERFACES.md, "Memory and ownership".
@@ -63,23 +63,27 @@ NSColor *on_ui_color(on_look_color_t color);
 /* ── Images ─────────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_icon — a bundled icon (Contents/Resources/<name>.png, the files in
- * icons/), decoded at the size it will be drawn: `points` times the
- * sharpest screen's scale, never the file's full 512 px.  Cached per name
- * and size; the set of icons is fixed, so the cache is bounded.
+ * on_ui_symbol — a command's glyph: an SF Symbol, as a TEMPLATE image.
+ * A template image is a shape, not a picture: the control showing it draws
+ * the shape in its own text colour, so the glyph follows light and dark,
+ * the disabled look and a pressed button with no code here.  For toolbar
+ * items and the buttons of a window's own bars.  Cached per name and size.
  *
  * Inputs:
- *   name   — the file's base name, e.g. @"new-folder"
- *   points — the edge length it is shown at
+ *   name   — SF Symbol name: @"plus", @"trash", @"sidebar.left", …
+ *   points — the symbol's point size, as a font's (it is drawn about as
+ *            tall as text of that size); 0 = no size of its own, for a
+ *            toolbar item, which sizes its image itself
  *
- * Output: the image, sized `points` square; nil if there is no such icon.
- *         Do not modify it (it is shared).
+ * Output: the image; nil when the system has no symbol of that name.  Do
+ *         not modify it (it is shared).
  */
-NSImage *on_ui_icon(NSString *name, CGFloat points);
+NSImage *on_ui_symbol(NSString *name, CGFloat points);
 
 /*
- * on_ui_app_icon — the app's icon as drawn (composition.png), at the About
- * panel's size.  macOS 26 puts a bundle icon that is not its rounded-square
+ * on_ui_app_icon — the app's icon as drawn (composition.png, the one bundled
+ * image), decoded at the About panel's size — never at the file's full
+ * size — and cached.  macOS 26 puts a bundle icon that is not its rounded-square
  * shape on a grey backdrop in alerts and the About panel; handing them this
  * image explicitly shows just the artwork.
  *
@@ -113,7 +117,7 @@ NSImage *on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w,
  * makes an NSImageView.
  *
  * Inputs:
- *   image  — what to show (from on_ui_icon / on_ui_thumbnail); may be nil
+ *   image  — what to show (from on_ui_app_icon / on_ui_thumbnail); may be nil
  *            and set later, once the view has this frame
  *   width  — the view's size in points
  *   height

@@ -91,7 +91,8 @@ src/                 flat; one module = one .h + one .c or .m
 tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
 resources/           Info.plist
-icons/               PNG artwork, copied into Contents/Resources
+icons/               composition.png, the app icon (copied into
+                     Contents/Resources); unused/ retired artwork
 porting/             this file and the two research documents
 dev/                 (gitignored) data/, test/, snapshots/
 ```
@@ -289,7 +290,7 @@ writes a second dispatch scheme.
 - **A command with no registered handler is disabled.**  That is why most of
   the skeleton's menu is grey; your items light up when you register.
 - **State on an item** (checkmark, "Hide"/"Show" wording, the list/grid
-  icon): call `on_command_item_update(item, title, icon, checked)` from your
+  glyph): call `on_command_item_update(item, title, icon, checked)` from your
   validate function — never when toggling, or state changed elsewhere does
   not show.
 - **Context menus**: build the `NSMenu` from the same identifiers; in
@@ -413,8 +414,11 @@ Therefore:
 - never `[[NSImageView alloc] init]` or `+imageViewWithImage:`; make image
   views with **`on_ui_image_view(image, w, h)`** (created at the final
   frame, image set last);
-- bundled icons come from **`on_ui_icon(name, points)`** (decoded at
-  points × scale via ImageIO; cached);
+- command glyphs (toolbar items, a window's own bar buttons) are SF
+  Symbols from **`on_ui_symbol(name, points)`** — template images the
+  control tints for light, dark and disabled; cached.  No bundled bitmap
+  icons; the app icon comes from **`on_ui_app_icon()`** (decoded at the
+  About size via ImageIO; cached);
 - a note's image for a thumbnail comes from **`on_ui_thumbnail(bytes, n,
   box_w, box_h, scale)`** (the bytes from `on_note_image_nth_png`) —
   capped decode, on a worker.  Never hand a full-size `NSImage` to a small
@@ -578,6 +582,10 @@ its inputs as locals, and never reads `self.…` off the main thread.
   and Tasks main windows.  Every other window — the editor above all —
   puts its controls in the window body (the editor's format bar and status
   bar), never in an `NSToolbar` or an `NSTitlebarAccessoryViewController`.
+- **Glyphs, not pictures, on controls.**  Toolbar items and a window's own
+  bar buttons show SF Symbols (`on_ui_symbol`), icon-only, as Tasks does:
+  template images, so they follow light/dark and the disabled look.  The
+  symbol names live in the command table (`commands.m`, `icon` column).
 - **No native dialogs.**  Never `NSAlert`, an alert sheet or a custom
   sheet: every message and question is a tool panel (`tool_panel.h`,
   ported from the Files app) — `on_ui_show_notice` and `on_ui_confirm` for
@@ -613,7 +621,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 
 - `make test` = `build/test_document` (the model tests, GLib only), every
   `tests/*_test.c` against the core, every `tests/*_test.m` against the app
-  objects (run from a small bundle so icons load).
+  objects (run from a small bundle so the app icon loads).
 - **`tests/ui_smoke_test.m`** builds the library window and editors
   in-process and checks: closed windows are deallocated (weak references go
   nil), an unsaved live edit is saved on close and by `flush_editors`, a
@@ -621,7 +629,8 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
   heap, and no decoded-image VM region is megabytes large (with a control
   that does the forbidden thing and must be detected).  It writes
   `dev/snapshots/library-light.png`, `library-dark.png`, `editor-light.png`
-  and `editor-dark.png` — look at them.
+  and `editor-dark.png` (each window with its title bar and, for the
+  library, its toolbar) — look at them.
   **Add your window to this test** (or a `tests/<module>_test.m` of your
   own in the same style): open it, close it, assert the weak reference is
   nil; cycle it for the heap check.

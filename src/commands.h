@@ -6,10 +6,11 @@
  *
  * A command is a stable identifier (the GTK build's action name:
  * "new-note", "toggle-sidebar", …) with a title, a keyboard shortcut and,
- * for toolbar commands, an icon.  Menu items, toolbar items and context
- * menu items are all made FROM this table (on_command_menu_item,
- * on_command_toolbar_item), so a command's wording and shortcut are
- * written once — the table in commands.m is the app's keyboard map.
+ * for toolbar commands, a glyph (an SF Symbol).  Menu items, toolbar
+ * items and context menu items are all made FROM this table
+ * (on_command_menu_item, on_command_toolbar_item), so a command's wording
+ * and shortcut are written once — the table in commands.m is the app's
+ * keyboard map.
  *
  * WHO RUNS A COMMAND.  Each command has a scope:
  *
@@ -49,7 +50,8 @@ typedef struct {
     NSString * __unsafe_unretained key;     /* key equivalent; @"" = none             */
     NSEventModifierFlags           mods;    /* the shortcut's modifiers               */
     NotesCommandScope              scope;
-    NSString * __unsafe_unretained icon;    /* icons/<icon>.png for a toolbar item;
+    NSString * __unsafe_unretained icon;    /* SF Symbol of its toolbar item
+                                               (ui_util.h: on_ui_symbol);
                                                nil = not a toolbar command            */
     NSString * __unsafe_unretained tip;     /* the tooltip of its toolbar item or
                                                format-bar button, saying what it does
@@ -94,9 +96,10 @@ NSMenuItem *on_command_menu_item(NSString *ident);
 NSString *on_command_tip(NSString *ident);
 
 /*
- * on_command_toolbar_item — a toolbar item for a command: its icon at the
- * toolbar size, its title as label and tooltip, target and action per its
- * scope.  The item's identifier is the command's.
+ * on_command_toolbar_item — a toolbar item for a command: its glyph (an SF
+ * Symbol template, sized by the toolbar), its title as label and tooltip,
+ * target and action per its scope.  The item's identifier is the
+ * command's.
  *
  * Inputs:
  *   ident — the command's identifier (must be in the table, with an icon)
@@ -124,8 +127,8 @@ NSString *on_command_ident(id item);
  * Inputs:
  *   item    — the menu or toolbar item being validated
  *   title   — a title for this state; nil keeps the table's
- *   icon    — an icon name for this state (toolbar items); nil keeps the
- *             table's
+ *   icon    — an SF Symbol name for this state (toolbar items); nil keeps
+ *             the table's
  *   checked — YES to show a checkmark (menu items)
  */
 void on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked);

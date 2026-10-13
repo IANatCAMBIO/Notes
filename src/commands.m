@@ -26,37 +26,37 @@ enum {
 static const on_command_t commands[] = {
     /* ── App scope: works from any window, acts on the library ── */
     { @"about",            @"About " ON_APP_NAME,      @"",  0,         app, nil, nil },
-    { @"preferences",      @"Settings…",               @",", cmd,       app, @"settings",
+    { @"preferences",      @"Settings…",               @",", cmd,       app, @"gearshape",
       @"Open the settings window" },
-    { @"new-note",         @"New Note",                @"n", cmd,       app, @"newnote",
+    { @"new-note",         @"New Note",                @"n", cmd,       app, @"plus",
       @"Create a note in the current folder" },
-    { @"new-folder",       @"New Folder…",             @"n", cmd_shift, app, @"new-folder",
+    { @"new-folder",       @"New Folder…",             @"n", cmd_shift, app, @"folder.badge.plus",
       @"Create a folder inside the selection" },
-    { @"quicknote",        @"Quick Note",              @"",  0,         app, @"archive",
+    { @"quicknote",        @"Quick Note",              @"",  0,         app, @"square.and.pencil",
       @"Create a note in the root folder" },
     { @"open-db",          @"Open Database File…",     @"",  0,         app, nil, nil },
     { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },
     { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil, nil },
     { @"view-list",        @"as List",                 @"1", cmd,       app, nil, nil },
     { @"view-grid",        @"as Grid",                 @"2", cmd,       app, nil, nil },
-    { @"toggle-view",      @"List or Grid",            @"",  0,         app, @"grid",
+    { @"toggle-view",      @"List or Grid",            @"",  0,         app, @"square.grid.2x2",
       @"Switch between the list and the grid" },
-    { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar",
+    { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar.left",
       @"Show or hide the folder pane" },
-    { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"hidden",
+    { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"eye.slash",
       @"Show or hide completed action items" },
-    { @"media",            @"Media…",                  @"i", cmd_shift, app, @"images",
+    { @"media",            @"Media…",                  @"i", cmd_shift, app, @"photo.on.rectangle",
       @"Show every image in the listed notes as thumbnails" },
-    { @"search",           @"Search Notes…",           @"f", cmd_shift, app, @"search",
+    { @"search",           @"Search Notes…",           @"f", cmd_shift, app, @"magnifyingglass",
       @"Open search window" },
-    { @"ai-summary",       @"AI Summary",              @"",  0,         app, @"microchip",
+    { @"ai-summary",       @"AI Summary",              @"",  0,         app, @"cpu",
       @"Summarize notes with AI" },
     { @"show-library",     @"Library",                 @"0", cmd,       app, nil, nil },
 
     /* ── Window scope, library ── */
-    { @"delete-note",      @"Move to Trash",           KEY_BACKSPACE, cmd, win, @"deletenote",
+    { @"delete-note",      @"Move to Trash",           KEY_BACKSPACE, cmd, win, @"trash",
       @"Move the selected notes to the Trash" },
-    { @"delete-folder",    @"Move Folder to Trash",    @"",  0,         win, @"delete-folder",
+    { @"delete-folder",    @"Move Folder to Trash",    @"",  0,         win, @"folder.badge.minus",
       @"Move the selected folder to the Trash" },
     { @"empty-trash",      @"Empty Trash…",            @"",  0,         win, nil, nil },
     { @"folder-info",      @"Folder Info…",            @"",  0,         win, nil, nil },
@@ -181,7 +181,7 @@ on_command_toolbar_item(NSString *ident)
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
     item.label    = command->title;
     item.toolTip  = on_command_tip(ident);
-    item.image    = on_ui_icon(command->icon, on_look_toolbar_icon);
+    item.image    = on_ui_symbol(command->icon, 0.0);
     item.target   = target;
     item.action   = action;
     item.bordered = YES;
@@ -217,9 +217,14 @@ on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
         menu_item.state = checked ? NSControlStateValueOn : NSControlStateValueOff;
     } else if ([item isKindOfClass:NSToolbarItem.class]) {
         NSToolbarItem *toolbar_item = item;
-        toolbar_item.label   = shown;
-        toolbar_item.toolTip = title ?: command->tip ?: command->title;
-        toolbar_item.image   = on_ui_icon(icon ?: command->icon, on_look_toolbar_icon);
+        NSString *tip  = title ?: command->tip ?: command->title;
+        NSImage *image = on_ui_symbol(icon ?: command->icon, 0.0);
+        /* Only what differs is set: AppKit validates after every event, and
+         * an item given an image (even the same one) is redrawn.  Glyphs
+         * are cached, so an unchanged one is the same object. */
+        if (![toolbar_item.label isEqualToString:shown]) toolbar_item.label = shown;
+        if (![toolbar_item.toolTip isEqualToString:tip]) toolbar_item.toolTip = tip;
+        if (toolbar_item.image != image) toolbar_item.image = image;
     }
 }
 

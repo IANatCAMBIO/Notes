@@ -146,7 +146,6 @@ static const on_look_color_t on_look_card        = { { 1.000, 1.000, 1.000, 1 },
 static const on_look_color_t on_look_card_border = { { 0.800, 0.800, 0.800, 1 }, { 0.333, 0.333, 0.333, 1 } };
 static const on_look_color_t on_look_card_text   = { { 0.267, 0.267, 0.267, 1 }, { 0.733, 0.733, 0.733, 1 } };
 
-static const double on_look_toolbar_icon     = 24.0;
 static const double on_look_toolbar_field_h  = 22.0;   /* a toolbar text field                   */
 static const double on_look_toolbar_search_w = 220.0;  /* the library's "Search all notes" field */
 static const double on_look_about_icon       = 128.0;

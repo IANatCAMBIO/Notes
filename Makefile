@@ -150,9 +150,10 @@ all: $(BUNDLE)
 
 # Info.plist gets every name from src/identity.h, the version from VERSION
 # and the time the bundle was assembled as NotesBuildDate (UTC), shown in
-# the About panel. Every PNG in icons/ is copied into Contents/Resources,
-# where the app loads it by name, and README.md, which Help opens.
-IMAGES   = $(wildcard icons/*.png)
+# the About panel. The app icon (icons/composition.png) is copied into
+# Contents/Resources, where the app loads it by name, and README.md, which
+# Help opens. Toolbar glyphs are SF Symbols and need no files.
+IMAGES   = icons/composition.png
 
 $(BUNDLE): $(APP_BIN) resources/Info.plist VERSION src/identity.h $(IMAGES) README.md
 	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed images do not linger
@@ -248,7 +249,7 @@ build/%_test: build/%_test.o $(CORE_OBJS)
 
 # UI tests (tests/*_test.m) link every app object except main.o, and run
 # from a bundle of their own that borrows the app's Resources, so
-# NSBundle.mainBundle finds the icons.
+# NSBundle.mainBundle finds the app icon.
 UI_TEST_SRCS = $(wildcard tests/*_test.m)
 UI_TEST_APPS = $(patsubst tests/%.m,build/%.app,$(UI_TEST_SRCS))
 APP_OBJS     = $(CORE_OBJS) $(filter-out build/main.o,$(UI_OBJS))

@@ -90,11 +90,11 @@ on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w, CGFloat box_h, CG
 }
 
 /*
- * on_ui_icon — bundled icon at its display size, cached.
+ * on_ui_symbol — SF Symbol template image, cached.
  * Inputs/output are documented in ui_util.h.
  */
 NSImage *
-on_ui_icon(NSString *name, CGFloat points)
+on_ui_symbol(NSString *name, CGFloat points)
 {
     static NSMutableDictionary<NSString *, NSImage *> *cache;
     static dispatch_once_t once;
@@ -104,24 +104,33 @@ on_ui_icon(NSString *name, CGFloat points)
     NSImage *image = cache[key];
     if (image) return image;
 
-    NSData *data = [NSData dataWithContentsOfURL:
-        [NSBundle.mainBundle URLForResource:name withExtension:@"png"]];
-    if (!data) return nil;
-    image = on_ui_thumbnail(data.bytes, data.length, points, points, sharpest_scale());
-    if (!image) return nil;
-    image.size = NSMakeSize(points, points);   /* icons are square artwork */
-    cache[key] = image;
+    image = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    if (image && points > 0.0) {
+        image = [image imageWithSymbolConfiguration:
+                    [NSImageSymbolConfiguration configurationWithPointSize:points
+                                                                    weight:NSFontWeightRegular]];
+    }
+    if (image) cache[key] = image;
     return image;
 }
 
 /*
- * on_ui_app_icon — the app's artwork.
+ * on_ui_app_icon — the app's artwork, decoded once at the About size.
  * Inputs/output are documented in ui_util.h.
  */
 NSImage *
 on_ui_app_icon(void)
 {
-    return on_ui_icon(app_icon_name, on_look_about_icon);
+    static NSImage *icon;
+    if (icon) return icon;
+
+    NSData *data = [NSData dataWithContentsOfURL:
+        [NSBundle.mainBundle URLForResource:app_icon_name withExtension:@"png"]];
+    if (!data) return nil;
+    icon = on_ui_thumbnail(data.bytes, data.length, on_look_about_icon, on_look_about_icon,
+                           sharpest_scale());
+    icon.size = NSMakeSize(on_look_about_icon, on_look_about_icon);   /* square artwork */
+    return icon;
 }
 
 /*

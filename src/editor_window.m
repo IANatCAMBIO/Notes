@@ -145,13 +145,11 @@ format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
     b.toolTip    = tooltip;
     b.refusesFirstResponder = YES;
     if (toggle) [b setButtonType:NSButtonTypePushOnPushOff];
-    NSImage *img = symbol ? [NSImage imageWithSystemSymbolName:symbol
-                                      accessibilityDescription:tooltip] : nil;
+    NSImage *img = symbol ? on_ui_symbol(symbol, on_look_format_icon - 3) : nil;
     if (img) {
-        b.image = [img imageWithSymbolConfiguration:
-                   [NSImageSymbolConfiguration configurationWithPointSize:on_look_format_icon - 3
-                                                                   weight:NSFontWeightRegular]];
-        b.imagePosition = NSImageOnly;
+        b.image              = img;
+        b.imagePosition      = NSImageOnly;
+        b.accessibilityLabel = tooltip;   /* the shared glyph carries no description */
     }
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b.heightAnchor constraintEqualToConstant:on_look_format_btn_h].active = YES;

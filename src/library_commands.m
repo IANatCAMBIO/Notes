@@ -325,15 +325,14 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
     NSWindow *win = lib.window;
     if ([path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
         return;
-    /* The default is stored as a folder (db_dir) holding the fixed file
-     * name: only a file of that name can be it.                           */
-    BOOL can_default = [path.lastPathComponent isEqualToString:@ON_DB_FILENAME];
+    /* While $CAMBIO_SHARED_DB names the file, the default cannot change. */
+    BOOL can_default = on_app_can_set_default();
     NSString *message = can_default
-        ? [NSString stringWithFormat:@"Open “%@” as your new default database, or for this session only?",
-                                     path.lastPathComponent]
-        : [NSString stringWithFormat:@"Open “%@” for this session only? Only a file named "
-                                     @ON_DB_FILENAME @" can be your default database.",
-                                     path.lastPathComponent];
+        ? [NSString stringWithFormat:@"Open “%@” as the default database of Notes and Tasks, "
+                                     @"or for this session only?", path.lastPathComponent]
+        : [NSString stringWithFormat:@"Open “%@” for this session only? $" SHARED_DB_ENV_VAR
+                                     @" names the database for this run, so the default "
+                                     @"cannot change.", path.lastPathComponent];
     NSArray<NSString *> *buttons = can_default ? @[@"Set as Default", @"Session Only", @"Cancel"]
                                                : @[@"Session Only", @"Cancel"];
     [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
@@ -342,7 +341,10 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
                          handler:^(NSInteger index) {
         if (index < 0 || [buttons[(NSUInteger)index] isEqualToString:@"Cancel"]) return;
         BOOL set_default = [buttons[(NSUInteger)index] isEqualToString:@"Set as Default"];
-        on_switch_result_t result = on_app_switch_db(lib.app, path.UTF8String, set_default);
+        gchar *why = NULL;
+        on_switch_result_t result = on_app_switch_db(lib.app, path.UTF8String, set_default, &why);
+        NSString *reason = why ? @(why) : @"Unknown error.";
+        g_free(why);
         if (result == ON_SWITCH_DONE) return;
         if (result == ON_SWITCH_UNSAVED) {
             on_editor_report_unsaved(@"Database not opened", win);
@@ -352,7 +354,8 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
             [NSApp terminate:nil];
             return;
         }
-        on_ui_show_notice(@"Database Error", [NSString stringWithFormat:@"Could not open:\n%@", path],
+        on_ui_show_notice(@"Database Error",
+                          [NSString stringWithFormat:@"Could not open:\n%@\n\n%@", path, reason],
                           win, nil);
     }];
 }

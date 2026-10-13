@@ -7,7 +7,7 @@
  *   1. on_app_config_init()            the ini, before anything reads it
  *   2. on_app_lock_take()              this copy is THE one on the data
  *                                      directory, or it quits untouched
- *   3. on_app_prefs_load(app), app->db_dir = on_app_config_load_db_dir()
+ *   3. on_app_prefs_load(app)
  *   4. on_app_open_db(app)             — or, when no database file exists
  *                                      at on_app_db_path(), ask the user
  *                                      first; never create one silently
@@ -24,9 +24,10 @@
  * if the process dies.  A second copy started on the same data directory
  * finds it held before it has opened the database or shown a window, and
  * quits (raising the first).  Without it, two copies would each hold
- * notes they believe current and autosave over each other's edits.  The
- * development seeder takes the same lock, so `make seed` cannot wipe a
- * database an app is running on.
+ * open editors over the same notes.  (Other WRITERS of the shared database
+ * — Tasks, an agent — are expected: their changes reach Notes through
+ * the pull, action_sync.h.)  The development seeder takes the same lock,
+ * so `make seed` cannot wipe a database an app is running on.
  *
  * THE FLUSH-ON-QUIT CONTRACT
  *
@@ -86,30 +87,45 @@ typedef enum {
 on_app_lock_result_t on_app_lock_take(void);
 
 /* ---------------------------------------------------------------------------
- * on_app_db_path() — where the database is expected: app->db_dir plus the
- * fixed file name, or the default path in the data directory.
+ * on_app_db_path() — where the shared database is expected
+ * (shared_db_path: $CAMBIO_SHARED_DB, else the pointer file both apps'
+ * "Set as Default" writes, else ~/Library/Application Support/camb.io/
+ * shared_data.db).
  *
  * Inputs:
- *   app — the application context (reads app->db_dir)
+ *   err — optional; on failure receives the reason (g_free it)
  *
- * Output: a new string; g_free it.
+ * Output: a new string (g_free it), or NULL when the location cannot be
+ *         resolved (a relative $CAMBIO_SHARED_DB, a malformed pointer file).
  * ------------------------------------------------------------------------- */
-gchar *on_app_db_path(OnApp *app);
+gchar *on_app_db_path(gchar **err);
 
 /* ---------------------------------------------------------------------------
- * on_app_open_db() — open the database at on_app_db_path(), CREATING it if
- * no file is there (the caller asks the user first when that matters).
+ * on_app_open_db() — open the shared database at on_app_db_path(),
+ * CREATING it if no file is there (the caller asks the user first when that
+ * matters).  A file that is not a shared database is refused untouched.
  * There is deliberately NO fallback to another location: silently opening a
  * different database is how notes "disappear" and how writes are stranded
  * in the wrong file.  One configured database, or a clear failure.
  *
  * Inputs:
  *   app — the application context; app->db is set on success
+ *   err — optional; on failure receives the reason (g_free it)
  *
- * Output: TRUE when the database is open.  On FALSE the reason is on
- *         stderr and app->db is NULL; the caller reports it and quits.
+ * Output: TRUE when the database is open.  On FALSE app->db is NULL; the
+ *         caller reports the reason and quits.
  * ------------------------------------------------------------------------- */
-gboolean on_app_open_db(OnApp *app);
+gboolean on_app_open_db(OnApp *app, gchar **err);
+
+/* ---------------------------------------------------------------------------
+ * on_app_can_set_default() — whether "Set as Default" may change which
+ * file both apps open: not while $CAMBIO_SHARED_DB names the file for this
+ * run (every development run and test), whose pointer file would be the
+ * user's real one and would not even be read.
+ *
+ * Output: TRUE when the default can be changed.
+ * ------------------------------------------------------------------------- */
+gboolean on_app_can_set_default(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
@@ -132,27 +148,31 @@ typedef enum {
 
 /* ---------------------------------------------------------------------------
  * on_app_switch_db() — File > Open Database File…: switch the running app
- * to another database file, for this session or as the new default.  Every
- * editor is flushed and closed first; if one cannot save, nothing changes.
- * If the new file cannot be opened the previous database is re-opened and
- * nothing else changes.
+ * to another shared database file, for this session or as the new default
+ * of both apps.  Every editor is flushed and closed first; if one cannot
+ * save, nothing changes.  If the new file cannot be opened (it is not a
+ * shared database, it is on a network or synced folder, …) the previous
+ * database is re-opened and nothing else changes.
  *
  * Inputs:
  *   app         — the application context
  *   path        — the database file to open
- *   set_default — TRUE to persist its directory as `db_dir`; FALSE for
- *                 this session only
+ *   set_default — TRUE to make it the default both apps open
+ *                 (shared_db_set_default_path; only when
+ *                 on_app_can_set_default); FALSE for this session only
+ *   err         — optional; on ON_SWITCH_FAILED receives the reason, the
+ *                 shared module's words (g_free it)
  *
  * Output: ON_SWITCH_DONE when the app is now on `path` (the library has
  *         been told to refresh, the backup timer re-armed, the integrity
  *         check started).  ON_SWITCH_UNSAVED when an editor could not save:
  *         it is still open and the old database still in use.
- *         ON_SWITCH_FAILED when `path` could not be opened: the previous
- *         database is open again, or — if even that failed — app->db is
- *         NULL and the caller must quit.
+ *         ON_SWITCH_FAILED when `path` could not be opened, or could not
+ *         be made the default: the previous database is open again, or —
+ *         if even that failed — app->db is NULL and the caller must quit.
  * ------------------------------------------------------------------------- */
 on_switch_result_t on_app_switch_db(OnApp *app, const gchar *path,
-                                    gboolean set_default);
+                                    gboolean set_default, gchar **err);
 
 /* ---------------------------------------------------------------------------
  * on_app_shutdown() — end the app's work in the one safe order (see the

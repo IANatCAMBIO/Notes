@@ -468,8 +468,7 @@ main(int argc, char **argv)
     GBytes *image = file_png(argv[2]);
     GBytes *photo = file_png(argv[3]);
     OnApp   app   = { 0 };
-    app.db_dir    = on_app_config_load_db_dir();
-    gboolean ok   = image != NULL && photo != NULL && on_app_open_db(&app) &&
+    gboolean ok   = image != NULL && photo != NULL && on_app_open_db(&app, NULL) &&
                     seed(&app, image, photo);
     if (ok) {
         print_counts(app.db);
@@ -477,7 +476,6 @@ main(int argc, char **argv)
         fprintf(stderr, "dev_seed: seeding failed\n");
     }
     on_app_shutdown(&app);
-    g_free(app.db_dir);
     if (image != NULL) g_bytes_unref(image);
     if (photo != NULL) g_bytes_unref(photo);
     return ok ? 0 : 2;

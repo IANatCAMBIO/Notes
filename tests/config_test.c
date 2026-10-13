@@ -10,7 +10,6 @@
 #include "check.h"
 
 #include "config.h"
-#include "db.h"
 
 #include <pwd.h>
 #include <sys/stat.h>
@@ -20,7 +19,7 @@
 /* Values a real ini holds: spaces, a tilde, bars, colons, an equals sign,
  * a leading space, a hash, a tab, a line break, non-ASCII.                  */
 static const char *const tricky[][2] = {
-    { "db_dir",   "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/N" },
+    { "folder",   "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/N" },
     { "stamp",    "/a b/c|/d e/notes.db|123456:1791000000" },
     { "leading",  "  two leading spaces" },
     { "equals",   "a=b # not a comment" },
@@ -64,7 +63,7 @@ malformed_child(void)
 {
     on_app_config_init();
     check(on_app_config_problem() != NULL, "an unreadable ini is reported");
-    gchar *dir = on_app_config_load_db_dir();
+    gchar *dir = on_app_config_get("folder");
     check(dir == NULL, "and the settings start from their defaults");
     g_free(dir);
     on_app_config_set("flag", "1");
@@ -82,7 +81,7 @@ malformed_child(void)
 static void
 test_malformed(const char *test_dir, const char *self)
 {
-    static const char bad[] = "[notes]\ndb_dir=/Volumes/Work\nthis line is not a key\n";
+    static const char bad[] = "[notes]\nfolder=/Volumes/Work\nthis line is not a key\n";
     gchar *dir = g_build_filename(test_dir, "malformed", NULL);
     gchar *ini = g_build_filename(dir, "notes.ini", NULL);
     g_mkdir_with_parents(dir, 0700);
@@ -135,10 +134,6 @@ test_policy(const char *test_dir)
     check(strcmp(ini, expect) == 0, "the ini is <data dir>/notes.ini");
     free(ini);
 
-    gchar *db = on_db_default_path();
-    snprintf(expect, sizeof expect, "%s/notes.db", test_dir);
-    check(strcmp(db, expect) == 0, "the default database is <data dir>/notes.db");
-    g_free(db);
 
     setenv(ON_DATA_DIR_ENV, "relative/place", 1);
     char cwd[PATH_MAX];
@@ -201,7 +196,7 @@ test_settings(const char *test_dir, const char *self)
     snprintf(ini, sizeof ini, "%s/notes.ini", fresh);
     check(stat(ini, &sb) != 0, "init writes no ini of its own (no defaults file)");
 
-    gchar *unset = on_app_config_get("db_dir");
+    gchar *unset = on_app_config_get("folder");
     check(unset == NULL, "an unset key reads as NULL");
     g_free(unset);
     check(on_app_config_get_bool("flag", TRUE) && !on_app_config_get_bool("flag", FALSE),
@@ -234,8 +229,8 @@ test_settings(const char *test_dir, const char *self)
     stat(ini, &sb);
     check(sb.st_ino == before, "setting an unchanged value does not rewrite the ini");
 
-    gchar *dbdir = on_app_config_load_db_dir();
-    check(g_strcmp0(dbdir, tricky[0][1]) == 0, "db_dir is read back in this process");
+    gchar *dbdir = on_app_config_get("folder");
+    check(g_strcmp0(dbdir, tricky[0][1]) == 0, "a value is read back in this process");
     g_free(dbdir);
 
     pid_t pid = fork();

@@ -1071,7 +1071,7 @@ test_backup(OnDatabase *db, const char *data_dir)
     gint notes = 0, copied = 0;
     on_db_totals(db, &notes, NULL, NULL);
     check(on_db_backup_to(db, dest), "backup: written");
-    OnDatabase *copy = on_db_open(dest);
+    OnDatabase *copy = on_db_open(dest, NULL);
     if (copy != NULL) on_db_totals(copy, &copied, NULL, NULL);
     check(copy != NULL && copied == notes && notes > 0, "backup: it opens with the same notes");
     on_db_close(copy);
@@ -1091,7 +1091,7 @@ main(void)
     on_app_config_init();
 
     static OnApp app;
-    check(on_app_open_db(&app), "the test database opens");
+    check(on_app_open_db(&app, NULL), "the test database opens");
     test_notes(app.db);
     test_action_lines(app.db);
     test_action_list(app.db);

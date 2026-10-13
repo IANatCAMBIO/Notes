@@ -131,7 +131,7 @@ on_app_config_init(void)
                                    &err) &&
         !g_error_matches(err, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
         /* Unreadable: moved aside, never overwritten by the next save —
-         * it may hold db_dir, and the defaults would point elsewhere.      */
+         * it may hold settings the user wants back.                        */
         gchar *aside = g_strdup_printf("%s.bad-%" G_GINT64_FORMAT,
                                        config_ini_path, g_get_real_time() / G_USEC_PER_SEC);
         gboolean moved = g_rename(config_ini_path, aside) == 0;
@@ -255,13 +255,4 @@ on_app_config_set_size(const gchar *key_w, const gchar *key_h, gint w, gint h)
     on_app_config_set(key_w, num);
     g_snprintf(num, sizeof num, "%d", h);
     on_app_config_set(key_h, num);
-}
-
-/*
- * on_app_config_load_db_dir — see config.h.
- */
-gchar *
-on_app_config_load_db_dir(void)
-{
-    return on_app_config_get("db_dir");
 }

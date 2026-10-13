@@ -101,7 +101,7 @@ static void
 search_worker(void *data)
 {
     on_search_job_t *job = data;
-    OnDatabase  *db  = on_db_open(job->db_path);
+    OnDatabase  *db  = on_db_open(job->db_path, NULL);
     if (db == NULL) {
         job->error = g_strdup("Could not open the database.");
         on_main_post(search_finish, job);

@@ -334,7 +334,7 @@ start_scan
     CGFloat                  scale = self.window.backingScaleFactor ?: 2.0;
     __weak NotesMediaWindow *ws    = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        OnDatabase *db = on_db_open(path.fileSystemRepresentation);
+        OnDatabase *db = on_db_open(path.fileSystemRepresentation, NULL);
         NSMutableArray<NotesMediaCell *> *batch = [NSMutableArray array];
         NSUInteger     total = 0, with_images = 0;
         BOOL           truncated = NO;

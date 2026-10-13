@@ -191,18 +191,22 @@ applicationDidFinishLaunching:(NSNotification *)n
     }
 
     on_app_prefs_load(&_app);
-    _app.db_dir      = on_app_config_load_db_dir();
     _app.show_notice = hook_show_notice;
 
+    gchar *why      = NULL;
     char  *data_dir = on_paths_data_dir();
-    gchar *db_path  = on_app_db_path(&_app);
-    NSLog(@"[launch] data directory %@, database %@", @(data_dir), @(db_path));
-    BOOL db_exists = [NSFileManager.defaultManager fileExistsAtPath:@(db_path)];
+    gchar *db_path  = on_app_db_path(&why);
+    NSLog(@"[launch] data directory %@, database %@", @(data_dir), db_path ? @(db_path) : @"(none)");
+    BOOL db_exists = db_path != NULL && [NSFileManager.defaultManager fileExistsAtPath:@(db_path)];
     free(data_dir);
     g_free(db_path);
 
     [NSApp activate];
-    if (db_exists) {
+    if (why != NULL) {
+        on_ui_show_notice(@"Could not find the shared database", @(why), nil,
+                          ^{ [NSApp terminate:nil]; });
+        g_free(why);
+    } else if (db_exists) {
         [self open_database_and_start];
     } else {
         [self ask_first_run];
@@ -214,30 +218,31 @@ applicationDidFinishLaunching:(NSNotification *)n
 
 /*
  * ask_first_run — no database exists where one is expected: ask whether to
- * open an existing file or create a new one there, instead of silently
- * creating an empty database.  (A user whose database lives in a shared
- * folder usually means to OPEN it; creating a fresh one would look like
- * every note had vanished.)  Cancelling the file panel returns here.
+ * open an existing shared database or create a new one there, instead of
+ * silently creating an empty one.  (Notes and Tasks share one file; a
+ * user whose file lives elsewhere usually means to OPEN it — creating a
+ * fresh one would look like every note had vanished.)  Cancelling the file
+ * panel returns here.
  */
 - (void)
 ask_first_run
 {
-    gchar    *expected = on_app_db_path(&_app);
+    gchar    *expected = on_app_db_path(NULL);
     NSString *message  = [NSString stringWithFormat:
-        @"No notes database was found at\n%@\n\nDo not open a database that another "
-        @"notes app (the GTK Notes) has open: the two cannot see each other and would "
-        @"both write to it.", @(expected)];
+        @"No database was found at\n%@\n\n" ON_APP_NAME @" keeps your notes in the database "
+        @"it shares with Tasks. Create a new one there, or open an existing shared database "
+        @"file, which then becomes the default for both apps.", expected ? @(expected) : @"?"];
     g_free(expected);
 
     [NotesToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
                           symbol:@"note.text"
-                         buttons:@[@"Create a New Database", @"Open a notes.db File…", @"Quit"]
+                         buttons:@[@"Create a New Database", @"Open a Database File…", @"Quit"]
                             over:nil
                          handler:^(NSInteger index) {
         if (index == 0) {
             [self open_database_and_start];
         } else if (index == 1) {
-            on_ui_pick_path(NotesPickOpenFile, @"Choose the notes.db file to open", @"Open",
+            on_ui_pick_path(NotesPickOpenFile, @"Choose the shared database file to open", @"Open",
                             @[[UTType typeWithFilenameExtension:@"db"]], nil,
                             ^(NSString *path) { [self first_run_picked:path]; });
         } else {
@@ -247,9 +252,10 @@ ask_first_run
 }
 
 /*
- * first_run_picked: — the first-run file panel closed.  The app's model is
- * a folder plus the fixed file name notes.db (the ini stores db_dir only),
- * so only a file of that name can be opened; its folder becomes db_dir.
+ * first_run_picked: — the first-run file panel closed.  The chosen file is
+ * tried first (the shared module refuses anything that is not a shared
+ * database, untouched) and made the default of both apps only if it opens:
+ * a file that cannot be opened must not become the configured one.
  *
  * Inputs:
  *   path — the chosen file, or nil when the panel was cancelled
@@ -257,22 +263,27 @@ ask_first_run
 - (void)
 first_run_picked:(NSString *)path
 {
-    if (path && ![path.lastPathComponent isEqualToString:@ON_DB_FILENAME]) {
-        /* The welcome panel comes back once this one is answered. */
-        on_ui_show_notice(@"That file cannot be opened",
-                          @"The database file must be named " @ON_DB_FILENAME @".", nil,
-                          ^{ [self ask_first_run]; });
-        return;
-    }
     if (!path) {
         [self ask_first_run];
         return;
     }
-    /* Tried first, remembered only if it opens: a folder that cannot be
-     * opened must not become the configured one. */
-    g_free(_app.db_dir);
-    _app.db_dir = g_strdup(path.stringByDeletingLastPathComponent.fileSystemRepresentation);
-    if ([self open_database_and_start]) on_app_config_set("db_dir", _app.db_dir);
+    gchar      *why   = NULL;
+    OnDatabase *trial = on_app_can_set_default() ? on_db_open(path.fileSystemRepresentation, &why) : NULL;
+    char       *set_err = NULL;
+    if (trial != NULL) {
+        on_db_close(trial);
+        if (shared_db_set_default_path(path.fileSystemRepresentation, &set_err) == 0) {
+            [self open_database_and_start];
+            return;
+        }
+    }
+    NSString *reason = why     ? @(why)
+                     : set_err ? @(set_err)
+                     : @"$" SHARED_DB_ENV_VAR @" names the database for this run.";
+    g_free(why);
+    free(set_err);
+    /* The welcome panel comes back once this one is answered. */
+    on_ui_show_notice(@"That file cannot be opened", reason, nil, ^{ [self ask_first_run]; });
 }
 
 /*
@@ -287,15 +298,11 @@ first_run_picked:(NSString *)path
 - (BOOL)
 open_database_and_start
 {
-    if (!on_app_open_db(&_app)) {
-        gchar *expected = on_app_db_path(&_app);
-        on_ui_show_notice(@"Could not open the notes database",
-                          [NSString stringWithFormat:
-                              @"%@\n\nIf another copy of " ON_APP_NAME
-                              @" is still shutting down, try again in a few seconds.",
-                              @(expected)],
+    gchar *why = NULL;
+    if (!on_app_open_db(&_app, &why)) {
+        on_ui_show_notice(@"Could not open the database", why ? @(why) : @"Unknown error.",
                           nil, ^{ [NSApp terminate:nil]; });
-        g_free(expected);
+        g_free(why);
         return NO;
     }
 

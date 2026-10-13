@@ -121,11 +121,9 @@ on_backup_dir(void)
      * TIDINESS and nothing else — a subfolder shares the fate of its parent
      * exactly, so this is no more independent than the database's own
      * folder, and Settings still says so.                                   */
-    gchar *def  = on_db_default_path();
-    gchar *base = g_path_get_dirname(def);
+    char  *base = on_paths_data_dir();
     gchar *sub  = g_build_filename(base, BACKUP_SUBDIR, NULL);
-    g_free(def);
-    g_free(base);
+    free(base);
     g_mkdir_with_parents(sub, 0755);
     return sub;
 }
@@ -377,7 +375,7 @@ static void
 backup_thread(void *data)
 {
     BackupJob  *job = data;          /* the pass in flight                  */
-    OnDatabase *db  = on_db_open(job->db_path);
+    OnDatabase *db  = on_db_open(job->db_path, NULL);
     if (db == NULL) {
         job->message = g_strdup("Backup failed: cannot open the database");
         g_clear_pointer(&job->stamp, g_free);

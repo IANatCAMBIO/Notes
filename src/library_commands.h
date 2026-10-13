@@ -69,11 +69,13 @@ BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name
 void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);
 
 /*
- * on_library_open_db — switch to a database file already chosen: a tool
- * panel asks whether for this session only or as the new default (offered
- * only for a file named notes.db: the default is stored as its folder);
- * a file that will not open is reported and the previous database stays
- * open (on_app_switch_db).  The file already open needs nothing.  The
+ * on_library_open_db — switch to a shared database file already chosen: a
+ * tool panel asks whether for this session only or as the new default of
+ * both apps (offered only while on_app_can_set_default: not when
+ * $CAMBIO_SHARED_DB fixes the file for the run); a file the shared module
+ * refuses (not a shared database, on a network or synced folder) is
+ * reported in its words and the previous database stays open
+ * (on_app_switch_db).  The file already open needs nothing.  The
  * Open Database command calls it once the file picker returns.
  *
  * Inputs:

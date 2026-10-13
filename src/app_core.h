@@ -41,11 +41,9 @@
  * OnApp — the application context.
  *
  * State:
- *   db           — the open notes database (owned; on_app_shutdown closes
+ *   db           — the open shared database (owned; on_app_shutdown closes
  *                  it), or NULL before one is open.  Main thread only: a
  *                  worker opens its own connection from db->path.
- *   db_dir       — custom directory holding the database (owned), or NULL
- *                  for the default (the data directory, config.h).
  *
  * Preferences, loaded from notes.ini by on_app_prefs_load (the keys and
  * defaults are one table in app_core.c):
@@ -109,7 +107,6 @@
  * ------------------------------------------------------------------------- */
 typedef struct OnApp {
     OnDatabase *db;
-    gchar      *db_dir;
 
     gboolean    code_copy_buttons;
     gboolean    code_line_numbers;

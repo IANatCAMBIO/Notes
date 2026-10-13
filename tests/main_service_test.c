@@ -213,7 +213,7 @@ test_core_jobs(const char *data_dir)
     on_app_config_init();
     OnApp app = { 0 };
     app.notify_status = status_hook;
-    app.db = on_db_open(NULL);
+    app.db = on_db_open(NULL, NULL);
     check(app.db != NULL && g_str_has_prefix(app.db->path, data_dir),
           "the default database opens inside the test data directory");
     on_db_note_create(app.db, 0);
@@ -228,7 +228,7 @@ test_core_jobs(const char *data_dir)
 
     /* A pass abandoned by closing the connection must not call back.       */
     health_done = false;
-    OnDatabase *second = on_db_open(NULL);
+    OnDatabase *second = on_db_open(NULL, NULL);
     on_db_health_check_async(second, health_landed, NULL);
     on_db_close(second);
     check_pump(NULL, 0.5);
@@ -275,7 +275,7 @@ test_core_jobs(const char *data_dir)
     gchar *opened = g_build_filename(backups, "notes-20000101-000000.db", NULL);
     check(on_db_backup_to(app.db, opened), "an old-looking backup exists");
     OnDatabase *was = app.db;
-    app.db = on_db_open(opened);
+    app.db = on_db_open(opened, NULL);
     on_db_note_create(app.db, 0);    /* a change, so the pass is not skipped */
     on_app_config_set("backup_keep", "1");
     on_backup_start(&app, app.db->path);
@@ -337,14 +337,14 @@ paced_backup_worker(gpointer data)
 static void
 test_paced_backup(const char *data_dir)
 {
-    OnDatabase *writer = on_db_open(NULL);
+    OnDatabase *writer = on_db_open(NULL, NULL);
     gint64      note   = on_db_note_create(writer, 0);
     gsize       big    = 8 * 1024 * 1024;     /* ~2000 pages: four steps    */
     guint8     *bytes  = g_malloc(big);
     for (gsize i = 0; i < big; i++) bytes[i] = (guint8)(i * 2654435761u >> 24);
     check(on_db_note_save(writer, note, "Big", bytes, big, NULL), "a large note is stored");
 
-    paced_backup_t job = { on_db_open(NULL), g_build_filename(data_dir, "paced.db", NULL), FALSE, 0 };
+    paced_backup_t job = { on_db_open(NULL, NULL), g_build_filename(data_dir, "paced.db", NULL), FALSE, 0 };
     GThread *thread = g_thread_new("paced-backup", paced_backup_worker, &job);
     gint64   slowest = 0, writes = 0;
     while (!g_atomic_int_get(&job.done)) {
@@ -356,7 +356,7 @@ test_paced_backup(const char *data_dir)
     check(job.ok, "the backup completes while another connection keeps writing");
     check(slowest < G_USEC_PER_SEC, "no write waits a second for it");
 
-    OnDatabase *copy = on_db_open(job.dest);
+    OnDatabase *copy = on_db_open(job.dest, NULL);
     guint8     *blob = NULL;
     gsize       len  = 0;
     check(copy != NULL && on_db_note_load(copy, note, &blob, &len) &&

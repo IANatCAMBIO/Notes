@@ -1043,7 +1043,7 @@ schedule_cards
     NSString   *path  = @(self.lib.app->db->path);
     __weak NotesNotesPane *ws = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        OnDatabase *db = on_db_open(path.fileSystemRepresentation);
+        OnDatabase *db = on_db_open(path.fileSystemRepresentation, NULL);
         for (NSNumber *nid in batch) {
             @autoreleasepool {
                 NSImage *image = db ? render_card(db, nid.longLongValue, dark, scale) : nil;

@@ -427,18 +427,41 @@ test_app_lock(const char *self)
 static void
 test_lifecycle(OnApp *app, const char *data_dir)
 {
-    gchar *path = on_app_db_path(app);
-    char expect[PATH_MAX];
-    snprintf(expect, sizeof expect, "%s/notes.db", data_dir);
-    check(strcmp(path, expect) == 0, "with no db_dir the database is in the data directory");
+    gchar *path = on_app_db_path(NULL);
+    check(path != NULL && strcmp(path, getenv(SHARED_DB_ENV_VAR)) == 0,
+          "the database is the one $CAMBIO_SHARED_DB names");
     g_free(path);
+    check(!on_app_can_set_default(),
+          "while $CAMBIO_SHARED_DB names the file, the default cannot change");
 
-    app->db_dir = g_build_filename(data_dir, "elsewhere", "missing", NULL);
-    check(!on_app_open_db(app) && app->db == NULL,
-          "an unopenable configured database is a failure, never a fallback");
-    g_clear_pointer(&app->db_dir, g_free);
+    /* An old notes.db (no stamps, tables) is refused untouched, with the
+     * module's reason — never opened, never "upgraded".                    */
+    gchar   *old = g_build_filename(data_dir, "old-notes.db", NULL);
+    sqlite3 *sq  = NULL;
+    sqlite3_open(old, &sq);
+    sqlite3_exec(sq, "CREATE TABLE notes (id INTEGER PRIMARY KEY)", NULL, NULL, NULL);
+    sqlite3_close(sq);
+    gchar  *before = NULL, *after = NULL, *why = NULL;
+    gsize   n_before = 0, n_after = 0;
+    g_file_get_contents(old, &before, &n_before, NULL);
+    OnDatabase *refused = on_db_open(old, &why);
+    g_file_get_contents(old, &after, &n_after, NULL);
+    check(refused == NULL && why != NULL && n_before == n_after &&
+          memcmp(before, after, n_before) == 0,
+          "a file that is not a shared database is refused, byte for byte untouched");
+    g_free(before);
+    g_free(after);
+    g_free(why);
+    g_free(old);
 
-    check(on_app_open_db(app) && app->db != NULL, "the default database opens");
+    check(on_app_open_db(app, NULL) && app->db != NULL, "the default database opens");
+    sqlite3_stmt *mode = NULL;
+    sqlite3_prepare_v2(app->db->handle, "PRAGMA journal_mode", -1, &mode, NULL);
+    gboolean wal = mode != NULL && sqlite3_step(mode) == SQLITE_ROW &&
+                   strcmp((const char *)sqlite3_column_text(mode, 0), "wal") == 0;
+    sqlite3_finalize(mode);
+    check(wal && strcmp(app->db->path, getenv(SHARED_DB_ENV_VAR)) == 0,
+          "it is the shared file, in WAL mode through the shared module");
 }
 
 /*

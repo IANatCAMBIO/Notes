@@ -3,16 +3,20 @@
  *
  * LOCATION POLICY (the rule the whole fork's data safety rests on)
  *
- * Every file this app keeps — everything but a database the user
- * explicitly opened elsewhere — lives in ONE directory, the data directory:
+ * Every file this app keeps for itself lives in ONE directory, the data
+ * directory:
  *
  *     $NOTES_DATA_DIR                          when that is set
  *     ~/Library/Application Support/Notes      otherwise
  *
  *     <data dir>/notes.ini            the settings (this module)
- *     <data dir>/notes.db             the default database (db.h)
- *     <data dir>/backups/             the default backup folder (backup.h)
  *     <data dir>/notes.lock           the app lock (app_lifecycle.h)
+ *
+ * The notes themselves are in the database Notes shares with Tasks, which
+ * the shared module places (shared_db.h, shared_db_path): $CAMBIO_SHARED_DB,
+ * else the file both apps' "Set as Default" points at, else
+ * ~/Library/Application Support/camb.io/shared_data.db.  Its backups and
+ * their policy are the shared module's too (backup.h).
  *
  * Nothing is ever resolved relative to argv[0], the bundle, or the XDG
  * directories the GTK build used (~/.config/notes, ~/.local/share/notes,
@@ -21,10 +25,6 @@
  * password database, not $HOME, so a stray environment cannot move the
  * default either; NOTES_DATA_DIR is the one override, and `make run`,
  * `make seed` and `make test` always set it to a folder under dev/.
- *
- * The only way out of the data directory is the `db_dir` setting, written
- * by File > Open Database File… > Set as Default: a decision the user makes
- * in the app, never a default.
  *
  * Not in the data directory, and not this module's: what AppKit keeps for
  * any app under its bundle identifier (~/Library/Preferences/<bundle
@@ -61,7 +61,7 @@ char *on_paths_data_dir(void);
  * on_paths_data_file() — the path of a file inside the data directory.
  *
  * Inputs:
- *   name — the file's name (ON_CONFIG_FILENAME, ON_DB_FILENAME, …)
+ *   name — the file's name (ON_CONFIG_FILENAME, ON_LOCK_FILENAME)
  *
  * Output: a new absolute path; free() it.
  * ------------------------------------------------------------------------- */
@@ -153,13 +153,5 @@ void on_app_config_get_size(const gchar *key_w, const gchar *key_h,
  * ------------------------------------------------------------------------- */
 void on_app_config_set_size(const gchar *key_w, const gchar *key_h,
                             gint w, gint h);
-
-/* ---------------------------------------------------------------------------
- * on_app_config_load_db_dir() — the custom database directory (`db_dir`).
- *
- * Output: a new string (g_free it), or NULL when the default location (the
- *         data directory) is in use.
- * ------------------------------------------------------------------------- */
-gchar *on_app_config_load_db_dir(void);
 
 #endif /* ON_CONFIG_H */

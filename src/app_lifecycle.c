@@ -81,28 +81,47 @@ on_app_lock_take(void)
  * on_app_db_path — see app_lifecycle.h.
  */
 gchar *
-on_app_db_path(OnApp *app)
+on_app_db_path(gchar **err)
 {
-    return app->db_dir != NULL
-           ? g_build_filename(app->db_dir, ON_DB_FILENAME, NULL)
-           : on_db_default_path();
+    char  *module_err = NULL;        /* the shared module's message         */
+    char  *path       = shared_db_path(&module_err);
+    gchar *out        = g_strdup(path);
+    if (path == NULL && err != NULL) {
+        *err = g_strdup(module_err != NULL ? module_err : "unknown error");
+    }
+    free(module_err);
+    free(path);
+    return out;
 }
 
 /*
  * on_app_open_db — see app_lifecycle.h.
  */
 gboolean
-on_app_open_db(OnApp *app)
+on_app_open_db(OnApp *app, gchar **err)
 {
-    gchar *db_path = on_app_db_path(app);
-    app->db = on_db_open(db_path);
+    gchar *why = NULL;               /* the reason it did not open          */
+    app->db = on_db_open(NULL, &why);
     if (app->db == NULL) {
-        fprintf(stderr, "notes: could not open the notes database at %s\n"
-                        "(if another instance is still shutting down, try "
-                        "again in a few seconds)\n", db_path);
+        fprintf(stderr, "notes: could not open the shared database: %s\n",
+                why != NULL ? why : "?");
+        if (err != NULL) {
+            *err = why;
+            why  = NULL;
+        }
     }
-    g_free(db_path);
+    g_free(why);
     return app->db != NULL;
+}
+
+/*
+ * on_app_can_set_default — see app_lifecycle.h.
+ */
+gboolean
+on_app_can_set_default(void)
+{
+    const char *env = getenv(SHARED_DB_ENV_VAR);
+    return env == NULL || env[0] == '\0';
 }
 
 /*
@@ -120,27 +139,34 @@ on_app_start_services(OnApp *app)
  * on_app_switch_db — see app_lifecycle.h.
  */
 on_switch_result_t
-on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default)
+on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
+                 gchar **err)
 {
     if (app->flush_editors != NULL && !app->flush_editors(app)) {
         return ON_SWITCH_UNSAVED;
     }
     gchar *old_path = g_strdup(app->db->path);
     on_db_close(app->db);
-    app->db = on_db_open(path);
+    app->db = on_db_open(path, err);
+    char *module_err = NULL;         /* why the default could not be set    */
+    if (app->db != NULL && set_default &&
+        (!on_app_can_set_default() ||
+         shared_db_set_default_path(app->db->path, &module_err) != 0)) {
+        if (err != NULL) {
+            *err = g_strdup(module_err != NULL ? module_err
+                            : "$" SHARED_DB_ENV_VAR " names the database for "
+                              "this run, so the default cannot be changed");
+        }
+        free(module_err);
+        on_db_close(app->db);
+        app->db = NULL;
+    }
     if (app->db == NULL) {
-        app->db = on_db_open(old_path);      /* back to where we were        */
+        app->db = on_db_open(old_path, NULL);   /* back to where we were    */
         g_free(old_path);
         return ON_SWITCH_FAILED;
     }
     g_free(old_path);
-
-    if (set_default) {               /* (Session Only persists nothing)      */
-        gchar *new_dir = g_path_get_dirname(path);
-        on_app_config_set("db_dir", new_dir);
-        g_free(app->db_dir);
-        app->db_dir = new_dir;
-    }
 
     /* The backup timer carries the database path, so it is re-armed onto
      * the file that is now open.                                           */

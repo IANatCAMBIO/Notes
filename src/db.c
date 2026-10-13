@@ -7,7 +7,6 @@
  * =========================================================================== */
 
 #include "db.h"
-#include "config.h"                  /* on_paths_data_dir: the default path  */
 #include "main_service.h"            /* the health pass's worker + hand-back */
 
 #include <stdlib.h>
@@ -18,178 +17,20 @@
 typedef struct HealthJob HealthJob;
 static void on_db_health_abandon(OnDatabase *db);
 
-/* ---------------------------------------------------------------------------
- * SCHEMA_SQL — DDL executed every time the database is opened.
- * Every statement uses IF NOT EXISTS so re-running is harmless.
- * ------------------------------------------------------------------------- */
-static const char *SCHEMA_SQL =
-    "PRAGMA foreign_keys = ON;"
-    "CREATE TABLE IF NOT EXISTS folders ("
-    "  id         INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  parent_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,"
-    "  name       TEXT NOT NULL,"
-    "  sort_order INTEGER NOT NULL DEFAULT 0"
-    ");"
-    "CREATE TABLE IF NOT EXISTS notes ("
-    "  id         INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  folder_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,"
-    "  title      TEXT NOT NULL DEFAULT 'New Note',"
-    "  content    BLOB,"
-    "  sort_order INTEGER NOT NULL DEFAULT 0,"
-    "  created_at INTEGER NOT NULL,"
-    "  updated_at INTEGER NOT NULL"
-    ");"
-    "CREATE TABLE IF NOT EXISTS tags ("
-    "  id   INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  name TEXT NOT NULL UNIQUE"
-    ");"
-    "CREATE TABLE IF NOT EXISTS note_tags ("
-    "  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,"
-    "  tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,"
-    "  PRIMARY KEY (note_id, tag_id)"
-    ");"
-    /* The Tasks app's three tables, its DDL VERBATIM (tasks/src/db.c) —
-     * the merge of the two databases depends on the two being the same
-     * text.  Only `tasks` has DEFAULTs built from macros, so it is a
-     * printf format, TASKS_SCHEMA_FMT, run right after this string.       */
-    "CREATE TABLE IF NOT EXISTS list_groups ("
-    "  id       INTEGER PRIMARY KEY,"
-    "  name     TEXT    NOT NULL DEFAULT '',"
-    "  position INTEGER NOT NULL DEFAULT 0);"
-    "CREATE TABLE IF NOT EXISTS lists ("
-    "  id         INTEGER PRIMARY KEY,"
-    "  name       TEXT    NOT NULL DEFAULT '',"
-    "  emoji      TEXT    NOT NULL DEFAULT '',"
-    "  position   INTEGER NOT NULL DEFAULT 0,"
-    "  group_id   INTEGER REFERENCES list_groups(id),"
-    "  updated_at INTEGER NOT NULL DEFAULT 0,"
-    "  deleted    INTEGER NOT NULL DEFAULT 0);"
-    /* The uid high-water mark: one row, monotonically increasing, so a
-     * uid retired by a deleted item is never handed out again.             */
-    "CREATE TABLE IF NOT EXISTS action_uid_seq ("
-    "  id   INTEGER PRIMARY KEY CHECK (id = 1),"
-    "  next INTEGER NOT NULL"
-    ");"
-    "INSERT OR IGNORE INTO action_uid_seq (id, next) VALUES (1, 1);"
-    "CREATE INDEX IF NOT EXISTS idx_notes_folder  ON notes(folder_id);"
-    "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);"
-    "CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);";
-
-/* The Tasks app's `tasks` table (tasks/src/db.c), the three %d being the
- * ON_TASK_*_DEFAULT macros — the CREATE and the defaults cannot drift.
- * note_task links a '!' line to its task: keyed by the uid the note blob
- * carries, so the merge can renumber tasks.id by rewriting this table
- * alone, never a blob.  Both run after SCHEMA_SQL, before the ALTERs.    */
-static const char *TASKS_SCHEMA_FMT =
-    "CREATE TABLE IF NOT EXISTS tasks ("
-    "  id           INTEGER PRIMARY KEY,"
-    "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
-    "  parent_id    INTEGER REFERENCES tasks(id),"
-    "  title        TEXT    NOT NULL DEFAULT '',"
-    "  notes        TEXT    NOT NULL DEFAULT '',"
-    "  due          INTEGER NOT NULL DEFAULT 0,"
-    "  status       INTEGER NOT NULL DEFAULT 0,"
-    "  pinned       INTEGER NOT NULL DEFAULT 0,"
-    "  priority     INTEGER NOT NULL DEFAULT 0,"
-    "  position     INTEGER NOT NULL DEFAULT 0,"
-    "  updated_at   INTEGER NOT NULL DEFAULT 0,"
-    "  deleted      INTEGER NOT NULL DEFAULT 0,"
-    "  completed_at INTEGER NOT NULL DEFAULT 0,"
-    "  recur_interval INTEGER NOT NULL DEFAULT 0,"
-    "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
-    "  recur_time     INTEGER NOT NULL DEFAULT %d,"
-    "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
-    "  recur_next     INTEGER NOT NULL DEFAULT 0,"
-    "  recur_start    INTEGER NOT NULL DEFAULT 0,"
-    "  due_time       INTEGER NOT NULL DEFAULT %d);"
-    "CREATE INDEX IF NOT EXISTS idx_tasks_list "
-    "  ON tasks(list_id, parent_id, position);"
-    "CREATE TABLE IF NOT EXISTS note_task ("
-    "  uid     INTEGER PRIMARY KEY,"
-    "  task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,"
-    "  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,"
-    "  ord     INTEGER NOT NULL);"
-    "CREATE INDEX IF NOT EXISTS idx_note_task_note ON note_task(note_id);";
-
-/* ---------------------------------------------------------------------------
- * The views and the trigger, ensured by db_ensure() in on_db_open AFTER
- * the column migrations, since a view references migrated columns
- * (folders.trashed).
- * ------------------------------------------------------------------------- */
-
-/* trash_folder_ids — the recursive closure of the Trash: every folder that
- * is flagged trashed OR sits anywhere below a flagged folder.  Notes inside
- * these folders are implicitly trashed without carrying their own flag.    */
-#define TRASH_VIEW_NAME "trash_folder_ids"
-#define TRASH_VIEW_BODY \
-    "WITH RECURSIVE tf(id) AS (" \
-    "  SELECT id FROM folders WHERE trashed=1" \
-    "  UNION" \
-    "  SELECT f.id FROM folders f JOIN tf ON f.parent_id = tf.id" \
-    ") SELECT id FROM tf"
-
-/* WHERE fragment: a note is visible in normal (non-Trash) views — not
- * directly trashed and not inside a trashed folder's subtree.               */
-#define NOTE_VISIBLE_SQL \
-    "trashed=0 AND (folder_id IS NULL OR " \
-    "folder_id NOT IN (SELECT id FROM trash_folder_ids))"
+/* The action_items_ctx view (shared_db.c creates it): every LIVE action
+ * item as a task row with its note's placement — note_id, ord, text (the
+ * task's title), done (status = 2), due, uid, folder_id, updated_at (the
+ * note's), visible (the note is outside the Trash) and context (the name
+ * of the note's folder, "" at the root).  Every listing reads it.          */
+#define ACTION_CTX_VIEW_NAME "action_items_ctx"
 
 /* Column list shared by the action-item queries, matching
  * run_action_query()'s expectations.                                        */
 #define ACTION_COLS "note_id, ord, text, done, due, uid"
 
-/* action_items_ctx — every LIVE action item as a task row WITH ITS NOTE'S
- * PLACEMENT, the one shape every listing reads (and the contract a sister
- * app sharing this database reads directly): ACTION_COLS, where text is
- * the task's title and done is status = 2, then
- *   folder_id  — the owning note's folder (NULL at the root): the stable
- *                key for a context, surviving a rename,
- *   updated_at — the owning note's modification time,
- *   visible    — NOTE_VISIBLE_SQL evaluated for the note, so a reader
- *                needs no knowledge of the Trash rules,
- *   context    — the NAME of that folder ("" at the root): the container
- *                the note sits in, whatever is above it — a note in
- *                Salt/Deployments/Stride has the context "Stride".
- * Tombstoned tasks are not in it (a note's trash state is `visible`, a
- * task's deletion is absence).  The context is DERIVED here, never
- * stored: a stored copy would go stale the moment a note moved or a
- * folder was renamed, and with two writers on one file nobody could trust
- * it.  The columns are spelled out (not t.*) so the view's contract is
- * exactly this list.                                                      */
-#define ACTION_CTX_VIEW_NAME "action_items_ctx"
-#define ACTION_CTX_VIEW_BODY \
-    "SELECT nt.note_id, nt.ord, t.title AS text, (t.status = 2) AS done," \
-    "  t.due, nt.uid," \
-    "  n.folder_id, n.updated_at," \
-    "  (n." NOTE_VISIBLE_SQL ") AS visible," \
-    "  COALESCE(f.name, '') AS context" \
-    " FROM note_task nt JOIN tasks t ON t.id = nt.task_id" \
-    " JOIN notes n ON n.id = nt.note_id" \
-    " LEFT JOIN folders f ON f.id = n.folder_id" \
-    " WHERE t.deleted = 0"
-
-/* note_task_tombstone — a note_task row going away (the note hard-deleted
- * or its folder, the Trash emptied: all ON DELETE CASCADE) tombstones the
- * task the Tasks way, in the same transaction, from ONE definition — no
- * delete path in C has to remember it.  A BEFORE DELETE trigger fires for
- * cascaded deletes too (measured).                                        */
-#define TASK_TRIGGER_NAME "note_task_tombstone"
-#define TASK_TRIGGER_SQL \
-    "CREATE TRIGGER " TASK_TRIGGER_NAME " BEFORE DELETE ON note_task BEGIN" \
-    "  UPDATE tasks SET deleted=1, updated_at=strftime('%s','now')" \
-    "   WHERE id=OLD.task_id AND deleted=0;" \
-    " END"
-
 /* Remove tags that no longer label any note; run (via exec_simple) after
  * anything that can delete note_tags rows, so the library's tag list
  * stays tidy.                                                                */
-/* How every transaction that writes begins.  IMMEDIATE takes the write lock
- * up front, so a busy database is waited for (the busy timeout) at the
- * start; a plain BEGIN that reads first and then writes can instead fail at
- * once with SQLITE_BUSY when another connection is writing, half-way
- * through a save.                                                           */
-#define WRITE_TXN "BEGIN IMMEDIATE"
-
 #define PRUNE_ORPHAN_TAGS_SQL \
     "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM note_tags)"
 
@@ -212,20 +53,57 @@ exec_simple(OnDatabase *db, const char *sql)
 }
 
 /* ---------------------------------------------------------------------------
- * txn_end() — finish a transaction begun with WRITE_TXN: COMMIT when all of
- * it succeeded, ROLLBACK otherwise.
- *   db — open database, inside the transaction.
- *   ok — whether every step in it succeeded.
- * Returns TRUE only when the transaction committed.
+ * txn_begin() — start a write transaction (shared_db_begin: BEGIN
+ * IMMEDIATE, so a busy file is waited for up front and a write never fails
+ * half-way with SQLITE_BUSY) — or JOIN the caller's, when one is already
+ * open on this connection: several writes (a pull, its save, a note's
+ * tags) are then one transaction.
+ *   db  — open database.
+ *   own — out: TRUE when this call opened the transaction (txn_end then
+ *         commits it), FALSE when it joined the caller's.
+ * Returns TRUE when a transaction is open.
  * ------------------------------------------------------------------------- */
 static gboolean
-txn_end(OnDatabase *db, gboolean ok)
+txn_begin(OnDatabase *db, gboolean *own)
 {
-    if (ok)
-        ok = exec_simple(db, "COMMIT");
-    if (!ok)
-        exec_simple(db, "ROLLBACK");
-    return ok;
+    *own = FALSE;
+    if (sqlite3_get_autocommit(db->handle) == 0)
+        return TRUE;
+    char *err = NULL;                /* the module's message               */
+    if (shared_db_begin(db->shared, &err) != 0) {
+        g_warning("db: cannot begin a transaction: %s", err != NULL ? err : "?");
+        free(err);
+        return FALSE;
+    }
+    *own = TRUE;
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * txn_end() — finish what txn_begin started: COMMIT when all of it
+ * succeeded, ROLLBACK otherwise.  A joined transaction is left to its
+ * owner (who sees `ok` and rolls back on FALSE).
+ *   db  — open database, inside the transaction.
+ *   own — txn_begin's `own`.
+ *   ok  — whether every step in it succeeded.
+ * Returns TRUE only when every step succeeded (and, when owned, committed).
+ * ------------------------------------------------------------------------- */
+static gboolean
+txn_end(OnDatabase *db, gboolean own, gboolean ok)
+{
+    if (!own)
+        return ok;
+    if (!ok) {
+        shared_db_rollback(db->shared);
+        return FALSE;
+    }
+    char *err = NULL;                /* the module's message               */
+    if (shared_db_commit(db->shared, &err) != 0) {
+        g_warning("db: commit failed: %s", err != NULL ? err : "?");
+        free(err);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -274,10 +152,6 @@ bind_id_or_null(sqlite3_stmt *stmt, int idx, gint64 id)
  * ------------------------------------------------------------------------- */
 static gboolean
 stmt_done(OnDatabase *db, sqlite3_stmt *stmt);      /* see stmt_finish below */
-
-/* The schema version, which on_db_open reads and writes: see below.         */
-static gint     user_version(OnDatabase *db);
-static gboolean set_user_version(OnDatabase *db, gint version);
 
 /* stmt_cache_finalize() — GDestroyNotify wrapper for sqlite3_finalize,
  * used as the value-destroy function of stmt_cache.                          */
@@ -354,48 +228,6 @@ cached_stmt_done(OnDatabase *db, sqlite3_stmt *stmt)
 }
 
 /* ---------------------------------------------------------------------------
- * db_ensure() — make the view or trigger `name` exist with exactly
- * `create` as its definition.  A view's definition is part of the
- * contract other readers of the file rely on (action_items_ctx is read by
- * a sister app) and a trigger's is behaviour, and CREATE … IF NOT EXISTS
- * would leave an OLD definition in place forever once the code's changed
- * — silently, since the name still resolves.  So the stored text is
- * compared against the expected one (SQLite keeps the CREATE statement
- * verbatim in sqlite_master, minus IF NOT EXISTS) and the object is
- * dropped and recreated only on a mismatch; a database whose objects are
- * current is not written to at all on open.
- *   db     — open database.
- *   type   — "view" or "trigger" (sqlite_master's type, and the DROP).
- *   name   — the object's name.
- *   create — the whole CREATE statement, byte for byte what the stored
- *            text must hold.
- * Returns TRUE when the object is in place.
- * ------------------------------------------------------------------------- */
-static gboolean
-db_ensure(OnDatabase *db, const gchar *type, const gchar *name,
-          const gchar *create)
-{
-    gboolean current = FALSE;        /* stored text == expected text?       */
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT sql FROM sqlite_master WHERE type=? AND name=?");
-    if (stmt != NULL) {
-        sqlite3_bind_text(stmt, 1, type, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
-        if (sqlite3_step(stmt) == SQLITE_ROW)
-            current = g_strcmp0(
-                (const gchar *)sqlite3_column_text(stmt, 0), create) == 0;
-        sqlite3_finalize(stmt);
-    }
-    gboolean ok = TRUE;              /* the outcome                         */
-    if (!current) {
-        gchar *drop = g_strdup_printf("DROP %s IF EXISTS %s", type, name);
-        ok = exec_simple(db, drop) && exec_simple(db, create);
-        g_free(drop);
-    }
-    return ok;
-}
-
-/* ---------------------------------------------------------------------------
  * query_int64() — first column of the first row of a scalar SELECT.
  *   db      — open database.
  *   sql     — single SELECT with at most one integer '?' placeholder.
@@ -421,117 +253,31 @@ query_int64(OnDatabase *db, const char *sql, gint64 bind_id)
  * lifecycle
  * ========================================================================= */
 
-gchar *
-on_db_default_path(void)
-{
-    /* The data directory (config.h's policy) — never the XDG data dir the
-     * GTK build used, which is where that build's real database may be.   */
-    char *dir = on_paths_data_dir();
-    g_mkdir_with_parents(dir, 0700);
-    gchar *path = g_build_filename(dir, ON_DB_FILENAME, NULL);
-    free(dir);
-    return path;
-}
-
 OnDatabase *
-on_db_open(const gchar *path_override)
+on_db_open(const gchar *path, gchar **err)
 {
-    /* Resolve the database path: explicit override, or the per-user data
-     * directory default.                                                    */
-    gchar *path = (path_override != NULL)   /* final absolute db path      */
-                  ? g_strdup(path_override)
-                  : on_db_default_path();
+    char *module_err = NULL;         /* the shared module's message         */
+    char *resolved   = path != NULL ? strdup(path) : shared_db_path(&module_err);
+    shared_db *shared = resolved != NULL ? shared_db_open(resolved, &module_err)
+                                         : NULL;
+    if (shared == NULL) {
+        g_warning("db: cannot open %s: %s", resolved != NULL ? resolved : "the database",
+                  module_err != NULL ? module_err : "?");
+        if (err != NULL)
+            *err = g_strdup(module_err != NULL ? module_err : "unknown error");
+        free(module_err);
+        free(resolved);
+        return NULL;
+    }
+    free(resolved);
 
     OnDatabase *db = g_new0(OnDatabase, 1);
-    db->path = path;
+    db->shared = shared;
+    db->handle = shared_db_handle(shared);
+    db->path   = g_strdup(shared_db_file(shared));
     /* Statements are keyed by SQL literal pointer; finalized on db_close.   */
     db->stmt_cache = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
                                            stmt_cache_finalize);
-
-    if (sqlite3_open(path, &db->handle) != SQLITE_OK) {
-        g_warning("db: cannot open %s: %s", path, sqlite3_errmsg(db->handle));
-        on_db_close(db);
-        return NULL;
-    }
-
-    /* Wait out short write locks instead of failing instantly — e.g. a
-     * write from another connection landing while the GUI is mid-autosave. */
-    sqlite3_busy_timeout(db->handle, ON_DB_BUSY_TIMEOUT_MS);
-
-    if (!exec_simple(db, SCHEMA_SQL)) {
-        on_db_close(db);
-        return NULL;
-    }
-    gchar *tasks_sql = g_strdup_printf(TASKS_SCHEMA_FMT,
-                                       ON_TASK_RECUR_TIME_DEFAULT,
-                                       ON_TASK_RECUR_LEAD_DEFAULT,
-                                       ON_TASK_DUE_TIME_DEFAULT);
-    gboolean tasks_ok = exec_simple(db, tasks_sql);
-    g_free(tasks_sql);
-    if (!tasks_ok) {
-        on_db_close(db);
-        return NULL;
-    }
-
-    /* Migrations: these columns arrived after the original schema.
-     * ALTER fails harmlessly when the column already exists.               */
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE notes ADD COLUMN pinned INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE notes ADD COLUMN body_text TEXT",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE notes ADD COLUMN trashed INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE folders ADD COLUMN trashed INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE folders ADD COLUMN ai_mode INTEGER "
-                 "NOT NULL DEFAULT 0",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db->handle,
-                 "ALTER TABLE folders ADD COLUMN emoji TEXT "
-                 "NOT NULL DEFAULT ''",
-                 NULL, NULL, NULL);
-
-    /* PRAGMA user_version.  2, 3 and 4 were consumed by one-time passes
-     * that are gone, 5 by the 2026-09-18 migration of action items into
-     * task rows (the ACTION record in every '!' line's blob), which was
-     * removed once the one live database had crossed.  A file still
-     * carrying the old action_items table is from before that and is
-     * REFUSED — stamping it would silently drop every item it holds; it
-     * needs one open with Notes 5.0.0 first.  A fresh file has no such
-     * table and is stamped straight to 5.  The next one-time migration
-     * is 6 or higher.                                                       */
-    if (user_version(db) < 5) {
-        if (query_int64(db, "SELECT COUNT(*) FROM sqlite_master WHERE "
-                            "type='table' AND name='action_items'", -1) > 0) {
-            g_warning("db: %s predates Notes 5.0 (its action items are in "
-                      "the old action_items table); open it once with "
-                      "Notes 5.0.0 to migrate it", path);
-            on_db_close(db);
-            return NULL;
-        }
-        set_user_version(db, 5);
-    }
-
-    /* The views reference migrated columns (and action_items_ctx the
-     * Trash view), so they are created only after the migrations above,
-     * in this order.                                                        */
-    if (!db_ensure(db, "view", TRASH_VIEW_NAME,
-                   "CREATE VIEW " TRASH_VIEW_NAME " AS " TRASH_VIEW_BODY) ||
-        !db_ensure(db, "view", ACTION_CTX_VIEW_NAME,
-                   "CREATE VIEW " ACTION_CTX_VIEW_NAME " AS "
-                   ACTION_CTX_VIEW_BODY) ||
-        !db_ensure(db, "trigger", TASK_TRIGGER_NAME, TASK_TRIGGER_SQL)) {
-        on_db_close(db);
-        return NULL;
-    }
     return db;
 }
 
@@ -602,11 +348,7 @@ on_db_close(OnDatabase *db)
         g_hash_table_destroy(db->stmt_cache);
         db->stmt_cache = NULL;
     }
-    /* A statement left unfinalized would make sqlite3_close refuse, keeping
-     * the file and its locks open: close_v2 lets go once it is finalized,
-     * and the leak is reported.                                            */
-    if (db->handle != NULL && sqlite3_close_v2(db->handle) != SQLITE_OK)
-        g_warning("db: closing %s: %s", db->path, sqlite3_errmsg(db->handle));
+    shared_db_close(db->shared);      /* NULL-safe; closes the handle        */
     /* An async health pass still running must not report to a connection
      * that is gone: the job outlives us and frees itself.                */
     if (db->health_job != NULL)
@@ -620,162 +362,16 @@ on_db_close(OnDatabase *db)
  * health: is this database structurally sound, and what file is it?
  * ========================================================================= */
 
-/*
- * integrity_collect — sqlite3_exec callback: accumulate every non-"ok" row
- * of a PRAGMA integrity_check result into the GString passed as `data`.
- *
- * Inputs:
- *   data      — the GString to append to
- *   argc/argv — one result row
- *   col_names — unused
- *
- * Output:
- *   0 always (never abort the exec: the later rows are the findings).
- */
-static int
-integrity_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;             /* where the findings accumulate       */
-    for (int i = 0; i < argc; i++) {
-        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
-            if (out->len > 0)
-                g_string_append_c(out, '\n');
-            g_string_append(out, argv[i]);
-        }
-    }
-    return 0;
-}
-
-/*
- * fk_collect — sqlite3_exec callback for PRAGMA foreign_key_check.
- *
- * Its own collector because those columns (table, rowid, parent, fkid) are
- * a RECORD rather than a message: integrity_collect would spill each field
- * onto a line of its own and lose which table the row belongs to.
- *
- * Inputs:
- *   data      — the GString to append to
- *   argc/argv — one violation row
- *   col_names — unused
- *
- * Output:
- *   0 always.
- */
-static int
-fk_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;             /* where the violations accumulate     */
-    if (argc >= 3 && argv[0] != NULL) {
-        if (out->len > 0)
-            g_string_append_c(out, '\n');
-        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
-                               argv[0],
-                               argv[1] != NULL ? argv[1] : "?",
-                               argv[2] != NULL ? argv[2] : "?");
-    }
-    return 0;
-}
-
-/*
- * db_check_pragmas — run PRAGMA integrity_check then PRAGMA
- * foreign_key_check on `sq`, honoring BOTH exec return codes.
- *
- * The ONE spelling of "is this database structurally sound?".  Two
- * callers want that answer about different connections — on_db_verify_file
- * about a file nothing has open, the health pass (on_db_health_check_async)
- * about the live one, at launch and on Settings' Update — and the rule they must
- * all follow is the same: a PRAGMA that never RAN collects no rows, which
- * is indistinguishable from a clean result if you only look at the
- * collector.  Reporting "verified" when nothing was checked is the one
- * answer this must never give — it is what a caller is about to delete the
- * original on.
- *
- * Inputs:
- *   sq     — an open connection, must not be NULL
- *   ran    — optional out: TRUE when both PRAGMAs actually executed
- *   detail — optional out: sqlite's own words on failure (g_free), set to
- *            NULL on success
- *
- * Output:
- *   TRUE only when both RAN and both came back clean.
- */
-static gboolean
-db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
-{
-    if (detail != NULL)
-        *detail = NULL;
-
-    /* Two GStrings, because what a check REPORTED and why a check STOPPED
-     * are the two different answers this function has to keep apart.       */
-    GString  *found = g_string_new(NULL);  /* the checks' own findings      */
-    GString  *errs  = g_string_new(NULL);  /* why one gave up              */
-    gboolean  broke = FALSE;               /* an exec returned an error     */
-    gchar    *msg   = NULL;                /* sqlite's exec message         */
-
-    if (sqlite3_exec(sq, "PRAGMA integrity_check", integrity_collect, found,
-                     &msg) != SQLITE_OK) {
-        broke = TRUE;
-        g_string_append_printf(errs, "integrity_check stopped: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
-    msg = NULL;
-
-    /* Skipped once the first check has errored: over pages sqlite could not
-     * read, this reports the same damage in a second vocabulary.           */
-    GString *fk = g_string_new(NULL);      /* foreign key violations        */
-    if (!broke && sqlite3_exec(sq, "PRAGMA foreign_key_check", fk_collect,
-                               fk, &msg) != SQLITE_OK) {
-        broke = TRUE;
-        g_string_append_printf(errs, "foreign_key_check stopped: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
-    if (fk->len > 0) {
-        if (found->len > 0)
-            g_string_append_c(found, '\n');
-        g_string_append(found, "Foreign key violations:\n");
-        g_string_append(found, fk->str);
-    }
-    g_string_free(fk, TRUE);
-
-    /* The verdict, decided ONCE at the end.
-     *
-     * A CORRUPT file makes integrity_check do both things at once: it
-     * reports the damage it found and THEN returns an error, having given
-     * up on the page that caused it.  So the error code alone cannot mean
-     * "did not run" — what means that is coming back having learned
-     * NOTHING, which is the locked or unreadable file this distinction
-     * exists for.  Deciding per-exec reported real corruption as "the check
-     * did not complete", which sends someone looking for a lock that was
-     * never the problem.                                                   */
-    gboolean any  = found->len > 0;  /* we learned something                */
-    gboolean done = !broke || any;   /* the checks got somewhere            */
-    gboolean ok   = !broke && !any;  /* and found nothing wrong             */
-
-    if (!ok && detail != NULL) {
-        if (errs->len > 0) {
-            if (found->len > 0)
-                g_string_append_c(found, '\n');
-            g_string_append(found, errs->str);
-        }
-        *detail = g_strdup(found->str);
-    }
-    if (ran != NULL)
-        *ran = done;
-    g_string_free(found, TRUE);
-    g_string_free(errs, TRUE);
-    return ok;
-}
-
-/* db_check_file() — the two PRAGMAs over a fresh READ-ONLY connection to
- * `path`: the one implementation behind on_db_verify_file (a copy) and the
- * async pass over the live file (a worker thread's own connection).
- *   ran, detail — as db_check_pragmas; a file that cannot be opened is
- *                 "did not run", with the open error as the detail.
- * Returns TRUE only when both checks RAN and both came back clean.       */
+/* db_check_file() — shared_db_check (integrity_check, foreign_key_check,
+ * the stamps, WAL, the cross-table invariants) over a fresh READ-ONLY
+ * connection to `path`: the one implementation behind on_db_verify_file
+ * (a copy) and the async pass over the live file (a worker thread's own
+ * connection).
+ *   ran    — optional out: TRUE when the checks ran (a file that cannot be
+ *            opened, or a check that could not run, is "did not run");
+ *   detail — optional out: the findings, one per line, or why it did not
+ *            run (g_free); NULL when clean.
+ * Returns TRUE only when the checks RAN and found nothing.               */
 static gboolean
 db_check_file(const gchar *path, gboolean *ran, gchar **detail)
 {
@@ -783,25 +379,38 @@ db_check_file(const gchar *path, gboolean *ran, gchar **detail)
         *ran = FALSE;
     if (detail != NULL)
         *detail = NULL;
-    gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
-    sqlite3 *sq  = NULL;             /* the read-only connection            */
-    if (sqlite3_open_v2(uri, &sq, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
-                        NULL) != SQLITE_OK) {
+    char      *err = NULL;           /* the module's message                */
+    shared_db *sq  = shared_db_open_readonly(path, &err);
+    if (sq == NULL) {
         if (detail != NULL)
             *detail = g_strdup_printf("cannot open %s: %s", path,
-                sq != NULL ? sqlite3_errmsg(sq) : "?");
-        sqlite3_close(sq);
-        g_free(uri);
+                                      err != NULL ? err : "?");
+        free(err);
         return FALSE;
     }
-    /* A save on the app's connection may hold the write lock as the check
-     * starts: wait for it like every connection does, rather than report
-     * "database is locked" as a failed check.                               */
-    sqlite3_busy_timeout(sq, ON_DB_BUSY_TIMEOUT_MS);
-    g_free(uri);
-
-    gboolean ok = db_check_pragmas(sq, ran, detail);
-    sqlite3_close(sq);
+    shared_db_findings found;        /* what the checks reported            */
+    int rc = shared_db_check(sq, 1, &found, &err);
+    shared_db_close(sq);
+    if (rc != 0) {
+        if (detail != NULL)
+            *detail = g_strdup(err != NULL ? err : "the check could not run");
+        free(err);
+        shared_db_findings_free(&found);
+        return FALSE;
+    }
+    if (ran != NULL)
+        *ran = TRUE;
+    gboolean ok = found.count == 0;
+    if (!ok && detail != NULL) {
+        GString *text = g_string_new(NULL);
+        for (size_t i = 0; i < found.count; i++) {
+            if (text->len > 0)
+                g_string_append_c(text, '\n');
+            g_string_append(text, found.items[i].message);
+        }
+        *detail = g_string_free(text, FALSE);
+    }
+    shared_db_findings_free(&found);
     return ok;
 }
 
@@ -1061,8 +670,8 @@ typedef void (*BulkBind)(sqlite3_stmt *stmt, gsize i, gint64 id,
                          gpointer data);
 
 /* ---------------------------------------------------------------------------
- * bulk_ids() — run `sql` once per id inside one write transaction (BEGIN
- * IMMEDIATE: see WRITE_TXN).
+ * bulk_ids() — run `sql` once per id inside one write transaction
+ * (txn_begin: the caller's, or its own).
  *   sql       — the statement to step per id.
  *   ids / n   — the rows to act on.
  *   bind      — binds one row's parameters.
@@ -1079,12 +688,13 @@ bulk_ids(OnDatabase *db, const char *sql,
 {
     if (n == 0)
         return TRUE;
-    if (!exec_simple(db, WRITE_TXN))
+    gboolean own;                        /* this call's transaction?       */
+    if (!txn_begin(db, &own))
         return FALSE;
 
     sqlite3_stmt *stmt = prepare(db, sql);
     if (stmt == NULL)
-        return txn_end(db, FALSE);
+        return txn_end(db, own, FALSE);
 
     gboolean ok = TRUE;                  /* set FALSE on first failure      */
     for (gsize i = 0; i < n && ok; i++) {
@@ -1099,7 +709,7 @@ bulk_ids(OnDatabase *db, const char *sql,
 
     if (ok && after_sql != NULL)
         ok = exec_simple(db, after_sql);
-    return txn_end(db, ok);
+    return txn_end(db, own, ok);
 }
 
 /* bind_id_only() — BulkBind for statements whose only parameter is the id.  */
@@ -1573,7 +1183,7 @@ on_db_note_list_all(OnDatabase *db, gboolean include_trash)
         ? "SELECT " NOTE_META_COLS " "
           "FROM notes ORDER BY folder_id, sort_order"
         : "SELECT " NOTE_META_COLS " "
-          "FROM notes WHERE " NOTE_VISIBLE_SQL " "
+          "FROM notes WHERE " SHARED_DB_NOTE_VISIBLE_SQL " "
           "ORDER BY folder_id, sort_order");
 }
 
@@ -1582,7 +1192,7 @@ on_db_note_list_recent(OnDatabase *db)
 {
     return meta_query_cached(db,
         "SELECT " NOTE_META_COLS " "
-        "FROM notes WHERE " NOTE_VISIBLE_SQL " "
+        "FROM notes WHERE " SHARED_DB_NOTE_VISIBLE_SQL " "
         "ORDER BY updated_at DESC");
 }
 
@@ -1603,7 +1213,7 @@ on_db_note_list_pinned(OnDatabase *db)
 {
     return meta_query_cached(db,
         "SELECT " NOTE_META_COLS " "
-        "FROM notes WHERE pinned=1 AND " NOTE_VISIBLE_SQL " "
+        "FROM notes WHERE pinned=1 AND " SHARED_DB_NOTE_VISIBLE_SQL " "
         "ORDER BY updated_at DESC");
 }
 
@@ -1611,7 +1221,7 @@ gint
 on_db_note_count_pinned(OnDatabase *db)
 {
     return (gint)query_int64(db,
-        "SELECT COUNT(*) FROM notes WHERE pinned=1 AND " NOTE_VISIBLE_SQL,
+        "SELECT COUNT(*) FROM notes WHERE pinned=1 AND " SHARED_DB_NOTE_VISIBLE_SQL,
         -1);
 }
 
@@ -1716,7 +1326,8 @@ on_db_tag_list_free(GList *tags)
 gboolean
 on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 {
-    if (!exec_simple(db, WRITE_TXN))
+    gboolean own;                        /* this call's transaction?       */
+    if (!txn_begin(db, &own))
         return FALSE;
 
     /* Drop the note's old tag links, then re-add the current set.          */
@@ -1753,7 +1364,7 @@ on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
     if (ok)
         ok = exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
 
-    return txn_end(db, ok);
+    return txn_end(db, own, ok);
 }
 
 GList *
@@ -1815,13 +1426,11 @@ on_db_action_uid_alloc(OnDatabase *db)
     /* Outside a transaction the read-then-write of the high-water mark is
      * wrapped in one (IMMEDIATE: the write lock from the start), so two
      * allocations cannot read the same `next`.                            */
-    gboolean own_txn = sqlite3_get_autocommit(db->handle) != 0;
-    if (own_txn && !exec_simple(db, WRITE_TXN))
+    gboolean own;                        /* this call's transaction?       */
+    if (!txn_begin(db, &own))
         return 0;
     gint64 uid = action_uid_alloc(db);
-    if (own_txn)
-        txn_end(db, uid != 0);
-    return uid;
+    return txn_end(db, own, uid != 0) ? uid : 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1846,7 +1455,7 @@ task_list_managed(OnDatabase *db)
         "SELECT id FROM lists WHERE name=? AND deleted=0 LIMIT 1");
     if (stmt == NULL)
         return 0;
-    sqlite3_bind_text(stmt, 1, ON_TASK_LIST_NAME, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, SHARED_DB_ACTION_LIST_NAME, -1, SQLITE_STATIC);
     gint64 id = sqlite3_step(stmt) == SQLITE_ROW
                 ? sqlite3_column_int64(stmt, 0) : 0;
     sqlite3_finalize(stmt);
@@ -1858,8 +1467,8 @@ task_list_managed(OnDatabase *db)
         "  (SELECT COALESCE(MAX(position), 0) + 1 FROM lists), ?)");
     if (stmt == NULL)
         return 0;
-    sqlite3_bind_text(stmt, 1, ON_TASK_LIST_NAME, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, ON_TASK_LIST_EMOJI, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, SHARED_DB_ACTION_LIST_NAME, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, SHARED_DB_ACTION_LIST_EMOJI, -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 3, task_now());
     if (!stmt_done(db, stmt))
         return 0;
@@ -1985,7 +1594,8 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
 {
     if (changed != NULL)
         *changed = FALSE;
-    if (!exec_simple(db, WRITE_TXN))
+    gboolean own;                        /* this call's transaction?       */
+    if (!txn_begin(db, &own))
         return FALSE;
     gboolean ok = TRUE;              /* the outcome                         */
     GHashTable *kept = g_hash_table_new(g_int64_hash, g_int64_equal);
@@ -2058,7 +1668,7 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
     }
     g_hash_table_destroy(kept);
 
-    return txn_end(db, ok);
+    return txn_end(db, own, ok);
 }
 
 gboolean
@@ -2166,48 +1776,6 @@ void
 on_db_action_list_free(GList *items)
 {
     g_list_free_full(items, (GDestroyNotify)on_db_action_item_free);
-}
-
-/* --- schema version (PRAGMA user_version) — gates one-time backfills ---- */
-
-/*
- * user_version — the schema version (PRAGMA user_version), which gates
- * one-time backfills.
- *
- * Inputs:
- *   db — open database
- *
- * Output: the version; 0 when unset.
- */
-static gint
-user_version(OnDatabase *db)
-{
-    sqlite3_stmt *stmt = prepare(db, "PRAGMA user_version");
-    if (stmt == NULL)
-        return 0;
-    gint v = 0;                          /* stored version, 0 = never set  */
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        v = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    return v;
-}
-
-/*
- * set_user_version — record the schema version (PRAGMA user_version).
- *
- * Inputs:
- *   db      — open database
- *   version — the version
- *
- * Output: TRUE when it was written.
- */
-static gboolean
-set_user_version(OnDatabase *db, gint version)
-{
-    gchar *sql = g_strdup_printf("PRAGMA user_version=%d", version);
-    gboolean ok = exec_simple(db, sql);
-    g_free(sql);
-    return ok;
 }
 
 /* =========================================================================
@@ -2338,7 +1906,8 @@ on_db_folder_note_ids(OnDatabase *db, gint64 folder_id)
 gboolean
 on_db_trash_empty(OnDatabase *db)
 {
-    if (!exec_simple(db, WRITE_TXN))
+    gboolean own;                        /* this call's transaction?       */
+    if (!txn_begin(db, &own))
         return FALSE;
 
     /* The explicit notes delete covers directly-trashed notes; deleting
@@ -2350,7 +1919,7 @@ on_db_trash_empty(OnDatabase *db)
             "folder_id IN (SELECT id FROM trash_folder_ids)") &&
         exec_simple(db, "DELETE FROM folders WHERE trashed=1") &&
         exec_simple(db, PRUNE_ORPHAN_TAGS_SQL);
-    return txn_end(db, ok);
+    return txn_end(db, own, ok);
 }
 
 /* =========================================================================
@@ -2364,7 +1933,7 @@ on_db_note_is_trashed(OnDatabase *db, gint64 id)
      * when it exists and is visible, so "no row" means trashed — or gone,
      * which the callers have already ruled out.                            */
     return query_int64(db,
-        "SELECT COUNT(*) FROM notes WHERE id=? AND " NOTE_VISIBLE_SQL,
+        "SELECT COUNT(*) FROM notes WHERE id=? AND " SHARED_DB_NOTE_VISIBLE_SQL,
         id) == 0;
 }
 
@@ -2372,7 +1941,7 @@ gint
 on_db_note_count_visible(OnDatabase *db)
 {
     return (gint)query_int64(db,
-        "SELECT COUNT(*) FROM notes WHERE " NOTE_VISIBLE_SQL, -1);
+        "SELECT COUNT(*) FROM notes WHERE " SHARED_DB_NOTE_VISIBLE_SQL, -1);
 }
 
 void

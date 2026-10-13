@@ -1,13 +1,16 @@
 /* ===========================================================================
  * db.h — SQLite persistence layer for Notes
  *
- * All notes, folders and tags live in a single SQLite database file, by
- * default notes.db in the app's data directory (config.h).
+ * All notes, folders and tags live in the ONE SQLite file Notes shares with
+ * the Tasks app (../shared_data, shared_db.h): that module resolves where
+ * the file is (shared_db_path), opens every connection (WAL, busy timeout,
+ * foreign keys, local disk only), and holds the schema — every table,
+ * index, view and trigger below is created there, not here.
  *
  * Note *content* is stored as an opaque binary BLOB in the custom "BNBF"
  * format produced by serialize.c; this module never interprets it.
  *
- * Schema
+ * Schema (created by shared_db.c; what this module reads and writes)
  * ------
  *   folders   (id, parent_id, name, sort_order, trashed, ai_mode, emoji) -- nested via parent_id
  *   notes     (id, folder_id, title, content BLOB,
@@ -15,20 +18,21 @@
  *              pinned, body_text, trashed)
  *   tags      (id, name UNIQUE)
  *   note_tags    (note_id, tag_id)                       -- many-to-many
- *   list_groups, lists, tasks                            -- the Tasks app's tables, VERBATIM
- *   note_task (uid, task_id, note_id, ord)               -- a '!' line's task, keyed by the
- *                                                           uid the note blob carries
+ *   list_groups, lists, tasks                            -- the Tasks app's tables
+ *   note_task (uid, task_id, note_id, ord,               -- a '!' line's task, keyed by the
+ *              seen_title, seen_done, seen_due,             uid the note blob carries, and
+ *              seen_deleted)                                what the line last agreed with
  *   action_uid_seq (id, next)                            -- uid high-water mark
  *
  * An ACTION ITEM is a TASK ROW: a '!' line in a note is a rendering of its
  * task's title, done state (status 2) and due date, linked through
  * note_task by the uid the line carries in the blob (BNBF ACTION record).
- * The task is the source of truth; the line is rewritten from it.  The
- * three tables are the sister Tasks app's own DDL so the two databases can
- * merge without a notion of "action item vs task"; Notes writes only
- * title/status/due/completed_at/updated_at/deleted and never touches the
- * Tasks-only columns.  The action_items_ctx view (db.c) is what every
- * listing reads.
+ * Both apps edit those three fields; the seen_* columns are the baseline
+ * that tells whose side changed (serialize.h: the push on save, the pull
+ * of outside changes).  Notes writes only title/status/due/completed_at/
+ * updated_at/deleted of a task — and list_id, parent_id, position when it
+ * creates one — never the Tasks-only columns.  The action_items_ctx view
+ * is what every listing reads.
  *
  * A NULL parent_id means "top-level folder"; a NULL folder_id means the
  * note lives at the top level ("Notes" root).
@@ -48,13 +52,11 @@
 #include <glib.h>
 #include <sqlite3.h>
 
+#include "shared_db.h"
+
 /* ---------------------------------------------------------------------------
  * DB constants
  * ------------------------------------------------------------------------- */
-/* Milliseconds to wait for a write lock before failing — long enough to ride
- * out another connection's write landing while the GUI is mid-autosave.    */
-#define ON_DB_BUSY_TIMEOUT_MS          5000
-
 /* Default title used for a newly created note and as the fallback when the
  * first-line extraction returns empty text.                                  */
 #define ON_DEFAULT_NOTE_TITLE          "New Note"
@@ -86,13 +88,18 @@ typedef struct {
 } OnDbHealth;
 
 /* ---------------------------------------------------------------------------
- * OnDatabase — an open handle to the notes database.
+ * OnDatabase — one open connection to the shared database.
  *
  * Fields:
- *   handle — the underlying sqlite3 connection, owned by this struct.
+ *   shared — the shared module's connection (owned; shared_db.h), which
+ *            owns the SQLite handle.  One per thread: a worker opens its
+ *            own with on_db_open(db->path, …).
+ *   handle — shared_db_handle(shared), for this module's queries (borrowed
+ *            from `shared`).
  *   path   — absolute path of the database file (owned string).
  * ------------------------------------------------------------------------- */
 typedef struct {
+    shared_db  *shared;
     sqlite3    *handle;
     gchar      *path;
     GHashTable *stmt_cache;   /* sql literal → sqlite3_stmt*, reused via
@@ -189,20 +196,18 @@ typedef struct {
 
 /* --------------------------- lifecycle ---------------------------------- */
 
-/* The database filename inside its directory (default or configured).      */
-#define ON_DB_FILENAME "notes.db"
-
-/* The default database path: ON_DB_FILENAME inside the data directory
- * (config.h — ~/Library/Application Support/Notes unless
- * NOTES_DATA_DIR says otherwise), creating the directory if needed.
- * Returns a new string; g_free() it.                                       */
-gchar *on_db_default_path(void);
-
-/* Open (creating if necessary) the notes database.
- *   path_override — explicit db path, or NULL to use the default location
- *                   (on_db_default_path).
- * Returns a new OnDatabase*, or NULL on failure (error is logged).          */
-OnDatabase *on_db_open(const gchar *path_override);
+/* ---------------------------------------------------------------------------
+ * on_db_open() — open a read-write connection to the shared database
+ * through shared_db_open: a missing or empty file is created with the
+ * shared schema; a file that is not a shared database (an old notes.db or
+ * tasks.db, anything unstamped) is REFUSED untouched, as is one on a
+ * network or cloud-synced folder.
+ *   path — the database file, or NULL for shared_db_path() ($CAMBIO_SHARED_DB,
+ *          else the pointer file, else the per-user default).
+ *   err  — optional; on failure receives the reason in words fit for the
+ *          user (g_free it).
+ * Returns a new OnDatabase*, or NULL on failure (also logged).              */
+OnDatabase *on_db_open(const gchar *path, gchar **err);
 
 /* Write a consistent snapshot of the (possibly in-use) database to
  * `dest_path` using SQLite's online backup API, a few megabytes at a time
@@ -471,19 +476,11 @@ GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
 
 /* --------------------------- action items -------------------------------- */
 
-/* The Tasks app's constants, spelled as it spells them (tasks/src/db.h),
- * so both schemas carry the same defaults and status encoding.            */
-#define ON_TASK_RECUR_TIME_DEFAULT (8 * 60)       /* minutes past midnight */
-#define ON_TASK_RECUR_LEAD_DEFAULT (7 * 24 * 60)  /* minutes                */
-#define ON_TASK_DUE_TIME_DEFAULT   (8 * 60)       /* minutes past midnight */
-#define ON_TASK_STATUS_DONE        2              /* == struck in the note;
-                                                     0 new, 1 in progress */
-
-/* The one managed list every note-born task is filed in — the name and
- * emoji the Tasks app's Notes plugin gives ITS managed list, so the merge
- * finds one list, not two.                                                */
-#define ON_TASK_LIST_NAME  "Action Items"
-#define ON_TASK_LIST_EMOJI "\xe2\x9d\x97"          /* U+2757                */
+/* tasks.status of a done task (== struck in the note); 0 is New, 1 In
+ * Progress — the Tasks app's encoding, which shared_db.h does not name.
+ * New items go into the managed list SHARED_DB_ACTION_LIST_NAME /
+ * SHARED_DB_ACTION_LIST_EMOJI (shared_db.h).                              */
+#define ON_TASK_STATUS_DONE        2
 
 /* Allocate a fresh uid from the action_uid_seq high-water mark: only ever
  * incremented, so a uid retired with a deleted item is never handed out

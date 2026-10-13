@@ -923,16 +923,31 @@ test_trash(NotesLibrary *lib)
           editor_window_titled(@"Loose note") == nil,
           "and then deletes the Trash's notes, closing their editors");
 
-    /* Only a file named notes.db can become the default database (the
-     * default is stored as its folder): any other is offered for this
-     * session only.                                                        */
+    /* While $CAMBIO_SHARED_DB names the file (every test run) the default
+     * cannot change: a database is offered for this session only.  A file
+     * that is not a shared database (an old notes.db) is refused untouched,
+     * in the shared module's words, and the app stays on its database.    */
     on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"]);
     pump(0.2);
     check(!answer_panel(@"Set as Default") && answer_panel(@"Cancel"),
-          "a database not named notes.db is not offered as the default");
-    on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"other/notes.db"]);
-    pump(0.2);
-    check(answer_panel(@"Cancel"), "and one named notes.db is offered (cancelled here)");
+          "with $CAMBIO_SHARED_DB set, Set as Default is not offered");
+    {
+        NSString *old = [@(check_data_dir()) stringByAppendingPathComponent:@"notes.db"];
+        sqlite3  *sq  = NULL;
+        sqlite3_open(old.fileSystemRepresentation, &sq);
+        sqlite3_exec(sq, "CREATE TABLE notes (id INTEGER PRIMARY KEY)", NULL, NULL, NULL);
+        sqlite3_close(sq);
+        NSData   *before = [NSData dataWithContentsOfFile:old];
+        gchar    *was    = g_strdup(app.db->path);
+        on_library_open_db(lib, old);
+        pump(0.2);
+        check(answer_panel(@"Session Only"), "an old notes.db is offered for this session");
+        pump(0.3);
+        check(answer_panel(@"OK") && strcmp(app.db->path, was) == 0 &&
+              [[NSData dataWithContentsOfFile:old] isEqualToData:before],
+              "and refused untouched, with the app still on its database");
+        g_free(was);
+    }
 
     /* The question is not modal: what was restored while it was up is not
      * deleted when it is answered.                                         */
@@ -2630,7 +2645,7 @@ main(void)
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
-        check(on_app_open_db(&app), "the test database opens");
+        check(on_app_open_db(&app, NULL), "the test database opens");
         on_app_prefs_load(&app);
         new_note("First note\n! Something to do due 2026-12-01");
 

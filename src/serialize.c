@@ -158,6 +158,18 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
 }
 
 /*
+ * on_note_document_save_tags — see serialize.h.
+ */
+gboolean
+on_note_document_save_tags(OnDatabase *db, gint64 id, const OnDocument *doc)
+{
+    GList   *tags = on_document_collect_tags(doc);
+    gboolean ok   = on_db_note_set_tags(db, id, tags);
+    g_list_free_full(tags, g_free);
+    return ok;
+}
+
+/*
  * on_note_new_from_text — see serialize.h.
  */
 gint64

@@ -210,11 +210,11 @@ build/dev_seed: build/dev_seed.o $(CORE_OBJS)
 -include build/dev_seed.d
 
 # seed: a fresh, realistic database — nested folders, tags, pinned and
-# trashed notes, every block kind, action items in several contexts. It
-# refuses to run while an app is serving dev/data (the tool would hand its
-# commands to that app).
-seed: $(BUNDLE) build/dev_seed
-	@tools/seed-dev.sh "$(DEV_DATA)" "$(CLI_BIN)" build/dev_seed icons/composition.png
+# trashed notes, every block kind, action items in several contexts —
+# written through the core API by build/dev_seed. It refuses to run while
+# an app holds dev/data.
+seed: build/dev_seed
+	@tools/seed-dev.sh "$(DEV_DATA)" build/dev_seed icons/composition.png tests/fixtures/folder.png
 
 $(DEV_DATA)/notes.db:
 	@$(MAKE) seed

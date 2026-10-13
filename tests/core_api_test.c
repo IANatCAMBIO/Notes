@@ -245,29 +245,28 @@ stored_line(OnDatabase *db, gint64 note, guint block, gboolean *done)
 }
 
 /*
- * append_tag — append a #tag token to a document's last line, one space
- * after the text, carrying ON_FMT_TAG (what the editor's tag capture
- * writes).
+ * add_tag_line — append a line of #tag tokens, space-separated, each
+ * carrying ON_FMT_TAG (what the editor's tag capture writes).
  *
  * Inputs:
- *   doc  — the document (its last block is a text block)
- *   name — the tag, without '#'
+ *   doc   — the document
+ *   names — NULL-terminated tag names, without '#'
  */
 static void
-append_tag(OnDocument *doc, const char *name)
+add_tag_line(OnDocument *doc, const char *const *names)
 {
-    guint  last = on_document_n_blocks(doc) - 1;
-    OnPos  pos  = { last, -1, on_document_block(doc, last)->text->text->len };
-    on_document_insert_text(doc, pos, " ", 1, 0);
-    pos.offset++;
-    gchar *token = g_strdup_printf("#%s", name);
-    on_document_insert_text(doc, pos, token, strlen(token), ON_FMT_TAG);
-    g_free(token);
+    OnBlock *b = on_block_new_text(ON_BLOCK_PARA);
+    for (const char *const *n = names; *n != NULL; n++) {
+        if (n != names) on_text_append(b->text, " ", 1, 0);
+        gchar *token = g_strdup_printf("#%s", *n);
+        on_text_append(b->text, token, strlen(token), ON_FMT_TAG);
+        g_free(token);
+    }
+    on_document_insert_block(doc, on_document_n_blocks(doc), b);
 }
 
 /*
- * save_with_tags — THE save plus the tag links the editor writes after it
- * (on_db_note_set_tags from the document's #tag runs).
+ * save_with_tags — THE save plus the tag links the editor writes after it.
  *
  * Inputs:
  *   db   — the database
@@ -279,11 +278,8 @@ append_tag(OnDocument *doc, const char *name)
 static gboolean
 save_with_tags(OnDatabase *db, gint64 note, OnDocument *doc)
 {
-    GList   *tags = on_document_collect_tags(doc);
-    gboolean ok   = on_note_document_save(db, note, doc, TRUE, NULL) &&
-                    on_db_note_set_tags(db, note, tags);
-    g_list_free_full(tags, g_free);
-    return ok;
+    return on_note_document_save(db, note, doc, TRUE, NULL) &&
+           on_note_document_save_tags(db, note, doc);
 }
 
 /*
@@ -364,7 +360,7 @@ test_notes(OnDatabase *db)
     /* Replacing the content (`note set`): the old tags and action items
      * go with the old text.                                               */
     OnDocument *doc = on_document_from_text("Old title\n! Old item");
-    append_tag(doc, "oldtag");
+    add_tag_line(doc, (const char *[]){ "oldtag", NULL });
     check(save_with_tags(db, note, doc), "set: the old content with a tag and an item is saved");
     on_document_free(doc);
     check(tag_count(db, "oldtag") == 1 && nth_uid(db, note, 0) != 0,
@@ -742,8 +738,7 @@ test_tags(OnDatabase *db)
     gint64 one = on_note_new_from_text(db, 0, "Tagged one\nbody");
     gint64 two = on_note_new_from_text(db, 0, "Tagged two\nbody");
     OnDocument *doc = on_note_document_load(db, one);
-    append_tag(doc, "salt");
-    append_tag(doc, "urgent");
+    add_tag_line(doc, (const char *[]){ "salt", "urgent", NULL });
     GList *names = on_document_collect_tags(doc);
     check(g_list_length(names) == 2 && strcmp(names->data, "salt") == 0 &&
           strcmp(names->next->data, "urgent") == 0, "tags: collected in document order, no '#'");
@@ -751,11 +746,11 @@ test_tags(OnDatabase *db)
     check(save_with_tags(db, one, doc), "tags: saved with the note");
     on_document_free(doc);
     gchar *body = on_note_text_cached(db, one);
-    check(strcmp(body, "Tagged one\nbody #salt #urgent") == 0, "tags: the tokens are in the text");
+    check(strcmp(body, "Tagged one\nbody\n#salt #urgent") == 0, "tags: the tokens are in the text");
     g_free(body);
 
     doc = on_note_document_load(db, two);
-    append_tag(doc, "salt");
+    add_tag_line(doc, (const char *[]){ "salt", NULL });
     save_with_tags(db, two, doc);
     on_document_free(doc);
     check(tag_count(db, "salt") == 2 && tag_count(db, "urgent") == 1, "tags: counted per tag");
@@ -773,9 +768,9 @@ test_tags(OnDatabase *db)
 
     /* Untag: the token leaves the text, the link and an orphan tag go.     */
     doc = on_note_document_load(db, one);
-    OnText *t   = on_document_block(doc, 1)->text;
+    OnText *t   = on_document_block(doc, 2)->text;
     const char *at = strstr(t->text->str, " #urgent");
-    on_document_delete_text(doc, (OnPos){ 1, -1, (gsize)(at - t->text->str) }, strlen(" #urgent"));
+    on_document_delete_text(doc, (OnPos){ 2, -1, (gsize)(at - t->text->str) }, strlen(" #urgent"));
     check(save_with_tags(db, one, doc), "untag: saved");
     on_document_free(doc);
     check(tag_count(db, "urgent") == -1 && tag_count(db, "salt") == 2,
@@ -931,7 +926,7 @@ test_stats(OnDatabase *db)
     gint64 folder = on_db_folder_create(db, 0, "Stats", ON_AI_MODE_NORMAL, NULL);
     gint64 note   = on_note_new_from_text(db, folder, "Stats note\n! open one\n! done one");
     OnDocument *doc = on_note_document_load(db, note);
-    append_tag(doc, "statstag");
+    add_tag_line(doc, (const char *[]){ "statstag", NULL });
     save_with_tags(db, note, doc);
     on_document_free(doc);
     on_db_note_set_pinned(db, note, TRUE);

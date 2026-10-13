@@ -77,6 +77,20 @@ gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                                gboolean sync_actions, gboolean *changed);
 
 /* ---------------------------------------------------------------------------
+ * on_note_document_save_tags() — rewrite note `id`'s tag links from the
+ * document's #tag runs (on_document_collect_tags → on_db_note_set_tags,
+ * which creates missing tags and prunes orphans).  The second half of a
+ * save whose document's tags changed: the editor calls it when its tags
+ * were touched, everything else after every save.
+ *   db  — open database.
+ *   id  — the note.
+ *   doc — its document.
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
+                                    const OnDocument *doc);
+
+/* ---------------------------------------------------------------------------
  * on_note_new_from_text() — a new note holding plain text: one PARA block
  * per line (on_document_from_text), the first line its title, every '!'
  * line an action item — created and written through THE save.  A note

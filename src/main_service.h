@@ -16,9 +16,9 @@
  * timer: nothing it calls does.
  *
  * Threading rule that goes with it: one SQLite connection per thread.  A
- * worker opens its own connection (on_db_open) and closes it before it
- * posts its result back; the OnDatabase in OnApp belongs to the main
- * thread alone.
+ * worker opens its own connection (on_db_open_existing: never creates the
+ * file) and closes it before it posts its result back; the OnDatabase in
+ * OnApp belongs to the main thread alone.
  * =========================================================================== */
 
 #ifndef ON_MAIN_SERVICE_H

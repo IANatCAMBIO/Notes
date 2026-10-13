@@ -345,9 +345,13 @@ proposal for the owner; changing one is editing one row of the table.
 ## 7. Threading
 
 - **One SQLite connection per thread.**  `app->db` belongs to the main
-  thread.  A worker opens its own (`on_db_open(app->db->path, NULL)`,
-  which goes through `shared_db_open`), closes it,
-  and only then posts its result.  Capture the path and everything else the
+  thread.  A worker opens its own (`on_db_open_existing(app->db->path,
+  NULL)`, which goes through `shared_db_open_existing`), closes it,
+  and only then posts its result.  Only the main connection at launch or
+  "Create a New Database" may create the file (`on_db_open`); every other
+  connection — workers, the first-run "Open a Database File…" trial, File >
+  Open Database File… — refuses a missing file, so a database the user
+  moved aside (a restore, a rollback) is never replaced by an empty one.  Capture the path and everything else the
   worker needs as locals on the main thread before starting it.
 - **Workers**: `on_worker_run(fn, data)` (concurrent, utility QoS, one
   autorelease pool per job).  From Objective-C you may equally use

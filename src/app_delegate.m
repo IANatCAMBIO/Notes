@@ -269,7 +269,7 @@ first_run_picked:(NSString *)path
         return;
     }
     gchar      *why   = NULL;
-    OnDatabase *trial = on_db_open(path.fileSystemRepresentation, &why);
+    OnDatabase *trial = on_db_open_existing(path.fileSystemRepresentation, &why);
     char       *set_err = NULL;
     if (trial != NULL) {
         on_db_close(trial);

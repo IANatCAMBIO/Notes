@@ -283,15 +283,24 @@ query_int64(OnDatabase *db, const char *sql, gint64 bind_id)
  * ========================================================================= */
 
 /*
- * on_db_open — see db.h.
+ * open_db — the body of on_db_open and on_db_open_existing.
+ *
+ * Inputs:
+ *   path   — the database file, or NULL for shared_db_path().
+ *   create — TRUE: a missing file is created (shared_db_open); FALSE: it is
+ *            refused (shared_db_open_existing).
+ *   err    — optional; on failure receives the reason (g_free it).
+ *
+ * Output: a new OnDatabase*, or NULL on failure (also logged).
  */
-OnDatabase *
-on_db_open(const gchar *path, gchar **err)
+static OnDatabase *
+open_db(const gchar *path, gboolean create, gchar **err)
 {
     char *module_err = NULL;         /* the shared module's message         */
     char *resolved   = path != NULL ? strdup(path) : shared_db_path(&module_err);
-    shared_db *shared = resolved != NULL ? shared_db_open(resolved, &module_err)
-                                         : NULL;
+    shared_db *shared = resolved == NULL ? NULL
+                      : create ? shared_db_open(resolved, &module_err)
+                               : shared_db_open_existing(resolved, &module_err);
     if (shared == NULL) {
         g_warning("db: cannot open %s: %s", resolved != NULL ? resolved : "the database",
                   module_err != NULL ? module_err : "?");
@@ -312,6 +321,24 @@ on_db_open(const gchar *path, gchar **err)
                                            stmt_cache_finalize);
     db->txn_hooks  = g_array_new(FALSE, FALSE, sizeof(TxnHook));
     return db;
+}
+
+/*
+ * on_db_open — see db.h.
+ */
+OnDatabase *
+on_db_open(const gchar *path, gchar **err)
+{
+    return open_db(path, TRUE, err);
+}
+
+/*
+ * on_db_open_existing — see db.h.
+ */
+OnDatabase *
+on_db_open_existing(const gchar *path, gchar **err)
+{
+    return open_db(path, FALSE, err);
 }
 
 /*

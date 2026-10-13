@@ -935,8 +935,10 @@ test_trash(NotesLibrary *lib)
      * that is not a shared database (an old notes.db) is refused untouched,
      * in the shared module's words, and the app stays on its database.    */
     {
-        gchar *was = g_strdup(app.db->path);
-        on_library_open_db(lib, [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"]);
+        gchar    *was  = g_strdup(app.db->path);
+        NSString *work = [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"];
+        on_db_close(on_db_open(work.fileSystemRepresentation, NULL));   /* as Create New makes it */
+        on_library_open_db(lib, work);
         pump(0.2);
         check(answer_panel(@"Set as Default"), "Open Database offers Set as Default");
         pump(0.3);

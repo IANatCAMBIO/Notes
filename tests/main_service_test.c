@@ -313,6 +313,20 @@ test_core_jobs(const char *data_dir)
     shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
     check(last_at > 0, "the module recorded the time of the last backup");
 
+    /* The pass's own connection never creates the database: with the file
+     * moved aside (a restore, a rollback) the pass fails, saying so, and
+     * nothing appears at the path.                                         */
+    check(check_move_aside(app.db->shared, true), "(the database is moved aside)");
+    on_backup_start(&app);
+    for (int i = 0; i < 500 && app.backup_running; i++) {
+        check_pump(NULL, 0.02);
+    }
+    check(!app.backup_running && strstr(last_status, "does not exist") != NULL,
+          "a backup of a database moved aside fails, saying the file does not exist");
+    check(!g_file_test(app.db->path, G_FILE_TEST_EXISTS),
+          "and creates no database in its place");
+    check(check_move_aside(app.db->shared, false), "(the database is put back)");
+
     /* The periodic poll arms through the same service.                     */
     on_backup_auto_start(&app);
     check(app.backup_timer != 0, "the backup poll timer is armed");

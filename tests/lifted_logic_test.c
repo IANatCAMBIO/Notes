@@ -353,6 +353,18 @@ test_search_job(OnApp *app)
     on_search_job_cancel(job);
     check_pump(NULL, 0.5);
     check(!search_done, "a cancelled search never reports");
+
+    /* The worker's own connection never creates the database: with the
+     * file moved aside the search fails and nothing appears at the path. */
+    search_done = false;
+    check(check_move_aside(app->db->shared, true), "(the database is moved aside)");
+    q = on_query_new("potatoes", FALSE, FALSE, NULL);
+    on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0, search_landed, NULL);
+    check(check_pump(&search_done, 10.0) && search_hits == -1,
+          "a search on a database moved aside fails");
+    check(!g_file_test(app->db->path, G_FILE_TEST_EXISTS),
+          "and creates no database in its place");
+    check(check_move_aside(app->db->shared, false), "(the database is put back)");
 }
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -491,8 +503,14 @@ test_lifecycle(OnApp *app, const char *data_dir)
           app->db != NULL && strcmp(app->db->path, was) == 0,
           "Set as Default under $CAMBIO_SHARED_DB is refused with a reason; the old file stays open");
     g_free(why);
+    check(on_app_switch_db(app, other, FALSE, &why) == ON_SWITCH_FAILED && why != NULL &&
+          strstr(why, "does not exist") != NULL && !g_file_test(other, G_FILE_TEST_EXISTS) &&
+          strcmp(app->db->path, was) == 0,
+          "Open Database File never creates a missing file; the old file stays open");
+    g_free(why);
+    on_db_close(on_db_open(other, NULL));    /* as Create New makes it      */
     check(on_app_switch_db(app, other, FALSE, NULL) == ON_SWITCH_DONE &&
-          strcmp(app->db->path, other) == 0, "Session Only opens (creates) another shared file");
+          strcmp(app->db->path, other) == 0, "Session Only opens another shared file");
     check(on_app_switch_db(app, was, FALSE, NULL) == ON_SWITCH_DONE, "and back");
     g_free(other);
     g_free(was);

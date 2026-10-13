@@ -139,7 +139,7 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
     }
     gchar *old_path = g_strdup(app->db->path);
     on_db_close(app->db);
-    app->db = on_db_open(path, err);
+    app->db = on_db_open_existing(path, err);
     char *module_err = NULL;         /* why the default could not be set    */
     if (app->db != NULL && set_default &&
         shared_db_set_default_path(app->db->path, &module_err) != 0) {
@@ -151,7 +151,7 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
         app->db = NULL;
     }
     if (app->db == NULL) {
-        app->db = on_db_open(old_path, NULL);   /* back to where we were    */
+        app->db = on_db_open_existing(old_path, NULL); /* back to where we were */
         g_free(old_path);
         return ON_SWITCH_FAILED;
     }

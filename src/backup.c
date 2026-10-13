@@ -97,7 +97,7 @@ backup_worker(void *data)
 {
     BackupJob  *job = data;          /* the pass in flight                  */
     gchar      *why = NULL;          /* why the connection did not open     */
-    OnDatabase *db  = on_db_open(job->db_path, &why);
+    OnDatabase *db  = on_db_open_existing(job->db_path, &why);
     if (db == NULL) {
         job->message = g_strdup_printf("Backup failed: %s", why);
         g_free(why);

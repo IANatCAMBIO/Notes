@@ -93,7 +93,7 @@ typedef struct {
  * Fields:
  *   shared — the shared module's connection (owned; shared_db.h), which
  *            owns the SQLite handle.  One per thread: a worker opens its
- *            own with on_db_open(db->path, …).
+ *            own with on_db_open_existing(db->path, …).
  *   handle — shared_db_handle(shared), for this module's queries (borrowed
  *            from `shared`).
  *   path   — absolute path of the database file (owned string).
@@ -204,13 +204,25 @@ typedef struct {
  * shared schema; an existing file that is empty (0 bytes) or not a shared
  * database (an old notes.db or tasks.db, anything unstamped) is REFUSED
  * untouched, as is one on a network or cloud-synced folder — so nothing
- * may create an empty file at the path first.
+ * may create an empty file at the path first.  Only the main connection,
+ * at launch or "Create a New Database", uses it; every other connection
+ * uses on_db_open_existing.
  *   path — the database file, or NULL for shared_db_path() ($CAMBIO_SHARED_DB,
  *          else the pointer file, else the per-user default).
  *   err  — optional; on failure receives the reason in words fit for the
  *          user (g_free it).
  * Returns a new OnDatabase*, or NULL on failure (also logged).              */
 OnDatabase *on_db_open(const gchar *path, gchar **err);
+
+/* ---------------------------------------------------------------------------
+ * on_db_open_existing() — on_db_open that never creates the file
+ * (shared_db_open_existing): for every connection but the main one at
+ * launch — the workers (backup, search, grid cards, media scan), the
+ * first-run "Open a Database File…" trial and File > Open Database File….
+ * A file the user moved aside (a restore, a rollback) is refused as
+ * missing rather than silently replaced by an empty database.
+ * Inputs and output as on_db_open.                                         */
+OnDatabase *on_db_open_existing(const gchar *path, gchar **err);
 
 /* Close the database and free the handle.  Safe to call with NULL.         */
 void on_db_close(OnDatabase *db);

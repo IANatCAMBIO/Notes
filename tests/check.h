@@ -128,4 +128,31 @@ check_midnight(int year, int month, int day)
     return (long long)mktime(&tm);
 }
 
+/*
+ * check_move_aside — move an open database file aside, as a restore or a
+ * rollback does, or put it back.  Moving it aside first empties its -wal
+ * (a checkpoint on the open connection): a missing file beside an empty
+ * log is exactly where a connection allowed to create the file would make
+ * a new, empty database.
+ *
+ * Inputs:
+ *   db    — an open connection to the file
+ *   aside — true to move the file to "<path>.aside", false to move it back
+ *
+ * Output: true when the checkpoint and the rename succeeded.
+ */
+static inline bool
+check_move_aside(shared_db *db, bool aside)
+{
+    const char *path = shared_db_file(db);
+    char        moved[PATH_MAX];
+    snprintf(moved, sizeof moved, "%s.aside", path);
+    if (!aside) {
+        return rename(moved, path) == 0;
+    }
+    return sqlite3_exec(shared_db_handle(db), "PRAGMA wal_checkpoint(TRUNCATE)",
+                        NULL, NULL, NULL) == SQLITE_OK &&
+           rename(path, moved) == 0;
+}
+
 #endif /* ON_TEST_CHECK_H */

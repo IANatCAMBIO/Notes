@@ -10,6 +10,7 @@
 
 #include "check.h"
 
+#include "action_sync.h"
 #include "app_core.h"
 #include "db.h"
 #include "serialize.h"
@@ -343,6 +344,383 @@ test_push_delete(OnDatabase *db, OnDatabase *other)
     sqlite3_finalize(st);
 }
 
+/* ── The pull ───────────────────────────────────────────────────────────── */
+
+/*
+ * first_line — the text of a stored note's block 0 (its title line), and
+ * whether it is a struck action line.
+ *
+ * Inputs:
+ *   db   — a connection
+ *   note — the note
+ *   done — receives the done state (may be NULL)
+ *
+ * Output: a new string; g_free it.
+ */
+static gchar *
+first_line(OnDatabase *db, gint64 note, gboolean *done)
+{
+    OnDocument *doc = on_note_document_load(db, note);
+    if (doc == NULL) return g_strdup("");
+    gchar *text = g_strdup(on_document_block(doc, 0)->text->text->str);
+    if (done != NULL) {
+        *done = FALSE;
+        on_document_block_action(doc, 0, NULL, NULL, done);
+    }
+    on_document_free(doc);
+    return text;
+}
+
+/*
+ * pending_count — how many notes the pull still has work in.
+ *
+ * Inputs:
+ *   db — a connection
+ *
+ * Output: the count.
+ */
+static guint
+pending_count(OnDatabase *db)
+{
+    GArray *ids = on_db_action_pending(db, 0);
+    guint   n   = ids->len;
+    g_array_unref(ids);
+    return n;
+}
+
+/*
+ * body_has — whether a note's searchable text holds a string.
+ *
+ * Inputs:
+ *   db     — a connection
+ *   note   — the note
+ *   needle — the string
+ *
+ * Output: TRUE when it does.
+ */
+static gboolean
+body_has(OnDatabase *db, gint64 note, const char *needle)
+{
+    gchar   *body = on_db_note_body_text(db, note);
+    gboolean has  = body != NULL && strstr(body, needle) != NULL;
+    g_free(body);
+    return has;
+}
+
+/*
+ * note_title_is — whether a note's stored title is `title`.
+ *
+ * Inputs:
+ *   db    — a connection
+ *   note  — the note
+ *   title — the expected title
+ *
+ * Output: TRUE when it is.
+ */
+static gboolean
+note_title_is(OnDatabase *db, gint64 note, const char *title)
+{
+    OnNoteMeta *m  = on_db_note_get(db, note);
+    gboolean    is = m != NULL && strcmp(m->title, title) == 0;
+    on_db_note_meta_free(m);
+    return is;
+}
+
+/*
+ * pane_text — the Action Items listing's text for a uid ("" when it is not
+ * listed: deleted, or its note trashed).
+ *
+ * Inputs:
+ *   db  — a connection
+ *   uid — the item
+ *
+ * Output: a new string; g_free it.
+ */
+static gchar *
+pane_text(OnDatabase *db, gint64 uid)
+{
+    gchar *text = NULL;
+    GList *all  = on_db_action_list(db);
+    for (GList *l = all; l != NULL; l = l->next) {
+        OnActionItem *it = l->data;
+        if (it->uid == uid) text = g_strdup(it->text);
+    }
+    on_db_action_list_free(all);
+    return text != NULL ? text : g_strdup("");
+}
+
+/*
+ * outside_writes — what another app does to the four items of the pull
+ * test (rename / complete / re-date / delete), on its own connection.
+ *
+ * Inputs:
+ *   other — the other connection
+ *   uids  — the four items
+ */
+static void
+outside_writes(OnDatabase *other, const gint64 uids[4])
+{
+    exec_uid(other, uids[0], "UPDATE tasks SET title = 'Renamed in Tasks', updated_at = 1 WHERE id = ?1");
+    exec_uid(other, uids[1], "UPDATE tasks SET status = 2, completed_at = 1 WHERE id = ?1");
+    gchar *redate = g_strdup_printf("UPDATE tasks SET due = %lld WHERE id = ?1",
+                                    (long long)check_midnight(2027, 4, 9));
+    exec_uid(other, uids[2], redate);
+    g_free(redate);
+    exec_uid(other, uids[3], "UPDATE tasks SET deleted = 1 WHERE id = ?1");
+}
+
+/*
+ * make_pull_notes — four closed notes, each one '!' line as its FIRST line
+ * (so the note's title is the line), for the four outside changes.
+ *
+ * Inputs:
+ *   db    — Notes' connection
+ *   notes — receives the four note ids
+ *   uids  — receives their items' uids
+ */
+static void
+make_pull_notes(OnDatabase *db, gint64 notes[4], gint64 uids[4])
+{
+    static const char *const text[4] = {
+        "! Rename me due 2026-11-02\nbody one",
+        "! Complete me\nbody two",
+        "! Re-date me due 2026-11-03\nbody three",
+        "!! Delete me due 2026-11-04\nbody four",
+    };
+    for (int i = 0; i < 4; i++) {
+        notes[i] = on_note_new_from_text(db, 0, text[i]);
+        uids[i]  = nth_uid(db, notes[i], 0);
+    }
+}
+
+/*
+ * check_pulled — the four outside changes are in the closed notes: blob,
+ * title, body_text, the Action Items listing, the baseline.
+ *
+ * Inputs:
+ *   db    — Notes' connection
+ *   notes — the notes
+ *   uids  — their items
+ *   how   — "connection" or "process", for the log
+ */
+static void
+check_pulled(OnDatabase *db, const gint64 notes[4], const gint64 uids[4], const char *how)
+{
+    char     what[160];
+    gboolean done = FALSE;
+    gchar   *line = first_line(db, notes[0], NULL);
+    gchar   *pane = pane_text(db, uids[0]);
+    snprintf(what, sizeof what, "pull (%s): a rename reaches the closed note's line, title, "
+             "body text and the pane", how);
+    check(strcmp(line, "! Renamed in Tasks due 2026-11-02") == 0 &&
+          note_title_is(db, notes[0], "! Renamed in Tasks due 2026-11-02") &&
+          body_has(db, notes[0], "Renamed in Tasks") && strcmp(pane, "Renamed in Tasks") == 0, what);
+    g_free(line);
+    g_free(pane);
+
+    line = first_line(db, notes[1], &done);
+    snprintf(what, sizeof what, "pull (%s): a completion strikes the line", how);
+    check(done && strcmp(line, "! Complete me") == 0, what);
+    g_free(line);
+
+    line = first_line(db, notes[2], NULL);
+    snprintf(what, sizeof what, "pull (%s): a new due date rewrites the suffix", how);
+    check(strcmp(line, "! Re-date me due 2027-04-09") == 0 && body_has(db, notes[2], "due 2027-04-09"),
+          what);
+    g_free(line);
+
+    line = first_line(db, notes[3], NULL);
+    pane = pane_text(db, uids[3]);
+    OnActionLink row;
+    snprintf(what, sizeof what, "pull (%s): a deleted task UNMARKS its line (every leading '!' "
+             "and its spaces go, the text and due suffix stay), its link goes", how);
+    check(strcmp(line, "Delete me due 2026-11-04") == 0 && !link_of(db, uids[3], notes[3], &row) &&
+          strcmp(pane, "") == 0 && note_title_is(db, notes[3], "Delete me due 2026-11-04") &&
+          nth_uid(db, notes[3], 0) == 0, what);
+    g_free(line);
+    g_free(pane);
+
+    for (int i = 0; i < 3; i++) {
+        link_of(db, uids[i], notes[i], &row);
+        gchar *title = task_title(db, uids[i]);
+        gboolean agreed = strcmp(row.seen_title, title) == 0 &&
+                          row.seen_done == (task_int(db, uids[i], "status") == 2) &&
+                          row.seen_due == task_int(db, uids[i], "due");
+        g_free(title);
+        on_db_action_link_clear(&row);
+        snprintf(what, sizeof what, "pull (%s): item %d's seen_* is the task's values", how, i);
+        check(agreed, what);
+    }
+    snprintf(what, sizeof what, "pull (%s): nothing is left pending", how);
+    check(pending_count(db) == 0, what);
+}
+
+/*
+ * test_pull_connection — another connection renames, completes, re-dates
+ * and deletes; one poll brings all four into the closed notes, and the
+ * pull's own writes trigger no second pull.
+ *
+ * Inputs:
+ *   app   — headless context on Notes' connection
+ *   other — a second connection
+ */
+static void
+test_pull_connection(OnApp *app, OnDatabase *other)
+{
+    gint64 notes[4], uids[4];
+    make_pull_notes(app->db, notes, uids);
+    on_action_sync_poll(app);        /* drop the setup's own state          */
+    outside_writes(other, uids);
+    check(pending_count(app->db) == 4, "pull: four notes have work");
+    check(on_action_sync_poll(app), "pull: one poll sees the outside commit and pulls");
+    check_pulled(app->db, notes, uids, "connection");
+    OnNoteMeta *before = on_db_note_get(app->db, notes[0]);
+    check(!on_action_sync_poll(app), "pull: its own saves do not trigger another pull");
+    on_action_sync_run(app);
+    OnNoteMeta *after = on_db_note_get(app->db, notes[0]);
+    check(before->updated_at == after->updated_at, "pull: a pull with nothing to do writes nothing");
+    on_db_note_meta_free(before);
+    on_db_note_meta_free(after);
+}
+
+/*
+ * test_pull_process — the same four changes made by ANOTHER PROCESS (a
+ * fork with its own connection, as Tasks is), then one poll.
+ *
+ * Inputs:
+ *   app — headless context on Notes' connection
+ */
+static void
+test_pull_process(OnApp *app)
+{
+    gint64 notes[4], uids[4];
+    make_pull_notes(app->db, notes, uids);
+    on_action_sync_poll(app);
+    gchar *path = g_strdup(app->db->path);
+    pid_t  pid  = fork();
+    if (pid == 0) {
+        OnDatabase *mine = on_db_open(path, NULL);
+        if (mine == NULL) _exit(3);
+        outside_writes(mine, uids);
+        on_db_close(mine);
+        _exit(0);
+    }
+    int status = -1;
+    waitpid(pid, &status, 0);
+    g_free(path);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "pull (process): the other process wrote");
+    check(on_action_sync_poll(app), "pull (process): one poll sees it");
+    check_pulled(app->db, notes, uids, "process");
+}
+
+/*
+ * test_pull_refused — a title the line cannot take (empty; ending in what
+ * reads as a due date) leaves the line, moves seen_title, and the same
+ * save pushes the line's text back to the task: no row stays pending.
+ *
+ * Inputs:
+ *   app   — headless context
+ *   other — a second connection
+ */
+static void
+test_pull_refused(OnApp *app, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(app->db, 0, "Refused\n! Keep my text\n! Mine too");
+    gint64 a    = nth_uid(app->db, note, 0);
+    gint64 b    = nth_uid(app->db, note, 1);
+    on_action_sync_poll(app);
+    exec_uid(other, a, "UPDATE tasks SET title = '' WHERE id = ?1");
+    exec_uid(other, b, "UPDATE tasks SET title = 'Looks dated due 2026-01-01' WHERE id = ?1");
+    on_action_sync_poll(app);
+    gchar *ta = task_title(app->db, a), *tb = task_title(app->db, b);
+    check(strcmp(ta, "Keep my text") == 0 && strcmp(tb, "Mine too") == 0 && pending_count(app->db) == 0,
+          "pull: a title the line refuses is written back from the line; nothing stays pending");
+    g_free(ta);
+    g_free(tb);
+}
+
+/*
+ * test_concurrent — no lost updates between Notes and Tasks: Tasks changes
+ * priority and due while Notes edits the title, in both orders of save
+ * and pull; every change survives in the task and in the line.
+ *
+ * Inputs:
+ *   app   — headless context
+ *   other — a second connection (Tasks)
+ */
+static void
+test_concurrent(OnApp *app, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(app->db, 0, "Concurrent\n! Plan the trip due 2026-11-10");
+    gint64 uid  = nth_uid(app->db, note, 0);
+    on_action_sync_poll(app);
+
+    /* Tasks first, Notes saves its title before pulling.                    */
+    gchar *sql = g_strdup_printf("UPDATE tasks SET priority = 2, due = %lld WHERE id = ?1",
+                                 (long long)check_midnight(2026, 12, 24));
+    exec_uid(other, uid, sql);
+    g_free(sql);
+    check(edit_note(app->db, note, 0, "Plan the whole trip", -1, NULL),
+          "concurrent: Notes saves a title edit made before it pulled");
+    on_action_sync_poll(app);
+    gchar *title = task_title(app->db, uid);
+    gchar *line  = first_line(app->db, note, NULL);
+    OnDocument *doc = on_note_document_load(app->db, note);
+    gchar *text = NULL;
+    gint64 due  = 0;
+    GArray *bl  = on_document_action_blocks(doc);
+    on_document_block_action(doc, g_array_index(bl, guint, 0), &text, &due, NULL);
+    g_array_unref(bl);
+    on_document_free(doc);
+    check(strcmp(title, "Plan the whole trip") == 0 && task_int(app->db, uid, "priority") == 2 &&
+          task_int(app->db, uid, "due") == check_midnight(2026, 12, 24) &&
+          strcmp(text, "Plan the whole trip") == 0 && due == check_midnight(2026, 12, 24),
+          "concurrent: Notes' title, Tasks' priority and due all survive, in the task and the line");
+    g_free(title);
+    g_free(line);
+    g_free(text);
+
+    /* Tasks re-dates again; Notes pulls first, then edits the title.        */
+    sql = g_strdup_printf("UPDATE tasks SET due = %lld WHERE id = ?1", (long long)check_midnight(2027, 1, 2));
+    exec_uid(other, uid, sql);
+    g_free(sql);
+    on_action_sync_poll(app);
+    edit_note(app->db, note, 0, "Plan the trip, finally", -1, NULL);
+    title = task_title(app->db, uid);
+    check(strcmp(title, "Plan the trip, finally") == 0 &&
+          task_int(app->db, uid, "due") == check_midnight(2027, 1, 2) &&
+          task_int(app->db, uid, "priority") == 2 && pending_count(app->db) == 0,
+          "concurrent: a pulled due date and a later Notes title both survive");
+    g_free(title);
+}
+
+/*
+ * test_restored_elsewhere — Notes removed a line (tombstone,
+ * seen_deleted = 1) and Tasks then restored the task: Notes leaves it
+ * alone (no pull work, no new tombstone on the next save).
+ *
+ * Inputs:
+ *   app   — headless context
+ *   other — a second connection
+ */
+static void
+test_restored_elsewhere(OnApp *app, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(app->db, 0, "Restore\n! Keep\n! Restored in Tasks");
+    gint64 uid  = nth_uid(app->db, note, 1);
+    OnDocument *doc = on_note_document_load(app->db, note);
+    GArray     *bl  = on_document_action_blocks(doc);
+    on_document_remove_block(doc, g_array_index(bl, guint, 1));
+    g_array_unref(bl);
+    on_note_document_save(app->db, note, doc, TRUE, NULL);
+    exec_uid(other, uid, "UPDATE tasks SET deleted = 0 WHERE id = ?1");
+    check(pending_count(app->db) == 0, "restored elsewhere: no pull work");
+    on_action_sync_poll(app);
+    edit_note(app->db, note, 0, "Keep, edited", -1, NULL);
+    on_document_free(doc);
+    check(task_int(app->db, uid, "deleted") == 0, "restored elsewhere: a later save leaves it live");
+}
+
 /*
  * main — run the test.
  *
@@ -359,6 +737,14 @@ main(void)
     test_push_new(db);
     test_push_fields(db, other);
     test_push_delete(db, other);
+
+    OnApp app = { 0 };               /* headless: every hook NULL           */
+    app.db = db;
+    test_pull_connection(&app, other);
+    test_pull_process(&app);
+    test_pull_refused(&app, other);
+    test_concurrent(&app, other);
+    test_restored_elsewhere(&app, other);
     on_db_close(other);
     on_db_close(db);
     return check_result();

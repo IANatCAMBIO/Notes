@@ -49,6 +49,7 @@
 #import "ui_util.h"
 
 #include "action_edit.h"
+#include "action_sync.h"
 #include "look.h"
 #include "app_lifecycle.h"
 #include "backup.h"
@@ -2645,6 +2646,142 @@ test_image_rule_control(NSWindow *window)
 }
 
 /*
+ * outside_sql — another app's write: run SQL on its own connection, with
+ * the task id of a uid bound as ?1.
+ *
+ * Inputs:
+ *   other — the other connection
+ *   uid   — the item
+ *   sql   — one statement
+ */
+static void
+outside_sql(OnDatabase *other, gint64 uid, const char *sql)
+{
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(other->handle, sql, -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, uid);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+}
+
+/*
+ * outside_insert — another writer (an agent) rewrites a note: a prefix put
+ * in front of one block, saved through the core on its own connection.
+ *
+ * Inputs:
+ *   other  — the other connection
+ *   note   — the note
+ *   block  — the block to prefix
+ *   prefix — the text
+ */
+static void
+outside_insert(OnDatabase *other, gint64 note, guint block, const char *prefix)
+{
+    OnDocument *doc = on_note_document_load(other, note);
+    OnPos       at  = { block, -1, 0 };
+    on_document_insert_text(doc, at, prefix, strlen(prefix), 0);
+    on_note_document_save(other, note, doc, TRUE, NULL);
+    on_document_free(doc);
+}
+
+/*
+ * test_outside_changes — the pull and an outside rewrite with the note
+ * OPEN: a task renamed in another app is reconciled into the live document
+ * (caret, selection and scroll unmoved; undoable; saved at once); a note
+ * rewritten by another writer reloads when the editor has no unsaved
+ * edits, and with unsaved edits keeps them and offers Reload.
+ */
+static void
+test_outside_changes(void)
+{
+    OnDatabase *other = on_db_open(app.db->path, NULL);
+    gint64 note = new_note("Outside\n! Rename me live due 2026-11-02\nsecond line\nthird line");
+    GList *items = on_db_action_list_for_note(app.db, note);
+    gint64 uid   = ((OnActionItem *)items->data)->uid;
+    on_db_action_list_free(items);
+    on_action_sync_poll(&app);
+
+    on_editor_window_open(&app, note, NotesEditorRevealNone, 0, nil);
+    pump(0.3);
+    NSWindow      *window = editor_window_titled(@"Outside");
+    NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+    NotesNoteView *view   = scroll.documentView;
+    on_note_view_feed_key(view, on_key_down, 0, on_mod_command);
+    on_note_view_feed_key(view, on_key_end, 0, 0);
+    for (int i = 0; i < 4; i++) on_note_view_feed_key(view, on_key_left, 0, on_mod_shift);
+    OnPos     caret  = on_note_view_caret(view);
+    NSString *chosen = on_note_view_selected_text(view);
+    NSPoint   origin = scroll.contentView.bounds.origin;
+
+    outside_sql(other, uid, "UPDATE tasks SET title = 'Renamed while open' WHERE id ="
+                            " (SELECT task_id FROM note_task WHERE uid = ?1)");
+    check(on_action_sync_poll(&app), "open note: the poll sees the other app's rename");
+    OnDocument *live = on_note_view_document(view);
+    check(strcmp(on_document_block(live, 1)->text->text->str, "! Renamed while open due 2026-11-02") == 0,
+          "open note: the rename is reconciled into the live document");
+    gchar *body = on_db_note_body_text(app.db, note);
+    check(body != NULL && strstr(body, "Renamed while open") != NULL,
+          "open note: and saved at once, with its baseline");
+    g_free(body);
+    OnPos now = on_note_view_caret(view);
+    check(now.block == caret.block && now.offset == caret.offset &&
+          [on_note_view_selected_text(view) isEqualToString:chosen] &&
+          NSEqualPoints(scroll.contentView.bounds.origin, origin),
+          "open note: the caret, the selection and the scroll position stay");
+    on_note_view_undo(view);
+    check(strcmp(on_document_block(live, 1)->text->text->str, "! Rename me live due 2026-11-02") == 0,
+          "open note: the reconcile is one undo step");
+    pump(1.8);
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(app.db->handle, "SELECT t.title FROM tasks t JOIN note_task n ON n.task_id = t.id"
+                       " WHERE n.uid = ?", -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, uid);
+    check(sqlite3_step(st) == SQLITE_ROW && strcmp((const char *)sqlite3_column_text(st, 0), "Rename me live") == 0,
+          "open note: the undo is an edit, saved and pushed back to the task");
+    sqlite3_finalize(st);
+
+    /* Another writer rewrites the note; no unsaved edits here: reload.     */
+    on_action_sync_poll(&app);
+    outside_insert(other, note, 2, "agent: ");
+    on_action_sync_poll(&app);
+    live = on_note_view_document(view);
+    check(g_str_has_prefix(on_document_block(live, 2)->text->text->str, "agent: second line"),
+          "outside rewrite, nothing unsaved: the open editor reloads the note");
+
+    /* With unsaved edits: they are kept, and Reload is offered.            */
+    on_note_view_feed_key(view, on_key_down, 0, on_mod_command);
+    on_note_view_feed_key(view, on_key_end, 0, 0);
+    on_note_view_feed_text(view, " mine");
+    outside_insert(other, note, 2, "second agent: ");
+    on_action_sync_poll(&app);
+    live = on_note_view_document(view);
+    check(g_str_has_suffix(on_document_block(live, 3)->text->text->str, " mine") &&
+          answer_panel(@"Keep Mine"),
+          "outside rewrite, unsaved edits: they stay, and a tool panel offers Reload / Keep Mine");
+    pump(1.8);
+    body = on_db_note_body_text(app.db, note);
+    check(body != NULL && strstr(body, " mine") != NULL && strstr(body, "second agent") == NULL,
+          "Keep Mine: the editor's version replaces the other writer's");
+    g_free(body);
+
+    on_note_view_feed_text(view, " again");
+    outside_insert(other, note, 2, "third agent: ");
+    on_action_sync_poll(&app);
+    check(answer_panel(@"Reload"), "a second outside rewrite asks again");
+    live = on_note_view_document(view);
+    body = on_db_note_body_text(app.db, note);
+    check(g_str_has_prefix(on_document_block(live, 2)->text->text->str, "third agent: ") &&
+          !g_str_has_suffix(on_document_block(live, 3)->text->text->str, " again") &&
+          body != NULL && strstr(body, "third agent") != NULL,
+          "Reload: the other writer's version is shown and kept");
+    g_free(body);
+
+    on_editor_close_notes(&note, 1);
+    pump(0.2);
+    on_db_close(other);
+}
+
+/*
  * main — run the test.
  *
  * Output: 0 when every check held.
@@ -2672,12 +2809,13 @@ main(void)
         on_media_install(lib);
         on_library_ai_install(lib);
         check(app.open_note != NULL && app.live_document != NULL && app.live_edited != NULL &&
-              app.flush_editors != NULL &&
+              app.live_save != NULL && app.check_editors != NULL && app.flush_editors != NULL &&
               app.notify_notes_changed != NULL && app.notify_note_saved != NULL &&
               app.notify_status != NULL, "the modules install the hooks the core calls");
 
         test_library(lib);
         test_editor();
+        test_outside_changes();
         test_editor_commands();
         test_inline_image();
         test_accessibility();

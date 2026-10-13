@@ -6,6 +6,8 @@
 #include "action_sync.h"
 #include "serialize.h"               /* load, reconcile (the pull), save     */
 
+#include <stdlib.h>
+
 /* ---------------------------------------------------------------------------
  * LiveEdit — an open editor's document the pull rewrote, told so when the
  * transaction has ended (live_edited_end).
@@ -38,12 +40,33 @@ live_edited_end(gpointer data, gboolean committed)
 }
 
 /*
+ * sync_held — is the note held back from the pull: its open editor waits
+ * for the user to answer the "changed outside" panel (OnApp.live_held)?
+ * Writing it now would only be refused and rolled back; the answer runs
+ * the pull (on_action_sync_run).
+ *
+ * Inputs:
+ *   app     — the application context
+ *   note_id — the note
+ *
+ * Output: TRUE when the pull must leave the note alone for now.
+ */
+static gboolean
+sync_held(OnApp *app, gint64 note_id)
+{
+    return app->live_held != NULL && app->live_held(app, note_id);
+}
+
+/*
  * on_action_sync_note — see action_sync.h.
  */
 gboolean
 on_action_sync_note(OnApp *app, gint64 note_id)
 {
     OnDatabase *db      = app->db;
+    if (sync_held(app, note_id)) {
+        return TRUE;
+    }
     GArray     *pending = on_db_action_pending(db, note_id);
     gboolean    work    = pending->len > 0;
     g_array_unref(pending);
@@ -112,6 +135,9 @@ on_action_sync_run(OnApp *app, gboolean refresh)
     gboolean failed = FALSE;         /* a note stays unsynced               */
     for (guint i = 0; i < notes->len; i++) {
         gint64 id = g_array_index(notes, gint64, i);
+        if (sync_held(app, id)) {
+            continue;
+        }
         if (on_action_sync_note(app, id)) {
             done++;
         } else {
@@ -128,26 +154,42 @@ on_action_sync_run(OnApp *app, gboolean refresh)
 }
 
 /*
- * on_action_sync_poll — see action_sync.h.
+ * sync_poll — one look at the shared file (shared_db_poll: whether another
+ * connection committed, and both revisions, in one snapshot), then what
+ * it calls for: no outside commit — every rev movement was Notes' own, so
+ * the revs are adopted and nothing runs (unless `retry` and the last pull
+ * failed); else the pull when 'tasks' moved, the refresh when 'notes'
+ * moved.
+ *
+ * Inputs:
+ *   app   — the application context (nothing happens with no database)
+ *   retry — pull again when the last pull failed, outside commit or not
+ *           (the timer's tick; not the look after Notes' own commit)
+ *
+ * Output: TRUE when the pull ran.
  */
-gboolean
-on_action_sync_poll(OnApp *app)
+static gboolean
+sync_poll(OnApp *app, gboolean retry)
 {
-    gboolean changed;                /* another connection committed        */
-    gint64   rev_tasks, rev_notes;   /* the revisions in the same snapshot  */
+    int      changed;                /* another connection committed        */
+    int64_t  rev_tasks, rev_notes;   /* the revisions in the same snapshot  */
+    char    *err = NULL;             /* the module's message                */
     if (app->db == NULL) {
         return FALSE;
     }
-    if (!on_db_poll_revs(app->db, &changed, &rev_tasks, &rev_notes)) {
+    if (shared_db_poll(app->db->shared, &changed, &rev_tasks, &rev_notes, &err) != 0) {
+        g_warning("sync: cannot look for changes: %s", err != NULL ? err : "?");
+        free(err);
         app->pull_failed = TRUE;     /* the look itself failed: look again  */
         return FALSE;
     }
-    if (!changed && !app->pull_failed) {
+    gboolean failed = retry && app->pull_failed;
+    if (!changed && !failed) {
         app->rev_tasks = rev_tasks;  /* only Notes' own commits moved them  */
         app->rev_notes = rev_notes;
         return FALSE;
     }
-    gboolean pull  = app->pull_failed || rev_tasks != app->rev_tasks;
+    gboolean pull  = failed || rev_tasks != app->rev_tasks;
     gboolean notes = rev_notes != app->rev_notes;
     app->rev_tasks = rev_tasks;
     app->rev_notes = rev_notes;
@@ -157,6 +199,55 @@ on_action_sync_poll(OnApp *app)
         sync_refresh(app);
     }
     return pull;
+}
+
+/*
+ * on_action_sync_poll — see action_sync.h.
+ */
+gboolean
+on_action_sync_poll(OnApp *app)
+{
+    return sync_poll(app, TRUE);
+}
+
+/*
+ * sync_after_commit — the look posted by sync_commit_hook: right after
+ * Notes' own commit, adopt the revisions it moved (no outside commit since
+ * the last look) or handle what another writer moved meanwhile.
+ *
+ * Inputs:
+ *   data — the OnApp
+ *
+ * Output: none.
+ */
+static void
+sync_after_commit(void *data)
+{
+    OnApp *app = data;
+    app->commit_look_posted = FALSE;
+    sync_poll(app, FALSE);
+}
+
+/*
+ * sync_commit_hook — sqlite3_commit_hook on the app's connection: a write
+ * transaction of Notes' own (explicit or autocommit) is committing.  It
+ * must not touch the connection, so it only posts the look that follows
+ * (sync_after_commit), once however many commits come before it runs.
+ *
+ * Inputs:
+ *   data — the OnApp
+ *
+ * Output: 0 — the commit goes ahead.
+ */
+static int
+sync_commit_hook(void *data)
+{
+    OnApp *app = data;
+    if (!app->commit_look_posted) {
+        app->commit_look_posted = TRUE;
+        on_main_post(sync_after_commit, app);
+    }
+    return 0;
 }
 
 /*
@@ -179,9 +270,12 @@ sync_tick(void *data)
 void
 on_action_sync_start(OnApp *app, gboolean refresh)
 {
-    gboolean changed;                /* unused: everything is new here      */
-    app->rev_tasks = app->rev_notes = 0;
-    on_db_poll_revs(app->db, &changed, &app->rev_tasks, &app->rev_notes);
+    int      changed;                /* unused: everything is new here      */
+    int64_t  rev_tasks = 0, rev_notes = 0;
+    shared_db_poll(app->db->shared, &changed, &rev_tasks, &rev_notes, NULL);
+    app->rev_tasks = rev_tasks;
+    app->rev_notes = rev_notes;
+    sqlite3_commit_hook(app->db->handle, sync_commit_hook, app);
     on_action_sync_run(app, refresh);
     if (app->sync_timer == 0) {
         app->sync_timer = on_timer_add(SHARED_DB_POLL_SECONDS, true, sync_tick, app, NULL);

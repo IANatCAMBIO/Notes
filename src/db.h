@@ -57,10 +57,6 @@
 /* ---------------------------------------------------------------------------
  * DB constants
  * ------------------------------------------------------------------------- */
-/* Default title used for a newly created note and as the fallback when the
- * first-line extraction returns empty text.                                  */
-#define ON_DEFAULT_NOTE_TITLE          "New Note"
-
 /* Maximum depth walked when building a folder path string.  A corrupt cycle
  * in the parent_id chain (hand-edited DB) would otherwise spin forever.     */
 #define ON_DB_FOLDER_PATH_DEPTH_LIMIT  128
@@ -566,8 +562,8 @@ typedef struct {
  *     to it stays (the pull brings it into the line).
  *   - every task of this note whose line is gone, still live and known
  *     live to Notes (seen_deleted = 0), is TOMBSTONED (deleted = 1) with
- *     its live subtasks, one statement, one updated_at (`(id = X OR
- *     parent_id = X) AND deleted = 0`, the note_task_tombstone trigger's
+ *     its live subtasks, one statement, one updated_at
+ *     (SHARED_DB_SQL_TOMBSTONE_WHERE, the note_task_tombstone trigger's
  *     rule), and its row gets seen_deleted = 1 (so an undo can revive it).
  * `changed` (optional) receives whether any task row was written.
  * Returns TRUE on success.
@@ -663,23 +659,6 @@ typedef void (*OnDbTxnHook)(gpointer data, gboolean committed);
  * transaction is open.
  * ------------------------------------------------------------------------- */
 gboolean on_db_txn_on_end(OnDatabase *db, OnDbTxnHook hook, gpointer data);
-
-/* ---------------------------------------------------------------------------
- * on_db_poll_revs() — the pull's poll, in ONE read snapshot: has another
- * connection committed since the last look (shared_db_changed), and the
- * two change revisions (shared_db_rev: SHARED_DB_REV_TASKS, _NOTES).  One
- * snapshot is what makes "no outside commit" mean that every rev movement
- * since the last look was this connection's own.
- *   db        — open database, no transaction open.
- *   changed   — out: TRUE when another connection committed (also when
- *               that could not be read).
- *   rev_tasks — out: the 'tasks' revision.
- *   rev_notes — out: the 'notes' revision.
- * Returns TRUE on success; FALSE when a transaction is open or a read
- * failed (the outs are then unchanged).
- * ------------------------------------------------------------------------- */
-gboolean on_db_poll_revs(OnDatabase *db, gboolean *changed, gint64 *rev_tasks,
-                         gint64 *rev_notes);
 
 /* One live item by uid, off the view (context included); NULL when no
  * live task carries that uid.  Free with on_db_action_item_free().        */

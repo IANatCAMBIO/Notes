@@ -56,6 +56,7 @@
 #include "serialize.h"
 #include "image_io.h"
 
+#include <glib/gstdio.h>
 #include <mach/mach.h>
 #include <objc/message.h>
 #include <mach/mach_vm.h>
@@ -2138,6 +2139,75 @@ test_shell(NotesLibrary *lib)
     on_library_run_command(lib, command_item(@"toggle-done"));
 }
 
+static gchar *last_status;           /* the last status message captured */
+
+/*
+ * status_recorder — OnApp.notify_status while a test captures it: keep
+ * the message.
+ *
+ * Inputs:
+ *   a       — the application context (unused)
+ *   message — the status line
+ */
+static void
+status_recorder(OnApp *a, const gchar *message)
+{
+    (void)a;
+    g_free(last_status);
+    last_status = g_strdup(message);
+}
+
+/*
+ * test_backup_pruning_failed — Back Up Now whose copy is made but whose
+ * pruning of old backups fails (an old "backup" that cannot be deleted):
+ * the status line says the backup was made and what went wrong, and
+ * Settings' backup line shows the new last-backup time and the error.
+ *
+ * Inputs:
+ *   root — the open Settings window's content view
+ */
+static void
+test_backup_pruning_failed(NSView *root)
+{
+    NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
+    check([backup_path.stringValue containsString:@"\nLast backup "] ||
+          [backup_path.stringValue containsString:@"\nNo backup made yet"],
+          "the backup line says when the last backup was made");
+    gchar  *dir   = on_backup_dir(&app, NULL);
+    gchar  *stuck = g_build_filename(dir, SHARED_DB_BACKUP_PREFIX "20000101-000000Z.db", "x", NULL);
+    gchar  *old   = g_path_get_dirname(stuck);
+    int64_t keep  = 0;
+    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_KEEP, &keep, NULL);
+    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "1", NULL);
+    g_mkdir_with_parents(old, 0700);
+    g_file_set_contents(stuck, "", 0, NULL);  /* a non-empty directory: unlink fails */
+
+    void (*status_was)(OnApp *, const gchar *) = app.notify_status;
+    app.notify_status = status_recorder;
+    [button_titled(root, @"Back Up Now") performClick:nil];
+    for (int i = 0; i < 200 && (app.backup_running || last_status == NULL); i++) pump(0.05);
+    app.notify_status = status_was;
+    int64_t last_at = 0;
+    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
+    check(last_status != NULL && g_str_has_prefix(last_status, "Backup made with a problem: ") &&
+          strstr(last_status, "removing old backups failed") != NULL && last_at > 0,
+          "Back Up Now, pruning failed: the status says the backup was made, and why it is not clean");
+    check([backup_path.stringValue containsString:@"\nLast backup "] &&
+          [backup_path.stringValue containsString:@"removing old backups failed"],
+          "and Settings shows the new last-backup time and the error at once");
+
+    g_remove(stuck);
+    g_rmdir(old);
+    gchar *keep_text = g_strdup_printf("%lld", (long long)keep);
+    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, keep_text, NULL);
+    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
+    g_free(keep_text);
+    g_free(old);
+    g_free(stuck);
+    g_free(dir);
+    g_clear_pointer(&last_status, g_free);
+}
+
 /*
  * test_secondary_windows — the four WPH windows open, display correctly,
  * and release their resources on close.
@@ -2215,7 +2285,7 @@ test_secondary_windows(NotesLibrary *lib)
         [density selectItemAtIndex:density_was ? 1 : 0];
         [density sendAction:density.action to:density.target];
 
-        check(app.notify_db_health != NULL, "while Settings is open the health plate follows checks");
+        check(app.notify_db_state != NULL, "while Settings is open the health plate follows checks");
         NSTextField *health = (NSTextField *)view_with_identifier(root, @"health");
         [button_titled(root, @"Update") performClick:nil];
         check([health.stringValue isEqualToString:@"Checking…"],
@@ -2236,9 +2306,10 @@ test_secondary_windows(NotesLibrary *lib)
         check([backup_path.stringValue hasPrefix:@"Backing up to "] &&
               button_titled(root, @"Back Up Now").enabled == (backup_enabled != 0),
               "the backup line names the folder, and its buttons follow the switch");
-        check([backup_path.stringValue containsString:@"The last backup failed: the disk is full"],
+        check([backup_path.stringValue containsString:@"The last backup pass reported: the disk is full"],
               "and says why the last backup failed (backup_last_error)");
         shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
+        test_backup_pruning_failed(root);
 
         NSButton    *ai     = button_titled(root, @"Enable AI features");
         NSTextField *ai_cmd = (NSTextField *)view_with_identifier(root, @"ai-command");
@@ -2267,7 +2338,7 @@ test_secondary_windows(NotesLibrary *lib)
         [settings_win close];
     }
     pump(0.3);
-    check(weak_settings == nil && app.notify_db_health == NULL,
+    check(weak_settings == nil && app.notify_db_state == NULL,
           "closed settings window is deallocated and lets go of the health hook");
 
     /* Search window ───────────────────────────────────────────────────── */
@@ -2932,10 +3003,25 @@ test_open_note_sync(void)
     check(body != NULL && strstr(body, "Second line") != NULL && strstr(body, " mine") == NULL,
           "same-second rewrite: the dirty editor's autosave does not overwrite it");
     g_free(body);
+    /* While the panel waits, the pull leaves the note alone: no rollback,
+     * no failure retried every tick; the answer runs it.                   */
+    outside_sql(other, uid, "UPDATE tasks SET title = 'Renamed while asking'"
+                            " WHERE id = (SELECT task_id FROM note_task WHERE uid = ?1)");
+    on_action_sync_poll(&app);
+    GArray *pending = on_db_action_pending(app.db, 0);
+    check(app.live_held(&app, note) && pending->len == 1 && !app.pull_failed &&
+          strcmp(on_document_block(live, 1)->text->text->str, "! Renamed, rolled back") == 0,
+          "panel up: the pull leaves the note alone, and that is no failure to retry");
+    g_array_unref(pending);
     check(answer_panel(@"Keep Mine"), "same-second rewrite: the changed-outside panel asks");
+    pending = on_db_action_pending(app.db, 0);
+    check(!app.live_held(&app, note) && pending->len == 0 &&
+          strcmp(on_document_block(live, 1)->text->text->str, "! Renamed while asking") == 0,
+          "the answer runs the pull: the rename reaches the kept version");
+    g_array_unref(pending);
     pump(1.8);
     body = on_db_note_body_text(app.db, note);
-    check(body != NULL && strstr(body, " mine") != NULL,
+    check(body != NULL && strstr(body, " mine") != NULL && strstr(body, "Renamed while asking") != NULL,
           "Keep Mine: the editor's version is then saved over it, deliberately");
     g_free(body);
 
@@ -2973,7 +3059,7 @@ main(void)
         on_media_install(lib);
         on_library_ai_install(lib);
         check(app.open_note != NULL && app.live_document != NULL && app.live_edited != NULL &&
-              app.live_save != NULL && app.check_editors != NULL && app.flush_editors != NULL &&
+              app.live_held != NULL && app.live_save != NULL && app.check_editors != NULL && app.flush_editors != NULL &&
               app.notify_notes_changed != NULL && app.notify_note_saved != NULL &&
               app.notify_status != NULL, "the modules install the hooks the core calls");
 
@@ -2996,7 +3082,7 @@ main(void)
 
         check(on_library_run_command(lib, command_item(@"quicknote")), "Quick Note runs");
         pump(0.3);
-        check(editor_window_titled(@ON_DEFAULT_NOTE_TITLE) != nil,
+        check(editor_window_titled(@SHARED_DB_NOTE_DEFAULT_TITLE) != nil,
               "Quick Note creates a note and opens its editor");
         on_editor_close_all();
 

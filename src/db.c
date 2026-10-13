@@ -936,9 +936,8 @@ gint64
 on_db_note_create(OnDatabase *db, gint64 folder_id)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "INSERT INTO notes (folder_id, title, sort_order, created_at, "
-        "                   updated_at) "
-        "VALUES (?, '" ON_DEFAULT_NOTE_TITLE "', "
+        "INSERT INTO notes (folder_id, sort_order, created_at, updated_at) "
+        "VALUES (?, "
         "  COALESCE((SELECT MAX(sort_order)+1 FROM notes "
         "            WHERE folder_id IS ?), 0), "
         "  strftime('%s','now'), strftime('%s','now'))");
@@ -1449,12 +1448,12 @@ GList *
 on_db_notes_by_tag(OnDatabase *db, gint64 tag_id)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT n.id, COALESCE(n.folder_id,0), n.title, n.sort_order, "
-        "       n.updated_at, n.pinned, n.created_at "
-        "FROM notes n JOIN note_tags nt ON nt.note_id = n.id "
-        "WHERE nt.tag_id=? AND n.trashed=0 AND (n.folder_id IS NULL OR "
-        "      n.folder_id NOT IN (SELECT id FROM trash_folder_ids)) "
-        "ORDER BY n.updated_at DESC");
+        "SELECT id, COALESCE(folder_id,0), title, sort_order, "
+        "       updated_at, pinned, created_at "
+        "FROM notes "
+        "WHERE id IN (SELECT note_id FROM note_tags WHERE tag_id=?) "
+        "  AND " SHARED_DB_NOTE_VISIBLE_SQL " "
+        "ORDER BY updated_at DESC");
     if (stmt == NULL)
         return NULL;
     sqlite3_bind_int64(stmt, 1, tag_id);
@@ -1616,9 +1615,8 @@ task_push(OnDatabase *db, gint64 task_id, guint mask, const gchar *title,
 /* ---------------------------------------------------------------------------
  * task_tombstone() — Notes removed the line of task `task_id`: tombstone
  * it AND its subtasks, in one statement with one updated_at — the rule
- * the note_task_tombstone trigger applies when a link row is deleted:
- *   UPDATE tasks SET deleted = 1, updated_at = now
- *    WHERE (id = X OR parent_id = X) AND deleted = 0
+ * the note_task_tombstone trigger applies when a link row is deleted
+ * (SHARED_DB_SQL_TOMBSTONE_WHERE)
  * (a subtask deleted before keeps its own updated_at, so task_revive can
  * tell the two apart).
  * Returns TRUE on success.
@@ -1628,7 +1626,7 @@ task_tombstone(OnDatabase *db, gint64 task_id)
 {
     sqlite3_stmt *stmt = cached_prepare(db,
         "UPDATE tasks SET deleted = 1, updated_at = ?1"
-        " WHERE (id = ?2 OR parent_id = ?2) AND deleted = 0");
+        " WHERE " SHARED_DB_SQL_TOMBSTONE_WHERE("?2"));
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_int64(stmt, 1, task_now());
@@ -2119,29 +2117,6 @@ on_db_txn_on_end(OnDatabase *db, OnDbTxnHook hook, gpointer data)
     return TRUE;
 }
 
-/*
- * on_db_poll_revs — see db.h.  A deferred BEGIN: the first statement opens
- * the read snapshot, and PRAGMA data_version and both revs are read in it.
- */
-gboolean
-on_db_poll_revs(OnDatabase *db, gboolean *changed, gint64 *rev_tasks,
-                gint64 *rev_notes)
-{
-    if (sqlite3_get_autocommit(db->handle) == 0 || !exec_simple(db, "BEGIN"))
-        return FALSE;
-    int     moved = shared_db_changed(db->shared);
-    int64_t t = 0, n = 0;            /* the two revisions                  */
-    gboolean ok = shared_db_rev(db->shared, SHARED_DB_REV_TASKS, &t, NULL) == 0 &&
-                  shared_db_rev(db->shared, SHARED_DB_REV_NOTES, &n, NULL) == 0;
-    exec_simple(db, "COMMIT");
-    if (!ok)
-        return FALSE;
-    *changed   = moved != 0;
-    *rev_tasks = t;
-    *rev_notes = n;
-    return TRUE;
-}
-
 /* The columns both listings read off the action_items_ctx view, in
  * run_action_query()'s order: ACTION_COLS then the context.                 */
 #define ACTION_CTX_COLS ACTION_COLS ", context"
@@ -2529,11 +2504,10 @@ GHashTable *
 on_db_tag_count_map(OnDatabase *db)
 {
     return count_map_from_query(db,
-        "SELECT nt.tag_id, COUNT(*) FROM note_tags nt "
-        "JOIN notes n ON n.id = nt.note_id "
-        "WHERE n.trashed=0 AND (n.folder_id IS NULL OR "
-        "      n.folder_id NOT IN (SELECT id FROM trash_folder_ids)) "
-        "GROUP BY nt.tag_id");
+        "SELECT tag_id, COUNT(*) FROM note_tags "
+        "WHERE note_id IN (SELECT id FROM notes WHERE "
+        SHARED_DB_NOTE_VISIBLE_SQL ") "
+        "GROUP BY tag_id");
 }
 
 /*

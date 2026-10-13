@@ -132,11 +132,12 @@ module that owns it and never cleared:
 | `notify_note_saved(app, id)` | library_window.m | the editor after a plain save | update that one row |
 | `notify_status(app, msg)` | library_window.m | `on_app_status()` (printf-style) | status-bar event message |
 | `notify_ai_changed(app)` | library_ai.m (H) | Settings | `ai_enabled` changed |
-| `notify_db_health(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
+| `notify_db_state(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
 | `show_notice(app, title, msg)` | app_delegate.m | the integrity check, on damage | modal message |
 | `open_note(app, id)` | editor_window.m | library_notes.m | open/raise the editor |
 | `live_document(app, id)` / `live_edited(app, id)` | editor_window.m | action_sync.c | edit an OPEN note's document |
 | `live_save(app, id)` | editor_window.m | action_sync.c | that editor saves now, inside the pull's transaction |
+| `live_held(app, id)` | editor_window.m | action_sync.c | that editor waits for its "changed outside" answer: the pull skips the note |
 | `check_editors(app)` | editor_window.m | action_sync.c | after an outside change: reload an editor whose note another writer rewrote (or, with unsaved edits, offer Reload) |
 | `flush_editors(app)` | editor_window.m | `on_app_shutdown`, `on_app_switch_db` | close every editor, each saving first |
 

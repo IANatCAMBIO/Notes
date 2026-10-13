@@ -224,8 +224,8 @@ indented(NSView *view, CGFloat inset)
 }
 
 /*
- * health_stamp — when a check was made, in as few words as carry it:
- * "13:24 today", "Sep 8 at 09:02".
+ * when_stamp — when a check or a backup was made, in as few words as carry
+ * it: "13:24 today", "Sep 8 at 09:02".
  *
  * Inputs:
  *   when — UNIX time
@@ -233,7 +233,7 @@ indented(NSView *view, CGFloat inset)
  * Output: the text.
  */
 static NSString *
-health_stamp(gint64 when)
+when_stamp(gint64 when)
 {
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:(double)when];
     return on_ui_format_date(when, [NSCalendar.currentCalendar isDateInToday:date]
@@ -333,16 +333,18 @@ policy_store(OnApp *app, const char *key, gint64 value)
 static NotesSettingsWindow *settings_window;
 
 /*
- * settings_notify_db_health — OnApp.notify_db_health while the window is
- * open: a check started or landed, repaint the plate.
+ * settings_notify_db_state — OnApp.notify_db_state while the window is
+ * open: a check started or landed, or a backup pass ended — repaint the
+ * plate and the backup line.
  *
  * Inputs:
  *   app — the application context (unused)
  */
 static void
-settings_notify_db_health(OnApp *app)
+settings_notify_db_state(OnApp *app)
 {
     [settings_window refresh_db];
+    [settings_window refresh_backup];
 }
 
 @implementation NotesSettingsWindow
@@ -420,7 +422,7 @@ init_with_lib:(NotesLibrary *)lib
     [self refresh_db];
     [self refresh_backup];
     [self refresh_ai];
-    lib.app->notify_db_health = settings_notify_db_health;
+    lib.app->notify_db_state = settings_notify_db_state;
     return self;
 }
 
@@ -727,7 +729,7 @@ refresh_db
         text = @"Checking…";
         tip  = @"PRAGMA integrity_check is running on a worker thread; the verdict lands here.";
     } else {
-        NSString *when = health_stamp(h->when);
+        NSString *when = when_stamp(h->when);
         led  = h->ok ? led_ok : led_bad;
         text = h->ok ? [NSString stringWithFormat:@"Healthy — checked %@", when]
              : h->ran ? [NSString stringWithFormat:@"Problems found — %@", when]
@@ -795,7 +797,10 @@ show_sha:(NSString *)full
 /*
  * refresh_backup — the backup controls follow the master switch, and the
  * folder line names where backups land, with a warning when that folder
- * goes with the database's (GTK bk_section_refresh).
+ * goes with the database's (GTK bk_section_refresh), when the last backup
+ * was made (backup_last_at) and why the last pass failed
+ * (backup_last_error) — both can be set at once: a copy made whose
+ * pruning of old backups failed.
  */
 - (void)
 refresh_backup
@@ -818,10 +823,14 @@ refresh_backup
         ? [NSString stringWithFormat:@"Backing up to %@\n⚠ alongside the database — change it to survive "
                                       "losing that folder", dir]
         : [NSString stringWithFormat:@"Backing up to %@", dir];
+    int64_t last_at = 0;             /* when the last backup was made, or 0 */
+    shared_backup_policy_get(self.lib.app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
+    text = last_at > 0 ? [text stringByAppendingFormat:@"\nLast backup %@", when_stamp(last_at)]
+                       : [text stringByAppendingString:@"\nNo backup made yet"];
     char *last_error = NULL;         /* why the last backup failed, if it did */
     if (shared_settings_get(self.lib.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
                             &last_error, NULL) == 1 && last_error[0] != '\0') {
-        text = [text stringByAppendingFormat:@"\n⚠ The last backup failed: %@", @(last_error)];
+        text = [text stringByAppendingFormat:@"\n⚠ The last backup pass reported: %@", @(last_error)];
     }
     free(last_error);
     self.backup_path.stringValue = text;
@@ -940,7 +949,7 @@ browse_viewer:(id)sender
 /*
  * update_health: — Update: a health pass on a worker (THE check, as at
  * launch: its verdict lands in the status bar, problems in a tool panel,
- * and the plate refreshes through notify_db_health); the plate shows
+ * and the plate refreshes through notify_db_state); the plate shows
  * "Checking…" meanwhile.
  *
  * Inputs:
@@ -1066,7 +1075,7 @@ ai_toggled:(NSButton *)sender
 - (void)
 windowWillClose:(NSNotification *)note
 {
-    if (self.lib.app->notify_db_health == settings_notify_db_health) self.lib.app->notify_db_health = NULL;
+    if (self.lib.app->notify_db_state == settings_notify_db_state) self.lib.app->notify_db_state = NULL;
     settings_window = nil;
 }
 

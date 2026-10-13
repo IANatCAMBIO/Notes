@@ -1592,7 +1592,7 @@ start them first. E, F, G can develop against a stub editor
 1. **Primitive types / GLib policy** (10.1) — one header everyone includes.
 2. **`app_core.h`**: core context (db, db_dir, db_transient, preference
    fields, backup_running/backup_timer) + hooks: `notify_notes_changed`,
-   `notify_note_saved(id)`, `notify_status(msg)`, `notify_db_health`,
+   `notify_note_saved(id)`, `notify_status(msg)`, `notify_db_state`,
    `notify_ai_changed`, and NEW ones replacing the upward calls:
    `open_note(app, id, reveal_kind, ord, search_term)`, `quicknote(app)`,
    `live_document(app, note_id)` + `live_edited(app, note_id)` (for

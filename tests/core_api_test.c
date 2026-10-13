@@ -334,7 +334,7 @@ test_notes(OnDatabase *db)
     on_db_note_meta_free(meta);
 
     gint64 blank = on_note_new_from_text(db, 0, "");
-    check(note_title_is(db, blank, ON_DEFAULT_NOTE_TITLE),
+    check(note_title_is(db, blank, SHARED_DB_NOTE_DEFAULT_TITLE),
           "notes: an empty note takes the default title");
 
     /* Replacing the content (`note set`): the old tags and action items

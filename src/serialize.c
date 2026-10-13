@@ -209,7 +209,7 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
     if (ok) {
         gsize blob_len;              /* serialized content size             */
         guint8 *blob  = on_document_to_bnbf(doc, &blob_len);
-        gchar  *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE,
+        gchar  *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE,
                                           ON_TITLE_MAX_CHARS);
         gchar  *body  = on_document_plain_text(doc);
         ok = on_db_note_save(db, id, title, blob, blob_len, body);

@@ -64,7 +64,8 @@ typedef struct {
 
 /*
  * backup_finish — the pass's main-thread tail (on_main_post): report,
- * release the in-flight guard, free the job.
+ * release the in-flight guard, let Settings repaint its backup line
+ * (OnApp.notify_db_state: last backup time, last error), free the job.
  *
  * Inputs:
  *   data — the BackupJob
@@ -78,6 +79,8 @@ backup_finish(void *data)
     job->app->backup_running = FALSE;
     if (job->message != NULL)
         on_app_status(job->app, "%s", job->message);
+    if (job->app->notify_db_state != NULL)
+        job->app->notify_db_state(job->app);
     g_free(job->message);
     g_free(job->db_path);
     g_free(job);
@@ -85,7 +88,9 @@ backup_finish(void *data)
 
 /*
  * backup_worker — the pass, on its own connection: the module's backup
- * (or its due-check-and-claim, for the timer), then the hand-back.
+ * (or its due-check-and-claim, for the timer), then the hand-back.  Three
+ * outcomes are told apart: a backup made; a backup made whose pruning of
+ * old backups failed (-1 with the new path set); no backup.
  *
  * Inputs:
  *   data — the BackupJob
@@ -114,6 +119,11 @@ backup_worker(void *data)
         gchar *base = g_path_get_basename(out);
         job->message = g_strdup_printf("Backed up to %s", base);
         g_free(base);
+    } else if (rc < 0 && out != NULL) {
+        /* The copy was made and verified; what came after it (pruning the
+         * oldest backups) failed — the module's message says both.        */
+        job->message = g_strdup_printf("Backup made with a problem: %s",
+                                       err != NULL ? err : "unknown error");
     } else if (rc < 0) {
         job->message = g_strdup_printf("Backup failed: %s",
                                        err != NULL ? err : "unknown error");

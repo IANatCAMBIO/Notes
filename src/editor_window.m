@@ -844,7 +844,7 @@ build_image_viewer
         int w = 0, h = 0;
         if (!s || !on_note_view_image_size(s.note_view, idx, &w, &h)) return nil;
         gchar *title = on_document_title(on_note_view_document(s.note_view),
-                                         ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+                                         SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
         NSString *caption = [NSString stringWithFormat:@"%@ — image %ld of %ld — %zu × %zu",
                              @(title), (long)idx + 1, (long)on_note_view_image_count(s.note_view),
                              (size_t)w, (size_t)h];
@@ -901,7 +901,7 @@ reload_from_row
     self.dirty          = NO;
     on_note_view_reload_document(self.note_view, doc);
     [self record_stamp];
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+    gchar *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
     self.window.title = @(title);
     g_free(title);
     [self update_status];
@@ -940,7 +940,9 @@ check_outside
  * Keep Mine (this version is saved over the other writer's, deliberately:
  * the stored stamp is adopted and a save queued) or Reload (the other
  * writer's version replaces this one).  Until it is answered nothing is
- * saved.
+ * saved, and the pull leaves this note alone (hook_live_held); either
+ * answer then runs the pull, which brings what Tasks changed meanwhile
+ * into the version kept.
  */
 - (void)
 show_outside_notice
@@ -964,6 +966,7 @@ show_outside_notice
             [s record_stamp];        /* acknowledged: the next save writes ours */
             [s queue_autosave];
         }
+        on_action_sync_run(s.app, FALSE);
     }];
 }
 
@@ -1228,7 +1231,7 @@ save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
     self.dirty          = NO;
 
     OnDocument *doc   = on_note_view_document(self.note_view);
-    gchar      *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+    gchar      *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
     self.window.title = @(title);
     g_free(title);
     [self update_status];
@@ -1533,6 +1536,23 @@ hook_live_edited(OnApp *app, gint64 note_id)
 }
 
 /*
+ * hook_live_held — OnApp.live_held: the open editor of a note shows the
+ * "changed outside" panel and waits for its answer.
+ *
+ * Inputs:
+ *   app     — the application context (unused)
+ *   note_id — the note
+ *
+ * Output: TRUE while that panel is up; FALSE when it is not or the note
+ *         is not open.
+ */
+static gboolean
+hook_live_held(OnApp *app, gint64 note_id)
+{
+    return editor_for(note_id).outside_notice;
+}
+
+/*
  * hook_live_save — OnApp.live_save: the open editor of a note writes now,
  * inside the caller's transaction (the pull), pushing EVERY action line
  * (sync_actions forced: a title the pull refused must go back to its
@@ -1597,6 +1617,7 @@ on_editor_install(OnApp *app)
     app->open_note      = hook_open_note;
     app->live_document  = hook_live_document;
     app->live_edited    = hook_live_edited;
+    app->live_held      = hook_live_held;
     app->live_save      = hook_live_save;
     app->check_editors  = hook_check_editors;
     app->flush_editors  = hook_flush_editors;

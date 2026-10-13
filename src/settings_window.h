@@ -17,8 +17,9 @@
 /*
  * on_settings_install — register the "preferences" command, which shows the
  * Settings window.  While that window is open the module sets
- * OnApp.notify_db_health so the health plate repaints when a check starts
- * or lands, and clears it when the window closes.  Called once at startup
+ * OnApp.notify_db_state so the health plate and the backup line repaint
+ * when a check starts or lands and when a backup pass ends, and clears it
+ * when the window closes.  Called once at startup
  * by the app delegate.
  *
  * Inputs:

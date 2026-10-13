@@ -1004,6 +1004,155 @@ test_poll_revs(OnApp *app, OnDatabase *other)
 }
 
 /*
+ * test_commit_look — the look right after Notes' own commit (the commit
+ * hook on_action_sync_start installs): it adopts the revisions Notes'
+ * commit moved, so a later outside 'tasks' commit pulls without a library
+ * refresh; an outside commit that came before Notes' own is handled by
+ * that look.
+ *
+ * Inputs:
+ *   app   — headless context (its two refresh hooks counted here)
+ *   other — a second connection
+ */
+static void
+test_commit_look(OnApp *app, OnDatabase *other)
+{
+    on_action_sync_start(app, FALSE);
+    on_timer_remove(app->sync_timer);    /* the test polls by hand          */
+    app->sync_timer = 0;
+    gint64 note = on_note_new_from_text(app->db, 0, "Look\n! Looked at");
+    gint64 uid  = nth_uid(app->db, note, 0);
+    check_pump(NULL, 0.1);
+    app->notify_notes_changed = count_refresh;
+    app->check_editors        = count_check;
+
+    refreshes = editor_checks = 0;
+    on_note_new_from_text(app->db, 0, "Own commit, looked at");
+    check(app->commit_look_posted, "commit look: Notes' own commit posts one look");
+    check_pump(NULL, 0.1);
+    check(!app->commit_look_posted && refreshes == 0, "commit look: it adopts Notes' own revs, no refresh");
+    exec_uid(other, uid, "UPDATE tasks SET priority = 2 WHERE id = ?1");
+    check(on_action_sync_poll(app) && refreshes == 0 && editor_checks == 0,
+          "commit look: a later outside 'tasks' commit pulls, and nothing refreshes");
+
+    on_note_new_from_text(app->db, 0, "Own commit, not looked at");
+    exec_uid(other, uid, "UPDATE tasks SET priority = 1 WHERE id = ?1");
+    check(on_action_sync_poll(app) && refreshes == 1,
+          "control: without that look the poll counts Notes' own 'notes' movement and refreshes");
+    check_pump(NULL, 0.1);
+
+    refreshes = editor_checks = 0;
+    exec_sql(other, "UPDATE notes SET title = 'Renamed before' WHERE title = 'Look'");
+    on_note_new_from_text(app->db, 0, "Own commit after an outside one");
+    check_pump(NULL, 0.1);
+    check(refreshes == 1 && editor_checks == 1,
+          "commit look: an outside commit before Notes' own is handled by the look (refresh once)");
+    check(!on_action_sync_poll(app) && refreshes == 1, "commit look: and the next tick has nothing left");
+    app->notify_notes_changed = NULL;
+    app->check_editors        = NULL;
+}
+
+static gint64 held_note;             /* the note test_held's hook holds     */
+
+/*
+ * held_hook — OnApp.live_held for test_held: held_note's editor waits
+ * for its "changed outside" answer.
+ *
+ * Inputs:
+ *   app     — the context (unused)
+ *   note_id — the note
+ *
+ * Output: TRUE for held_note.
+ */
+static gboolean
+held_hook(OnApp *app, gint64 note_id)
+{
+    (void)app;
+    return note_id == held_note;
+}
+
+/*
+ * test_held — a note whose open editor shows the "changed outside" panel
+ * is left alone by the pull (no transaction, no failure, no retry every
+ * tick) until the answer runs the pull.
+ *
+ * Inputs:
+ *   app   — headless context
+ *   other — a second connection
+ */
+static void
+test_held(OnApp *app, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(app->db, 0, "! Held back\nbody");
+    gint64 uid  = nth_uid(app->db, note, 0);
+    on_action_sync_poll(app);
+    held_note       = note;
+    app->live_held  = held_hook;
+    exec_uid(other, uid, "UPDATE tasks SET title = 'Renamed while held' WHERE id = ?1");
+    on_action_sync_poll(app);
+    gchar *line = first_line(app->db, note, NULL);
+    check(strcmp(line, "! Held back") == 0 && pending_count(app->db) == 1 && !app->pull_failed,
+          "held: the pull leaves the note alone, and that is not a failure");
+    g_free(line);
+    check(!on_action_sync_poll(app) && !on_action_sync_poll(app),
+          "held: the next ticks do not retry it");
+    held_note = 0;                   /* the user answered                   */
+    on_action_sync_run(app, FALSE);
+    line = first_line(app->db, note, NULL);
+    check(strcmp(line, "! Renamed while held") == 0 && pending_count(app->db) == 0,
+          "held: the answer runs the pull, which brings the change in");
+    g_free(line);
+    app->live_held = NULL;
+}
+
+/*
+ * test_migrated_tombstone — a migrated file can hold a link with
+ * seen_deleted = 0 to a task tombstoned only in Tasks before migration
+ * (built here directly, as the migration writes it): the pull at launch
+ * (on_action_sync_start, on a fresh connection) unmarks the line and
+ * drops the link.
+ *
+ * Inputs:
+ *   db    — Notes' connection (makes the note)
+ *   other — the connection that writes the link as the migration does
+ */
+static void
+test_migrated_tombstone(OnDatabase *db, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(db, 0, "!! Deleted before migration due 2026-11-05\nbody");
+    gint64 uid  = nth_uid(db, note, 0);
+    gchar *sql  = g_strdup_printf(
+        "BEGIN;"
+        "CREATE TEMP TABLE mig AS SELECT * FROM note_task WHERE uid = %1$lld;"
+        "DELETE FROM note_task WHERE uid = %1$lld;"
+        "INSERT INTO tasks (list_id, title, due, deleted, updated_at)"
+        " SELECT t.list_id, t.title, t.due, 1, 1 FROM tasks t JOIN mig ON t.id = mig.task_id;"
+        "INSERT INTO note_task (uid, task_id, note_id, ord, seen_title, seen_done, seen_due,"
+        " seen_deleted) SELECT uid, last_insert_rowid(), note_id, ord, seen_title, seen_done,"
+        " seen_due, 0 FROM mig;"
+        "DROP TABLE mig;"
+        "COMMIT;", (long long)uid);
+    gint64 tombstoned = -1;
+    check(exec_sql(other, sql) &&
+          uid_sql(other, uid, "SELECT deleted FROM tasks WHERE id = ?1", &tombstoned) && tombstoned == 1,
+          "migrated: a link with seen_deleted = 0 to a tombstoned task, built directly");
+    g_free(sql);
+
+    OnApp launch = { 0 };            /* a fresh launch on its own connection */
+    launch.db = on_db_open(NULL, NULL);
+    on_action_sync_start(&launch, FALSE);
+    on_timer_remove(launch.sync_timer);
+    check_pump(NULL, 0.1);           /* the look after the pull's commit    */
+    OnActionLink row;
+    gchar *line = first_line(launch.db, note, NULL);
+    check(strcmp(line, "Deleted before migration due 2026-11-05") == 0 &&
+          !link_of(launch.db, uid, note, &row) && pending_count(launch.db) == 0,
+          "migrated: the pull at launch unmarks the line and drops the link");
+    g_free(line);
+    on_db_close(launch.db);
+}
+
+/*
  * main — run the test.
  *
  * Output: 0 when every check held.
@@ -1031,6 +1180,9 @@ main(void)
     test_failed_save_uids(db);
     test_new_from_text_atomic(db, other);
     test_poll_revs(&app, other);
+    test_held(&app, other);
+    test_migrated_tombstone(db, other);
+    test_commit_look(&app, other);
     on_db_close(other);
     on_db_close(db);
     return check_result();

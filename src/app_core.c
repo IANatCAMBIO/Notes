@@ -126,8 +126,8 @@ db_health_done(OnDatabase *db, gpointer data)
         app->show_notice(app, "Database Integrity Check", message);
         g_free(message);
     }
-    if (app->notify_db_health != NULL) {
-        app->notify_db_health(app);
+    if (app->notify_db_state != NULL) {
+        app->notify_db_state(app);
     }
 }
 
@@ -138,7 +138,7 @@ void
 on_app_db_health_start(OnApp *app)
 {
     on_db_health_check_async(app->db, db_health_done, app);
-    if (app->notify_db_health != NULL) {
-        app->notify_db_health(app);  /* the plate shows "checking"           */
+    if (app->notify_db_state != NULL) {
+        app->notify_db_state(app);  /* the plate shows "checking"           */
     }
 }

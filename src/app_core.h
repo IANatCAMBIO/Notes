@@ -74,6 +74,8 @@
  *   rev_notes      — likewise 'notes', for the library's refresh.
  *   pull_failed    — the last pull left a note unsynced: the next poll
  *                    tick pulls again, outside commit or not.
+ *   commit_look_posted — the look after Notes' own commit is posted and
+ *                    has not run yet (one post for any number of commits).
  *
  * Hooks (see the invariant above; each says who calls it):
  *   notify_notes_changed — the set of notes, folders, tags or action items
@@ -87,8 +89,10 @@
  *                    bar.  Post through on_app_status().
  *   notify_ai_changed — ai_enabled changed: show or hide the AI control.
  *                    Called by Settings.
- *   notify_db_health — the health verdict changed (a check started or
- *                    landed): repaint the Settings database plate.
+ *   notify_db_state — the health verdict changed (a check started or
+ *                    landed) or a backup pass ended: repaint the Settings
+ *                    database plate and backup line.  Called by
+ *                    on_app_db_health_start and backup.c.
  *   show_notice    — show a modal message the user must see (the integrity
  *                    check found damage).  Called by on_app_db_health_start.
  *   open_note      — open the editor for a note, or raise it if it is
@@ -106,6 +110,11 @@
  *                    scroll) and queues its autosave.  Called by the pull
  *                    (action_sync.c) when its transaction has ended, only
  *                    when it did change the document.
+ *   live_held      — note_id's open editor waits for the user to answer
+ *                    its "changed outside" panel: the pull leaves the
+ *                    note alone until then (the answer runs the pull).
+ *                    FALSE when the note is not open or not waiting.
+ *                    Called by the pull (action_sync.c).
  *   live_save      — write the open editor of note_id NOW (its autosave
  *                    cancelled, every action line pushed), inside the
  *                    caller's transaction: the pull's rewrite of a live
@@ -150,17 +159,19 @@ typedef struct OnApp {
     gint64      rev_tasks;
     gint64      rev_notes;
     gboolean    pull_failed;
+    gboolean    commit_look_posted;
 
     void        (*notify_notes_changed)(struct OnApp *app);
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);
     void        (*notify_status)(struct OnApp *app, const gchar *message);
     void        (*notify_ai_changed)(struct OnApp *app);
-    void        (*notify_db_health)(struct OnApp *app);
+    void        (*notify_db_state)(struct OnApp *app);
     void        (*show_notice)(struct OnApp *app, const gchar *title,
                                const gchar *message);
     gboolean    (*open_note)(struct OnApp *app, gint64 note_id);
     OnDocument *(*live_document)(struct OnApp *app, gint64 note_id);
     void        (*live_edited)(struct OnApp *app, gint64 note_id);
+    gboolean    (*live_held)(struct OnApp *app, gint64 note_id);
     gboolean    (*live_save)(struct OnApp *app, gint64 note_id);
     void        (*check_editors)(struct OnApp *app);
     gboolean    (*flush_editors)(struct OnApp *app);
@@ -225,7 +236,7 @@ gchar *on_app_folder_location(OnApp *app, gint64 folder_id);
  * looked"), and Settings' Update on request.  It runs on a worker with its own read-only
  * connection; when the verdict lands on the main thread it posts a status
  * line, or calls app->show_notice if anything is wrong, and then
- * app->notify_db_health.
+ * app->notify_db_state.
  *
  * Inputs:
  *   app — the application context, its database open

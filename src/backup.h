@@ -16,9 +16,11 @@
  *                        SHARED_BACKUP_INTERVAL_MIN_DEFAULT; 0 = only when
  *                        "Back Up Now" is pressed.
  *   backup_keep          files retained, SHARED_BACKUP_KEEP_MIN..MAX.
- *   backup_last_at       when the last backup was made (the module's).
- *   backup_last_error    why the last one failed (the module's; Settings
- *                        shows it).
+ *   backup_last_at       when the last backup was made (the module's;
+ *                        Settings shows it).
+ *   backup_last_error    why the last pass failed (the module's; Settings
+ *                        shows it).  A copy made whose pruning of old
+ *                        backups then failed sets both.
  *
  * Settings reads the policy through shared_backup_policy_get (defaults and
  * ranges are the module's), writes it with shared_settings_set, and
@@ -27,10 +29,7 @@
  *
  * What this module adds is Notes' part: the worker (with its OWN
  * connection — a connection never crosses threads — so a slow destination
- * never blocks the UI) and the periodic poll timer.  (A sandboxed run —
- * $CAMBIO_SHARED_DB set — with no backup_dir backs up into `backups/`
- * beside that file: the module's rule, so dev and test backups never reach
- * the per-user folder.)
+ * never blocks the UI) and the periodic poll timer.
  *
  * The module never deletes a database's -wal / -shm files; nor does this.
  *
@@ -61,7 +60,9 @@ gchar *on_backup_dir(OnApp *app, gchar **why);
  * on_backup_start() — "Back Up Now": one backup on a worker, regardless of
  * the schedule (shared_db_backup).  Refused with a status message when
  * on_backup_dir refuses; ignored while a pass is in flight.  The outcome
- * is posted as a status message.
+ * is posted as a status message — a backup made, a backup made whose
+ * pruning of old backups failed (the module's -1 with the path set), or
+ * no backup — and Settings repaints its backup line (notify_db_state).
  *
  * Inputs:
  *   app — the application context, its database open

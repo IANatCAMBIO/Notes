@@ -456,8 +456,8 @@ text_check(const OnText *t, gboolean allow_newline, const gchar *where,
         return FALSE;                                                   \
     } G_STMT_END
 
-    if (!allow_newline && memchr(t->text->str, '\n', t->text->len) != NULL)
-        FAIL("text contains a newline");
+    if (!allow_newline && on_document_text_has_line_break(t->text->str, t->text->len))
+        FAIL("text contains a line break");
     if (!g_utf8_validate_len(t->text->str, (gssize)t->text->len, NULL))
         FAIL("text is not valid UTF-8");
 
@@ -911,6 +911,16 @@ line_break(const gchar *p, const gchar *end, gsize *brk)
     }
     *brk = 0;
     return end;
+}
+
+/*
+ * on_document_text_has_line_break — see document.h.
+ */
+gboolean
+on_document_text_has_line_break(const gchar *s, gsize n)
+{
+    gsize brk;                       /* the break's length (unused)         */
+    return line_break(s, s + n, &brk) != s + n;
 }
 
 OnDocument *
@@ -1800,7 +1810,7 @@ on_document_insert_text(OnDocument *d, OnPos pos, const gchar *s, gsize n,
 {
     if (pos_ok(d, pos, 0) == NULL || n == 0 ||
         !g_utf8_validate_len(s, (gssize)n, NULL) ||
-        (pos.cell < 0 && memchr(s, '\n', n) != NULL) ||
+        (pos.cell < 0 && on_document_text_has_line_break(s, n)) ||
         g_strstr_len(s, (gssize)n, ON_OBJ_CHAR) != NULL)
         return FALSE;
     Op *op = op_new(OP_INSERT_TEXT);
@@ -2788,7 +2798,7 @@ on_document_action_text(OnDocument *d, gint ord, const gchar *text)
     guint i = action_block(d, ord);
     gsize n = text != NULL ? strlen(text) : 0;
     if (i == G_MAXUINT || n == 0 || !g_utf8_validate_len(text, (gssize)n, NULL) ||
-        memchr(text, '\n', n) != NULL || strstr(text, ON_OBJ_CHAR) != NULL)
+        on_document_text_has_line_break(text, n) || strstr(text, ON_OBJ_CHAR) != NULL)
         return FALSE;
     OnText *t = on_document_block(d, i)->text;
     gsize start, end;                /* the item text                       */

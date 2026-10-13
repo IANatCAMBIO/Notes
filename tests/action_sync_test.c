@@ -706,6 +706,39 @@ test_pull_refused(OnApp *app, OnDatabase *other)
           "pull: a title the line refuses is written back from the line; nothing stays pending");
     g_free(ta);
     g_free(tb);
+
+    /* Every line break the loader splits at, a NUL and invalid UTF-8 are
+     * refused the same way: the line, its due date and the note survive.  */
+    static const char *const bad[] = {
+        "UPDATE tasks SET title = 'carriage' || char(13) || 'return' WHERE id = ?1",
+        "UPDATE tasks SET title = 'windows' || char(13, 10) || 'break' WHERE id = ?1",
+        "UPDATE tasks SET title = 'para' || char(8233) || 'graph' WHERE id = ?1",
+        "UPDATE tasks SET title = CAST(X'6E756C00746974' AS TEXT) WHERE id = ?1",
+        "UPDATE tasks SET title = CAST(X'626164FF75746638' AS TEXT) WHERE id = ?1",
+    };
+    static const char *const what[] = { "a \\r", "\\r\\n", "U+2029", "a NUL", "invalid UTF-8" };
+    gint64 dated = on_note_new_from_text(app->db, 0, "! Keep me due 2026-11-20\nafter");
+    gint64 uid   = nth_uid(app->db, dated, 0);
+    on_action_sync_poll(app);
+    for (guint i = 0; i < G_N_ELEMENTS(bad); i++) {
+        exec_uid(other, uid, bad[i]);
+        on_action_sync_poll(app);
+        gchar *line = first_line(app->db, dated, NULL);
+        gchar *body = on_note_text_cached(app->db, dated);
+        gchar *task = task_title(app->db, uid);
+        gint64 len  = -1;
+        uid_sql(app->db, uid, "SELECT length(CAST(title AS BLOB)) FROM tasks WHERE id = ?1", &len);
+        char msg[160];
+        snprintf(msg, sizeof msg, "pull: a title with %s is refused: the line, its due date and the "
+                 "next line stay, the line's text goes back to the task", what[i]);
+        check(strcmp(line, "! Keep me due 2026-11-20") == 0 && body != NULL &&
+              strstr(body, "Keep me due 2026-11-20\nafter") != NULL &&
+              strcmp(task, "Keep me") == 0 && len == 7 && pending_count(app->db) == 0 &&
+              task_int(app->db, uid, "due") == check_midnight(2026, 11, 20), msg);
+        g_free(line);
+        g_free(body);
+        g_free(task);
+    }
 }
 
 /*

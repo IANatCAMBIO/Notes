@@ -334,16 +334,18 @@ on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
             g_array_unref(blocks);
         }
         gboolean seen = FALSE;       /* a seen_* value moved to the task's  */
-        if (g_strcmp0(row->title, row->seen_title) != 0) {
-            if (ord >= 0 && g_strcmp0(text, row->title) != 0) {
-                if (on_document_action_text(doc, ord, row->title))
+        if (on_db_action_link_title_moved(row)) {
+            /* A title with a NUL or invalid UTF-8 is refused like one the
+             * line cannot take (a line break, empty, ending in a due).     */
+            gboolean same = row->title_ok && g_strcmp0(text, row->title) == 0;
+            if (ord >= 0 && !same) {
+                if (row->title_ok && on_document_action_text(doc, ord, row->title))
                     edited = TRUE;
                 else
                     push = TRUE;     /* the line keeps its text; the push
                                         writes it back to the task          */
             }
-            g_free(row->seen_title);
-            row->seen_title = g_strdup(row->title);
+            on_db_action_link_agree_title(row, row->title, row->title_len);
             seen = TRUE;
         }
         if (row->done != row->seen_done) {
@@ -364,7 +366,7 @@ on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
         }
         g_free(text);
         if (seen)
-            ok = on_db_action_link_set_seen(db, row);
+            ok = on_db_action_link_update(db, row);
     }
     g_array_unref(rows);
     if (changed != NULL)

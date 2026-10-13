@@ -1758,10 +1758,22 @@ test_action_rewrites(void)
     guint depth = on_document_undo_depth(d);
     g_assert_false(on_document_action_text(d, 0, "pay \xef\xbf\xbc rent"));
     g_assert_false(on_document_action_text(d, 0, "two\nlines"));
+    g_assert_false(on_document_action_text(d, 0, "carriage\rreturn"));
+    g_assert_false(on_document_action_text(d, 0, "windows\r\nbreak"));
+    g_assert_false(on_document_action_text(d, 0, "para\xe2\x80\xa9graph"));
     g_assert_false(on_document_action_text(d, 0, ""));
     g_assert_false(on_document_action_text(d, 1, "due 2026-01-01"));
     g_assert_cmpstr(block_text(d, 3), ==, "!  renamed due 2027-03-04");
     g_assert_cmpstr(block_text(d, 5), ==, "! still done");
+    g_assert_cmpuint(on_document_undo_depth(d), ==, depth);
+    /* Every break the loader splits at is refused in block text too (one
+     * predicate); U+2028 is not one of them.                               */
+    OnPos at = { 3, -1, 1 };
+    g_assert_false(on_document_insert_text(d, at, "a\rb", 3, 0));
+    g_assert_false(on_document_insert_text(d, at, "a\xe2\x80\xa9" "b", 5, 0));
+    g_assert_true(on_document_text_has_line_break("x\r", 2));
+    g_assert_true(on_document_text_has_line_break("\xe2\x80\xa9", 3));
+    g_assert_false(on_document_text_has_line_break("line\xe2\x80\xa8" "sep", 10));
     g_assert_cmpuint(on_document_undo_depth(d), ==, depth);
     g_assert_true(on_document_action_text(d, 0, "  spaced  "));
     g_assert_cmpstr(block_text(d, 3), ==, "!  spaced due 2027-03-04");

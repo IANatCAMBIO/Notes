@@ -145,10 +145,13 @@ void on_note_document_release(OnDatabase *db, OnDocument *doc);
  *     seen_done; due vs seen_due), the line is rewritten to the task's
  *     value if it differs (on_document_action_text / _strike / _due: the
  *     '!', spacing, due suffix and strike of the line are kept; a due date
- *     is written " due YYYY-MM-DD"), and seen_* := the task's value.  A
- *     title the line cannot take (empty, a newline, or text that would read
- *     back as something else, e.g. ending in "due <date>") leaves the line
- *     as it is — seen_title is still set, so the save's push writes the
+ *     is written " due YYYY-MM-DD"), and seen_* := the task's value (every
+ *     byte of the title).  A title the line cannot take — empty; holding a
+ *     line break (on_document_text_has_line_break: "\n", "\r", U+2029),
+ *     U+FFFC, a NUL or invalid UTF-8 over its whole stored length; or text
+ *     that would read back as something else, e.g. ending in "due <date>"
+ *     — leaves the line as it is: seen_title is still set to the task's
+ *     title, so the save's push (which the pull then asks for) writes the
  *     line's text back to the task.
  * Each rewrite is an undo group of the document.
  *

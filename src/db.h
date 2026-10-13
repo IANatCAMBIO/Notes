@@ -514,11 +514,15 @@ typedef struct {
     gint64   task_id;
     gint64   note_id;
     gint     ord;
-    gchar   *seen_title;
+    gchar   *seen_title;             /* every byte of it (NUL-terminated,  */
+    gsize    seen_title_len;         /* but may hold a NUL: use the length) */
     gboolean seen_done;
     gint64   seen_due;
     gboolean seen_deleted;           /* 1 = Notes itself tombstoned it      */
-    gchar   *title;                  /* the task's                          */
+    gchar   *title;                  /* the task's, every byte, as above    */
+    gsize    title_len;
+    gboolean title_ok;               /* valid UTF-8 with no NUL over its
+                                        whole length: a line can show it   */
     gboolean done;                   /* status == DONE                      */
     gint64   due;
     gboolean deleted;
@@ -560,18 +564,30 @@ gboolean on_db_note_save_actions(OnDatabase *db, gint64 note_id,
 
 /* on_db_action_diff() — which fields (ON_ACTION_FIELD_*) of the line `it`
  * differ from the row's seen_* baseline: what a push writes.  Text is
- * compared byte for byte (the line's text is already trimmed), done as a
- * boolean, due as the integer.                                            */
+ * compared byte for byte over seen_title's whole length (the line's text
+ * is already trimmed), done as a boolean, due as the integer.             */
 guint on_db_action_diff(const OnActionItem *it, const OnActionLink *row);
+
+/* on_db_action_link_title_moved() — whether the task's title differs from
+ * seen_title, byte for byte over both whole lengths (a NUL inside one
+ * counts).                                                                */
+gboolean on_db_action_link_title_moved(const OnActionLink *row);
+
+/* on_db_action_link_agree_title() — seen_title := `len` bytes of `text`
+ * (in memory; on_db_action_link_update writes it).                        */
+void on_db_action_link_agree_title(OnActionLink *row, const gchar *text,
+                                   gsize len);
 
 /* on_db_action_links() — every note_task row of note `note_id` with its
  * task, ord order.  Returns a GArray of OnActionLink that clears its
  * elements; g_array_unref() it.                                           */
 GArray *on_db_action_links(OnDatabase *db, gint64 note_id);
 
-/* on_db_action_link_set_seen() — write a row's placement and seen_*
- * baseline as given (the pull's "seen := the task").  TRUE on success.    */
-gboolean on_db_action_link_set_seen(OnDatabase *db, const OnActionLink *row);
+/* on_db_action_link_update() — write a row's placement and its whole
+ * seen_* baseline as given (the push and the pull: "seen := what the line
+ * and the task now agree on"); seen_title is written with all of its
+ * bytes.  TRUE on success.                                                */
+gboolean on_db_action_link_update(OnDatabase *db, const OnActionLink *row);
 
 /* on_db_action_link_delete() — delete one note_task row (the pull, when
  * the task was deleted elsewhere and its line has been unmarked; the

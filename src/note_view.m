@@ -2447,8 +2447,7 @@ insertText:(id)string replacementRange:(NSRange)replacementRange
     }
     const char *u8 = text.UTF8String;
     if (u8 == NULL || *u8 == '\0') return;
-    if (strpbrk(u8, "\r\n") != NULL || strstr(u8, "\xe2\x80\xa9") != NULL ||
-        strstr(u8, ON_OBJ_CHAR) != NULL) {
+    if (on_document_text_has_line_break(u8, strlen(u8)) || strstr(u8, ON_OBJ_CHAR) != NULL) {
         /* Several lines at once (dictation, Writing Tools): a line of
          * text cannot hold them, so they go in as a plain paste does.   */
         OnDocument *frag = on_document_from_text(u8);

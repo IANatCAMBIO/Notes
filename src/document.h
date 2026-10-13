@@ -315,8 +315,8 @@ OnText *on_document_text_at(const OnDocument *d, OnPos pos);
  * ------------------------------------------------------------------------- */
 
 /* on_document_insert_text() — `n` bytes of `s` at `pos` under `flags`
- * (ON_FMT_RUN_MASK bits).  Refuses a newline in block text; a cell may
- * hold one.                                                               */
+ * (ON_FMT_RUN_MASK bits).  Refuses any line break in block text
+ * (on_document_text_has_line_break); a cell may hold "\n".               */
 gboolean on_document_insert_text(OnDocument *d, OnPos pos, const gchar *s,
                                  gsize n, guint32 flags);
 
@@ -488,6 +488,17 @@ gchar *on_document_title(const OnDocument *d, const gchar *fallback,
                          glong max_chars);
 
 /* ---------------------------------------------------------------------------
+ * on_document_text_has_line_break() — whether `s` holds anything the loader
+ * breaks a line at: "\n", "\r" (alone or in "\r\n") or U+2029 PARAGRAPH
+ * SEPARATOR (U+2028 is not one).  THE one list (document.c line_break):
+ * a line's text never holds one, so every path that puts outside text into
+ * a line — typing, an action item's text, a title pulled from a task —
+ * asks this.
+ *   s — the bytes; n — their count.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_text_has_line_break(const gchar *s, gsize n);
+
+/* ---------------------------------------------------------------------------
  * on_document_from_text() — a document of PARA blocks, one per line of
  * `text` (broken like the loader breaks lines: "\n", "\r\n", "\r",
  * U+2029).  What `note new` and `note set` build, and a plain-text paste.
@@ -554,8 +565,8 @@ gboolean on_document_action_due(OnDocument *d, gint ord, gint64 due);
 /* on_document_action_text() — replace the item TEXT, keeping the '!'
  * prefix, the line's own spacing and any trailing "due <date>"; the new
  * text (less its outer spaces) is given the old text's strike state.  Refused (FALSE,
- * the document unchanged) when `text` is empty, not UTF-8, holds a newline
- * or U+FFFC, would not read back as itself less its outer spaces (it ends
+ * the document unchanged) when `text` is empty, not UTF-8, holds a line
+ * break (on_document_text_has_line_break) or U+FFFC, would not read back as itself less its outer spaces (it ends
  * in what parses as a due date), would leave the line no longer an item,
  * or when the old text holds an inline image.             */
 gboolean on_document_action_text(OnDocument *d, gint ord,

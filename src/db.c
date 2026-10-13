@@ -1569,6 +1569,26 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
 }
 
 /* ---------------------------------------------------------------------------
+ * column_bytes() — every byte of a TEXT column, NUL-terminated but kept
+ * whole when it holds a NUL (sqlite3_column_bytes, not strlen).
+ *   stmt — a statement on a result row.
+ *   col  — the column.
+ *   len  — out: the byte count.
+ * Returns a new string ("" for NULL); g_free() it.
+ * ------------------------------------------------------------------------- */
+static gchar *
+column_bytes(sqlite3_stmt *stmt, int col, gsize *len)
+{
+    const guchar *text = sqlite3_column_text(stmt, col);
+    *len = (gsize)sqlite3_column_bytes(stmt, col);
+    gchar *out = g_malloc(*len + 1);
+    if (*len > 0)
+        memcpy(out, text, *len);
+    out[*len] = '\0';
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
  * link_from_row() — fill an OnActionLink from the current result row of a
  * statement selecting LINK_COLS (below), in that order; its strings are
  * new (on_db_action_link_clear).  Returns TRUE.
@@ -1580,11 +1600,12 @@ link_from_row(sqlite3_stmt *stmt, OnActionLink *row)
     row->task_id      = sqlite3_column_int64(stmt, 1);
     row->note_id      = sqlite3_column_int64(stmt, 2);
     row->ord          = sqlite3_column_int(stmt, 3);
-    row->seen_title   = g_strdup((const gchar *)sqlite3_column_text(stmt, 4));
+    row->seen_title   = column_bytes(stmt, 4, &row->seen_title_len);
     row->seen_done    = sqlite3_column_int(stmt, 5) != 0;
     row->seen_due     = sqlite3_column_int64(stmt, 6);
     row->seen_deleted = sqlite3_column_int(stmt, 7) != 0;
-    row->title        = g_strdup((const gchar *)sqlite3_column_text(stmt, 8));
+    row->title        = column_bytes(stmt, 8, &row->title_len);
+    row->title_ok     = g_utf8_validate_len(row->title, row->title_len, NULL);
     row->done         = sqlite3_column_int(stmt, 9) == SHARED_DB_TASK_STATUS_DONE;
     row->due          = sqlite3_column_int64(stmt, 10);
     row->deleted      = sqlite3_column_int(stmt, 11) != 0;
@@ -1614,13 +1635,18 @@ link_get(OnDatabase *db, gint64 uid, OnActionLink *row)
     return found;
 }
 
+/*
+ * on_db_action_link_clear — see db.h.
+ */
 void
 on_db_action_link_clear(OnActionLink *row)
 {
     g_free(row->seen_title);
     g_free(row->title);
-    row->seen_title = NULL;
-    row->title      = NULL;
+    row->seen_title     = NULL;
+    row->title          = NULL;
+    row->seen_title_len = 0;
+    row->title_len      = 0;
 }
 
 GArray *
@@ -1643,13 +1669,11 @@ on_db_action_links(OnDatabase *db, gint64 note_id)
     return rows;
 }
 
-/* ---------------------------------------------------------------------------
- * link_update() — write the note_task row of `uid`: placement and the
- * whole seen_* baseline (the caller passes the values it agreed on).
- * Returns TRUE on success.
- * ------------------------------------------------------------------------- */
-static gboolean
-link_update(OnDatabase *db, const OnActionLink *row)
+/*
+ * on_db_action_link_update — see db.h.
+ */
+gboolean
+on_db_action_link_update(OnDatabase *db, const OnActionLink *row)
 {
     sqlite3_stmt *stmt = cached_prepare(db,
         "UPDATE note_task SET note_id=?, ord=?, seen_title=?, seen_done=?,"
@@ -1659,7 +1683,8 @@ link_update(OnDatabase *db, const OnActionLink *row)
     sqlite3_bind_int64(stmt, 1, row->note_id);
     sqlite3_bind_int(stmt, 2, row->ord);
     sqlite3_bind_text(stmt, 3, row->seen_title != NULL ? row->seen_title : "",
-                      -1, SQLITE_TRANSIENT);
+                      row->seen_title != NULL ? (int)row->seen_title_len : 0,
+                      SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 4, row->seen_done ? 1 : 0);
     sqlite3_bind_int64(stmt, 5, row->seen_due);
     sqlite3_bind_int(stmt, 6, row->seen_deleted ? 1 : 0);
@@ -1667,12 +1692,33 @@ link_update(OnDatabase *db, const OnActionLink *row)
     return cached_stmt_done(db, stmt);
 }
 
+/*
+ * on_db_action_link_title_moved — see db.h.
+ */
 gboolean
-on_db_action_link_set_seen(OnDatabase *db, const OnActionLink *row)
+on_db_action_link_title_moved(const OnActionLink *row)
 {
-    return link_update(db, row);
+    return row->title_len != row->seen_title_len ||
+           memcmp(row->title, row->seen_title, row->title_len) != 0;
 }
 
+/*
+ * on_db_action_link_agree_title — see db.h.
+ */
+void
+on_db_action_link_agree_title(OnActionLink *row, const gchar *text, gsize len)
+{
+    g_free(row->seen_title);
+    row->seen_title = g_malloc(len + 1);
+    if (len > 0)
+        memcpy(row->seen_title, text, len);
+    row->seen_title[len] = '\0';
+    row->seen_title_len  = len;
+}
+
+/*
+ * on_db_action_link_delete — see db.h.
+ */
 gboolean
 on_db_action_link_delete(OnDatabase *db, gint64 uid)
 {
@@ -1682,11 +1728,15 @@ on_db_action_link_delete(OnDatabase *db, gint64 uid)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_action_diff — see db.h.
+ */
 guint
 on_db_action_diff(const OnActionItem *it, const OnActionLink *row)
 {
     guint mask = 0;                  /* the fields that differ              */
-    if (g_strcmp0(it->text, row->seen_title) != 0)
+    gsize n    = it->text != NULL ? strlen(it->text) : 0;
+    if (n != row->seen_title_len || memcmp(it->text, row->seen_title, n) != 0)
         mask |= ON_ACTION_FIELD_TEXT;
     if ((it->done != 0) != (row->seen_done != 0))
         mask |= ON_ACTION_FIELD_DONE;
@@ -1724,8 +1774,7 @@ push_item(OnDatabase *db, OnActionLink *row, const OnActionItem *it,
     if (ok && mask != 0) {
         ok = task_push(db, row->task_id, mask, it->text, it->done, it->due);
         *changed = TRUE;
-        g_free(row->seen_title);
-        row->seen_title = g_strdup(it->text);
+        on_db_action_link_agree_title(row, it->text, strlen(it->text));
         row->seen_done  = it->done;
         row->seen_due   = it->due;
         link = TRUE;
@@ -1733,7 +1782,7 @@ push_item(OnDatabase *db, OnActionLink *row, const OnActionItem *it,
     row->note_id = note_id;
     row->ord     = ord;
     if (ok && link)
-        ok = link_update(db, row);
+        ok = on_db_action_link_update(db, row);
     return ok;
 }
 

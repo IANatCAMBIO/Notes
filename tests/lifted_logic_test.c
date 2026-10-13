@@ -23,6 +23,7 @@
 static OnDocument *live_doc;         /* the "open editor's" document         */
 static gint64      live_note;        /* the note it is editing               */
 static int         live_edits;       /* live_edited calls                    */
+static int         live_saves;       /* live_save calls                      */
 static int         flushes;          /* flush_editors calls                  */
 static gboolean    flush_fails;      /* the "editor" cannot save             */
 
@@ -55,6 +56,23 @@ fake_live_edited(OnApp *app, gint64 note_id)
     (void)app;
     (void)note_id;
     live_edits++;
+}
+
+/*
+ * fake_live_save — OnApp.live_save: save the "open" document as the
+ * editor's save does (inside the caller's transaction), and count.
+ *
+ * Inputs:
+ *   app     — the context
+ *   note_id — the note
+ *
+ * Output: TRUE when saved.
+ */
+static gboolean
+fake_live_save(OnApp *app, gint64 note_id)
+{
+    live_saves++;
+    return on_note_document_save(app->db, note_id, live_doc, TRUE, NULL);
 }
 
 /*
@@ -239,11 +257,12 @@ test_action_edit(OnApp *app)
     check(!on_action_edit_set_done(app, 987654, TRUE), "an unknown uid is refused");
 
     /* Live: the note is "open" — its document is edited in place, the
-     * editor is told, and the STORED blob is left for the editor's save.   */
+     * editor is told, and the editor saves it in the same transaction.     */
     live_note = note;
     live_doc  = on_note_document_load(app->db, note);
     app->live_document = fake_live_document;
     app->live_edited   = fake_live_edited;
+    app->live_save     = fake_live_save;
     gchar     *before = line_of(app->db, note, 1);
     gint64     due    = check_midnight(2027, 3, 3);
     check(on_action_edit_set_due(app, uid, due), "live: a due date is written");
@@ -252,7 +271,8 @@ test_action_edit(OnApp *app)
                  "! Call the bank due 2027-03-03") == 0,
           "live: the open document shows the new due date");
     gchar *after = line_of(app->db, note, 1);
-    check(strcmp(before, after) == 0, "live: the stored blob waits for the editor's own save");
+    check(strcmp(before, after) != 0 && strcmp(after, "! Call the bank due 2027-03-03") == 0 &&
+          live_saves == 1, "live: the editor saved it at once, through its own save");
     row = on_db_action_get(app->db, uid);
     check(row != NULL && row->due == due, "live: the task row was written first");
     on_db_action_item_free(row);
@@ -271,6 +291,7 @@ test_action_edit(OnApp *app)
     live_doc = NULL;
     app->live_document = NULL;
     app->live_edited   = NULL;
+    app->live_save     = NULL;
 }
 
 /* ── Search ─────────────────────────────────────────────────────────────── */

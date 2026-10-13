@@ -190,46 +190,110 @@ on_note_new_from_text(OnDatabase *db, gint64 folder_id, const gchar *text)
     return id;
 }
 
-gboolean
-on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc)
+/*
+ * action_unmark — turn the real action line in `block` into a plain line:
+ * delete the leading '!' and the whitespace after it, again while the line
+ * still starts with '!' (so "!! x" does not stay an item), as one undo
+ * group; the rest — text, a "due <date>" suffix, its formatting — stays.
+ * The block's uid is cleared, so the line is no longer that item (an undo
+ * brings the '!' back as a NEW item, the deleted task staying deleted).
+ *
+ * Inputs:
+ *   doc   — the document
+ *   block — the block index of a real action line
+ *
+ * Output: none.
+ */
+static void
+action_unmark(OnDocument *doc, guint block)
 {
-    GList *rows = on_db_action_list_for_note(db, id);
-    if (rows == NULL)
-        return FALSE;
-    GHashTable *by_uid = g_hash_table_new(g_int64_hash, g_int64_equal);
-    for (GList *l = rows; l != NULL; l = l->next) {
-        OnActionItem *it = l->data;  /* one task row                        */
-        g_hash_table_insert(by_uid, &it->uid, it);
+    OnBlock     *b    = on_document_block(doc, block);
+    const gchar *text = b->text->text->str;
+    gsize        n    = 0;           /* bytes of the prefix to delete       */
+    while (text[n] == '!') {
+        n++;
+        while (text[n] != '\0' && g_ascii_isspace((guchar)text[n]))
+            n++;
     }
+    OnPos at = { block, -1, 0 };
+    on_document_begin_group(doc);
+    on_document_delete_text(doc, at, n);
+    on_document_end_group(doc);
+    b->action_uid = 0;
+}
 
-    gboolean healed = FALSE;         /* any line rewritten?                 */
-    GArray *blocks = on_document_action_blocks(doc);
-    for (guint i = 0; i < blocks->len; i++) {
-        const OnBlock *b =
-            on_document_block(doc, g_array_index(blocks, guint, i));
-        OnActionItem *row = b->action_uid != 0
-                            ? g_hash_table_lookup(by_uid, &b->action_uid)
-                            : NULL;
-        if (row == NULL)
+gint
+on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
+                           gboolean *changed)
+{
+    gboolean ok = TRUE;              /* every write succeeded               */
+    gboolean edited = FALSE;         /* the document was rewritten          */
+    gboolean push   = FALSE;         /* a render was refused                */
+    GArray  *rows   = on_db_action_links(db, id);
+    for (guint r = 0; r < rows->len && ok; r++) {
+        OnActionLink *row = &g_array_index(rows, OnActionLink, r);
+        gint ord = on_document_action_ord(doc, row->uid);
+        if (row->deleted && !row->seen_deleted) {
+            /* Deleted elsewhere: the line becomes plain text, the link goes. */
+            if (ord >= 0) {
+                GArray *blocks = on_document_action_blocks(doc);
+                action_unmark(doc, g_array_index(blocks, guint, ord));
+                g_array_unref(blocks);
+                edited = TRUE;
+            }
+            ok = on_db_action_link_delete(db, row->uid);
             continue;
-        gchar   *text;               /* what the line says now              */
-        gint64   due;
-        gboolean done;
-        on_document_block_action(doc, g_array_index(blocks, guint, i),
-                                 &text, &due, &done);
-        /* Each rewrite re-resolves the line by ord: a text rewrite does
-         * not move it, so ord i still names it.                          */
-        if (g_strcmp0(text, row->text) != 0 && row->text != NULL &&
-            *row->text != '\0')
-            healed |= on_document_action_text(doc, (gint)i, row->text);
-        if (done != row->done)
-            healed |= on_document_action_strike(doc, (gint)i, row->done);
-        if (due != row->due)
-            healed |= on_document_action_due(doc, (gint)i, row->due);
+        }
+        if (row->deleted || row->seen_deleted)
+            continue;                /* Notes' own tombstone, or restored
+                                        elsewhere with no line: nothing to
+                                        pull                                */
+        gchar   *text = NULL;        /* the line as it reads now            */
+        gint64   due  = 0;
+        gboolean done = FALSE;
+        if (ord >= 0) {
+            GArray *blocks = on_document_action_blocks(doc);
+            on_document_block_action(doc, g_array_index(blocks, guint, ord),
+                                     &text, &due, &done);
+            g_array_unref(blocks);
+        }
+        gboolean seen = FALSE;       /* a seen_* value moved to the task's  */
+        if (g_strcmp0(row->title, row->seen_title) != 0) {
+            if (ord >= 0 && g_strcmp0(text, row->title) != 0) {
+                if (on_document_action_text(doc, ord, row->title))
+                    edited = TRUE;
+                else
+                    push = TRUE;     /* the line keeps its text; the push
+                                        writes it back to the task          */
+            }
+            g_free(row->seen_title);
+            row->seen_title = g_strdup(row->title);
+            seen = TRUE;
+        }
+        if (row->done != row->seen_done) {
+            if (ord >= 0 && done != row->done)
+                edited |= on_document_action_strike(doc, ord, row->done);
+            row->seen_done = row->done;
+            seen = TRUE;
+        }
+        if (row->due != row->seen_due) {
+            if (ord >= 0 && due != row->due) {
+                if (on_document_action_due(doc, ord, row->due))
+                    edited = TRUE;
+                else
+                    push = TRUE;     /* a time the line cannot show        */
+            }
+            row->seen_due = row->due;
+            seen = TRUE;
+        }
         g_free(text);
+        if (seen)
+            ok = on_db_action_link_set_seen(db, row);
     }
-    g_array_unref(blocks);
-    g_hash_table_destroy(by_uid);
-    on_db_action_list_free(rows);
-    return healed;
+    g_array_unref(rows);
+    if (changed != NULL)
+        *changed = edited;
+    if (!ok)
+        return -1;
+    return edited || push ? 1 : 0;
 }

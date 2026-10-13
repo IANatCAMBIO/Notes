@@ -20,6 +20,7 @@
 #include "check.h"
 
 #include "action_edit.h"
+#include "action_sync.h"
 #include "app_lifecycle.h"
 #include "export.h"
 #include "image_io.h"
@@ -545,8 +546,8 @@ test_action_list(OnDatabase *db)
 
 /*
  * test_action_edit — done / undone / due through action_edit.h (the Action
- * Items view's path), and a rename of the task row re-rendered into the
- * line (the path an edit made in the Tasks app takes).
+ * Items view's path), and a rename of the task row pulled into the line
+ * (the path an edit made in the Tasks app takes).
  *
  * Inputs:
  *   app — the context, database open, no hooks (headless)
@@ -600,10 +601,7 @@ test_action_edit(OnApp *app)
     OnActionItem *row = on_db_action_get(db, uid);
     check(on_db_action_set(db, uid, ON_ACTION_FIELD_TEXT, "Renamed by uid", row->done, row->due), "text: the row is renamed");
     on_db_action_item_free(row);
-    OnDocument *doc = on_note_document_load(db, note);
-    check(on_note_document_reconcile(db, note, doc), "text: the reconcile rewrites the line");
-    check(on_note_document_save(db, note, doc, TRUE, NULL), "text: and it is saved");
-    on_document_free(doc);
+    check(on_action_sync_note(app, note), "text: the pull rewrites the line and saves it");
     line = stored_line(db, note, 1, &struck);
     check(strcmp(line, "! Renamed by uid due 2027-02-02") == 0 && struck,
           "text: the line keeps its '!', its due date and its done state");

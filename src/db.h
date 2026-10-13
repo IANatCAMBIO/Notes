@@ -376,6 +376,12 @@ gboolean on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                          const guint8 *content, gsize len,
                          const gchar *body_text);
 
+/* What an open editor compares to tell that a note was rewritten by
+ * another writer since it loaded or saved it: the row's updated_at and
+ * the length of its blob.  Returns FALSE when the note does not exist.   */
+gboolean on_db_note_stamp(OnDatabase *db, gint64 id, gint64 *updated_at,
+                          gint64 *size);
+
 /* Read a note's cached searchable text. Returns a new string (g_free()
  * it), or NULL when the cache is unfilled (older rows) — callers then
  * extract from the blob and may write it back via
@@ -551,6 +557,13 @@ gboolean on_db_action_link_delete(OnDatabase *db, gint64 uid);
 
 /* on_db_action_link_clear() — free a row's strings (NULL-safe fields).    */
 void on_db_action_link_clear(OnActionLink *row);
+
+/* on_db_action_pending() — the notes the pull has work in: those with a
+ * note_task row (seen_deleted = 0) whose task differs from seen_* (title,
+ * status = 2 vs seen_done, due) or is deleted.  `note_id` 0 asks about
+ * every note, else about that one.  Returns a GArray of gint64 note ids,
+ * ascending; g_array_unref() it.                                          */
+GArray *on_db_action_pending(OnDatabase *db, gint64 note_id);
 
 /* on_db_txn_begin() / on_db_txn_end() — one write transaction around
  * several calls (BEGIN IMMEDIATE through shared_db_begin), or JOIN the one

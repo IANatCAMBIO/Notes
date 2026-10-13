@@ -43,8 +43,8 @@
  *     and the hook returns FALSE.
  *   - on_app_shutdown() is the ONE way the app ends: it calls
  *     app->flush_editors — and stops there, changing nothing else, when an
- *     editor could not save — then removes the backup timer, closes the
- *     database and lets go of the app lock.  It is idempotent.
+ *     editor could not save — then removes the backup and sync timers,
+ *     closes the database and lets go of the app lock.  It is idempotent.
  *   - every route out goes through it: the app delegate calls it from
  *     applicationShouldTerminate: (Quit, the Dock, logout and restart all
  *     arrive there), cancelling the quit when it fails, and turns SIGTERM
@@ -122,7 +122,8 @@ gboolean on_app_open_db(OnApp *app, gchar **err);
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
  * open, the hooks are installed and the library window exists: the
- * integrity check and the backup timer.
+ * integrity check, the backup poll and the pull of outside changes
+ * (action_sync.h: once now, then its poll timer).
  *
  * Inputs:
  *   app — the application context
@@ -157,7 +158,7 @@ typedef enum {
  *                 shared module's words (g_free it)
  *
  * Output: ON_SWITCH_DONE when the app is now on `path` (the library has
- *         been told to refresh, the backup timer re-armed, the integrity
+ *         been pulled into and refreshed, the backup poll re-armed, the integrity
  *         check started).  ON_SWITCH_UNSAVED when an editor could not save:
  *         it is still open and the old database still in use.
  *         ON_SWITCH_FAILED when `path` could not be opened, or could not

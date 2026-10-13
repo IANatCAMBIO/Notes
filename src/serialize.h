@@ -107,19 +107,45 @@ gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
                              const gchar *text);
 
 /* ---------------------------------------------------------------------------
- * on_note_document_reconcile() — the task rows are the truth: for every
- * real action line of `doc` whose uid has a live task, re-render the line
- * from the row where the two differ (on_document_action_text / strike /
- * due).  Run on every load — an editor opening a note, a headless rewrite
- * about to touch one — so a task edited by the Action Items view or
- * (after the merge) the Tasks app while the note was closed shows in
- * the note.  A blank task title is left alone: the line's text is not
- * something the document can hold as empty.
- * Returns TRUE when a line was rewritten (the caller then has an unsaved
- * document: the editor autosaves, a headless path saves).
+ * on_note_document_reconcile() — THE PULL into one document: bring note
+ * `id`'s '!' lines in line with what other writers (Tasks, an agent) did to
+ * their tasks, judged against the note_task seen_* baseline.  Must run
+ * inside a write transaction (on_db_txn_begin) that then saves the
+ * document when this asks for it, so the line, the baseline and the task
+ * always move together.  For each note_task row of the note:
+ *   - task deleted with seen_deleted = 0 (deleted elsewhere): its line, if
+ *     the document has it, is UNMARKED — the leading '!' and the
+ *     whitespace after it are deleted, repeatedly while the line still
+ *     starts with '!'; the rest (text, a due suffix, its formatting) stays
+ *     as a plain line and the block's uid is cleared — and the note_task
+ *     row is deleted (its tombstone trigger finds the task deleted already);
+ *   - task deleted with seen_deleted = 1, or live with seen_deleted = 1:
+ *     nothing (Notes' own tombstone; a task restored elsewhere whose line
+ *     is gone);
+ *   - otherwise, in the order text, strike, due: where the task's value
+ *     differs from seen_* (title vs seen_title byte for byte; status = 2 vs
+ *     seen_done; due vs seen_due), the line is rewritten to the task's
+ *     value if it differs (on_document_action_text / _strike / _due: the
+ *     '!', spacing, due suffix and strike of the line are kept; a due date
+ *     is written " due YYYY-MM-DD"), and seen_* := the task's value.  A
+ *     title the line cannot take (empty, a newline, or text that would read
+ *     back as something else, e.g. ending in "due <date>") leaves the line
+ *     as it is — seen_title is still set, so the save's push writes the
+ *     line's text back to the task.
+ * Each rewrite is an undo group of the document.
+ *
+ * Inputs:
+ *   db      — open database, inside a write transaction
+ *   id      — the note
+ *   doc     — its document (stored, or an open editor's)
+ *   changed — optional; receives whether the document was rewritten
+ *
+ * Output: 1 when the note must now be saved (a line rewritten or a title
+ *         refused), 0 when nothing more is needed, -1 on a database error
+ *         (the caller rolls back).
  * ------------------------------------------------------------------------- */
-gboolean on_note_document_reconcile(OnDatabase *db, gint64 id,
-                                    OnDocument *doc);
+gint on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
+                                gboolean *changed);
 
 /* ---------------------------------------------------------------------------
  * on_note_count_images() — how many IMAGE records a BNBF blob holds, found

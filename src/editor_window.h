@@ -8,8 +8,8 @@
  *
  * The window supplies the chrome — toolbar, find field, status bar, the
  * image viewer — and owns the note's LIFE while it is open: it loads the
- * note (reconciled against its task rows), saves it a moment after every
- * edit, and on close either saves the last edits or, if the note was left
+ * note (outside changes to its items pulled in first, action_sync.h),
+ * saves it a moment after every edit, and on close either saves the last edits or, if the note was left
  * blank, deletes it.  This module also keeps the REGISTRY of open editors
  * (note id -> window controller): it is how a note is never open twice,
  * how the core finds a note's live document, and how every editor is

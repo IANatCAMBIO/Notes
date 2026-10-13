@@ -503,9 +503,37 @@ access_offset(const OnDocument *doc, OnPos p)
 }
 
 /*
- * after_edit — call after every mutation: clamp the caret and anchor,
- * resize the view, scroll to the caret, fire the edited handler, reset the
- * blink.
+ * edit_settled — the bookkeeping after a mutation: clamp the caret and
+ * anchor, resize the view, scroll to the caret when asked, fire the edited
+ * handler, reset the blink.
+ *
+ * Inputs:
+ *   v      — the view
+ *   scroll — YES to bring the caret into view (the user's own edits); NO
+ *            to leave the scroll position alone (an edit from outside)
+ *
+ * Output: none.
+ */
+static void
+edit_settled(NotesNoteView *v, BOOL scroll)
+{
+    /* Every position the view holds is valid after an edit: the layout
+     * reads text at the caret's byte offset with no other bound.          */
+    v.caret  = clamp_pos(v.doc, v.caret);
+    v.anchor = clamp_pos(v.doc, v.anchor);
+    on_doc_layout_set_width(v.layout, layout_width(v));
+    refresh_hits(v);                    /* matches move with the edit */
+    fit_height(v);
+    if (scroll) scroll_to_caret(v);
+    im_sync_location(v);
+    blink_restart(v);
+    NSAccessibilityPostNotification(v, NSAccessibilityValueChangedNotification);
+    if (v.edited_handler) v.edited_handler();
+}
+
+/*
+ * after_edit — call after every mutation the user made: edit_settled,
+ * scrolling the caret into view.
  *
  * Inputs:
  *   v — the view
@@ -515,18 +543,7 @@ access_offset(const OnDocument *doc, OnPos p)
 static void
 after_edit(NotesNoteView *v)
 {
-    /* Every position the view holds is valid after an edit: the layout
-     * reads text at the caret's byte offset with no other bound.          */
-    v.caret  = clamp_pos(v.doc, v.caret);
-    v.anchor = clamp_pos(v.doc, v.anchor);
-    on_doc_layout_set_width(v.layout, layout_width(v));
-    refresh_hits(v);                    /* matches move with the edit */
-    fit_height(v);
-    scroll_to_caret(v);
-    im_sync_location(v);
-    blink_restart(v);
-    NSAccessibilityPostNotification(v, NSAccessibilityValueChangedNotification);
-    if (v.edited_handler) v.edited_handler();
+    edit_settled(v, YES);
 }
 
 /* ── Undo group ──────────────────────────────────────────────────────────── */
@@ -2666,11 +2683,21 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 /* ── C API (note_view.h) ────────────────────────────────────────────────── */
 
 /*
- * on_note_view_load_document — see note_view.h.
+ * load_document — the body of on_note_view_load_document and
+ * on_note_view_reload_document: take over `doc`, with the caret on the
+ * first text line, or where it was.
+ *
+ * Inputs:
+ *   view       — the view
+ *   doc        — the document; ownership passes to the view
+ *   keep_place — YES to keep the caret and selection (clamped), NO for
+ *                the start of the note
  */
-void
-on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
+static void
+load_document(NotesNoteView *view, OnDocument *doc, BOOL keep_place)
 {
+    OnPos caret  = view.caret;
+    OnPos anchor = view.anchor;
     tag_capture_end(view, NO);
     im_reset(view);
     typing_end(view);
@@ -2694,7 +2721,8 @@ on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
      * to be read or added to, not renamed (GTK: load_document). */
     OnPos start = { 0, -1, 0 };
     if (view.app->first_line_title && on_document_n_blocks(doc) > 1) start.block = 1;
-    view.caret = view.anchor = clamp_pos(doc, start);
+    view.caret  = clamp_pos(doc, keep_place ? caret : start);
+    view.anchor = clamp_pos(doc, keep_place ? anchor : start);
     on_document_take_tags_modified(doc);
     on_document_take_actions_modified(doc);
     if (view.find_text != nil) on_note_view_find(view, view.find_text);
@@ -2703,6 +2731,24 @@ on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
         fit_height(view);
         view.needsDisplay = YES;
     }
+}
+
+/*
+ * on_note_view_load_document — see note_view.h.
+ */
+void
+on_note_view_load_document(NotesNoteView *view, OnDocument *doc)
+{
+    load_document(view, doc, NO);
+}
+
+/*
+ * on_note_view_reload_document — see note_view.h.
+ */
+void
+on_note_view_reload_document(NotesNoteView *view, OnDocument *doc)
+{
+    load_document(view, doc, YES);
 }
 
 /*
@@ -2730,9 +2776,7 @@ on_note_view_begin_external_edit(NotesNoteView *view)
 void
 on_note_view_end_external_edit(NotesNoteView *view)
 {
-    view.caret = clamp_pos(view.doc, view.caret);
-    view.anchor = view.caret;
-    after_edit(view);                   /* fires edited_handler, once */
+    edit_settled(view, NO);             /* fires edited_handler, once */
 }
 
 /*

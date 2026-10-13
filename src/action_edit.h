@@ -4,24 +4,15 @@
  * An action item is a task row; the '!' line in a note renders it
  * (db.h, "An ACTION ITEM is a TASK ROW").  These two functions are the one
  * way the app changes an item other than by typing in the note: the
- * library's Action Items view (checkbox, due-date sheet).  (A task row
- * changed directly in the database — a rename, say — reaches the line
- * through on_note_document_reconcile, serialize.h.)
+ * library's Action Items view (checkbox, due-date sheet).
  *
- * Order, always: the TASK ROW first (on_db_action_set), then the line that
- * renders it —
- *   - on the note's OPEN editor when there is one: the document is reached
- *     through app->live_document, edited with the on_document_action_*
- *     rewrite, and app->live_edited tells the editor (which redraws and
- *     queues its autosave; the autosave's sync then finds the row equal);
- *   - otherwise on the stored document: loaded, reconciled against its task
- *     rows (which re-renders the line from the row just written) and saved
- *     at once.
- * Headless (a seeder or a test) app->live_document is NULL and only the
- * stored-document path exists.
- *
- * (In the GTK build this lived in editor_window.c as
- * on_editor_action_set_*.)
+ * An edit is exactly what an edit in the Tasks app is — the one field is
+ * written to the task (on_db_action_set: that field only, the push's status
+ * rule) — followed at once, in the SAME transaction, by the pull for its
+ * note (action_sync.h, on_action_sync_note), which renders the field into
+ * the line: on the note's open editor when there is one (saved at once),
+ * else on the stored document.  Headless (a seeder or a test) only the
+ * stored path exists.
  *
  * Main thread only.
  * =========================================================================== */
@@ -41,15 +32,15 @@
  *   uid  — the item's stable identity
  *   done — the new state
  *
- * Output: TRUE when a live item carries `uid` and its row was written.  A
- *         line that cannot be found afterwards is logged; the row stands.
+ * Output: TRUE when a live item carries `uid` and the task and its line
+ *         were written; FALSE otherwise (nothing written).
  * ------------------------------------------------------------------------- */
 gboolean on_action_edit_set_done(OnApp *app, gint64 uid, gboolean done);
 
 /* ---------------------------------------------------------------------------
- * on_action_edit_set_due() — set or clear an item's due date: the row, then
- * the line's trailing "due <date>" (written ISO, "due 2026-07-07"; appended
- * text inherits the item's strike state).
+ * on_action_edit_set_due() — set or clear an item's due date: the task,
+ * then the line's trailing "due <date>" (written ISO, "due 2026-07-07";
+ * appended text inherits the item's strike state).
  *
  * Inputs:
  *   app — the application context

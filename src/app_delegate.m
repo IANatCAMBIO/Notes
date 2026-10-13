@@ -12,6 +12,7 @@
 #import "tool_panel.h"
 #import "ui_util.h"
 
+#include "action_sync.h"
 #include "app_lifecycle.h"
 #include "identity.h"
 
@@ -372,6 +373,20 @@ applicationShouldTerminate:(NSApplication *)sender
     }
     NSLog(@"[quit] editors flushed, database closed");
     return NSTerminateNow;
+}
+
+/*
+ * applicationDidBecomeActive: — coming back to the app is when another
+ * app's edits are most likely waiting: look for them now rather than at
+ * the next poll (action_sync.h).
+ *
+ * Inputs:
+ *   n — NSApplicationDidBecomeActiveNotification (unused)
+ */
+- (void)
+applicationDidBecomeActive:(NSNotification *)n
+{
+    on_action_sync_poll(&_app);
 }
 
 /*

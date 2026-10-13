@@ -129,7 +129,7 @@ APP_LIBS  = $(CORE_LIBS) -framework Cocoa -framework CoreText \
             -framework UniformTypeIdentifiers
 
 # The core: no UI, shared by the app, the development seeder and the tests.
-CORE_SRCS = src/action_edit.c src/app_core.c src/app_lifecycle.c \
+CORE_SRCS = src/action_edit.c src/action_sync.c src/app_core.c src/app_lifecycle.c \
             src/backup.c src/bnbf.c src/config.c src/db.c \
             src/document.c src/export.c src/image_io.c \
             src/main_service.c src/search_job.c src/search_query.c \

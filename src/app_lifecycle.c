@@ -4,6 +4,7 @@
  * =========================================================================== */
 
 #include "app_lifecycle.h"
+#include "action_sync.h"
 #include "backup.h"
 #include "identity.h"
 
@@ -124,6 +125,7 @@ on_app_start_services(OnApp *app)
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);
     on_backup_auto_start(app);
+    on_action_sync_start(app);
 }
 
 /*
@@ -158,9 +160,7 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
 
     /* A pass in flight carries the old path; the timer reads app->db.    */
     on_backup_auto_start(app);
-    if (app->notify_notes_changed != NULL) {
-        app->notify_notes_changed(app);
-    }
+    on_action_sync_run(app);         /* pending outside changes, refresh   */
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);     /* every opened database is checked     */
     return ON_SWITCH_DONE;
@@ -179,6 +179,8 @@ on_app_shutdown(OnApp *app)
     }
     on_timer_remove(app->backup_timer);
     app->backup_timer = 0;
+    on_timer_remove(app->sync_timer);
+    app->sync_timer = 0;
     on_db_close(app->db);            /* NULL-safe                            */
     app->db = NULL;
     if (app_lock_fd >= 0) {          /* last: the database is closed         */

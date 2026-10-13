@@ -1760,6 +1760,45 @@ on_db_action_set(OnDatabase *db, gint64 uid, guint mask, const gchar *title,
     return task_id != 0 && task_push(db, task_id, mask, title, done, due);
 }
 
+GArray *
+on_db_action_pending(OnDatabase *db, gint64 note_id)
+{
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT DISTINCT nt.note_id FROM note_task nt"
+        " JOIN tasks t ON t.id = nt.task_id"
+        " WHERE (?1 = 0 OR nt.note_id = ?1) AND nt.seen_deleted = 0 AND"
+        "  (t.deleted = 1 OR t.title <> nt.seen_title OR"
+        "   (t.status = 2) <> (nt.seen_done <> 0) OR t.due <> nt.seen_due)"
+        " ORDER BY nt.note_id");
+    if (stmt == NULL)
+        return ids;
+    sqlite3_bind_int64(stmt, 1, note_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        gint64 id = sqlite3_column_int64(stmt, 0);
+        g_array_append_val(ids, id);
+    }
+    sqlite3_finalize(stmt);
+    return ids;
+}
+
+gboolean
+on_db_note_stamp(OnDatabase *db, gint64 id, gint64 *updated_at, gint64 *size)
+{
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "SELECT updated_at, COALESCE(length(content), 0) FROM notes WHERE id=?");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, id);
+    gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
+    if (found) {
+        *updated_at = sqlite3_column_int64(stmt, 0);
+        *size       = sqlite3_column_int64(stmt, 1);
+    }
+    sqlite3_reset(stmt);
+    return found;
+}
+
 gboolean
 on_db_txn_begin(OnDatabase *db, gboolean *own)
 {

@@ -64,6 +64,18 @@
 void on_note_view_load_document(NotesNoteView *view, OnDocument *doc);
 
 /*
+ * on_note_view_reload_document — the same, for ANOTHER VERSION of the note
+ * already shown (another writer rewrote it): the caret and selection keep
+ * their positions (clamped into the new document) and the scroll position
+ * stays; the undo history is cleared.
+ *
+ * Inputs:
+ *   view — the view
+ *   doc  — the document; ownership passes to the view
+ */
+void on_note_view_reload_document(NotesNoteView *view, OnDocument *doc);
+
+/*
  * on_note_view_document — the note itself.  The host reads it (title,
  * tags) and hands it to on_note_document_save; every change other than an
  * external edit (below) goes through the view's functions.
@@ -76,9 +88,11 @@ OnDocument *on_note_view_document(NotesNoteView *view);
 /*
  * on_note_view_begin_external_edit / on_note_view_end_external_edit — the
  * pair behind OnApp.live_document / live_edited: something outside the view
- * (action_edit.c, for the Action Items list) is about to change
- * the open note with on_document_* operations.  begin closes any typing
- * undo group and returns the document; end re-clamps the caret, redraws and
+ * (the pull, action_sync.c: an edit from the Action Items list or from
+ * another app) is about to change the open note with on_document_*
+ * operations.  begin closes any typing undo group and returns the
+ * document; end re-clamps the caret and the selection — keeping both and
+ * the scroll position, since the user did not move them — redraws and
  * calls edited_handler.
  *
  * Output (begin): the document, borrowed.

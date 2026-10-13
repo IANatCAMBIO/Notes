@@ -408,7 +408,8 @@ test_editor(void)
         }
         check(count == 1, "opening an open note does not open a second editor");
 
-        /* An edit from outside, through the hooks: live, not yet stored. */
+        /* An edit from outside, through the hooks: in the open document
+         * and saved with it at once (one transaction with the task).     */
         GList *items = on_db_action_list_for_note(app.db, note_id);
         gint64 uid   = ((OnActionItem *)items->data)->uid;
         on_db_action_list_free(items);
@@ -416,20 +417,24 @@ test_editor(void)
               "live_document returns the open editor's document");
         check(app.live_document(&app, note_id + 1000) == NULL, "and NULL for a note not open");
         check(on_action_edit_set_done(&app, uid, TRUE), "an action is completed through the editor");
+        gboolean live_done = FALSE, done = FALSE;
+        on_document_block_action(on_note_view_document(weak_view), 1, NULL, NULL, &live_done);
         OnDocument *stored = on_note_document_load(app.db, note_id);
-        gboolean done = TRUE;
         on_document_block_action(stored, 1, NULL, NULL, &done);
         on_document_free(stored);
-        check(!done, "the stored note is untouched until the editor saves");
+        check(live_done && done, "the open document shows it and the editor saved it at once");
 
+        /* Typing, then closing before the autosave: the close saves it.   */
+        on_note_view_feed_key(weak_view, on_key_down, 0, on_mod_command);
+        on_note_view_feed_key(weak_view, on_key_end, 0, 0);
+        on_note_view_feed_text(weak_view, " typed");
         on_editor_close_notes(&note_id, 1);
     }
     pump(0.3);
-    OnDocument *stored = on_note_document_load(app.db, note_id);
-    gboolean done = FALSE;
-    on_document_block_action(stored, 1, NULL, NULL, &done);
-    on_document_free(stored);
-    check(done, "closing the editor saved the unsaved edit");
+    gchar *closed_body = on_db_note_body_text(app.db, note_id);
+    check(closed_body != NULL && strstr(closed_body, "body text typed") != NULL,
+          "closing the editor saved the unsaved edit");
+    g_free(closed_body);
     check(weak_window == nil && weak_controller == nil && weak_view == nil,
           "a closed editor's controller, window and view are deallocated");
 

@@ -24,8 +24,10 @@
 #import "image_viewer.h"
 #import "library_state.h"
 #import "note_view.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
+#include "action_sync.h"
 #include "app_core.h"
 #include "config.h"
 #include "db.h"
@@ -240,6 +242,12 @@ separator(void)
 @property (nonatomic, assign) BOOL    sync_actions;   /* action line touched */
 @property (nonatomic, assign) BOOL    sync_tags;      /* tag links to write  */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
+
+/* The note row as this editor last loaded or saved it (on_db_note_stamp):
+ * a different stamp means another writer rewrote the note.              */
+@property (nonatomic, assign) gint64  stamp_updated_at;
+@property (nonatomic, assign) gint64  stamp_size;
+@property (nonatomic, assign) BOOL    outside_notice; /* the Reload panel is up */
 
 - (BOOL)save;
 - (BOOL)close_saved;
@@ -848,9 +856,9 @@ build_image_viewer
 }
 
 /*
- * load_content: — put the note's document, reconciled against its task
- * rows, into the note view.  A reconciled line is an unsaved change, so
- * the autosave is queued to write it back.
+ * load_content: — put the note's document into the note view (the caller
+ * has pulled any outside change to its items into the stored note first:
+ * on_editor_window_open) and remember the row's stamp.
  *
  * Inputs:
  *   doc — the loaded document; the note view takes ownership
@@ -858,11 +866,89 @@ build_image_viewer
 - (void)
 load_content:(OnDocument *)doc
 {
-    OnApp      *app    = self.app;
-    gboolean    healed = on_note_document_reconcile(app->db, self.note_id, doc);
     on_note_view_load_document(self.note_view, doc);   /* the view owns doc now */
-    if (healed) [self queue_autosave];
+    [self record_stamp];
     [self update_status];
+}
+
+/*
+ * record_stamp — remember the note row as it is now (after a load or a
+ * save of ours), so check_outside can tell another writer's rewrite.
+ */
+- (void)
+record_stamp
+{
+    gint64 updated_at = 0, size = 0;
+    on_db_note_stamp(self.app->db, self.note_id, &updated_at, &size);
+    self.stamp_updated_at = updated_at;
+    self.stamp_size       = size;
+}
+
+/*
+ * reload_from_row — replace the open document by the stored one (another
+ * writer's version), keeping the caret, selection and scroll where they
+ * can be; any unsaved edits are dropped.
+ */
+- (void)
+reload_from_row
+{
+    OnDocument *doc = on_note_document_load(self.app->db, self.note_id);
+    if (doc == NULL) return;            /* unreadable now: leave the editor as it is */
+    [self.autosave_timer invalidate];
+    self.autosave_timer = nil;
+    self.dirty          = NO;
+    on_note_view_reload_document(self.note_view, doc);
+    [self record_stamp];
+    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+    self.window.title = @(title);
+    g_free(title);
+    [self update_status];
+}
+
+/*
+ * check_outside — the database changed outside the app: has another writer
+ * (an agent, say) rewritten this note since this editor loaded or saved
+ * it?  Gone: the editor closes without saving.  Rewritten, no unsaved
+ * edits here: reloaded.  Rewritten with unsaved edits here: nothing is
+ * overwritten silently either way — the editor keeps its version (which
+ * its next save writes) and a tool panel offers Reload, once per change.
+ */
+- (void)
+check_outside
+{
+    gint64 updated_at = 0, size = 0;
+    if (!on_db_note_stamp(self.app->db, self.note_id, &updated_at, &size)) {
+        self.discard = YES;
+        [self.window close];
+        return;
+    }
+    if (updated_at == self.stamp_updated_at && size == self.stamp_size) return;
+    if (!self.dirty) {
+        [self reload_from_row];
+        return;
+    }
+    if (self.outside_notice) return;
+    self.outside_notice = YES;
+    __weak NotesEditorWindow *ws = self;
+    [NotesToolPanel show_message:@"Changed outside " ON_APP_NAME
+                         message:@"This note was changed outside " ON_APP_NAME @"; your open version "
+                                 @"will replace it. Reload to discard yours."
+                          symbol:@"exclamationmark.triangle"
+                         buttons:@[@"Keep Mine", @"Reload"]
+                            over:self.window
+                         handler:^(NSInteger index) {
+        NotesEditorWindow *s = ws;
+        if (!s) return;
+        s.outside_notice = NO;
+        if (index == 1) {
+            [s reload_from_row];
+        } else {
+            gint64 u = 0, n = 0;     /* acknowledged: the next save writes ours */
+            on_db_note_stamp(s.app->db, s.note_id, &u, &n);
+            s.stamp_updated_at = u;
+            s.stamp_size       = n;
+        }
+    }];
 }
 
 /* ── Commands ──────────────────────────────────────────────────────────── */
@@ -1037,6 +1123,7 @@ save
         return NO;
     }
     self.sync_actions = NO;
+    [self record_stamp];
 
     if (on_note_view_take_tags_modified(self.note_view)) self.sync_tags = YES;
     BOOL tags_changed = self.sync_tags;
@@ -1231,6 +1318,9 @@ on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
         [NSApp activate];
         return YES;
     }
+    /* Outside changes to its items, into the stored note before it is
+     * read (the poll would bring them a moment later otherwise).          */
+    on_action_sync_note(app, note_id);
     OnNoteMeta *meta = on_db_note_get(app->db, note_id);
     if (meta == NULL) return NO;
     NSString *title = @(meta->title);
@@ -1351,6 +1441,43 @@ hook_live_edited(OnApp *app, gint64 note_id)
 }
 
 /*
+ * hook_live_save — OnApp.live_save: the open editor of a note saves now,
+ * inside the caller's transaction (the pull).
+ *
+ * Inputs:
+ *   app     — the application context (unused)
+ *   note_id — the note
+ *
+ * Output: FALSE when the save failed (or the note is not open).
+ */
+static gboolean
+hook_live_save(OnApp *app, gint64 note_id)
+{
+    NotesEditorWindow *editor = editor_for(note_id);
+    if (editor == nil) return FALSE;
+    [editor.autosave_timer invalidate];
+    editor.autosave_timer = nil;
+    if ([editor save]) return TRUE;
+    [editor queue_autosave];          /* still unsaved: try again later */
+    return FALSE;
+}
+
+/*
+ * hook_check_editors — OnApp.check_editors: every editor looks for a
+ * rewrite of its note by another writer (check_outside).
+ *
+ * Inputs:
+ *   app — the application context (unused)
+ */
+static void
+hook_check_editors(OnApp *app)
+{
+    for (NotesEditorWindow *editor in editors.allValues) {   /* a copy: one may close */
+        [editor check_outside];
+    }
+}
+
+/*
  * hook_flush_editors — OnApp.flush_editors: close every editor, each
  * saving first (the flush-on-quit contract).
  *
@@ -1375,5 +1502,7 @@ on_editor_install(OnApp *app)
     app->open_note      = hook_open_note;
     app->live_document  = hook_live_document;
     app->live_edited    = hook_live_edited;
+    app->live_save      = hook_live_save;
+    app->check_editors  = hook_check_editors;
     app->flush_editors  = hook_flush_editors;
 }

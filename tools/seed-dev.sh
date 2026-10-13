@@ -2,7 +2,7 @@
 # =============================================================================
 # seed-dev.sh — build a fresh, realistic development database
 #
-#   tools/seed-dev.sh DATA_DIR DEV_SEED IMAGE IMAGE2
+#   tools/seed-dev.sh DATA_DIR SHARED_DB DEV_SEED IMAGE IMAGE2
 #
 # Called by `make seed`.  build/dev_seed writes everything through the core
 # API (tools/dev_seed.c says what): nested folders (some with emoji), tags,
@@ -12,20 +12,26 @@
 # undated — in several contexts (a context is the folder the note sits in).
 #
 # DATA_DIR is wiped first.  It must be a folder directly inside this
-# repository's dev/ directory, and no app may be running on it (dev_seed
-# check refuses while one holds the data directory's lock): this script
-# never touches a real data directory.
+# repository's dev/ directory and SHARED_DB (the shared database file,
+# CAMBIO_SHARED_DB) a file directly inside DATA_DIR; no app may be running
+# on it (dev_seed check refuses while one holds the data directory's lock).
+# This script never touches a real data directory or database.
 # =============================================================================
 set -euo pipefail
 
-DATA_DIR="$1"; DEV_SEED="$2"; IMAGE="$3"; IMAGE2="$4"
+DATA_DIR="$1"; SHARED_DB="$2"; DEV_SEED="$3"; IMAGE="$4"; IMAGE2="$5"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [ "$(dirname "$DATA_DIR")" != "$ROOT/dev" ] || [ "$(basename "$DATA_DIR")" = ".." ]; then
     echo "seed-dev: refusing: $DATA_DIR is not a folder directly inside $ROOT/dev" >&2
     exit 2
 fi
+if [ "$(dirname "$SHARED_DB")" != "$DATA_DIR" ]; then
+    echo "seed-dev: refusing: $SHARED_DB is not a file directly inside $DATA_DIR" >&2
+    exit 2
+fi
 export NOTES_DATA_DIR="$DATA_DIR"
+export CAMBIO_SHARED_DB="$SHARED_DB"
 
 mkdir -p "$DATA_DIR"
 "$DEV_SEED" check

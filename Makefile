@@ -12,7 +12,8 @@
 #   make clean      remove build/ and the bundle (dev/ is kept)
 #   make clean-dev  remove dev/ (development and test data)
 #
-# Requires the Xcode command-line tools and MacPorts glib2 + pkgconf.
+# Requires the Xcode command-line tools, MacPorts glib2 + sqlite3 + pkgconf,
+# and the shared_data repository beside this one (SHARED_DATA_DIR).
 # See BUILD.md.
 # =============================================================================
 
@@ -45,19 +46,28 @@ endif
 # shell's PATH.
 PKGCONF := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg-config)
 
-# GLib is the one non-system dependency (phase one keeps it in the core).
-# Two things are deliberately NOT taken from pkg-config's output:
-#   - its bare -I<prefix>/include, which would put MacPorts' sqlite3.h in
-#     front of the SDK's;
-#   - its -L<prefix>/lib, which would make -lsqlite3 resolve to MacPorts'
-#     library instead of the system's.
-# So GLib's own include directories are kept and the library is linked by
-# path.  SQLite is the system's: header from the SDK, /usr/lib/libsqlite3.
-GLIB_PREFIX_INC := -I$(shell $(PKGCONF) --variable=includedir glib-2.0)
-GLIB_CFLAGS     := $(filter-out $(GLIB_PREFIX_INC),$(shell $(PKGCONF) --cflags glib-2.0))
-GLIB_LIBS       := $(shell $(PKGCONF) --variable=libdir glib-2.0)/libglib-2.0.dylib
-ifeq ($(GLIB_CFLAGS),)
-$(error glib-2.0 not found: sudo port install glib2 pkgconf)
+# GLib (phase one keeps it in the core) and SQLite, both from MacPorts via
+# pkg-config.  SQLite is MacPorts' on purpose: Tasks links the same build,
+# so the two apps sharing one database file run one SQLite (WAL, file
+# format, locking) rather than two different versions.
+PKGS        = glib-2.0 sqlite3
+PKG_CFLAGS := $(shell $(PKGCONF) --cflags $(PKGS))
+PKG_LIBS   := $(shell $(PKGCONF) --libs $(PKGS))
+ifeq ($(PKG_LIBS),)
+$(error glib-2.0 or sqlite3 not found: sudo port install glib2 sqlite3 pkgconf)
+endif
+GLIB_CFLAGS := $(shell $(PKGCONF) --cflags glib-2.0)
+GLIB_LIBS   := $(shell $(PKGCONF) --libs glib-2.0)
+GLIB_DYLIB  := $(shell $(PKGCONF) --variable=libdir glib-2.0)/libglib-2.0.dylib
+
+# ── The shared database module ───────────────────────────────────────────
+# Notes and Tasks share one SQLite file; the module that owns its schema,
+# its location, its connections and its backups lives in the shared_data
+# repository beside this one and is compiled into the core.
+SHARED_DATA_DIR ?= $(CURDIR)/../shared_data
+SHARED_SRC       = $(SHARED_DATA_DIR)/src/shared_db.c
+ifeq ($(wildcard $(SHARED_SRC)),)
+$(error $(SHARED_SRC) not found: check out shared_data beside this repository or set SHARED_DATA_DIR)
 endif
 
 # Deployment target. The sources are COMPILED for MIN_MACOS, so using an API
@@ -67,7 +77,7 @@ endif
 # run on (and the linker warns about claiming less). When GLib goes, the two
 # become the same number.
 MIN_MACOS   = 14.0
-LINK_MACOS := $(shell otool -l $(GLIB_LIBS) | awk '$$1 == "minos" { print $$2; exit }')
+LINK_MACOS := $(shell otool -l $(GLIB_DYLIB) | awk '$$1 == "minos" { print $$2; exit }')
 
 # Code-signing identity (as in Files). macOS ties privacy grants to the
 # app's signature: for an ad-hoc ("-") signature that is the exact build, so
@@ -106,14 +116,14 @@ sign = codesign --force --sign "$(CODESIGN_IDENTITY)" $(1) 2>build/codesign.log 
 # ones AppKit's delegate and action signatures require. The C core keeps the
 # warning.
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
-           -mmacosx-version-min=$(MIN_MACOS) -I src -MMD -MP \
-           -DON_VERSION='"$(VERSION)"' $(GLIB_CFLAGS)
+           -mmacosx-version-min=$(MIN_MACOS) -I src -I $(SHARED_DATA_DIR)/src \
+           -MMD -MP -DON_VERSION='"$(VERSION)"' $(PKG_CFLAGS)
 CFLAGS   = -std=c11 $(COMMON)
 MFLAGS   = -fobjc-arc $(COMMON) -Wno-unused-parameter
 
-# What the core links: GLib, the system SQLite, and ImageIO for image_io.c.
+# What the core links: GLib, MacPorts' SQLite, and ImageIO for image_io.c.
 LDFLAGS   = -mmacosx-version-min=$(LINK_MACOS)
-CORE_LIBS = $(GLIB_LIBS) -lsqlite3 \
+CORE_LIBS = $(PKG_LIBS) \
             -framework CoreFoundation -framework CoreGraphics -framework ImageIO
 APP_LIBS  = $(CORE_LIBS) -framework Cocoa -framework CoreText \
             -framework UniformTypeIdentifiers
@@ -129,7 +139,7 @@ CORE_SRCS = src/action_edit.c src/app_core.c src/app_lifecycle.c \
 UI_C_SRCS = $(filter-out $(CORE_SRCS),$(wildcard src/*.c))
 UI_M_SRCS = $(wildcard src/*.m)
 
-CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS))
+CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o
 UI_OBJS   = $(patsubst src/%.c,build/%.o,$(UI_C_SRCS)) \
             $(patsubst src/%.m,build/%.o,$(UI_M_SRCS))
 DEPS      = $(CORE_OBJS:.o=.d) $(UI_OBJS:.o=.d)
@@ -174,6 +184,10 @@ build/%.o: src/%.c Makefile VERSION | build
 build/%.o: src/%.m Makefile VERSION | build
 	$(CC) $(MFLAGS) -c -o $@ $<
 
+# The shared module, compiled with the core's flags.
+build/shared_db.o: $(SHARED_SRC) Makefile | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 -include $(DEPS)
 
 build:
@@ -185,7 +199,8 @@ build:
 # real data directory is never touched. DEV_DATA is the one a person looks
 # at (`make run`); the tests use their own folders under dev/test.
 DEV_DATA = $(CURDIR)/dev/data
-DEV_ENV  = $(DATA_ENV)="$(DEV_DATA)"
+override DEV_SHARED_DB = $(DEV_DATA)/shared_data.db
+DEV_ENV  = $(DATA_ENV)="$(DEV_DATA)" CAMBIO_SHARED_DB="$(DEV_SHARED_DB)"
 
 build/dev_seed.o: tools/dev_seed.c Makefile | build
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -200,7 +215,7 @@ build/dev_seed: build/dev_seed.o $(CORE_OBJS)
 # written through the core API by build/dev_seed. It refuses to run while
 # an app holds dev/data.
 seed: build/dev_seed
-	@tools/seed-dev.sh "$(DEV_DATA)" build/dev_seed icons/composition.png tests/fixtures/folder.png
+	@tools/seed-dev.sh "$(DEV_DATA)" "$(DEV_SHARED_DB)" build/dev_seed icons/composition.png tests/fixtures/folder.png
 
 $(DEV_DATA)/notes.db:
 	@$(MAKE) seed
@@ -254,7 +269,8 @@ test: build/test_document $(TEST_BINS) $(UI_TEST_APPS) $(BUNDLE)
 	    name=$$(basename $$t .app); echo "== $$t"; \
 	    case $$t in *.app) run=$$t/Contents/MacOS/$$name ;; *) run=$$t ;; esac; \
 	    rm -rf "$(TEST_DATA)/$$name" && mkdir -p "$(TEST_DATA)/$$name" && \
-	    $(DATA_ENV)="$(TEST_DATA)/$$name" ./$$run || exit 1; \
+	    $(DATA_ENV)="$(TEST_DATA)/$$name" \
+	    CAMBIO_SHARED_DB="$(TEST_DATA)/$$name/shared_data.db" ./$$run || exit 1; \
 	done
 
 # ui-check: the in-process UI test on its own (tests/ui_smoke_test.m): it
@@ -267,13 +283,14 @@ test: build/test_document $(TEST_BINS) $(UI_TEST_APPS) $(BUNDLE)
 # on a Mac with developer mode off.
 ui-check: build/ui_smoke_test.app
 	@rm -rf "$(TEST_DATA)/ui_smoke_test" && mkdir -p "$(TEST_DATA)/ui_smoke_test"
-	@$(DATA_ENV)="$(TEST_DATA)/ui_smoke_test" ./build/ui_smoke_test.app/Contents/MacOS/ui_smoke_test
+	@$(DATA_ENV)="$(TEST_DATA)/ui_smoke_test" \
+	    CAMBIO_SHARED_DB="$(TEST_DATA)/ui_smoke_test/shared_data.db" ./build/ui_smoke_test.app/Contents/MacOS/ui_smoke_test
 
 # bnbf-scan: round-trips every note blob of a database COPY through the
 # model and reports what the loader normalised (tools/bnbf-scan.c).
 build/bnbf-scan: tools/bnbf-scan.c src/document.c src/bnbf.c src/document.h src/bnbf.h Makefile | build
-	$(CC) -std=c11 -O2 -Wall -Wextra -I src $(GLIB_CFLAGS) $(LDFLAGS) -o $@ \
-	    tools/bnbf-scan.c src/document.c src/bnbf.c $(GLIB_LIBS) -lsqlite3
+	$(CC) -std=c11 -O2 -Wall -Wextra -I src $(PKG_CFLAGS) $(LDFLAGS) -o $@ \
+	    tools/bnbf-scan.c src/document.c src/bnbf.c $(PKG_LIBS)
 
 bnbf-scan: build/bnbf-scan
 

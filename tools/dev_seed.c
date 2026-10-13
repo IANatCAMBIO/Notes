@@ -29,6 +29,7 @@
 #include "identity.h"
 #include "image_io.h"
 #include "serialize.h"
+#include "shared_db.h"                  /* SHARED_DB_ENV_VAR */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -440,9 +441,10 @@ print_counts(OnDatabase *db)
 int
 main(int argc, char **argv)
 {
-    if (getenv(ON_DATA_DIR_ENV) == NULL) {
-        fprintf(stderr, "dev_seed: %s is not set; this tool only writes "
-                        "development data\n", ON_DATA_DIR_ENV);
+    if (getenv(ON_DATA_DIR_ENV) == NULL || getenv(SHARED_DB_ENV_VAR) == NULL) {
+        fprintf(stderr, "dev_seed: %s and %s must both be set; this tool only "
+                        "writes development data\n", ON_DATA_DIR_ENV,
+                SHARED_DB_ENV_VAR);
         return 2;
     }
     on_app_config_init();

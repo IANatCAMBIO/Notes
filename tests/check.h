@@ -7,9 +7,10 @@
  * if any failed — so `make test` stops at the first failing program.
  *
  * Every test runs with NOTES_DATA_DIR pointing at its own folder under
- * dev/test (the Makefile sets it): check_data_dir() refuses to run
- * otherwise, so a test started by hand can never touch a real data
- * directory.
+ * dev/test, and CAMBIO_SHARED_DB at a database file under dev/test too
+ * (the Makefile puts it inside the test's folder): check_data_dir() refuses to run otherwise, so
+ * a test started by hand can never touch a real data directory or the
+ * real shared database.
  * =========================================================================== */
 
 #ifndef ON_TEST_CHECK_H
@@ -24,6 +25,7 @@
 #include <time.h>
 
 #include "identity.h"
+#include "shared_db.h"         /* SHARED_DB_ENV_VAR                  */
 
 static int check_failures;           /* expectations that did not hold       */
 
@@ -64,18 +66,22 @@ check_result(void)
  *
  * Output: the directory `make test` set in NOTES_DATA_DIR.  Exits with
  *         status 2 when it is unset, is not an absolute path under a
- *         dev/test/ folder, or climbs out of one with ".." — a test must
- *         never run against a real data directory.
+ *         dev/test/ folder, or climbs out of one with "..", and the same
+ *         for CAMBIO_SHARED_DB — a test must never run against a real data
+ *         directory or database.  (A child process may move its data
+ *         directory deeper; the database stays in the scratch area.)
  */
 static inline const char *
 check_data_dir(void)
 {
     const char *dir = getenv(ON_DATA_DIR_ENV);
+    const char *db  = getenv(SHARED_DB_ENV_VAR);
     if (dir == NULL || dir[0] != '/' || strstr(dir, "/dev/test/") == NULL ||
-        strstr(dir, "..") != NULL) {
-        fprintf(stderr, "refusing to run: %s must name a folder under dev/test/ "
-                        "(run the tests with `make test`)\n",
-                ON_DATA_DIR_ENV);
+        strstr(dir, "..") != NULL || db == NULL || db[0] != '/' ||
+        strstr(db, "/dev/test/") == NULL || strstr(db, "..") != NULL) {
+        fprintf(stderr, "refusing to run: %s must name a folder and %s a file "
+                        "under dev/test/ (run the tests with `make test`)\n",
+                ON_DATA_DIR_ENV, SHARED_DB_ENV_VAR);
         exit(2);
     }
     return dir;

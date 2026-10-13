@@ -69,6 +69,11 @@
  *                    off a manual "Back Up Now".
  *   backup_timer   — the periodic backup poll, or 0 before it is armed.
  *   sync_timer     — the poll for outside changes, or 0 before it is armed.
+ *   rev_tasks      — the change_rev 'tasks' revision the pull last acted
+ *                    on (or that only Notes' own commits moved since).
+ *   rev_notes      — likewise 'notes', for the library's refresh.
+ *   pull_failed    — the last pull left a note unsynced: the next poll
+ *                    tick pulls again, outside commit or not.
  *
  * Hooks (see the invariant above; each says who calls it):
  *   notify_notes_changed — the set of notes, folders, tags or action items
@@ -96,19 +101,24 @@
  *                    the returned document with on_document_* operations
  *                    only, then calls live_edited.  Called by the pull
  *                    (action_sync.c), for its own and for action edits.
- *   live_edited    — the document live_document returned was just edited:
+ *   live_edited    — the document live_document returned was edited:
  *                    the editor redraws (caret and selection clamped, no
  *                    scroll) and queues its autosave.  Called by the pull
- *                    (action_sync.c), only when it did change the document.
- *   live_save      — save the open editor of note_id NOW (its autosave
- *                    cancelled), inside the caller's transaction: the
- *                    pull's rewrite of a live document is saved in the
- *                    same transaction as the seen_* it moved.  FALSE when
- *                    the save failed (the edits stay unsaved).
+ *                    (action_sync.c) when its transaction has ended, only
+ *                    when it did change the document.
+ *   live_save      — write the open editor of note_id NOW (its autosave
+ *                    cancelled, every action line pushed), inside the
+ *                    caller's transaction: the pull's rewrite of a live
+ *                    document is saved in the same transaction as the
+ *                    seen_* it moved.  The editor counts as saved only if
+ *                    that transaction commits (on_db_txn_on_end); if not,
+ *                    it stays dirty.  FALSE when the write failed or was
+ *                    refused because another writer rewrote the note.
  *   check_editors  — the database changed outside the app: every editor
  *                    whose note another writer rewrote reloads it (no
  *                    unsaved edits) or says so (unsaved edits kept); one
- *                    whose note is gone closes.  Called by the pull.
+ *                    whose note is gone closes.  Called by the pull,
+ *                    outside any transaction.
  *   flush_editors  — close every editor window NOW, each one saving its
  *                    unsaved edits (or deleting its note if it was left
  *                    blank) before the call returns.  An editor whose save
@@ -137,6 +147,9 @@ typedef struct OnApp {
     gboolean    backup_running;
     on_timer_id_t   backup_timer;
     on_timer_id_t   sync_timer;
+    gint64      rev_tasks;
+    gint64      rev_notes;
+    gboolean    pull_failed;
 
     void        (*notify_notes_changed)(struct OnApp *app);
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);

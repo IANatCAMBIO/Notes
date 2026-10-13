@@ -125,7 +125,7 @@ on_app_start_services(OnApp *app)
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);
     on_backup_auto_start(app);
-    on_action_sync_start(app);
+    on_action_sync_start(app, FALSE);
 }
 
 /*
@@ -160,7 +160,8 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
 
     /* A pass in flight carries the old path; the timer reads app->db.    */
     on_backup_auto_start(app);
-    on_action_sync_run(app);         /* pending outside changes, refresh   */
+    on_action_sync_start(app, TRUE); /* its revisions, its pending changes,
+                                        and the refresh the new file needs */
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_app_db_health_start(app);     /* every opened database is checked     */
     return ON_SWITCH_DONE;

@@ -79,10 +79,38 @@ txn_begin(OnDatabase *db, gboolean *own)
     return TRUE;
 }
 
+/* One hook registered with on_db_txn_on_end.                               */
+typedef struct {
+    OnDbTxnHook hook;
+    gpointer    data;
+} TxnHook;
+
+/* ---------------------------------------------------------------------------
+ * txn_run_hooks() — the transaction has ended (committed or not): run and
+ * forget every hook registered with on_db_txn_on_end, in order.  The list
+ * is taken first, so a hook may open a transaction of its own.
+ *   db        — open database, no transaction open.
+ *   committed — whether the transaction's work was committed.
+ * ------------------------------------------------------------------------- */
+static void
+txn_run_hooks(OnDatabase *db, gboolean committed)
+{
+    GArray *hooks = db->txn_hooks;   /* the ended transaction's hooks       */
+    if (hooks == NULL || hooks->len == 0)
+        return;
+    db->txn_hooks = g_array_new(FALSE, FALSE, sizeof(TxnHook));
+    for (guint i = 0; i < hooks->len; i++) {
+        const TxnHook *h = &g_array_index(hooks, TxnHook, i);
+        h->hook(h->data, committed);
+    }
+    g_array_unref(hooks);
+}
+
 /* ---------------------------------------------------------------------------
  * txn_end() — finish what txn_begin started: COMMIT when all of it
- * succeeded, ROLLBACK otherwise.  A joined transaction is left to its
- * owner (who sees `ok` and rolls back on FALSE).
+ * succeeded, ROLLBACK otherwise (a failed COMMIT rolls back too), then the
+ * on_db_txn_on_end hooks.  A joined transaction is left to its owner (who
+ * sees `ok` and rolls back on FALSE).
  *   db  — open database, inside the transaction.
  *   own — txn_begin's `own`.
  *   ok  — whether every step in it succeeded.
@@ -93,17 +121,18 @@ txn_end(OnDatabase *db, gboolean own, gboolean ok)
 {
     if (!own)
         return ok;
+    gboolean committed = FALSE;      /* the work is in the file             */
+    char    *err       = NULL;       /* the module's message                */
     if (!ok) {
         shared_db_rollback(db->shared);
-        return FALSE;
-    }
-    char *err = NULL;                /* the module's message               */
-    if (shared_db_commit(db->shared, &err) != 0) {
+    } else if (shared_db_commit(db->shared, &err) != 0) {
         g_warning("db: commit failed: %s", err != NULL ? err : "?");
         free(err);
-        return FALSE;
+    } else {
+        committed = TRUE;
     }
-    return TRUE;
+    txn_run_hooks(db, committed);
+    return committed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -278,14 +307,23 @@ on_db_open(const gchar *path, gchar **err)
     /* Statements are keyed by SQL literal pointer; finalized on db_close.   */
     db->stmt_cache = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
                                            stmt_cache_finalize);
+    db->txn_hooks  = g_array_new(FALSE, FALSE, sizeof(TxnHook));
     return db;
 }
 
+/*
+ * on_db_close — see db.h.  A transaction still open is rolled back and its
+ * on_db_txn_on_end hooks run (not committed) before the connection goes.
+ */
 void
 on_db_close(OnDatabase *db)
 {
     if (db == NULL)
         return;
+    if (sqlite3_get_autocommit(db->handle) == 0)
+        shared_db_rollback(db->shared);
+    txn_run_hooks(db, FALSE);
+    g_array_unref(db->txn_hooks);
     /* Finalize all cached statements BEFORE closing the connection.          */
     if (db->stmt_cache != NULL) {
         g_hash_table_destroy(db->stmt_cache);
@@ -1801,33 +1839,102 @@ on_db_action_pending(OnDatabase *db, gint64 note_id)
     return ids;
 }
 
+/* FNV-1a 64-bit parameters (the note stamp's hash).                       */
+#define FNV64_OFFSET 0xcbf29ce484222325ULL
+#define FNV64_PRIME  0x100000001b3ULL
+
+/*
+ * on_db_note_stamp — see db.h.  The hash is FNV-1a 64 over the blob bytes
+ * (none for an empty note).
+ */
 gboolean
-on_db_note_stamp(OnDatabase *db, gint64 id, gint64 *updated_at, gint64 *size)
+on_db_note_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp)
 {
+    memset(stamp, 0, sizeof *stamp);
     sqlite3_stmt *stmt = cached_prepare(db,
-        "SELECT updated_at, COALESCE(length(content), 0) FROM notes WHERE id=?");
+        "SELECT updated_at, content FROM notes WHERE id=?");
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_int64(stmt, 1, id);
     gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
     if (found) {
-        *updated_at = sqlite3_column_int64(stmt, 0);
-        *size       = sqlite3_column_int64(stmt, 1);
+        const guchar *blob = sqlite3_column_blob(stmt, 1);
+        gint64        n    = sqlite3_column_bytes(stmt, 1);
+        guint64       hash = FNV64_OFFSET;
+        for (gint64 i = 0; i < n; i++) {
+            hash ^= blob[i];
+            hash *= FNV64_PRIME;
+        }
+        stamp->updated_at = sqlite3_column_int64(stmt, 0);
+        stamp->size       = n;
+        stamp->hash       = hash;
     }
     sqlite3_reset(stmt);
     return found;
 }
 
+/*
+ * on_db_note_stamp_same — see db.h.
+ */
+gboolean
+on_db_note_stamp_same(const OnNoteStamp *a, const OnNoteStamp *b)
+{
+    return a->updated_at == b->updated_at && a->size == b->size &&
+           a->hash == b->hash;
+}
+
+/*
+ * on_db_txn_begin — see db.h.
+ */
 gboolean
 on_db_txn_begin(OnDatabase *db, gboolean *own)
 {
     return txn_begin(db, own);
 }
 
+/*
+ * on_db_txn_end — see db.h.
+ */
 gboolean
 on_db_txn_end(OnDatabase *db, gboolean own, gboolean ok)
 {
     return txn_end(db, own, ok);
+}
+
+/*
+ * on_db_txn_on_end — see db.h.
+ */
+gboolean
+on_db_txn_on_end(OnDatabase *db, OnDbTxnHook hook, gpointer data)
+{
+    if (sqlite3_get_autocommit(db->handle) != 0)
+        return FALSE;
+    TxnHook h = { hook, data };
+    g_array_append_val(db->txn_hooks, h);
+    return TRUE;
+}
+
+/*
+ * on_db_poll_revs — see db.h.  A deferred BEGIN: the first statement opens
+ * the read snapshot, and PRAGMA data_version and both revs are read in it.
+ */
+gboolean
+on_db_poll_revs(OnDatabase *db, gboolean *changed, gint64 *rev_tasks,
+                gint64 *rev_notes)
+{
+    if (sqlite3_get_autocommit(db->handle) == 0 || !exec_simple(db, "BEGIN"))
+        return FALSE;
+    int     moved = shared_db_changed(db->shared);
+    int64_t t = 0, n = 0;            /* the two revisions                  */
+    gboolean ok = shared_db_rev(db->shared, SHARED_DB_REV_TASKS, &t, NULL) == 0 &&
+                  shared_db_rev(db->shared, SHARED_DB_REV_NOTES, &n, NULL) == 0;
+    exec_simple(db, "COMMIT");
+    if (!ok)
+        return FALSE;
+    *changed   = moved != 0;
+    *rev_tasks = t;
+    *rev_notes = n;
+    return TRUE;
 }
 
 /* The columns both listings read off the action_items_ctx view, in

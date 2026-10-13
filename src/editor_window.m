@@ -243,13 +243,16 @@ separator(void)
 @property (nonatomic, assign) BOOL    sync_tags;      /* tag links to write  */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
 
-/* The note row as this editor last loaded or saved it (on_db_note_stamp):
- * a different stamp means another writer rewrote the note.              */
-@property (nonatomic, assign) gint64  stamp_updated_at;
-@property (nonatomic, assign) gint64  stamp_size;
+/* The note row as this editor last loaded or saved it (on_db_note_stamp:
+ * updated_at, blob size, blob hash): a different stamp means another
+ * writer rewrote the note, and a save then writes nothing.               */
+@property (nonatomic, assign) OnNoteStamp stamp;
 @property (nonatomic, assign) BOOL    outside_notice; /* the Reload panel is up */
 
 - (BOOL)save;
+- (void)save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh;
+- (void)show_outside_notice;
+- (void)queue_autosave;
 - (BOOL)close_saved;
 - (void)update_status;
 @end
@@ -878,10 +881,9 @@ load_content:(OnDocument *)doc
 - (void)
 record_stamp
 {
-    gint64 updated_at = 0, size = 0;
-    on_db_note_stamp(self.app->db, self.note_id, &updated_at, &size);
-    self.stamp_updated_at = updated_at;
-    self.stamp_size       = size;
+    OnNoteStamp now;
+    on_db_note_stamp(self.app->db, self.note_id, &now);
+    self.stamp = now;
 }
 
 /*
@@ -908,31 +910,47 @@ reload_from_row
 /*
  * check_outside — the database changed outside the app: has another writer
  * (an agent, say) rewritten this note since this editor loaded or saved
- * it?  Gone: the editor closes without saving.  Rewritten, no unsaved
- * edits here: reloaded.  Rewritten with unsaved edits here: nothing is
- * overwritten silently either way — the editor keeps its version (which
- * its next save writes) and a tool panel offers Reload, once per change.
+ * it (its stamp, blob hash included)?  Gone: the editor closes without
+ * saving.  Rewritten, no unsaved edits here: reloaded.  Rewritten with
+ * unsaved edits here: nothing is overwritten silently either way — the
+ * editor keeps its version and asks (show_outside_notice).
  */
 - (void)
 check_outside
 {
-    gint64 updated_at = 0, size = 0;
-    if (!on_db_note_stamp(self.app->db, self.note_id, &updated_at, &size)) {
+    OnNoteStamp now;
+    if (!on_db_note_stamp(self.app->db, self.note_id, &now)) {
         self.discard = YES;
         [self.window close];
         return;
     }
-    if (updated_at == self.stamp_updated_at && size == self.stamp_size) return;
+    OnNoteStamp mine = self.stamp;
+    if (on_db_note_stamp_same(&now, &mine)) return;
     if (!self.dirty) {
         [self reload_from_row];
         return;
     }
+    [self show_outside_notice];
+}
+
+/*
+ * show_outside_notice — another writer rewrote this note while it holds
+ * unsaved edits (check_outside saw it, or a save found it inside its
+ * transaction and wrote nothing): a tool panel, once per change, offers
+ * Keep Mine (this version is saved over the other writer's, deliberately:
+ * the stored stamp is adopted and a save queued) or Reload (the other
+ * writer's version replaces this one).  Until it is answered nothing is
+ * saved.
+ */
+- (void)
+show_outside_notice
+{
     if (self.outside_notice) return;
     self.outside_notice = YES;
     __weak NotesEditorWindow *ws = self;
     [NotesToolPanel show_message:@"Changed outside " ON_APP_NAME
-                         message:@"This note was changed outside " ON_APP_NAME @"; your open version "
-                                 @"will replace it. Reload to discard yours."
+                         message:@"This note was changed outside " ON_APP_NAME @" while it has unsaved "
+                                 @"changes here. Keep Mine saves your version over it; Reload discards yours."
                           symbol:@"exclamationmark.triangle"
                          buttons:@[@"Keep Mine", @"Reload"]
                             over:self.window
@@ -943,10 +961,8 @@ check_outside
         if (index == 1) {
             [s reload_from_row];
         } else {
-            gint64 u = 0, n = 0;     /* acknowledged: the next save writes ours */
-            on_db_note_stamp(s.app->db, s.note_id, &u, &n);
-            s.stamp_updated_at = u;
-            s.stamp_size       = n;
+            [s record_stamp];        /* acknowledged: the next save writes ours */
+            [s queue_autosave];
         }
     }];
 }
@@ -1096,58 +1112,132 @@ queue_autosave
         NotesEditorWindow *s = ws;
         if (!s) return;
         s.autosave_timer = nil;
-        if (![s save]) [s queue_autosave];   /* still unsaved: try again */
+        /* Still unsaved: try again — unless an outside rewrite is waiting
+         * for the user's answer, which queues the next save itself.       */
+        if (![s save] && !s.outside_notice) [s queue_autosave];
     }];
 }
 
 /*
- * save — persist the note, its tag set when that changed, and tell the
- * library: the full refresh when a tag or a task row changed (the sidebar
- * shows them), the light one-note refresh otherwise.
+ * save_end_hook — the on_db_txn_on_end hook of an editor's save: hands the
+ * outcome to the block the save registered (save_ended:…).
  *
- * Output: YES when the note was written; NO when the save failed (the
- * edits are still unsaved).
+ * Inputs:
+ *   data      — the block (retained when registered; released here)
+ *   committed — whether the save's transaction committed
+ */
+static void
+save_end_hook(gpointer data, gboolean committed)
+{
+    void (^ended)(BOOL) = (__bridge_transfer void (^)(BOOL))data;
+    ended(committed != FALSE);
+}
+
+/*
+ * save — persist the note in ONE write transaction — the caller's when one
+ * is open (the pull's live_save), else its own: first, inside it, the
+ * stored note is compared with the one this editor last loaded or saved
+ * (its stamp, blob hash included), and if another writer rewrote it,
+ * NOTHING is written and the "changed outside" panel is shown; else the
+ * document (on_note_document_save: blob, title, body text, and the push
+ * when an action line was touched) and the tag set when it was touched.
+ * The editor counts as saved only when that transaction COMMITS
+ * (save_ended:…, through on_db_txn_on_end): until then it stays dirty, and
+ * if it does not commit it stays dirty and retries.
+ *
+ * Output: YES when everything was written (and, in its own transaction,
+ * committed); NO when nothing or not everything was (the edits are still
+ * unsaved).
  */
 - (BOOL)
 save
 {
     OnApp      *app = self.app;
+    OnDatabase *db  = app->db;
     OnDocument *doc = on_note_view_document(self.note_view);
 
     if (on_note_view_take_actions_modified(self.note_view)) self.sync_actions = YES;
+    if (on_note_view_take_tags_modified(self.note_view)) self.sync_tags = YES;
 
-    gboolean actions_changed = FALSE;
-    if (!on_note_document_save(app->db, self.note_id, doc, self.sync_actions,
-                               &actions_changed)) {
+    gboolean own;                    /* this save's own transaction?        */
+    if (!on_db_txn_begin(db, &own)) {
         on_app_status(app, "Could not save note %" G_GINT64_FORMAT, self.note_id);
         return NO;
     }
-    self.sync_actions = NO;
-    [self record_stamp];
-
-    if (on_note_view_take_tags_modified(self.note_view)) self.sync_tags = YES;
-    BOOL tags_changed = self.sync_tags;
-    if (tags_changed) {
-        if (!on_note_document_save_tags(app->db, self.note_id, doc)) {                     /* kept pending: the retry writes them */
-            on_app_status(app, "Could not save the tags of note %" G_GINT64_FORMAT, self.note_id);
-            return NO;
-        }
-        self.sync_tags = NO;
+    OnNoteStamp stored, mine = self.stamp;
+    if (on_db_note_stamp(db, self.note_id, &stored) && !on_db_note_stamp_same(&stored, &mine)) {
+        on_db_txn_end(db, own, FALSE);   /* nothing was written            */
+        [self show_outside_notice];
+        return NO;
     }
-    self.dirty = NO;
 
-    gchar *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
+    gboolean    actions_changed = FALSE;
+    BOOL        tags            = self.sync_tags;
+    OnNoteStamp saved;               /* the row as this save leaves it      */
+    gboolean    ok = on_note_document_save(db, self.note_id, doc, self.sync_actions,
+                                           &actions_changed) &&
+                     (!tags || on_note_document_save_tags(db, self.note_id, doc)) &&
+                     on_db_note_stamp(db, self.note_id, &saved);
+    if (ok) {
+        __weak NotesEditorWindow *ws = self;
+        BOOL refresh = tags || actions_changed;
+        void (^ended)(BOOL) = ^(BOOL committed) {
+            [ws save_ended:committed stamp:saved refresh:refresh];
+        };
+        on_db_txn_on_end(db, save_end_hook, (__bridge_retained void *)ended);
+    }
+    if (!on_db_txn_end(db, own, ok)) {
+        if (!ok) on_app_status(app, "Could not save note %" G_GINT64_FORMAT, self.note_id);
+        return NO;
+    }
+    return YES;
+}
+
+/*
+ * save_ended:stamp:refresh: — the transaction a save wrote in has ended.
+ * Committed: the editor is saved — the new stamp adopted, the pending
+ * action and tag flags cleared, any queued autosave dropped, the title and
+ * status bar updated, and the library told (after the commit, so no
+ * refresh runs while the write lock is held): the full refresh when a tag
+ * or a task row changed, the light one-note refresh otherwise.  Not
+ * committed (the caller's transaction rolled back, or the commit failed):
+ * the edits are still unsaved — the editor stays dirty with the stamp it
+ * had, which is the stored note's again after the rollback, so
+ * check_outside does not mistake it for another writer's rewrite and
+ * reload over the text — and the autosave retries.
+ *
+ * Inputs:
+ *   committed — whether the transaction committed
+ *   saved     — the note's stamp as the save left it (inside it)
+ *   refresh   — a tag or a task row changed
+ */
+- (void)
+save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
+{
+    OnApp *app = self.app;
+    if (!committed) {
+        on_app_status(app, "Could not save note %" G_GINT64_FORMAT, self.note_id);
+        [self queue_autosave];
+        return;
+    }
+    self.stamp        = saved;
+    self.sync_actions = NO;
+    self.sync_tags    = NO;
+    [self.autosave_timer invalidate];
+    self.autosave_timer = nil;
+    self.dirty          = NO;
+
+    OnDocument *doc   = on_note_view_document(self.note_view);
+    gchar      *title = on_document_title(doc, ON_DEFAULT_NOTE_TITLE, ON_TITLE_MAX_CHARS);
     self.window.title = @(title);
     g_free(title);
-
     [self update_status];
 
-    if (tags_changed || actions_changed) {
+    if (refresh) {
         if (app->notify_notes_changed != NULL) app->notify_notes_changed(app);
     } else {
         if (app->notify_note_saved != NULL) app->notify_note_saved(app, self.note_id);
     }
-    return YES;
 }
 
 /*
@@ -1192,7 +1282,8 @@ windowDidBecomeKey:(NSNotification *)note
 /*
  * windowShouldClose: — the user closes the window: unsaved edits are saved
  * first, and a save that fails keeps the window open, with a tool panel
- * offering to close without saving.
+ * offering to close without saving — or, when the save found the note
+ * rewritten by another writer, the "changed outside" panel asking first.
  *
  * Inputs:
  *   sender — the window
@@ -1203,6 +1294,7 @@ windowDidBecomeKey:(NSNotification *)note
 windowShouldClose:(NSWindow *)sender
 {
     if (!self.dirty || self.discard || [self save]) return YES;
+    if (self.outside_notice) return NO;     /* its panel asks first */
     __weak NotesEditorWindow *ws = self;
     on_ui_confirm([NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title],
                   @"Your changes are still in the window. Closing it now loses them.",
@@ -1441,14 +1533,18 @@ hook_live_edited(OnApp *app, gint64 note_id)
 }
 
 /*
- * hook_live_save — OnApp.live_save: the open editor of a note saves now,
- * inside the caller's transaction (the pull).
+ * hook_live_save — OnApp.live_save: the open editor of a note writes now,
+ * inside the caller's transaction (the pull), pushing EVERY action line
+ * (sync_actions forced: a title the pull refused must go back to its
+ * task even though no line was touched here).  It counts as saved only
+ * when that transaction commits (save_ended:…).
  *
  * Inputs:
  *   app     — the application context (unused)
  *   note_id — the note
  *
- * Output: FALSE when the save failed (or the note is not open).
+ * Output: FALSE when the write failed or was refused (another writer
+ *         rewrote the note), or the note is not open.
  */
 static gboolean
 hook_live_save(OnApp *app, gint64 note_id)
@@ -1457,9 +1553,8 @@ hook_live_save(OnApp *app, gint64 note_id)
     if (editor == nil) return FALSE;
     [editor.autosave_timer invalidate];
     editor.autosave_timer = nil;
-    if ([editor save]) return TRUE;
-    [editor queue_autosave];          /* still unsaved: try again later */
-    return FALSE;
+    editor.sync_actions   = YES;
+    return [editor save];
 }
 
 /*

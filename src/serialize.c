@@ -104,6 +104,49 @@ on_note_document_load(OnDatabase *db, gint64 id)
     return doc;
 }
 
+/* ---------------------------------------------------------------------------
+ * FreshUids — the uids one save handed to a document's lines
+ * (on_db_action_uid_alloc), kept until its transaction ends: they exist
+ * only if it commits.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    OnDocument *doc;                 /* the saved document (not owned)      */
+    GHashTable *uids;                /* gint64 uid -> itself (owned keys)   */
+} FreshUids;
+
+/*
+ * fresh_uids_end — an on_db_txn_on_end hook: the save's transaction ended.
+ * Not committed: every line still carrying one of the save's fresh uids
+ * goes back to uid 0, so the next save allocates again — a rolled-back
+ * uid left in the document would be handed out a second time and two
+ * lines would claim one task.  Committed: nothing to do.  Frees `data`.
+ *
+ * Inputs:
+ *   data      — the FreshUids
+ *   committed — whether the save's transaction committed
+ *
+ * Output: none.
+ */
+static void
+fresh_uids_end(gpointer data, gboolean committed)
+{
+    FreshUids *fresh = data;
+    if (!committed) {
+        GArray *blocks = on_document_action_blocks(fresh->doc);
+        for (guint i = 0; i < blocks->len; i++) {
+            OnBlock *b = on_document_block(fresh->doc, g_array_index(blocks, guint, i));
+            if (g_hash_table_contains(fresh->uids, &b->action_uid))
+                b->action_uid = 0;
+        }
+        g_array_unref(blocks);
+    }
+    g_hash_table_destroy(fresh->uids);
+    g_free(fresh);
+}
+
+/*
+ * on_note_document_save — see serialize.h.
+ */
 gboolean
 on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                       gboolean sync_actions, gboolean *changed)
@@ -114,9 +157,14 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
     if (!on_db_txn_begin(db, &own))
         return FALSE;
 
-    /* 1. Identities, before the bytes: dedupe, then allocate.             */
+    /* 1. Identities, before the bytes: dedupe, then allocate.  The fresh
+     *    uids are taken back if the transaction does not commit.          */
     GArray *blocks = on_document_action_blocks(doc);
     GHashTable *seen = g_hash_table_new(g_int64_hash, g_int64_equal);
+    FreshUids *fresh = g_new0(FreshUids, 1);
+    fresh->doc  = doc;
+    fresh->uids = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+    on_db_txn_on_end(db, fresh_uids_end, fresh);
     GList *items = NULL;             /* the lines as OnActionItem, reversed */
     gboolean ok = TRUE;              /* the outcome                         */
     for (guint i = 0; i < blocks->len && ok; i++) {
@@ -126,6 +174,8 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
         if (b->action_uid == 0) {
             b->action_uid = on_db_action_uid_alloc(db);
             ok = b->action_uid != 0;
+            if (ok)
+                g_hash_table_add(fresh->uids, g_memdup2(&b->action_uid, sizeof b->action_uid));
         }
         g_hash_table_add(seen, &b->action_uid);
         OnActionItem *it = g_new0(OnActionItem, 1);
@@ -178,16 +228,42 @@ on_note_document_save_tags(OnDatabase *db, gint64 id, const OnDocument *doc)
 gint64
 on_note_new_from_text(OnDatabase *db, gint64 folder_id, const gchar *text)
 {
-    gint64 id = on_db_note_create(db, folder_id);
-    if (id == 0)
+    gboolean own;                    /* this call's transaction?            */
+    if (!on_db_txn_begin(db, &own))
         return 0;
+    gint64      id  = on_db_note_create(db, folder_id);
     OnDocument *doc = on_document_from_text(text);
-    if (!on_note_document_save(db, id, doc, TRUE, NULL)) {
-        on_db_notes_delete(db, &id, 1);
-        id = 0;
-    }
-    on_document_free(doc);
-    return id;
+    gboolean    ok  = id != 0 && on_note_document_save(db, id, doc, TRUE, NULL);
+    on_note_document_release(db, doc);
+    return on_db_txn_end(db, own, ok) ? id : 0;
+}
+
+/*
+ * document_free_end — an on_db_txn_on_end hook: free a document once the
+ * transaction its save joined has ended (its FreshUids hook, registered
+ * earlier, has run by then).
+ *
+ * Inputs:
+ *   data      — the OnDocument
+ *   committed — unused
+ *
+ * Output: none.
+ */
+static void
+document_free_end(gpointer data, gboolean committed)
+{
+    (void)committed;
+    on_document_free(data);
+}
+
+/*
+ * on_note_document_release — see serialize.h.
+ */
+void
+on_note_document_release(OnDatabase *db, OnDocument *doc)
+{
+    if (doc != NULL && !on_db_txn_on_end(db, document_free_end, doc))
+        on_document_free(doc);
 }
 
 /*

@@ -109,6 +109,8 @@ typedef struct {
      * on_db_health_check_async().                                          */
     OnDbHealth  health;
     gpointer    health_job;   /* the async pass in flight, or NULL (db.c) */
+    GArray     *txn_hooks;    /* what runs when the open write transaction
+                                  ends (on_db_txn_on_end), in order         */
 } OnDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -376,11 +378,26 @@ gboolean on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                          const guint8 *content, gsize len,
                          const gchar *body_text);
 
-/* What an open editor compares to tell that a note was rewritten by
- * another writer since it loaded or saved it: the row's updated_at and
- * the length of its blob.  Returns FALSE when the note does not exist.   */
-gboolean on_db_note_stamp(OnDatabase *db, gint64 id, gint64 *updated_at,
-                          gint64 *size);
+/* ---------------------------------------------------------------------------
+ * OnNoteStamp — what an open editor compares to tell that a note was
+ * rewritten by another writer since it loaded or saved it: the row's
+ * updated_at, the length of its blob and a 64-bit FNV-1a hash of the blob
+ * bytes (so a rewrite in the same second to the same size is still seen).
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64  updated_at;
+    gint64  size;
+    guint64 hash;
+} OnNoteStamp;
+
+/* on_db_note_stamp() — note `id`'s stamp as stored now (read inside the
+ * caller's transaction, if one is open).  Returns FALSE when the note does
+ * not exist or cannot be read (*stamp is then zeroed).                    */
+gboolean on_db_note_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp);
+
+/* on_db_note_stamp_same() — whether two stamps describe the same stored
+ * note (every field equal).                                               */
+gboolean on_db_note_stamp_same(const OnNoteStamp *a, const OnNoteStamp *b);
 
 /* Read a note's cached searchable text. Returns a new string (g_free()
  * it), or NULL when the cache is unfilled (older rows) — callers then
@@ -474,7 +491,10 @@ GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
 /* Allocate a fresh uid from the action_uid_seq high-water mark: only ever
  * incremented, so a uid retired with a deleted item is never handed out
  * again.  Runs in its own transaction unless the caller already has one
- * open; a uid burned by a save that then fails is harmless.  Returns 0 on
+ * open.  Inside a transaction that then rolls back, the counter rolls back
+ * too and the same uid will be handed out again: whoever stored the uid
+ * outside the database must drop it unless the transaction commits
+ * (on_note_document_save does, through on_db_txn_on_end).  Returns 0 on
  * failure.                                                                */
 gint64 on_db_action_uid_alloc(OnDatabase *db);
 
@@ -569,14 +589,68 @@ void on_db_action_link_clear(OnActionLink *row);
  * ascending; g_array_unref() it.                                          */
 GArray *on_db_action_pending(OnDatabase *db, gint64 note_id);
 
-/* on_db_txn_begin() / on_db_txn_end() — one write transaction around
- * several calls (BEGIN IMMEDIATE through shared_db_begin), or JOIN the one
- * already open on this connection: `own` says which, and end commits only
- * what begin opened (rolling back when `ok` is FALSE).  Every on_db_*
- * writer joins an open transaction the same way.  Both return TRUE on
- * success.                                                                */
+/* ---------------------------------------------------------------------------
+ * on_db_txn_begin() — one write transaction around several calls (BEGIN
+ * IMMEDIATE through shared_db_begin), or JOIN the one already open on this
+ * connection.  Every on_db_* writer joins an open transaction the same
+ * way.
+ *   db  — open database.
+ *   own — out: TRUE when this call opened the transaction (on_db_txn_end
+ *         then commits it), FALSE when it joined the caller's.
+ * Returns TRUE when a transaction is open.
+ * ------------------------------------------------------------------------- */
 gboolean on_db_txn_begin(OnDatabase *db, gboolean *own);
+
+/* ---------------------------------------------------------------------------
+ * on_db_txn_end() — finish what on_db_txn_begin started: when `own`, COMMIT
+ * if `ok`, else ROLLBACK, and then run every hook registered with
+ * on_db_txn_on_end, in order, with whether the work was committed (a
+ * failed COMMIT rolls back and counts as not committed).  A joined
+ * transaction is left to its owner, who sees `ok`.
+ *   db  — open database, inside the transaction.
+ *   own — on_db_txn_begin's `own`.
+ *   ok  — whether every step in it succeeded.
+ * Returns TRUE only when every step succeeded and, when owned, committed.
+ * ------------------------------------------------------------------------- */
 gboolean on_db_txn_end(OnDatabase *db, gboolean own, gboolean ok);
+
+/* What on_db_txn_on_end runs: `data` as registered, and whether the
+ * transaction committed.  The hook owns `data` (frees it, if it must).    */
+typedef void (*OnDbTxnHook)(gpointer data, gboolean committed);
+
+/* ---------------------------------------------------------------------------
+ * on_db_txn_on_end() — run `hook` when the write transaction open on this
+ * connection ends (the outermost on_db_txn_end, or on_db_close, which
+ * counts as a rollback): what a joined writer does about state OUTSIDE the
+ * database that is right only if its writes are committed — a document's
+ * freshly allocated uids reset on a rollback, an editor marked saved only
+ * after the commit, a refresh made after the lock is released.  Hooks run
+ * in registration order, after the COMMIT or ROLLBACK, with no
+ * transaction open.
+ *   db   — open database, inside a transaction.
+ *   hook — the hook.
+ *   data — its argument.
+ * Returns TRUE when registered; FALSE (hook not called) when no
+ * transaction is open.
+ * ------------------------------------------------------------------------- */
+gboolean on_db_txn_on_end(OnDatabase *db, OnDbTxnHook hook, gpointer data);
+
+/* ---------------------------------------------------------------------------
+ * on_db_poll_revs() — the pull's poll, in ONE read snapshot: has another
+ * connection committed since the last look (shared_db_changed), and the
+ * two change revisions (shared_db_rev: SHARED_DB_REV_TASKS, _NOTES).  One
+ * snapshot is what makes "no outside commit" mean that every rev movement
+ * since the last look was this connection's own.
+ *   db        — open database, no transaction open.
+ *   changed   — out: TRUE when another connection committed (also when
+ *               that could not be read).
+ *   rev_tasks — out: the 'tasks' revision.
+ *   rev_notes — out: the 'notes' revision.
+ * Returns TRUE on success; FALSE when a transaction is open or a read
+ * failed (the outs are then unchanged).
+ * ------------------------------------------------------------------------- */
+gboolean on_db_poll_revs(OnDatabase *db, gboolean *changed, gint64 *rev_tasks,
+                         gint64 *rev_notes);
 
 /* One live item by uid, off the view (context included); NULL when no
  * live task carries that uid.  Free with on_db_action_item_free().        */

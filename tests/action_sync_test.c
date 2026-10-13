@@ -645,7 +645,7 @@ test_pull_connection(OnApp *app, OnDatabase *other)
     check_pulled(app->db, notes, uids, "connection");
     OnNoteMeta *before = on_db_note_get(app->db, notes[0]);
     check(!on_action_sync_poll(app), "pull: its own saves do not trigger another pull");
-    on_action_sync_run(app);
+    on_action_sync_run(app, FALSE);
     OnNoteMeta *after = on_db_note_get(app->db, notes[0]);
     check(before->updated_at == after->updated_at, "pull: a pull with nothing to do writes nothing");
     on_db_note_meta_free(before);
@@ -791,6 +791,186 @@ test_restored_elsewhere(OnApp *app, OnDatabase *other)
 }
 
 /*
+ * first_uid — the uid of a document's first action line.
+ *
+ * Inputs:
+ *   doc — the document
+ *
+ * Output: the uid (0 when it has none, or there is no action line).
+ */
+static gint64
+first_uid(OnDocument *doc)
+{
+    GArray *bl  = on_document_action_blocks(doc);
+    gint64  uid = bl->len > 0 ? on_document_block(doc, g_array_index(bl, guint, 0))->action_uid : 0;
+    g_array_unref(bl);
+    return uid;
+}
+
+/*
+ * test_failed_save_uids — a save that does not commit leaves no uid in the
+ * document: the fresh uids go back to 0 when the save itself fails (the
+ * note is gone) and when the caller's enclosing transaction rolls back,
+ * so a later save cannot hand the same uid to two notes.
+ *
+ * Inputs:
+ *   db — Notes' connection
+ */
+static void
+test_failed_save_uids(OnDatabase *db)
+{
+    /* The save fails after allocating: its note was deleted meanwhile.     */
+    gint64      gone = on_note_new_from_text(db, 0, "Gone");
+    OnDocument *doc  = on_document_from_text("Failed\n! A line that was never saved");
+    on_db_notes_delete(db, &gone, 1);
+    check(!on_note_document_save(db, gone, doc, TRUE, NULL) && first_uid(doc) == 0,
+          "failed save: the line's fresh uid is reset to 0 (it was rolled back)");
+    gint64 other = on_note_new_from_text(db, 0, "Other\n! Somebody else's line");
+    gint64 note  = on_note_new_from_text(db, 0, "Retry");
+    check(on_note_document_save(db, note, doc, TRUE, NULL) && first_uid(doc) != 0 &&
+          first_uid(doc) != nth_uid(db, other, 0),
+          "failed save: the retry allocates anew; no two notes share a uid");
+    gchar *mine = task_title(db, first_uid(doc)), *theirs = task_title(db, nth_uid(db, other, 0));
+    check(strcmp(mine, "A line that was never saved") == 0 &&
+          strcmp(theirs, "Somebody else's line") == 0, "failed save: each note keeps its own task");
+    g_free(mine);
+    g_free(theirs);
+    on_document_free(doc);
+
+    /* The save succeeds inside the caller's transaction, which then rolls
+     * back (as a pull's does when a later step fails).                     */
+    gint64   later = on_note_new_from_text(db, 0, "Enclosed");
+    gboolean own;
+    doc = on_document_from_text("Enclosed\n! Saved, then rolled back");
+    check(on_db_txn_begin(db, &own) && own && on_note_document_save(db, later, doc, TRUE, NULL) &&
+          first_uid(doc) != 0, "enclosed save: a uid is allocated inside the caller's transaction");
+    on_db_txn_end(db, own, FALSE);
+    check(first_uid(doc) == 0, "enclosed save: the rollback resets it to 0");
+    on_document_free(doc);
+}
+
+/*
+ * test_new_from_text_atomic — a new note from text is one transaction: when
+ * its save fails (here: the uid high-water mark is missing, so no uid can
+ * be allocated) no note is left behind.
+ *
+ * Inputs:
+ *   db    — Notes' connection
+ *   other — a second connection (removes and restores the mark)
+ */
+static void
+test_new_from_text_atomic(OnDatabase *db, OnDatabase *other)
+{
+    gint before = on_db_note_count_visible(db);
+    exec_sql(other, "CREATE TEMP TABLE seq_keep AS SELECT * FROM action_uid_seq;"
+                    "DELETE FROM action_uid_seq");
+    check(on_note_new_from_text(db, 0, "Atomic\n! cannot get a uid") == 0 &&
+          on_db_note_count_visible(db) == before,
+          "new note from text: a failed save leaves no note (one transaction)");
+    exec_sql(other, "INSERT INTO action_uid_seq SELECT * FROM seq_keep; DROP TABLE seq_keep");
+}
+
+static int refreshes;                /* notify_notes_changed calls           */
+static int editor_checks;            /* check_editors calls                  */
+
+/*
+ * count_refresh — OnApp.notify_notes_changed for the poll test: count.
+ *
+ * Inputs:
+ *   app — the context (unused)
+ */
+static void
+count_refresh(OnApp *app)
+{
+    (void)app;
+    refreshes++;
+}
+
+/*
+ * count_check — OnApp.check_editors for the poll test: count.
+ *
+ * Inputs:
+ *   app — the context (unused)
+ */
+static void
+count_check(OnApp *app)
+{
+    (void)app;
+    editor_checks++;
+}
+
+/*
+ * test_poll_revs — the poll acts only on real change: Notes' own commits,
+ * and outside commits to neither app's data, do nothing; 'notes' moving
+ * refreshes the editors and library without a pull; 'tasks' moving pulls
+ * (refreshing only when something was synced or 'notes' moved); a failed
+ * pull is retried on the next tick with no outside commit.
+ *
+ * Inputs:
+ *   app   — headless context (its two refresh hooks counted here)
+ *   other — a second connection
+ */
+static void
+test_poll_revs(OnApp *app, OnDatabase *other)
+{
+    gint64 note = on_note_new_from_text(app->db, 0, "Poll\n! Watch me");
+    gint64 uid  = nth_uid(app->db, note, 0);
+    on_action_sync_poll(app);
+    app->notify_notes_changed = count_refresh;
+    app->check_editors        = count_check;
+
+    refreshes = editor_checks = 0;
+    on_note_new_from_text(app->db, 0, "Own commit");
+    check(!on_action_sync_poll(app) && refreshes == 0 && editor_checks == 0,
+          "poll: Notes' own commits neither pull nor refresh");
+    shared_settings_set(other->shared, "poll_test", "1", NULL);
+    check(!on_action_sync_poll(app) && refreshes == 0,
+          "poll: an outside commit to neither app's data does nothing");
+    exec_sql(other, "UPDATE notes SET title = 'Renamed outside' WHERE title = 'Own commit'");
+    check(!on_action_sync_poll(app) && refreshes == 1 && editor_checks == 1,
+          "poll: the 'notes' rev moved: editors check and the library refreshes, no pull");
+    exec_uid(other, uid, "UPDATE tasks SET priority = 3 WHERE id = ?1");
+    check(on_action_sync_poll(app) && refreshes == 1,
+          "poll: the 'tasks' rev moved with nothing to pull: the pull runs, nothing refreshes");
+    exec_uid(other, uid, "UPDATE tasks SET title = 'Watched' WHERE id = ?1");
+    check(on_action_sync_poll(app) && refreshes == 2 && editor_checks == 2,
+          "poll: a pulled change refreshes once");
+    check(!on_action_sync_poll(app) && refreshes == 2, "poll: the pull's own commits do not count");
+
+    /* A pull that fails (the note cannot be read) is retried on the next
+     * tick, with no outside commit in between.                             */
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(app->db->handle, "SELECT content FROM notes WHERE id = ?", -1, &st, NULL);
+    sqlite3_bind_int64(st, 1, note);
+    sqlite3_step(st);
+    GBytes *blob = g_bytes_new(sqlite3_column_blob(st, 0), (gsize)sqlite3_column_bytes(st, 0));
+    sqlite3_finalize(st);
+    static const guint8 future[] = { 'B', 'N', 'B', 'F', 99, 0, 0, 0, 1, 0, 0, 0, 'x' };
+    sqlite3_prepare_v2(other->handle, "UPDATE notes SET content = ? WHERE id = ?", -1, &st, NULL);
+    sqlite3_bind_blob(st, 1, future, sizeof future, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, note);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+    exec_uid(other, uid, "UPDATE tasks SET title = 'Waits' WHERE id = ?1");
+    check(on_action_sync_poll(app) && app->pull_failed, "poll: a pull that fails is remembered");
+    check(on_action_sync_poll(app) && app->pull_failed,
+          "poll: and tried again on the next tick, with no outside commit");
+    gsize n = 0;
+    const void *bytes = g_bytes_get_data(blob, &n);
+    sqlite3_prepare_v2(other->handle, "UPDATE notes SET content = ? WHERE id = ?", -1, &st, NULL);
+    sqlite3_bind_blob(st, 1, bytes, (int)n, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, note);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+    g_bytes_unref(blob);
+    on_action_sync_poll(app);
+    check(!app->pull_failed && pending_count(app->db) == 0,
+          "poll: once the note is readable again the retry pulls it");
+    app->notify_notes_changed = NULL;
+    app->check_editors        = NULL;
+}
+
+/*
  * main — run the test.
  *
  * Output: 0 when every check held.
@@ -815,6 +995,9 @@ main(void)
     test_pull_refused(&app, other);
     test_concurrent(&app, other);
     test_restored_elsewhere(&app, other);
+    test_failed_save_uids(db);
+    test_new_from_text_atomic(db, other);
+    test_poll_revs(&app, other);
     on_db_close(other);
     on_db_close(db);
     return check_result();

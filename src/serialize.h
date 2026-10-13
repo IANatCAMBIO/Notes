@@ -70,6 +70,14 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
  *      baseline is written to the task (that field only), removed lines
  *      are tombstoned.  The editor passes whether an action line was
  *      touched since the last save; everyone else passes TRUE.
+ * The uids step 1 allocated exist only if the transaction COMMITS: when it
+ * does not — this save failed, or the caller's enclosing transaction rolls
+ * back or fails to commit — every line that received one is set back to
+ * uid 0 when the transaction ends (on_db_txn_on_end), so the next save
+ * allocates again and no rolled-back uid is ever carried into a second
+ * note.  `doc` must therefore outlive the transaction: inside a caller's
+ * transaction, give it up with on_note_document_release, not
+ * on_document_free.
  *   changed — optional; receives whether any task row was written (the
  *             library's full refresh hangs on it).
  * Returns TRUE on success.
@@ -94,10 +102,10 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
 /* ---------------------------------------------------------------------------
  * on_note_new_from_text() — a new note holding plain text: one PARA block
  * per line (on_document_from_text), the first line its title, every '!'
- * line an action item — created and written through THE save.  A note
- * whose save fails is deleted again, so no empty note is left in place of
- * the one asked for.  What the development seeder and the tests build
- * their notes with (it was the command-line tool's `note new`).
+ * line an action item — created and written through THE save, in ONE
+ * write transaction (the caller's, when one is open): a failed save leaves
+ * no note behind.  What the development seeder and the tests build their
+ * notes with (it was the command-line tool's `note new`).
  *   db        — open database.
  *   folder_id — the folder (0 = top level).
  *   text      — the content, UTF-8 (invalid bytes become U+FFFD).
@@ -105,6 +113,16 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
  * ------------------------------------------------------------------------- */
 gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
                              const gchar *text);
+
+/* ---------------------------------------------------------------------------
+ * on_note_document_release() — free a document that a save inside the
+ * open write transaction may still refer to (its fresh uids are reset if
+ * the transaction does not commit): freed when that transaction ends, or
+ * at once when none is open.
+ *   db  — open database.
+ *   doc — the document (owned by the caller until now), or NULL.
+ * ------------------------------------------------------------------------- */
+void on_note_document_release(OnDatabase *db, OnDocument *doc);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_reconcile() — THE PULL into one document: bring note

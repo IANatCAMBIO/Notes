@@ -58,7 +58,10 @@ action_apply(OnApp *app, gint64 uid, action_edit_t which, gboolean done,
     } else {
         done = it->done;
     }
-    gboolean ok      = on_db_action_set(app->db, uid, it->text, done, due);
+    gboolean ok      = on_db_action_set(app->db, uid,
+                                        which == ACTION_STRIKE ? ON_ACTION_FIELD_DONE
+                                                               : ON_ACTION_FIELD_DUE,
+                                        it->text, done, due);
     gint64   note_id = it->note_id;
     on_db_action_item_free(it);
     if (!ok) {

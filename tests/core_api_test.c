@@ -598,7 +598,7 @@ test_action_edit(OnApp *app)
 
     /* Rename from the row: '!', spacing, due suffix, strike and uid kept.  */
     OnActionItem *row = on_db_action_get(db, uid);
-    check(on_db_action_set(db, uid, "Renamed by uid", row->done, row->due), "text: the row is renamed");
+    check(on_db_action_set(db, uid, ON_ACTION_FIELD_TEXT, "Renamed by uid", row->done, row->due), "text: the row is renamed");
     on_db_action_item_free(row);
     OnDocument *doc = on_note_document_load(db, note);
     check(on_note_document_reconcile(db, note, doc), "text: the reconcile rewrites the line");

@@ -1379,19 +1379,23 @@ task_now(void)
 }
 
 /* ---------------------------------------------------------------------------
- * task_list_managed() — the id of the managed "Action Items" list, created
- * on first use (never seeded blind: a database that holds no item holds no
- * list either, until the first).  The Tasks app's bn_managed_list, by name.
+ * task_list_managed() — the id of the managed list every Notes-born task
+ * is filed in: the live list named SHARED_DB_ACTION_LIST_NAME with the
+ * emoji SHARED_DB_ACTION_LIST_EMOJI, the lowest id when there are several;
+ * created (appended after every other list) when there is none.  Never
+ * seeded blind: a database that holds no item holds no list either.
  * Returns the list id, or 0 on failure.
  * ------------------------------------------------------------------------- */
 static gint64
 task_list_managed(OnDatabase *db)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT id FROM lists WHERE name=? AND deleted=0 LIMIT 1");
+        "SELECT id FROM lists WHERE name=? AND emoji=? AND deleted=0"
+        " ORDER BY id LIMIT 1");
     if (stmt == NULL)
         return 0;
     sqlite3_bind_text(stmt, 1, SHARED_DB_ACTION_LIST_NAME, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, SHARED_DB_ACTION_LIST_EMOJI, -1, SQLITE_STATIC);
     gint64 id = sqlite3_step(stmt) == SQLITE_ROW
                 ? sqlite3_column_int64(stmt, 0) : 0;
     sqlite3_finalize(stmt);
@@ -1412,124 +1416,278 @@ task_list_managed(OnDatabase *db)
 }
 
 /* ---------------------------------------------------------------------------
- * task_apply() — write title / done / due onto task `task_id`: THE one
- * statement Notes writes a task with, the shape of the Tasks app's
- * task_db_task_apply_done_source.  done folds into status the way a
- * done-only source must (done → DONE; undone → IN_PROGRESS only if it was
- * DONE, else unchanged, so a New task survives a round trip), completed_at
- * is stamped on entering DONE and never cleared, updated_at is stamped,
- * and deleted is cleared — a tombstoned task whose line came back (undo)
- * lives again.  Every other column is the Tasks app's alone.
+ * task_push() — write the fields in `mask` (ON_ACTION_FIELD_*) of a '!'
+ * line onto task `task_id`, and only those: THE one statement Notes
+ * changes a task with, so a field Tasks changed meanwhile is never written
+ * back.  Done folds into status the way a done-only source must: done →
+ * DONE, stamping completed_at on entry; not done → IN_PROGRESS only if it
+ * was DONE, else unchanged (New and In Progress are never pushed).
+ * updated_at is stamped.  Every other column is the Tasks app's alone.
+ * Every CASE reads the row as it was, so completed_at sees the old status.
+ * Returns TRUE on success (a mask of 0 writes nothing).
+ * ------------------------------------------------------------------------- */
+static gboolean
+task_push(OnDatabase *db, gint64 task_id, guint mask, const gchar *title,
+          gboolean done, gint64 due)
+{
+    if (mask == 0)
+        return TRUE;
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "UPDATE tasks SET"
+        "  title = CASE WHEN ?1 THEN ?2 ELSE title END,"
+        "  due   = CASE WHEN ?3 THEN ?4 ELSE due END,"
+        "  completed_at = CASE WHEN ?5 AND ?6 = 1 AND status <> 2 THEN ?7"
+        "                      ELSE completed_at END,"
+        "  status = CASE WHEN NOT ?5 THEN status"
+        "                WHEN ?6 = 1 THEN 2"
+        "                WHEN status = 2 THEN 1 ELSE status END,"
+        "  updated_at = ?7"
+        " WHERE id = ?8");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int(stmt, 1, (mask & ON_ACTION_FIELD_TEXT) != 0);
+    sqlite3_bind_text(stmt, 2, title != NULL ? title : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, (mask & ON_ACTION_FIELD_DUE) != 0);
+    sqlite3_bind_int64(stmt, 4, due);
+    sqlite3_bind_int(stmt, 5, (mask & ON_ACTION_FIELD_DONE) != 0);
+    sqlite3_bind_int(stmt, 6, done ? 1 : 0);
+    sqlite3_bind_int64(stmt, 7, task_now());
+    sqlite3_bind_int64(stmt, 8, task_id);
+    return cached_stmt_done(db, stmt);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_create() — a new task for a '!' line: appended to the managed list
+ * as a top-level task, with the line's title, due date and done state
+ * (status DONE and completed_at now, else New) and every other column at
+ * the schema's default; then its note_task link, the seen_* baseline set
+ * to the line's values.
  * Returns TRUE on success.
  * ------------------------------------------------------------------------- */
 static gboolean
-task_apply(OnDatabase *db, gint64 task_id, const gchar *title,
-           gboolean done, gint64 due)
+task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
 {
+    gint64 list_id = task_list_managed(db);
+    if (list_id == 0)
+        return FALSE;
+    gint64 now = task_now();
     sqlite3_stmt *stmt = prepare(db,
-        "UPDATE tasks SET title=?3, due=?4,"
-        "  completed_at = CASE WHEN ?1 = 1 AND status <> 2 THEN ?2"
-        "                      ELSE completed_at END,"
-        "  status       = CASE WHEN ?1 = 1 THEN 2"
-        "                      WHEN status = 2 THEN 1 ELSE status END,"
-        "  deleted = 0, updated_at = ?2"
-        " WHERE id = ?5");
+        "INSERT INTO tasks (list_id, parent_id, title, due, status,"
+        "                   completed_at, position, updated_at)"
+        " VALUES (?1, NULL, ?2, ?3, ?4, ?5,"
+        "   (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks"
+        "     WHERE list_id = ?1 AND parent_id IS NULL), ?6)");
     if (stmt == NULL)
         return FALSE;
-    sqlite3_bind_int(stmt, 1, done ? 1 : 0);
-    sqlite3_bind_int64(stmt, 2, task_now());
-    sqlite3_bind_text(stmt, 3, title, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 4, due);
-    sqlite3_bind_int64(stmt, 5, task_id);
+    sqlite3_bind_int64(stmt, 1, list_id);
+    sqlite3_bind_text(stmt, 2, it->text, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, it->due);
+    sqlite3_bind_int(stmt, 4, it->done ? ON_TASK_STATUS_DONE : 0);
+    sqlite3_bind_int64(stmt, 5, it->done ? now : 0);
+    sqlite3_bind_int64(stmt, 6, now);
+    if (!stmt_done(db, stmt))
+        return FALSE;
+    gint64 task_id = sqlite3_last_insert_rowid(db->handle);
+
+    stmt = prepare(db,
+        "INSERT INTO note_task (uid, task_id, note_id, ord, seen_title,"
+        "                       seen_done, seen_due, seen_deleted)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, 0)");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, it->uid);
+    sqlite3_bind_int64(stmt, 2, task_id);
+    sqlite3_bind_int64(stmt, 3, note_id);
+    sqlite3_bind_int(stmt, 4, ord);
+    sqlite3_bind_text(stmt, 5, it->text, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, it->done ? 1 : 0);
+    sqlite3_bind_int64(stmt, 7, it->due);
     return stmt_done(db, stmt);
 }
 
 /* ---------------------------------------------------------------------------
- * task_create() — a new task for a '!' line: the Tasks app's create shape
- * (appended to the managed list, no parent), then task_apply for its
- * done/due so the status logic lives once, then the note_task link.
- * Returns the task id, or 0 on failure.
+ * link_from_row() — fill an OnActionLink from the current result row of a
+ * statement selecting LINK_COLS (below), in that order; its strings are
+ * new (on_db_action_link_clear).  Returns TRUE.
  * ------------------------------------------------------------------------- */
-static gint64
-task_create(OnDatabase *db, gint64 uid, gint64 note_id, gint ord,
-            const gchar *title, gboolean done, gint64 due)
+static gboolean
+link_from_row(sqlite3_stmt *stmt, OnActionLink *row)
 {
-    gint64 list_id = task_list_managed(db);
-    if (list_id == 0)
-        return 0;
-    sqlite3_stmt *stmt = prepare(db,
-        "INSERT INTO tasks (list_id, parent_id, title, position, updated_at)"
-        " VALUES (?1, NULL, ?2,"
-        "   (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks"
-        "     WHERE list_id = ?1 AND parent_id IS NULL), ?3)");
-    if (stmt == NULL)
-        return 0;
-    sqlite3_bind_int64(stmt, 1, list_id);
-    sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 3, task_now());
-    if (!stmt_done(db, stmt))
-        return 0;
-    gint64 task_id = sqlite3_last_insert_rowid(db->handle);
-    if (!task_apply(db, task_id, title, done, due))
-        return 0;
-
-    stmt = prepare(db,
-        "INSERT INTO note_task (uid, task_id, note_id, ord) VALUES (?,?,?,?)");
-    if (stmt == NULL)
-        return 0;
-    sqlite3_bind_int64(stmt, 1, uid);
-    sqlite3_bind_int64(stmt, 2, task_id);
-    sqlite3_bind_int64(stmt, 3, note_id);
-    sqlite3_bind_int(stmt, 4, ord);
-    return stmt_done(db, stmt) ? task_id : 0;
+    row->uid          = sqlite3_column_int64(stmt, 0);
+    row->task_id      = sqlite3_column_int64(stmt, 1);
+    row->note_id      = sqlite3_column_int64(stmt, 2);
+    row->ord          = sqlite3_column_int(stmt, 3);
+    row->seen_title   = g_strdup((const gchar *)sqlite3_column_text(stmt, 4));
+    row->seen_done    = sqlite3_column_int(stmt, 5) != 0;
+    row->seen_due     = sqlite3_column_int64(stmt, 6);
+    row->seen_deleted = sqlite3_column_int(stmt, 7) != 0;
+    row->title        = g_strdup((const gchar *)sqlite3_column_text(stmt, 8));
+    row->done         = sqlite3_column_int(stmt, 9) == ON_TASK_STATUS_DONE;
+    row->due          = sqlite3_column_int64(stmt, 10);
+    row->deleted      = sqlite3_column_int(stmt, 11) != 0;
+    return TRUE;
 }
 
-/* ---------------------------------------------------------------------------
- * TaskRow — what the save reads back for one of the note's items.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gint64   task_id;
-    gint64   note_id;
-    gint     ord;
-    gchar   *title;
-    gboolean done;                   /* status == DONE                      */
-    gint64   due;
-    gboolean deleted;
-} TaskRow;
+/* The columns link_from_row reads, in its order.                            */
+#define LINK_COLS \
+    "nt.uid, nt.task_id, nt.note_id, nt.ord, nt.seen_title, nt.seen_done," \
+    " nt.seen_due, nt.seen_deleted, t.title, t.status, t.due, t.deleted"
 
-/* task_row_get() — the task behind `uid`, whatever note it is linked to
- * and whether or not it is tombstoned.  Returns FALSE when there is none;
- * `row->title` is owned.                                                    */
+/* link_get() — the note_task row of `uid` and its task, whatever note it is
+ * linked to.  Returns FALSE when there is none; the row's strings are
+ * owned (on_db_action_link_clear).                                          */
 static gboolean
-task_row_get(OnDatabase *db, gint64 uid, TaskRow *row)
+link_get(OnDatabase *db, gint64 uid, OnActionLink *row)
 {
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT t.id, nt.note_id, nt.ord, t.title, t.status, t.due, t.deleted"
-        " FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "SELECT " LINK_COLS " FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
         " WHERE nt.uid = ?");
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_int64(stmt, 1, uid);
-    gboolean found = sqlite3_step(stmt) == SQLITE_ROW;
-    if (found) {
-        row->task_id = sqlite3_column_int64(stmt, 0);
-        row->note_id = sqlite3_column_int64(stmt, 1);
-        row->ord     = sqlite3_column_int(stmt, 2);
-        row->title   = g_strdup((const gchar *)sqlite3_column_text(stmt, 3));
-        row->done    = sqlite3_column_int(stmt, 4) == ON_TASK_STATUS_DONE;
-        row->due     = sqlite3_column_int64(stmt, 5);
-        row->deleted = sqlite3_column_int(stmt, 6) != 0;
+    gboolean found = sqlite3_step(stmt) == SQLITE_ROW &&
+                     link_from_row(stmt, row);
+    sqlite3_reset(stmt);
+    return found;
+}
+
+void
+on_db_action_link_clear(OnActionLink *row)
+{
+    g_free(row->seen_title);
+    g_free(row->title);
+    row->seen_title = NULL;
+    row->title      = NULL;
+}
+
+GArray *
+on_db_action_links(OnDatabase *db, gint64 note_id)
+{
+    GArray *rows = g_array_new(FALSE, TRUE, sizeof(OnActionLink));
+    g_array_set_clear_func(rows, (GDestroyNotify)on_db_action_link_clear);
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT " LINK_COLS " FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+        " WHERE nt.note_id = ? ORDER BY nt.ord");
+    if (stmt == NULL)
+        return rows;
+    sqlite3_bind_int64(stmt, 1, note_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        OnActionLink row;
+        link_from_row(stmt, &row);
+        g_array_append_val(rows, row);
     }
     sqlite3_finalize(stmt);
-    return found;
+    return rows;
+}
+
+/* ---------------------------------------------------------------------------
+ * link_update() — write the note_task row of `uid`: placement and the
+ * whole seen_* baseline (the caller passes the values it agreed on).
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+static gboolean
+link_update(OnDatabase *db, const OnActionLink *row)
+{
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "UPDATE note_task SET note_id=?, ord=?, seen_title=?, seen_done=?,"
+        " seen_due=?, seen_deleted=? WHERE uid=?");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, row->note_id);
+    sqlite3_bind_int(stmt, 2, row->ord);
+    sqlite3_bind_text(stmt, 3, row->seen_title != NULL ? row->seen_title : "",
+                      -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, row->seen_done ? 1 : 0);
+    sqlite3_bind_int64(stmt, 5, row->seen_due);
+    sqlite3_bind_int(stmt, 6, row->seen_deleted ? 1 : 0);
+    sqlite3_bind_int64(stmt, 7, row->uid);
+    return cached_stmt_done(db, stmt);
+}
+
+gboolean
+on_db_action_link_set_seen(OnDatabase *db, const OnActionLink *row)
+{
+    return link_update(db, row);
+}
+
+gboolean
+on_db_action_link_delete(OnDatabase *db, gint64 uid)
+{
+    sqlite3_stmt *stmt = prepare(db, "DELETE FROM note_task WHERE uid=?");
+    if (stmt != NULL)
+        sqlite3_bind_int64(stmt, 1, uid);
+    return stmt_done(db, stmt);
+}
+
+guint
+on_db_action_diff(const OnActionItem *it, const OnActionLink *row)
+{
+    guint mask = 0;                  /* the fields that differ              */
+    if (g_strcmp0(it->text, row->seen_title) != 0)
+        mask |= ON_ACTION_FIELD_TEXT;
+    if ((it->done != 0) != (row->seen_done != 0))
+        mask |= ON_ACTION_FIELD_DONE;
+    if (it->due != row->seen_due)
+        mask |= ON_ACTION_FIELD_DUE;
+    return mask;
+}
+
+/* ---------------------------------------------------------------------------
+ * push_item() — the push for one line that has a note_task row (see
+ * on_db_note_save_actions in db.h for the rules).
+ *   row     — the row as read (its seen_* are updated here, in memory too).
+ *   it      — the line.
+ *   note_id, ord — where the line is now.
+ *   changed — set TRUE when a task row is written.
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+static gboolean
+push_item(OnDatabase *db, OnActionLink *row, const OnActionItem *it,
+          gint64 note_id, gint ord, gboolean *changed)
+{
+    if (row->deleted && !row->seen_deleted)
+        return TRUE;                 /* deleted elsewhere: the pull's       */
+    gboolean ok   = TRUE;
+    gboolean link = row->note_id != note_id || row->ord != ord;
+    if (row->deleted) {              /* Notes tombstoned it; the line is back */
+        sqlite3_stmt *stmt = prepare(db,
+            "UPDATE tasks SET deleted=0, updated_at=? WHERE id=?");
+        if (stmt != NULL) {
+            sqlite3_bind_int64(stmt, 1, task_now());
+            sqlite3_bind_int64(stmt, 2, row->task_id);
+        }
+        ok = stmt_done(db, stmt);
+        *changed = TRUE;
+    }
+    if (row->seen_deleted) {
+        row->seen_deleted = FALSE;
+        link = TRUE;
+    }
+    guint mask = on_db_action_diff(it, row);
+    if (ok && mask != 0) {
+        ok = task_push(db, row->task_id, mask, it->text, it->done, it->due);
+        *changed = TRUE;
+        g_free(row->seen_title);
+        row->seen_title = g_strdup(it->text);
+        row->seen_done  = it->done;
+        row->seen_due   = it->due;
+        link = TRUE;
+    }
+    row->note_id = note_id;
+    row->ord     = ord;
+    if (ok && link)
+        ok = link_update(db, row);
+    return ok;
 }
 
 gboolean
 on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
                         gboolean *changed)
 {
-    if (changed != NULL)
-        *changed = FALSE;
+    gboolean dummy;                  /* when the caller does not ask        */
+    if (changed == NULL)
+        changed = &dummy;
+    *changed = FALSE;
     gboolean own;                        /* this call's transaction?       */
     if (!txn_begin(db, &own))
         return FALSE;
@@ -1539,66 +1697,51 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
     for (GList *l = items; l != NULL && ok; l = l->next, ord++) {
         OnActionItem *it = l->data;  /* one real action line                */
         g_hash_table_add(kept, &it->uid);
-        TaskRow row;
-        if (!task_row_get(db, it->uid, &row)) {
-            ok = task_create(db, it->uid, note_id, ord, it->text, it->done,
-                             it->due) != 0;
-            if (changed != NULL)
-                *changed = TRUE;
+        OnActionLink row = { 0 };
+        if (!link_get(db, it->uid, &row)) {
+            ok = task_create(db, it, note_id, ord);
+            *changed = TRUE;
             continue;
         }
-        if (row.note_id != note_id || row.ord != ord) {
-            /* The line moved: within the note, or (cut and pasted with
-             * its record) into this note from another.                  */
-            sqlite3_stmt *stmt = prepare(db,
-                "UPDATE note_task SET note_id=?, ord=? WHERE uid=?");
-            if (stmt != NULL) {
-                sqlite3_bind_int64(stmt, 1, note_id);
-                sqlite3_bind_int(stmt, 2, ord);
-                sqlite3_bind_int64(stmt, 3, it->uid);
-            }
-            ok = stmt_done(db, stmt);
-        }
-        if (ok && (row.deleted || row.done != it->done ||
-                   row.due != it->due ||
-                   g_strcmp0(row.title, it->text) != 0)) {
-            ok = task_apply(db, row.task_id, it->text, it->done, it->due);
-            if (changed != NULL)
-                *changed = TRUE;
-        }
-        g_free(row.title);
+        ok = push_item(db, &row, it, note_id, ord, changed);
+        on_db_action_link_clear(&row);
     }
 
-    /* Every live task of this note whose line is gone.                    */
+    /* Every live task of this note whose line is gone, that Notes knew as
+     * live (seen_deleted = 0): tombstoned, remembered as Notes' doing.     */
     if (ok) {
         GArray *gone = g_array_new(FALSE, FALSE, sizeof(gint64));
         sqlite3_stmt *stmt = prepare(db,
-            "SELECT nt.uid, nt.task_id FROM note_task nt"
-            " JOIN tasks t ON t.id = nt.task_id"
-            " WHERE nt.note_id = ? AND t.deleted = 0");
+            "SELECT nt.uid FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
+            " WHERE nt.note_id = ? AND t.deleted = 0 AND nt.seen_deleted = 0");
         if (stmt == NULL) {
             ok = FALSE;
         } else {
             sqlite3_bind_int64(stmt, 1, note_id);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 gint64 uid = sqlite3_column_int64(stmt, 0);
-                if (!g_hash_table_contains(kept, &uid)) {
-                    gint64 task_id = sqlite3_column_int64(stmt, 1);
-                    g_array_append_val(gone, task_id);
-                }
+                if (!g_hash_table_contains(kept, &uid))
+                    g_array_append_val(gone, uid);
             }
             sqlite3_finalize(stmt);
         }
         for (guint i = 0; i < gone->len && ok; i++) {
             stmt = prepare(db,
-                "UPDATE tasks SET deleted=1, updated_at=? WHERE id=?");
+                "UPDATE tasks SET deleted=1, updated_at=?1 WHERE id ="
+                " (SELECT task_id FROM note_task WHERE uid=?2)");
             if (stmt != NULL) {
                 sqlite3_bind_int64(stmt, 1, task_now());
                 sqlite3_bind_int64(stmt, 2, g_array_index(gone, gint64, i));
             }
             ok = stmt_done(db, stmt);
-            if (changed != NULL)
-                *changed = TRUE;
+            if (ok) {
+                stmt = prepare(db,
+                    "UPDATE note_task SET seen_deleted=1 WHERE uid=?");
+                if (stmt != NULL)
+                    sqlite3_bind_int64(stmt, 1, g_array_index(gone, gint64, i));
+                ok = stmt_done(db, stmt);
+            }
+            *changed = TRUE;
         }
         g_array_unref(gone);
     }
@@ -1608,13 +1751,25 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
 }
 
 gboolean
-on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
+on_db_action_set(OnDatabase *db, gint64 uid, guint mask, const gchar *title,
                  gboolean done, gint64 due)
 {
     gint64 task_id = query_int64(db,
         "SELECT nt.task_id FROM note_task nt JOIN tasks t ON t.id = nt.task_id"
         " WHERE nt.uid = ? AND t.deleted = 0", uid);
-    return task_id != 0 && task_apply(db, task_id, title, done, due);
+    return task_id != 0 && task_push(db, task_id, mask, title, done, due);
+}
+
+gboolean
+on_db_txn_begin(OnDatabase *db, gboolean *own)
+{
+    return txn_begin(db, own);
+}
+
+gboolean
+on_db_txn_end(OnDatabase *db, gboolean own, gboolean ok)
+{
+    return txn_end(db, own, ok);
 }
 
 /* The columns both listings read off the action_items_ctx view, in

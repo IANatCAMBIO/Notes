@@ -110,6 +110,9 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
 {
     if (changed != NULL)
         *changed = FALSE;
+    gboolean own;                    /* this call's transaction?            */
+    if (!on_db_txn_begin(db, &own))
+        return FALSE;
 
     /* 1. Identities, before the bytes: dedupe, then allocate.             */
     GArray *blocks = on_document_action_blocks(doc);
@@ -150,11 +153,11 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
         g_free(blob);
     }
 
-    /* 3. The tasks the lines are.                                         */
+    /* 3. The tasks the lines are: the push.                               */
     if (ok && sync_actions)
         ok = on_db_note_save_actions(db, id, items, changed);
     on_db_action_list_free(items);
-    return ok;
+    return on_db_txn_end(db, own, ok);
 }
 
 /*

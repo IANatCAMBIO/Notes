@@ -54,9 +54,10 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_save() — write `doc` back as note `id`: THE one save.
- * Every path that persists a document — the editor's autosave, a
- * headless action rewrite, a new note from text — comes through here, so
- * what a save consists of is defined once:
+ * Every path that persists a document — the editor's autosave, a pull, a
+ * new note from text — comes through here, so what a save consists of is
+ * defined once, and it is ONE write transaction (the caller's, when one is
+ * open on the connection — a pull — else its own):
  *   1. every real action line (on_document_action_blocks) gets its uid:
  *      a line with none is allocated one (on_db_action_uid_alloc), a uid
  *      the document carries twice (a pasted copy that smuggled its record)
@@ -64,10 +65,11 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
  *      the blob is where the uid lives (the ACTION record);
  *   2. the blob, the title (first line) and the searchable body text go
  *      to on_db_note_save (which bumps updated_at);
- *   3. with `sync_actions`, the task rows are brought in line with the
- *      lines (on_db_note_save_actions: create / update / re-ord /
- *      tombstone).  The editor passes whether an action line was touched
- *      since the last save; everyone else passes TRUE.
+ *   3. with `sync_actions`, THE PUSH (on_db_note_save_actions): new lines
+ *      become tasks, a field of a line that differs from its seen_*
+ *      baseline is written to the task (that field only), removed lines
+ *      are tombstoned.  The editor passes whether an action line was
+ *      touched since the last save; everyone else passes TRUE.
  *   changed — optional; receives whether any task row was written (the
  *             library's full refresh hangs on it).
  * Returns TRUE on success.

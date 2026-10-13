@@ -473,31 +473,104 @@ GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
  * failure.                                                                */
 gint64 on_db_action_uid_alloc(OnDatabase *db);
 
-/* Sync note `note_id`'s task rows to `items` — the note's real action
- * lines in document order, each with the uid its line carries (never 0:
- * the caller allocates first, since the blob must hold the uid before it
- * is written).  One transaction: an item with no task row gets one
- * (created in the managed list); an existing task is updated only where
- * title / done / due differ (done folds into status the way the Tasks
- * app's done-only sources do: done → 2, undone → 1 if it was 2, else
- * unchanged; completed_at stamped on entering 2; a tombstoned row comes
- * back to life — the undo of a deleted line); its note_task row is
- * re-pointed and re-numbered when the line moved; and every task of this
- * note whose uid is no longer among the items is TOMBSTONED (deleted=1).
+/* The three fields a '!' line and its task share, as bits of a mask.     */
+#define ON_ACTION_FIELD_TEXT 1u      /* line text  <-> tasks.title          */
+#define ON_ACTION_FIELD_DONE 2u      /* struck     <-> tasks.status = 2     */
+#define ON_ACTION_FIELD_DUE  4u      /* due suffix <-> tasks.due            */
+
+/* ---------------------------------------------------------------------------
+ * OnActionLink — one note_task row and the state of its task: the line's
+ * identity and placement, the seen_* baseline (what the line and the task
+ * last agreed on), and the task's own title / done / due / deleted.  Its
+ * two strings are owned: on_db_action_link_clear.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64   uid;
+    gint64   task_id;
+    gint64   note_id;
+    gint     ord;
+    gchar   *seen_title;
+    gboolean seen_done;
+    gint64   seen_due;
+    gboolean seen_deleted;           /* 1 = Notes itself tombstoned it      */
+    gchar   *title;                  /* the task's                          */
+    gboolean done;                   /* status == DONE                      */
+    gint64   due;
+    gboolean deleted;
+} OnActionLink;
+
+/* ---------------------------------------------------------------------------
+ * on_db_note_save_actions() — THE PUSH: bring note `note_id`'s tasks in
+ * line with `items`, its real action lines in document order (each with
+ * the uid its line carries — never 0: the caller allocates first, since the
+ * blob must hold the uid before it is written).  Joins the caller's
+ * transaction (on_db_txn_begin) or runs in its own.  Per line:
+ *   - no note_task row for the uid: a new task in the managed list (title,
+ *     due, done → status 2 + completed_at now, else status 0; every other
+ *     column the schema's default) and its row, seen_* = the line;
+ *   - task deleted with seen_deleted = 0 (deleted elsewhere, not yet
+ *     pulled — maybe its line was pasted here from another note): left
+ *     alone, for the pull;
+ *   - task deleted with seen_deleted = 1 (Notes removed the line, and an
+ *     undo brought it back): revived (deleted = 0), seen_deleted = 0;
+ *   - then each field whose LINE value differs from its seen_* value —
+ *     only those — is written to the task (ON_ACTION_FIELD_*; done folds
+ *     into status: done → 2 stamping completed_at on entry, not done → 1
+ *     only if it was 2), updated_at stamped, and seen_* := the line's
+ *     values; the row is re-pointed / re-numbered when the line moved.
+ *     A field equal to its seen_* is never written: a change Tasks made
+ *     to it stays (the pull brings it into the line).
+ *   - every task of this note whose line is gone, still live and known
+ *     live to Notes (seen_deleted = 0), is TOMBSTONED (deleted = 1) and its
+ *     row gets seen_deleted = 1 (so an undo can revive it).
  * `changed` (optional) receives whether any task row was written.
- * Returns TRUE on success.                                                */
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
 gboolean on_db_note_save_actions(OnDatabase *db, gint64 note_id,
                                  GList *items, gboolean *changed);
+
+/* on_db_action_diff() — which fields (ON_ACTION_FIELD_*) of the line `it`
+ * differ from the row's seen_* baseline: what a push writes.  Text is
+ * compared byte for byte (the line's text is already trimmed), done as a
+ * boolean, due as the integer.                                            */
+guint on_db_action_diff(const OnActionItem *it, const OnActionLink *row);
+
+/* on_db_action_links() — every note_task row of note `note_id` with its
+ * task, ord order.  Returns a GArray of OnActionLink that clears its
+ * elements; g_array_unref() it.                                           */
+GArray *on_db_action_links(OnDatabase *db, gint64 note_id);
+
+/* on_db_action_link_set_seen() — write a row's placement and seen_*
+ * baseline as given (the pull's "seen := the task").  TRUE on success.    */
+gboolean on_db_action_link_set_seen(OnDatabase *db, const OnActionLink *row);
+
+/* on_db_action_link_delete() — delete one note_task row (the pull, when
+ * the task was deleted elsewhere and its line has been unmarked; the
+ * tombstone trigger does nothing to an already deleted task).             */
+gboolean on_db_action_link_delete(OnDatabase *db, gint64 uid);
+
+/* on_db_action_link_clear() — free a row's strings (NULL-safe fields).    */
+void on_db_action_link_clear(OnActionLink *row);
+
+/* on_db_txn_begin() / on_db_txn_end() — one write transaction around
+ * several calls (BEGIN IMMEDIATE through shared_db_begin), or JOIN the one
+ * already open on this connection: `own` says which, and end commits only
+ * what begin opened (rolling back when `ok` is FALSE).  Every on_db_*
+ * writer joins an open transaction the same way.  Both return TRUE on
+ * success.                                                                */
+gboolean on_db_txn_begin(OnDatabase *db, gboolean *own);
+gboolean on_db_txn_end(OnDatabase *db, gboolean own, gboolean ok);
 
 /* One live item by uid, off the view (context included); NULL when no
  * live task carries that uid.  Free with on_db_action_item_free().        */
 OnActionItem *on_db_action_get(OnDatabase *db, gint64 uid);
 
-/* Write one live item's title / done / due onto its task (the row-first
- * half of an external edit; the line is re-rendered from it afterwards).
- * FALSE when no live task carries that uid.                               */
-gboolean on_db_action_set(OnDatabase *db, gint64 uid, const gchar *title,
-                          gboolean done, gint64 due);
+/* Write the fields in `mask` (ON_ACTION_FIELD_*) onto the live task with
+ * this uid, and only those, with the push's status rule (the task half of
+ * an edit from the Action Items view; the pull then renders the line).
+ * seen_* is NOT changed.  FALSE when no live task carries that uid.       */
+gboolean on_db_action_set(OnDatabase *db, gint64 uid, guint mask,
+                          const gchar *title, gboolean done, gint64 due);
 
 /* Free one OnActionItem.                                                  */
 void on_db_action_item_free(OnActionItem *it);

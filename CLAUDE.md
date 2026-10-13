@@ -18,11 +18,21 @@ data, code style, verification.
   and `dist/` left at the repo root (ignored; `notes.ini` points at the
   real notes), the sibling repos `../tasks`, `../files`.  Never run a GTK
   `notes` binary.
-- Every run uses test data: `make run`, `make seed`, `make test`.  By hand:
-  `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/MacOS/Notes`.
-- Do not change `document.c`, `bnbf.c`, `db.c` behaviour.  There is no
-  command-line tool; the core API's behaviour is pinned by
-  `tests/core_api_test.c`.
+- The notes live in the database Notes SHARES with Tasks
+  (`../shared_data`, its own repository — read `../shared_data/PLAN.md`;
+  never edit it from here).  The owner's live copy,
+  `~/Library/Application Support/{Notes,camb.io,Tasks}/`, is off limits
+  too, not even to read.  Never `make install`.
+- Every run uses test data: `make run`, `make seed`, `make test` set
+  `NOTES_DATA_DIR` and `CAMBIO_SHARED_DB` under `dev/`.  By hand:
+  `NOTES_DATA_DIR=$PWD/dev/data CAMBIO_SHARED_DB=$PWD/dev/data/shared_data.db Notes.app/Contents/MacOS/Notes`.
+- Do not change `document.c`, `bnbf.c`, `db.c` behaviour lightly.  There
+  is no command-line tool; the core API's behaviour is pinned by
+  `tests/core_api_test.c`, the sync with Tasks by
+  `tests/action_sync_test.c`.
+- A task is written only by the push (a save) and the pull
+  (`action_sync.h`), each one transaction with the note; only the fields
+  that changed on Notes' side are pushed (`note_task.seen_*`).
 - No new GLib in new code; nothing pumps a GLib main loop — use
   `main_service.h`.
 - Do NOT run `leaks`, `vmmap`, `footprint`, `sample`, `lldb` or
@@ -39,8 +49,8 @@ data, code style, verification.
 ## Build and verify
 
 ```sh
-export PATH=/opt/local/bin:$PATH
-make clean && make      # zero warnings
+export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config, glib2, sqlite3
+make clean && make      # zero warnings (needs ../shared_data)
 make test               # model, core, UI smoke
 make ui-check           # the UI test alone; light/dark snapshots in dev/snapshots
 make seed && make run   # the app on dev/data
@@ -51,6 +61,10 @@ make seed && make run   # the app on dev/data
 - `src/` — flat, one module per `.h` + `.c`/`.m`.  Core C modules are listed
   in the Makefile's `CORE_SRCS`; everything else is the app.
 - `src/identity.h` — every name of this build, defined once.
+- `../shared_data/src/shared_db.h` — the shared database's frozen API
+  (compiled into the core from `SHARED_DATA_DIR`).
+- `src/action_sync.[ch]` — the pull of outside changes; `db.c`
+  `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written
   from — is in git at its last commit, `51ec5a4`:
   `git show 51ec5a4:src/note_view.c`.  Its

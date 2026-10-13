@@ -8,21 +8,25 @@ AppKit while keeping its document model and database.
 
 The whole app is native AppKit: the library (sidebar, list, grid and Action
 Items), the note editor with its own layout and rendering, Settings,
-Search, the media browser and the AI summary.  The document model and
-database are the GTK build's.  There is no command-line tool.
+Search, the media browser and the AI summary.  The document model is the
+GTK build's; the database is the one shared with Tasks (below).  There is no command-line tool.
 
 It is a separate application from the GTK Notes: its own bundle identifier
-(`com.cambio.notes`) and its own data folder.  It never reads or writes
-the GTK app's database or settings.  Both bundles are called `Notes.app`,
-so `make install` replaces a GTK copy in `~/Applications` (the GTK build
-is on branch `gtk4`).
+(`com.cambio.notes`), its own settings folder, and the database it shares
+with Tasks.  It never reads or writes the GTK app's database or settings.
+Both bundles are called `Notes.app`, so `make install` replaces a GTK copy
+in `~/Applications` (the GTK build is on branch `gtk4`).
 
 ## Prerequisites
 
 - macOS 14 or later to compile against; the built app currently requires the
   macOS version your MacPorts GLib was built for (see BUILD.md)
 - Xcode command-line tools (`xcode-select --install`)
-- MacPorts `glib2` and `pkgconf` (`sudo port install glib2 pkgconf`)
+- MacPorts `glib2`, `sqlite3` and `pkgconf`
+  (`sudo port install glib2 sqlite3 pkgconf`)
+- the `shared_data` repository checked out beside this one
+  (`../shared_data`): the module that owns the database Notes shares with
+  Tasks is compiled in from there
 
 ## Install
 
@@ -37,30 +41,67 @@ bundle, so reinstalling never touches them.
 
 ## Where your data is
 
+Notes keeps its notes in **one database file it shares with the Tasks app**:
+a Notes action item (a `!` line) *is* a task in that file, shown in Tasks'
+managed list "Action Items" ❗ (until you move it to another list there).
+
 | What | Where |
 |---|---|
-| Settings | `~/Library/Application Support/Notes/notes.ini` |
-| Database (default) | `~/Library/Application Support/Notes/notes.db` |
-| Backups (default, when enabled) | `~/Library/Application Support/Notes/backups/` |
+| The shared database (default) | `~/Library/Application Support/camb.io/shared_data.db` |
+| Which file both apps open, when not the default | `~/Library/Application Support/camb.io/location` (one line: the path) |
+| Backups (default) | `~/Library/Application Support/camb.io/backups/` |
+| Notes' settings | `~/Library/Application Support/Notes/notes.ini` |
 | App lock (one running copy per data folder) | `~/Library/Application Support/Notes/notes.lock` |
 
-Setting the environment variable `NOTES_DATA_DIR` moves all of them to another
-folder; development and tests always do (`dev/` inside the source tree).
-The database can also be kept elsewhere — a synced folder, say: File ▸ Open
-Database File… opens one for the session, or makes a `notes.db` the default
-(its folder is stored as `db_dir` in `notes.ini`).
+The database must be on a local disk, outside iCloud Drive, Dropbox and
+other synced folders (the app refuses such a file).  File ▸ Open Database
+File… opens another shared database for this session, or with **Set as
+Default** for both apps from now on.  A file that is not a shared database
+— an old `notes.db` or `tasks.db` — is refused untouched; the migration
+tool in `shared_data/migrate` converts one.
+
+Backups are the shared module's: a verified copy (`VACUUM INTO`) made by
+whichever app is running when one is due, policy in the database itself, so
+Settings ▸ Database in either app edits the same policy.
+
+`CAMBIO_SHARED_DB` names the database file for a run (development and tests
+always set it, under `dev/`), and `NOTES_DATA_DIR` moves Notes' own
+settings and lock.  While `CAMBIO_SHARED_DB` is set the default cannot be
+changed.
+
+## Working with Tasks (and agents) at the same time
+
+Both apps — and an AI agent using the shared-data skill — may have the file
+open at once (SQLite WAL mode).  Edits flow both ways:
+
+- **In Notes**: a line's text, its strike-through and its `due <date>`
+  are the task's title, done state and due date.  A save writes to the task
+  only the fields you changed in Notes, so a priority, note, list or due
+  date set in Tasks meanwhile is never overwritten.  Removing a `!` line
+  deletes its task; undo brings the same task back.
+- **From Tasks**: Notes notices another app's changes within about a second
+  (and whenever you switch to it) and rewrites the lines — even in notes
+  that are not open, so note text, titles and search stay right.  In an
+  open note the change is an ordinary edit you can undo; your caret stays
+  where it was.  A task completed in Tasks is struck through; one deleted
+  in Tasks turns its line back into plain text (the `!` goes, the words
+  stay).
+- **A note changed by another program while it is open**: an editor with
+  no unsaved edits shows the new version; one with unsaved edits keeps
+  yours and offers to reload.
 
 ## First run
 
-With no database in the data folder the app asks whether to **create a new
-database** there or **open an existing `notes.db`** (whose folder is then
-remembered).  It never creates one silently, and it never falls back to
-another location if the configured database cannot be opened.
+With no database where one is expected the app asks whether to **create a
+new database** there or **open an existing shared database file** (which
+then becomes the default for both apps).  It never creates one silently,
+and it never falls back to another location if the database cannot be
+opened.
 
 ## Development
 
 ```sh
-make seed     # a realistic test database in dev/data
+make seed     # a realistic test database: dev/data/shared_data.db
 make run      # run the app on it
 make test     # model, core and UI tests
 make ui-check # the UI test alone; window snapshots in dev/snapshots

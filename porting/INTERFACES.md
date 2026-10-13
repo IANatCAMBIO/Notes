@@ -32,15 +32,17 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    (read-only references; never build or run there).
    Never run a GTK `notes` binary.
 2. **Every run uses test data.**  `make run`, `make seed`, `make test` set
-   `NOTES_DATA_DIR` to a folder under `dev/`.  If you start the app by
-   hand, set it yourself:
-   `NOTES_DATA_DIR=$PWD/dev/data Notes.app/Contents/MacOS/Notes`
+   `NOTES_DATA_DIR` to a folder under `dev/` and `CAMBIO_SHARED_DB` to a
+   database file inside it.  If you start the app by hand, set both:
+   `NOTES_DATA_DIR=$PWD/dev/data CAMBIO_SHARED_DB=$PWD/dev/data/shared_data.db Notes.app/Contents/MacOS/Notes`
    (its log's first `[launch]` line names the database it opened — look
-   at it).
-   Without the variable this build uses its own real directory,
-   `~/Library/Application Support/Notes/`; it cannot reach the GTK
-   build's files either way (§10).
-3. **`document.c`, `bnbf.c`, `db.c` are not yours to change.**  The document
+   at it).  Without them this build uses the real per-user files: its
+   settings in `~/Library/Application Support/Notes/` and the database it
+   shares with Tasks in `~/Library/Application Support/camb.io/` — the
+   owner's live data (`../shared_data/PLAN.md`, hard rules).  Never
+   `make install`.
+3. **`document.c`, `bnbf.c`, `db.c` are not yours to change**, nor
+   `../shared_data` (the shared module, its own repository).  The document
    model is the single mutation path of a note (`BLOCK_MODEL.md`).  If you
    think the model needs a change, raise it.
 4. **The core API's behaviour is pinned** by `tests/core_api_test.c`
@@ -64,14 +66,17 @@ src/                 flat; one module = one .h + one .c or .m
   -- core (C, no UI; linked into the app, the dev seeder and the tests) --
   document.[ch] bnbf.[ch]   the block model and its blob format   (carried)
   db.[ch] serialize.[ch] export.[ch] search_query.[ch]   (carried)
-  backup.[ch]               rotating backups, on main_service
+  backup.[ch]               backups through the shared module, on main_service
   config.[ch]               the data-directory policy + notes.ini
   main_service.[ch]         main-thread posts, timers, workers (GCD)
   image_io.[ch]             the one decoded image type: CGImageRef
   app_core.[ch]             OnApp: state, preferences, the hooks
   app_lifecycle.[ch]        the app lock, open the database, start
                             services, shut down
+  action_sync.[ch]          pull outside changes to action items into notes
   action_edit.[ch]          edit an action item from outside its note
+  ../shared_data/src/shared_db.[ch]  the shared database: schema, location,
+                            connections, backups, checks (compiled in)
   search_job.[ch]           a search on a worker
   utf_index.[ch]            UTF-8 byte <-> UTF-16 unit offsets
   -- UI (C and Objective-C; the app only) --
@@ -105,11 +110,11 @@ Everything in map §2.3 is still there with the same signatures
 
 | Was (GTK) | Is now |
 |---|---|
-| `app.h` (GTK types in `OnApp`) | `app_core.h`: `OnApp` = db, db_dir, preference fields, backup state, **hooks** |
+| `app.h` (GTK types in `OnApp`) | `app_core.h`: `OnApp` = db, preference fields, backup and sync timers, **hooks** |
 | `on_app_config_init(argv0)`, ini beside the binary, `notes.ini.defaults` | `config.h`: `on_app_config_init()`, one data directory; no defaults file — defaults are the table in `app_core.c` |
 | `g_idle_add` / `g_timeout_add` / `g_thread_new` | `main_service.h`: `on_main_post`, `on_timer_add` / `on_timer_remove`, `on_worker_run` |
 | `GdkPixbuf`, `on_png_decode_capped`, `on_image_png_bytes`, `on_png_probe_size`, `gdk_pixbuf_new_from_file` | `image_io.h`: `on_image_decode_capped` → `CGImageRef` (+1), `on_image_png_encode`, `on_image_probe_size`, `on_image_file_to_png`; `on_note_image_nth_png` gives one image's PNG bytes |
-| `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due` (a rename reaches the line through `on_note_document_reconcile`) |
+| `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due` = the task field, then the pull of its note (`action_sync.h`) |
 | the search worker inside search_window.c, `OnSearchScope` | `search_job.h`: `on_search_job_start` / `_cancel`, `OnSearchScope` |
 | main.c's sequence, `on_app_switch_database`, quit by destroying windows | `app_lifecycle.h`: `on_app_db_path`, `on_app_open_db`, `on_app_start_services`, `on_app_switch_db`, `on_app_shutdown` |
 | `on_editor_window_open` called from the notes pane | hook `OnApp.open_note` |
@@ -130,7 +135,9 @@ module that owns it and never cleared:
 | `notify_db_health(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
 | `show_notice(app, title, msg)` | app_delegate.m | the integrity check, on damage | modal message |
 | `open_note(app, id)` | editor_window.m | library_notes.m | open/raise the editor |
-| `live_document(app, id)` / `live_edited(app, id)` | editor_window.m | action_edit.c | edit an OPEN note's document |
+| `live_document(app, id)` / `live_edited(app, id)` | editor_window.m | action_sync.c | edit an OPEN note's document |
+| `live_save(app, id)` | editor_window.m | action_sync.c | that editor saves now, inside the pull's transaction |
+| `check_editors(app)` | editor_window.m | action_sync.c | after an outside change: reload an editor whose note another writer rewrote (or, with unsaved edits, offer Reload) |
 | `flush_editors(app)` | editor_window.m | `on_app_shutdown`, `on_app_switch_db` | close every editor, each saving first |
 
 A hook is handed only the `OnApp`; UI state is reached through
@@ -338,7 +345,8 @@ proposal for the owner; changing one is editing one row of the table.
 ## 7. Threading
 
 - **One SQLite connection per thread.**  `app->db` belongs to the main
-  thread.  A worker opens its own (`on_db_open(app->db->path)`), closes it,
+  thread.  A worker opens its own (`on_db_open(app->db->path, NULL)`,
+  which goes through `shared_db_open`), closes it,
   and only then posts its result.  Capture the path and everything else the
   worker needs as locals on the main thread before starting it.
 - **Workers**: `on_worker_run(fn, data)` (concurrent, utility QoS, one
@@ -479,14 +487,31 @@ its inputs as locals, and never reads `self.…` off the main thread.
 ## 10. Data and test data
 
 - **One data directory** (`config.h`): `$NOTES_DATA_DIR`, else
-  `~/Library/Application Support/Notes/`.  It holds `notes.ini`, the
-  default `notes.db`, the default `backups/` and the app lock `notes.lock`
-  (held by the running app from launch to quit, so a second copy on the
-  same data directory quits before it opens the database; `make seed`
-  takes it too).  Nothing is resolved from `argv[0]`, the bundle or
-  the XDG directories; the home directory comes from the password database,
-  not `$HOME`.  The only way out is the `db_dir` key, written by File ▸ Open
-  Database File… ▸ Set as Default.
+  `~/Library/Application Support/Notes/`.  It holds `notes.ini` and the app
+  lock `notes.lock` (held by the running app from launch to quit, so a
+  second copy on the same data directory quits before it opens the
+  database; `make seed` takes it too).  Nothing is resolved from
+  `argv[0]`, the bundle or the XDG directories; the home directory comes
+  from the password database, not `$HOME`.
+- **One shared database** (`../shared_data`, `shared_db.h`): Notes and
+  Tasks share one SQLite file, located by `shared_db_path`
+  (`$CAMBIO_SHARED_DB`, else the pointer file
+  `~/Library/Application Support/camb.io/location` that File ▸ Open
+  Database File… ▸ Set as Default writes through
+  `shared_db_set_default_path`, else `…/camb.io/shared_data.db`).  The
+  schema, the WAL/busy-timeout connection rules, the refusal of a
+  non-shared or synced file, backups (`shared_db_backup*`, policy in
+  `shared_settings`) and checks are the module's; Notes keeps none of its
+  own.  The module never deletes a database's `-wal`/`-shm`; nothing in
+  Notes may either.
+- **Action items are shared tasks** (`db.h`, `serialize.h`,
+  `action_sync.h`): a save PUSHES the fields of a `!` line that differ from
+  `note_task.seen_*` (and only those) in the same transaction as the blob;
+  the PULL (at launch, on `shared_db_changed` every second and on
+  activation) rewrites lines whose task differs from `seen_*` and unmarks
+  lines whose task was deleted elsewhere, saving open notes through their
+  editor and closed ones directly.  Never write a task outside these
+  paths.
 - **Preferences are `notes.ini`**, not `NSUserDefaults`: read with
   `on_app_config_get*`, written with `on_app_config_set`, mirrored in
   `OnApp` fields by `on_app_prefs_load` (call it again after a write).  The
@@ -494,7 +519,7 @@ its inputs as locals, and never reads `self.…` off the main thread.
   layouts — and this port persists the same, in the same keys (`list_columns`
   as `key:vis,…`, not `autosaveName`).  The keys `native_menubar` and
   `touch_assist` are GTK-only and gone.
-- **`make seed`** rebuilds `dev/data/notes.db`: nested folders with emoji,
+- **`make seed`** rebuilds `dev/data/shared_data.db`: nested folders with emoji,
   six tags, pinned notes, trashed notes and a trashed folder, a note with
   every block kind (note 1), images, a 200-line note, 40 dated filler notes,
   and 13 action items — open, done, overdue, due today, undated — in several
@@ -502,8 +527,9 @@ its inputs as locals, and never reads `self.…` off the main thread.
   (`tools/dev_seed.c`).  It refuses to run while an app holds `dev/data`.
 - **`make run`** runs the app on `dev/data` in the foreground (its log, with
   `[status]` lines, on your terminal).
-- **Tests** get their own directory under `dev/test/<name>` (the Makefile
-  sets it; `tests/check.h` refuses to run otherwise).
+- **Tests** get their own directory under `dev/test/<name>`, with
+  `CAMBIO_SHARED_DB` inside it (the Makefile sets both; `tests/check.h`
+  refuses to run otherwise).
 
 ---------------------------------------------------------------------------
 
@@ -645,7 +671,9 @@ only the `OnApp`).
    tool panel says so), and a headless action edit fails.  An empty
    document is never handed out in its place,
    so neither the blank-means-delete rule nor a save can reach the note.
-2. **Two copies of the app on one data directory** (fixed).  The app
+2. **Two copies of the app on one data directory** (fixed; other WRITERS of
+   the shared database — Tasks, an agent — are expected and handled by the
+   pull, `action_sync.h`).  The app
    takes the data directory's lock (`on_app_lock_take`, app_lifecycle.h)
    first thing at launch, before it opens the database or shows a window,
    so a second copy never has the database open; the development seeder

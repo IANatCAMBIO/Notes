@@ -28,9 +28,9 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(BOOL ai)
 {
     NSArray<NSToolbarItemIdentifier> *head = @[
-        @"new-folder", @"delete-folder", NSToolbarSpaceItemIdentifier,
+        @"toggle-sidebar", @"new-folder", @"delete-folder", NSToolbarSpaceItemIdentifier,
         @"quicknote", @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
-        @"toggle-sidebar", @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
+        @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
     ];
     NSArray<NSToolbarItemIdentifier> *tail = @[NSToolbarFlexibleSpaceItemIdentifier, search_item_ident];
     return [[head arrayByAddingObjectsFromArray:ai ? @[NSToolbarSpaceItemIdentifier, @"ai-summary"] : @[]]

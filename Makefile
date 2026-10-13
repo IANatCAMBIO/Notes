@@ -217,12 +217,13 @@ build/dev_seed: build/dev_seed.o $(CORE_OBJS)
 seed: build/dev_seed
 	@tools/seed-dev.sh "$(DEV_DATA)" "$(DEV_SHARED_DB)" build/dev_seed icons/composition.png tests/fixtures/folder.png
 
-$(DEV_DATA)/notes.db:
+# The development database is seeded once, when it does not exist yet.
+$(DEV_SHARED_DB):
 	@$(MAKE) seed
 
 # run: the app in the foreground on the development data, its log on this
 # terminal. Quit it with ⌘Q.
-run: $(BUNDLE) $(DEV_DATA)/notes.db
+run: $(BUNDLE) $(DEV_SHARED_DB)
 	@echo "$(DATA_ENV)=$(DEV_DATA)"
 	@$(DEV_ENV) $(APP_BIN)
 

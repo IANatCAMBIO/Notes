@@ -12,6 +12,9 @@
 
 #include <string.h>
 
+/*
+ * on_note_count_images — see serialize.h.
+ */
 gint
 on_note_count_images(const guint8 *data, gsize len)
 {
@@ -30,6 +33,9 @@ on_note_count_images(const guint8 *data, gsize len)
     return n;
 }
 
+/*
+ * on_note_image_nth_png — see serialize.h.
+ */
 GBytes *
 on_note_image_nth_png(const guint8 *data, gsize len, gint ord)
 {
@@ -51,6 +57,9 @@ on_note_image_nth_png(const guint8 *data, gsize len, gint ord)
     return out;
 }
 
+/*
+ * on_note_extract_text — see serialize.h.
+ */
 gchar *
 on_note_extract_text(const guint8 *data, gsize len)
 {
@@ -63,6 +72,9 @@ on_note_extract_text(const guint8 *data, gsize len)
     return text;
 }
 
+/*
+ * on_note_text_cached — see serialize.h.
+ */
 gchar *
 on_note_text_cached(OnDatabase *db, gint64 id)
 {
@@ -84,6 +96,9 @@ on_note_text_cached(OnDatabase *db, gint64 id)
     return text;
 }
 
+/*
+ * on_note_document_load — see serialize.h.
+ */
 OnDocument *
 on_note_document_load(OnDatabase *db, gint64 id)
 {
@@ -298,6 +313,9 @@ action_unmark(OnDocument *doc, guint block)
     b->action_uid = 0;
 }
 
+/*
+ * on_note_document_reconcile — see serialize.h.
+ */
 gint
 on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
                            gboolean *changed)

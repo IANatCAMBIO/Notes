@@ -200,10 +200,11 @@ typedef struct {
 
 /* ---------------------------------------------------------------------------
  * on_db_open() — open a read-write connection to the shared database
- * through shared_db_open: a missing or empty file is created with the
- * shared schema; a file that is not a shared database (an old notes.db or
- * tasks.db, anything unstamped) is REFUSED untouched, as is one on a
- * network or cloud-synced folder.
+ * through shared_db_open: a MISSING file is created atomically with the
+ * shared schema; an existing file that is empty (0 bytes) or not a shared
+ * database (an old notes.db or tasks.db, anything unstamped) is REFUSED
+ * untouched, as is one on a network or cloud-synced folder — so nothing
+ * may create an empty file at the path first.
  *   path — the database file, or NULL for shared_db_path() ($CAMBIO_SHARED_DB,
  *          else the pointer file, else the per-user default).
  *   err  — optional; on failure receives the reason in words fit for the

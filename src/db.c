@@ -282,6 +282,9 @@ query_int64(OnDatabase *db, const char *sql, gint64 bind_id)
  * lifecycle
  * ========================================================================= */
 
+/*
+ * on_db_open — see db.h.
+ */
 OnDatabase *
 on_db_open(const gchar *path, gchar **err)
 {
@@ -424,6 +427,9 @@ health_worker(void *user_data)
     on_main_post(health_job_done, job);
 }
 
+/*
+ * on_db_health_check_async — see db.h.
+ */
 void
 on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done, gpointer data)
 {
@@ -439,6 +445,9 @@ on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done, gpointer data)
     on_worker_run(health_worker, job);
 }
 
+/*
+ * on_db_health — see db.h.
+ */
 const OnDbHealth *
 on_db_health(OnDatabase *db)
 {
@@ -450,6 +459,9 @@ on_db_health(OnDatabase *db)
  * the user's business and not ours to hold in memory twice.              */
 #define SHA_CHUNK 65536
 
+/*
+ * on_db_file_sha256 — see db.h.
+ */
 gchar *
 on_db_file_sha256(const gchar *path)
 {
@@ -475,6 +487,9 @@ on_db_file_sha256(const gchar *path)
  * folders
  * ========================================================================= */
 
+/*
+ * on_db_folder_create — see db.h.
+ */
 gint64
 on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name,
                     gint ai_mode, const gchar *emoji)
@@ -505,6 +520,9 @@ on_db_folder_create(OnDatabase *db, gint64 parent_id, const gchar *name,
     return new_id;
 }
 
+/*
+ * on_db_folder_get_ai_mode — see db.h.
+ */
 gint
 on_db_folder_get_ai_mode(OnDatabase *db, gint64 id)
 {
@@ -512,6 +530,9 @@ on_db_folder_get_ai_mode(OnDatabase *db, gint64 id)
         "SELECT ai_mode FROM folders WHERE id=?", id);
 }
 
+/*
+ * on_db_folder_get_emoji — see db.h.
+ */
 gchar *
 on_db_folder_get_emoji(OnDatabase *db, gint64 id)
 {
@@ -527,6 +548,9 @@ on_db_folder_get_emoji(OnDatabase *db, gint64 id)
     return emoji != NULL ? emoji : g_strdup("");
 }
 
+/*
+ * on_db_folder_update — see db.h.
+ */
 gboolean
 on_db_folder_update(OnDatabase *db, gint64 id, const gchar *name,
                     gint ai_mode, const gchar *emoji)
@@ -554,6 +578,9 @@ folder_parent_of(OnDatabase *db, gint64 id)
         "SELECT COALESCE(parent_id,0) FROM folders WHERE id=?", id);
 }
 
+/*
+ * on_db_folder_move — see db.h.
+ */
 gboolean
 on_db_folder_move(OnDatabase *db, gint64 id, gint64 parent_id)
 {
@@ -682,6 +709,9 @@ reorder_rows(OnDatabase *db, const char *sql, const gint64 *ids, gsize n)
     return bulk_ids(db, sql, ids, n, bind_order_id, NULL, NULL);
 }
 
+/*
+ * on_db_folder_reorder — see db.h.
+ */
 gboolean
 on_db_folder_reorder(OnDatabase *db, const gint64 *folder_ids, gsize n)
 {
@@ -703,6 +733,9 @@ folder_name_cmp(gconstpointer a, gconstpointer b)
     return result;
 }
 
+/*
+ * on_db_folder_sort_children — see db.h.
+ */
 gint
 on_db_folder_sort_children(OnDatabase *db, gint64 parent_id)
 {
@@ -723,6 +756,9 @@ on_db_folder_sort_children(OnDatabase *db, gint64 parent_id)
     return ok ? n : -1;
 }
 
+/*
+ * on_db_folder_delete — see db.h.
+ */
 gboolean
 on_db_folder_delete(OnDatabase *db, gint64 id)
 {
@@ -754,6 +790,9 @@ run_folder_query(sqlite3_stmt *stmt)
     return g_list_reverse(out);
 }
 
+/*
+ * on_db_folder_list — see db.h.
+ */
 GList *
 on_db_folder_list(OnDatabase *db, gint64 parent_id)
 {
@@ -780,6 +819,9 @@ free_folder(gpointer data)
     g_free(f);
 }
 
+/*
+ * on_db_folder_list_free — see db.h.
+ */
 void
 on_db_folder_list_free(GList *folders)
 {
@@ -793,6 +835,9 @@ free_folder_list(gpointer data)
     g_list_free_full(data, free_folder);
 }
 
+/*
+ * on_db_folder_child_map — see db.h.
+ */
 GHashTable *
 on_db_folder_child_map(OnDatabase *db)
 {
@@ -834,12 +879,18 @@ on_db_folder_child_map(OnDatabase *db)
     return map;
 }
 
+/*
+ * on_db_folder_children — see db.h.
+ */
 GList *
 on_db_folder_children(GHashTable *map, gint64 parent_id)
 {
     return g_hash_table_lookup(map, &parent_id);
 }
 
+/*
+ * on_db_folder_child_map_free — see db.h.
+ */
 void
 on_db_folder_child_map_free(GHashTable *map)
 {
@@ -851,6 +902,9 @@ on_db_folder_child_map_free(GHashTable *map)
  * notes
  * ========================================================================= */
 
+/*
+ * on_db_note_create — see db.h.
+ */
 gint64
 on_db_note_create(OnDatabase *db, gint64 folder_id)
 {
@@ -875,6 +929,9 @@ on_db_note_create(OnDatabase *db, gint64 folder_id)
     return new_id;
 }
 
+/*
+ * on_db_notes_delete — see db.h.
+ */
 gboolean
 on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n)
 {
@@ -897,6 +954,9 @@ bind_move(sqlite3_stmt *stmt, gsize i, gint64 id, gpointer data)
     sqlite3_bind_int64(stmt, 3, id);
 }
 
+/*
+ * on_db_notes_move — see db.h.
+ */
 gboolean
 on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
                  gint64 folder_id)
@@ -913,6 +973,9 @@ on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
                     note_ids, n, bind_move, &folder_id, NULL);
 }
 
+/*
+ * on_db_note_save — see db.h.
+ */
 gboolean
 on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                 const guint8 *content, gsize len, const gchar *body_text)
@@ -937,6 +1000,9 @@ on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
     return cached_stmt_done(db, stmt) && sqlite3_changes(db->handle) == 1;
 }
 
+/*
+ * on_db_note_body_text — see db.h.
+ */
 gchar *
 on_db_note_body_text(OnDatabase *db, gint64 id)
 {
@@ -953,6 +1019,9 @@ on_db_note_body_text(OnDatabase *db, gint64 id)
     return text;
 }
 
+/*
+ * on_db_note_set_body_text — see db.h.
+ */
 gboolean
 on_db_note_set_body_text(OnDatabase *db, gint64 id, const gchar *body_text)
 {
@@ -965,6 +1034,9 @@ on_db_note_set_body_text(OnDatabase *db, gint64 id, const gchar *body_text)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_note_set_updated_at — see db.h.
+ */
 gboolean
 on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts)
 {
@@ -977,6 +1049,9 @@ on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_note_load — see db.h.
+ */
 gboolean
 on_db_note_load(OnDatabase *db, gint64 id, guint8 **out, gsize *out_len)
 {
@@ -1026,6 +1101,9 @@ meta_from_row(sqlite3_stmt *stmt)
     return m;
 }
 
+/*
+ * on_db_note_get — see db.h.
+ */
 OnNoteMeta *
 on_db_note_get(OnDatabase *db, gint64 id)
 {
@@ -1097,6 +1175,9 @@ meta_query_cached(OnDatabase *db, const char *sql)
     return (stmt != NULL) ? run_meta_query_cached(stmt) : NULL;
 }
 
+/*
+ * on_db_note_list — see db.h.
+ */
 GList *
 on_db_note_list(OnDatabase *db, gint64 folder_id)
 {
@@ -1113,6 +1194,9 @@ on_db_note_list(OnDatabase *db, gint64 folder_id)
     return run_meta_query_cached(stmt);
 }
 
+/*
+ * on_db_note_list_all — see db.h.
+ */
 GList *
 on_db_note_list_all(OnDatabase *db, gboolean include_trash)
 {
@@ -1124,6 +1208,9 @@ on_db_note_list_all(OnDatabase *db, gboolean include_trash)
           "ORDER BY folder_id, sort_order");
 }
 
+/*
+ * on_db_note_list_recent — see db.h.
+ */
 GList *
 on_db_note_list_recent(OnDatabase *db)
 {
@@ -1133,6 +1220,9 @@ on_db_note_list_recent(OnDatabase *db)
         "ORDER BY updated_at DESC");
 }
 
+/*
+ * on_db_note_set_pinned — see db.h.
+ */
 gboolean
 on_db_note_set_pinned(OnDatabase *db, gint64 id, gboolean pinned)
 {
@@ -1145,6 +1235,9 @@ on_db_note_set_pinned(OnDatabase *db, gint64 id, gboolean pinned)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_note_list_pinned — see db.h.
+ */
 GList *
 on_db_note_list_pinned(OnDatabase *db)
 {
@@ -1154,6 +1247,9 @@ on_db_note_list_pinned(OnDatabase *db)
         "ORDER BY updated_at DESC");
 }
 
+/*
+ * on_db_note_count_pinned — see db.h.
+ */
 gint
 on_db_note_count_pinned(OnDatabase *db)
 {
@@ -1162,6 +1258,9 @@ on_db_note_count_pinned(OnDatabase *db)
         -1);
 }
 
+/*
+ * on_db_note_meta_free — see db.h.
+ */
 void
 on_db_note_meta_free(OnNoteMeta *meta)
 {
@@ -1171,6 +1270,9 @@ on_db_note_meta_free(OnNoteMeta *meta)
     g_free(meta);
 }
 
+/*
+ * on_db_note_list_free — see db.h.
+ */
 void
 on_db_note_list_free(GList *notes)
 {
@@ -1235,6 +1337,9 @@ run_tag_query(sqlite3_stmt *stmt)
     return g_list_reverse(out);
 }
 
+/*
+ * on_db_tag_list — see db.h.
+ */
 GList *
 on_db_tag_list(OnDatabase *db)
 {
@@ -1254,12 +1359,18 @@ free_tag(gpointer data)
     g_free(t);
 }
 
+/*
+ * on_db_tag_list_free — see db.h.
+ */
 void
 on_db_tag_list_free(GList *tags)
 {
     g_list_free_full(tags, free_tag);
 }
 
+/*
+ * on_db_note_set_tags — see db.h.
+ */
 gboolean
 on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 {
@@ -1304,6 +1415,9 @@ on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
     return txn_end(db, own, ok);
 }
 
+/*
+ * on_db_notes_by_tag — see db.h.
+ */
 GList *
 on_db_notes_by_tag(OnDatabase *db, gint64 tag_id)
 {
@@ -1357,6 +1471,9 @@ action_uid_alloc(OnDatabase *db)
     return ok ? uid : 0;
 }
 
+/*
+ * on_db_action_uid_alloc — see db.h.
+ */
 gint64
 on_db_action_uid_alloc(OnDatabase *db)
 {
@@ -1649,6 +1766,9 @@ on_db_action_link_clear(OnActionLink *row)
     row->title_len      = 0;
 }
 
+/*
+ * on_db_action_links — see db.h.
+ */
 GArray *
 on_db_action_links(OnDatabase *db, gint64 note_id)
 {
@@ -1792,6 +1912,9 @@ typedef struct {
     gint64 task_id;                  /* the task to tombstone               */
 } GoneLine;
 
+/*
+ * on_db_note_save_actions — see db.h.
+ */
 gboolean
 on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
                         gboolean *changed)
@@ -1858,6 +1981,9 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
     return txn_end(db, own, ok);
 }
 
+/*
+ * on_db_action_set — see db.h.
+ */
 gboolean
 on_db_action_set(OnDatabase *db, gint64 uid, guint mask, const gchar *title,
                  gboolean done, gint64 due)
@@ -1868,6 +1994,9 @@ on_db_action_set(OnDatabase *db, gint64 uid, guint mask, const gchar *title,
     return task_id != 0 && task_push(db, task_id, mask, title, done, due);
 }
 
+/*
+ * on_db_action_pending — see db.h.
+ */
 GArray *
 on_db_action_pending(OnDatabase *db, gint64 note_id)
 {
@@ -2012,6 +2141,9 @@ run_action_query(sqlite3_stmt *stmt)
     return g_list_reverse(out);
 }
 
+/*
+ * on_db_action_list — see db.h.
+ */
 GList *
 on_db_action_list(OnDatabase *db)
 {
@@ -2023,6 +2155,9 @@ on_db_action_list(OnDatabase *db)
     return (stmt != NULL) ? run_action_query(stmt) : NULL;
 }
 
+/*
+ * on_db_action_list_for_note — see db.h.
+ */
 GList *
 on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
 {
@@ -2037,6 +2172,9 @@ on_db_action_list_for_note(OnDatabase *db, gint64 note_id)
     return run_action_query(stmt);
 }
 
+/*
+ * on_db_action_get — see db.h.
+ */
 OnActionItem *
 on_db_action_get(OnDatabase *db, gint64 uid)
 {
@@ -2052,6 +2190,9 @@ on_db_action_get(OnDatabase *db, gint64 uid)
     return it;
 }
 
+/*
+ * on_db_action_counts — see db.h.
+ */
 void
 on_db_action_counts(OnDatabase *db, gint *total, gint *open)
 {
@@ -2069,6 +2210,9 @@ on_db_action_counts(OnDatabase *db, gint *total, gint *open)
     sqlite3_finalize(stmt);
 }
 
+/*
+ * on_db_action_item_free — see db.h.
+ */
 void
 on_db_action_item_free(OnActionItem *it)
 {
@@ -2077,6 +2221,9 @@ on_db_action_item_free(OnActionItem *it)
     g_free(it);
 }
 
+/*
+ * on_db_action_list_free — see db.h.
+ */
 void
 on_db_action_list_free(GList *items)
 {
@@ -2087,6 +2234,9 @@ on_db_action_list_free(GList *items)
  * trash
  * ========================================================================= */
 
+/*
+ * on_db_notes_trash — see db.h.
+ */
 gboolean
 on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n)
 {
@@ -2096,6 +2246,9 @@ on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n)
                     ids, n, bind_id_only, NULL, NULL);
 }
 
+/*
+ * on_db_note_restore — see db.h.
+ */
 gboolean
 on_db_note_restore(OnDatabase *db, gint64 id)
 {
@@ -2111,6 +2264,9 @@ on_db_note_restore(OnDatabase *db, gint64 id)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_folder_trash — see db.h.
+ */
 gboolean
 on_db_folder_trash(OnDatabase *db, gint64 id)
 {
@@ -2121,6 +2277,9 @@ on_db_folder_trash(OnDatabase *db, gint64 id)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_folder_restore — see db.h.
+ */
 gboolean
 on_db_folder_restore(OnDatabase *db, gint64 id)
 {
@@ -2141,6 +2300,9 @@ on_db_folder_restore(OnDatabase *db, gint64 id)
     return stmt_done(db, stmt);
 }
 
+/*
+ * on_db_folder_list_trashed — see db.h.
+ */
 GList *
 on_db_folder_list_trashed(OnDatabase *db)
 {
@@ -2155,6 +2317,9 @@ on_db_folder_list_trashed(OnDatabase *db)
     return run_folder_query(stmt);
 }
 
+/*
+ * on_db_note_list_trashed — see db.h.
+ */
 GList *
 on_db_note_list_trashed(OnDatabase *db)
 {
@@ -2163,6 +2328,9 @@ on_db_note_list_trashed(OnDatabase *db)
         "FROM notes WHERE trashed=1 ORDER BY updated_at DESC");
 }
 
+/*
+ * on_db_trash_count — see db.h.
+ */
 gint
 on_db_trash_count(OnDatabase *db)
 {
@@ -2187,6 +2355,9 @@ run_id_query(sqlite3_stmt *stmt)
     return ids;
 }
 
+/*
+ * on_db_trash_note_ids — see db.h.
+ */
 GArray *
 on_db_trash_note_ids(OnDatabase *db)
 {
@@ -2195,6 +2366,9 @@ on_db_trash_note_ids(OnDatabase *db)
         "folder_id IN (SELECT id FROM trash_folder_ids)"));
 }
 
+/*
+ * on_db_folder_note_ids — see db.h.
+ */
 GArray *
 on_db_folder_note_ids(OnDatabase *db, gint64 folder_id)
 {
@@ -2208,6 +2382,9 @@ on_db_folder_note_ids(OnDatabase *db, gint64 folder_id)
     return run_id_query(stmt);
 }
 
+/*
+ * on_db_trash_empty — see db.h.
+ */
 gboolean
 on_db_trash_empty(OnDatabase *db)
 {
@@ -2231,6 +2408,9 @@ on_db_trash_empty(OnDatabase *db)
  * counts
  * ========================================================================= */
 
+/*
+ * on_db_note_is_trashed — see db.h.
+ */
 gboolean
 on_db_note_is_trashed(OnDatabase *db, gint64 id)
 {
@@ -2242,6 +2422,9 @@ on_db_note_is_trashed(OnDatabase *db, gint64 id)
         id) == 0;
 }
 
+/*
+ * on_db_note_count_visible — see db.h.
+ */
 gint
 on_db_note_count_visible(OnDatabase *db)
 {
@@ -2249,6 +2432,9 @@ on_db_note_count_visible(OnDatabase *db)
         "SELECT COUNT(*) FROM notes WHERE " SHARED_DB_NOTE_VISIBLE_SQL, -1);
 }
 
+/*
+ * on_db_totals — see db.h.
+ */
 void
 on_db_totals(OnDatabase *db, gint *notes, gint *folders, gint *tags)
 {
@@ -2296,6 +2482,9 @@ count_map_from_query(OnDatabase *db, const gchar *sql)
     return map;
 }
 
+/*
+ * on_db_note_count_map — see db.h.
+ */
 GHashTable *
 on_db_note_count_map(OnDatabase *db)
 {
@@ -2306,6 +2495,9 @@ on_db_note_count_map(OnDatabase *db)
         "GROUP BY COALESCE(folder_id,0)");
 }
 
+/*
+ * on_db_tag_count_map — see db.h.
+ */
 GHashTable *
 on_db_tag_count_map(OnDatabase *db)
 {
@@ -2317,6 +2509,9 @@ on_db_tag_count_map(OnDatabase *db)
         "GROUP BY nt.tag_id");
 }
 
+/*
+ * on_db_note_text_map — see db.h.
+ */
 GHashTable *
 on_db_note_text_map(OnDatabase *db, gint max_chars)
 {
@@ -2365,6 +2560,9 @@ folder_row_free(gpointer data)
     g_free(r);
 }
 
+/*
+ * on_db_folder_path_map — see db.h.
+ */
 GHashTable *
 on_db_folder_path_map(OnDatabase *db)
 {
@@ -2415,6 +2613,9 @@ on_db_folder_path_map(OnDatabase *db)
     return map;
 }
 
+/*
+ * on_db_folder_path — see db.h.
+ */
 gchar *
 on_db_folder_path(OnDatabase *db, gint64 folder_id)
 {

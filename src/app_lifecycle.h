@@ -117,8 +117,6 @@ gchar *on_app_db_path(gchar **err);
  * ------------------------------------------------------------------------- */
 gboolean on_app_open_db(OnApp *app, gchar **err);
 
-
-
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
  * open, the hooks are installed and the library window exists: the

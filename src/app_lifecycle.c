@@ -115,7 +115,6 @@ on_app_open_db(OnApp *app, gchar **err)
     return app->db != NULL;
 }
 
-
 /*
  * on_app_start_services — see app_lifecycle.h.
  */

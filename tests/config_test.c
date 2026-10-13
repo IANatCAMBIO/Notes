@@ -20,7 +20,7 @@
  * a leading space, a hash, a tab, a line break, non-ASCII.                  */
 static const char *const tricky[][2] = {
     { "folder",   "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/N" },
-    { "stamp",    "/a b/c|/d e/notes.db|123456:1791000000" },
+    { "stamp",    "/a b/c|/d e/shared_data.db|123456:1791000000" },
     { "leading",  "  two leading spaces" },
     { "equals",   "a=b # not a comment" },
     { "control",  "tab\there\nsecond line" },
@@ -134,7 +134,6 @@ test_policy(const char *test_dir)
     check(strcmp(ini, expect) == 0, "the ini is <data dir>/notes.ini");
     free(ini);
 
-
     setenv(ON_DATA_DIR_ENV, "relative/place", 1);
     char cwd[PATH_MAX];
     getcwd(cwd, sizeof cwd);
@@ -229,9 +228,9 @@ test_settings(const char *test_dir, const char *self)
     stat(ini, &sb);
     check(sb.st_ino == before, "setting an unchanged value does not rewrite the ini");
 
-    gchar *dbdir = on_app_config_get("folder");
-    check(g_strcmp0(dbdir, tricky[0][1]) == 0, "a value is read back in this process");
-    g_free(dbdir);
+    gchar *folder = on_app_config_get("folder");
+    check(g_strcmp0(folder, tricky[0][1]) == 0, "a value is read back in this process");
+    g_free(folder);
 
     pid_t pid = fork();
     if (pid == 0) {

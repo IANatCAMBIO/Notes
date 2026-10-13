@@ -9,7 +9,7 @@
  * action_edit, search_job) never includes a UI header and never names a UI
  * function.  Everything it needs from the UI it asks for through the HOOKS
  * below, which the UI installs at startup.  These replace the GTK build's
- * upward calls (cli.c -> editor window, app.c -> alert dialog).
+ * upward calls from the core into the UI.
  *
  * THE HEADLESS INVARIANT.  Headless = every hook is NULL.  A seeder's or
  * a test's OnApp is zeroed and never has a hook installed, and core code

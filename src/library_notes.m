@@ -7,7 +7,7 @@
  * refresh_notes, render_note_thumb and the thumbnail fill, the column
  * layout, the per-note menu, refresh_actions and the due-date dialog.
  *
- *   List          Title, Path, Modified, Created; sortable headers (the
+ *   List          Title, Tags, Modified, Created; sortable headers (the
  *                 sort drives the grid too, Modified newest first by
  *                 default); headers reorder; a header menu shows and hides
  *                 columns; the layout persists in "list_columns".  Compact
@@ -18,7 +18,7 @@
  *                 each card.
  *   Selection     ONE selection by note id, shared by both views, kept
  *                 across content refreshes; a navigation starts empty.
- *   Action Items  Done, Context, Action, Due Date; sortable, reorderable,
+ *   Action Items  Done, Tags (the note's), Action, Due Date; sortable, reorderable,
  *                 persisted in "action_columns"; done items struck through
  *                 (or hidden: show_done_actions); due dates tinted by
  *                 local day; a double-click on a due date sets it in a tool
@@ -70,7 +70,7 @@ static const CGFloat card_title_h = 34.0;
 @interface NotesNoteRecord : NSObject
 @property (nonatomic, assign) gint64    note_id;
 @property (nonatomic, copy)   NSString *title;
-@property (nonatomic, copy)   NSString *path;       /* "/Folder/Sub", "/" at the top */
+@property (nonatomic, copy)   NSString *tags;       /* "Salt, Stride"; "" for none */
 @property (nonatomic, copy)   NSString *modified;
 @property (nonatomic, copy)   NSString *created;
 @property (nonatomic, copy)   NSString *preview;    /* nil = none */
@@ -87,7 +87,7 @@ static const CGFloat card_title_h = 34.0;
 @property (nonatomic, assign) gint64    note_id;
 @property (nonatomic, assign) gint      ord;
 @property (nonatomic, copy)   NSString *text;
-@property (nonatomic, copy)   NSString *context;
+@property (nonatomic, copy)   NSString *tags;       /* its note's, "Salt, Stride" */
 @property (nonatomic, assign) BOOL      done;
 @property (nonatomic, assign) gint64    due;        /* local midnight; 0 = none */
 @end
@@ -183,10 +183,10 @@ casecmp(NSString *a, NSString *b)
 /*
  * note_order — the list's (and grid's) order for a column key.  The time
  * columns are inverted so that ascending — the first click — shows the
- * newest first (GTK cmp_updated); equal paths fall back to the title.
+ * newest first (GTK cmp_updated); equal tags fall back to the title.
  *
  * Inputs:
- *   key — "title", "path", "modified" or "created"
+ *   key — "title", "tags", "modified" or "created"
  *   a,b — the records
  *
  * Output: the order.
@@ -196,8 +196,8 @@ note_order(NSString *key, id ra, id rb)
 {
     NotesNoteRecord *a = ra, *b = rb;
     if ([key isEqualToString:@"title"]) return casecmp(a.title, b.title);
-    if ([key isEqualToString:@"path"]) {
-        NSComparisonResult r = casecmp(a.path, b.path);
+    if ([key isEqualToString:@"tags"]) {
+        NSComparisonResult r = casecmp(a.tags, b.tags);
         return r != NSOrderedSame ? r : casecmp(a.title, b.title);
     }
     gint64 ta = [key isEqualToString:@"created"] ? a.created_at : a.updated_at;
@@ -207,11 +207,11 @@ note_order(NSString *key, id ra, id rb)
 
 /*
  * action_order — Action Items' order for a column key: open items first;
- * context and text alphabetically; the soonest due date first, undated
- * last (GTK cmp_action_*).
+ * tags and text alphabetically; the soonest due date first, undated last
+ * (GTK cmp_action_*).
  *
  * Inputs:
- *   key — "done", "context", "action" or "due"
+ *   key — "done", "tags", "action" or "due"
  *   a,b — the records
  *
  * Output: the order.
@@ -222,7 +222,7 @@ action_order(NSString *key, id ra, id rb)
     NotesActionRecord *a = ra, *b = rb;
     if ([key isEqualToString:@"done"])
         return a.done == b.done ? NSOrderedSame : a.done ? NSOrderedDescending : NSOrderedAscending;
-    if ([key isEqualToString:@"context"]) return casecmp(a.context, b.context);
+    if ([key isEqualToString:@"tags"])   return casecmp(a.tags, b.tags);
     if ([key isEqualToString:@"action"])  return casecmp(a.text, b.text);
     gint64 da = a.due ? a.due : G_MAXINT64, db = b.due ? b.due : G_MAXINT64;
     return da < db ? NSOrderedAscending : da > db ? NSOrderedDescending : NSOrderedSame;
@@ -262,14 +262,14 @@ typedef struct {
 
 static const column_spec_t note_columns[] = {
     { @"title",    @"Title",    @"Title",    240, YES },
-    { @"path",     @"Path",     @"Path",     140, NO  },
+    { @"tags",     @"Tags",     @"Tags",     140, NO  },
     { @"modified", @"Modified", @"Modified", 140, NO  },
     { @"created",  @"Created",  @"Created",  140, NO  },
 };
 
 static const column_spec_t action_columns[] = {
     { @"done",    @"",         @"Done",     24,  NO  },
-    { @"context", @"Context",  @"Context",  120, NO  },
+    { @"tags",    @"Tags",     @"Tags",     120, NO  },
     { @"action",  @"Action",   @"Action",   260, YES },
     { @"due",     @"Due Date", @"Due Date", 110, NO  },
 };
@@ -688,7 +688,7 @@ init_with_lib:(NotesLibrary *)lib
 
     _list = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
     add_columns(_list, note_columns, sizeof note_columns / sizeof *note_columns);
-    apply_layout(_list, "list_columns", "path:0,title:1,modified:1,created:0");
+    apply_layout(_list, "list_columns", "title:1,tags:1,modified:1,created:0");
     _list.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES]];
     _list.allowsMultipleSelection = YES;
     _list.usesAlternatingRowBackgroundColors = YES;
@@ -729,7 +729,7 @@ init_with_lib:(NotesLibrary *)lib
 
     _actions = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
     add_columns(_actions, action_columns, sizeof action_columns / sizeof *action_columns);
-    apply_layout(_actions, "action_columns", "done:1,context:1,action:1,due:1");
+    apply_layout(_actions, "action_columns", "done:1,tags:1,action:1,due:1");
     _actions.usesAlternatingRowBackgroundColors = YES;
     _actions.target       = self;
     _actions.doubleAction = @selector(actions_activated:);
@@ -787,9 +787,9 @@ sort_actions
 }
 
 /*
- * load_records: — the notes of the selection, as rows: paths from one
- * folder-path query, preview lines from one text query (only in the
- * Comfortable list).
+ * load_records: — the notes of the selection, as rows: tags from one
+ * query, preview lines from one text query (only in the Comfortable
+ * list).
  *
  * Inputs:
  *   previews — YES to fetch the preview lines
@@ -799,7 +799,7 @@ load_records:(BOOL)previews
 {
     OnDatabase *db    = self.lib.app->db;
     GList      *notes = on_library_notes_for_selection(self.lib);
-    GHashTable *paths = on_db_folder_path_map(db);
+    GHashTable *tags  = on_db_note_tag_names_map(db);
     GHashTable *texts = previews ? on_db_note_text_map(db, preview_chars) : NULL;
     NSMutableArray<NotesNoteRecord *> *records = [NSMutableArray array];
     for (GList *l = notes; l != NULL; l = l->next) {
@@ -811,13 +811,13 @@ load_records:(BOOL)previews
         r.created_at = m->created_at;
         r.modified   = on_ui_format_date(m->updated_at, on_ui_date_list);
         r.created    = on_ui_format_date(m->created_at, on_ui_date_list);
-        const gchar *path = m->folder_id ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
-        r.path    = [@"/" stringByAppendingString:path ? @(path) : @""];
+        const gchar *names = g_hash_table_lookup(tags, &m->id);
+        r.tags    = names != NULL ? @(names) : @"";
         r.preview = texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil;
         [records addObject:r];
     }
     on_db_note_list_free(notes);
-    g_hash_table_destroy(paths);
+    g_hash_table_destroy(tags);
     if (texts) g_hash_table_destroy(texts);
     self.records = records;
     [self sort_records];
@@ -831,13 +831,14 @@ load_records:(BOOL)previews
 
 /*
  * load_actions — every action item (completed ones only while they are
- * shown), as rows.
+ * shown), as rows, each with its note's tags (one query for them all).
  */
 - (void)
 load_actions
 {
     NSMutableArray<NotesActionRecord *> *rows = [NSMutableArray array];
-    GList *items = on_db_action_list(self.lib.app->db);
+    GList      *items = on_db_action_list(self.lib.app->db);
+    GHashTable *tags  = on_db_note_tag_names_map(self.lib.app->db);
     for (GList *l = items; l != NULL; l = l->next) {
         const OnActionItem *it = l->data;
         if (it->done && !self.lib.app->show_done_actions) continue;
@@ -846,12 +847,14 @@ load_actions
         r.note_id = it->note_id;
         r.ord     = it->ord;
         r.text    = @(it->text ?: "");
-        r.context = @(it->context ?: "");
+        const gchar *names = g_hash_table_lookup(tags, &it->note_id);
+        r.tags    = names != NULL ? @(names) : @"";
         r.done    = it->done;
         r.due     = it->due;
         [rows addObject:r];
     }
     on_db_action_list_free(items);
+    g_hash_table_destroy(tags);
     self.action_records = rows;
     [self sort_actions];
 }
@@ -1446,7 +1449,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         NotesNoteRecord *r = self.records[(NSUInteger)row];
         if ([key isEqualToString:@"title"]) return [self title_cell:r];
         NSTableCellView *cell = on_ui_label_cell(table, key);
-        cell.textField.stringValue = [key isEqualToString:@"path"]     ? r.path
+        cell.textField.stringValue = [key isEqualToString:@"tags"]     ? r.tags
                                    : [key isEqualToString:@"modified"] ? r.modified : r.created;
         return cell;
     }
@@ -1462,7 +1465,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         return check;
     }
     NSTableCellView *cell = on_ui_label_cell(table, key);
-    NSString *text   = [key isEqualToString:@"context"] ? r.context
+    NSString *text   = [key isEqualToString:@"tags"]    ? r.tags
                      : [key isEqualToString:@"action"]  ? r.text : due_text(r.due);
     NSColor  *colour = [key isEqualToString:@"due"] && r.due ? due_colour(r.due) : nil;
     cell.textField.attributedStringValue = struck(text, r.done, colour);
@@ -1549,7 +1552,7 @@ tableViewSelectionDidChange:(NSNotification *)note
 tableView:(NSTableView *)table pasteboardWriterForRow:(NSInteger)row
 {
     if (table != self.list || (NSUInteger)row >= self.records.count) return nil;
-    return on_library_drag_item(on_drag_notes, @[@(self.records[(NSUInteger)row].note_id)]);
+    return on_library_drag_item(@[@(self.records[(NSUInteger)row].note_id)]);
 }
 
 /* ── Grid data source and delegate ────────────────────────────────────── */
@@ -1656,7 +1659,7 @@ collectionView:(NSCollectionView *)cv canDragItemsAtIndexPaths:(NSSet<NSIndexPat
 - (id<NSPasteboardWriting>)
 collectionView:(NSCollectionView *)cv pasteboardWriterForItemAtIndexPath:(NSIndexPath *)path
 {
-    return on_library_drag_item(on_drag_notes, @[@(self.records[(NSUInteger)path.item].note_id)]);
+    return on_library_drag_item(@[@(self.records[(NSUInteger)path.item].note_id)]);
 }
 
 @end

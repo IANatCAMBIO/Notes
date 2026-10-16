@@ -5,11 +5,11 @@
 #   tools/seed-dev.sh DATA_DIR SHARED_DB DEV_SEED IMAGE IMAGE2
 #
 # Called by `make seed`.  build/dev_seed writes everything through the core
-# API (tools/dev_seed.c says what): nested folders (some with emoji), tags,
-# pinned notes, trashed notes and a trashed folder, a note with every block
-# kind, notes with images, a long note, forty filler notes with spread-out
-# dates, and '!' action items — open, done, overdue, due today, due later,
-# undated — in several contexts (a context is the folder the note sits in).
+# API (tools/dev_seed.c says what): tags in notes' Tags fields and #tags in
+# their text (some with emoji, two favorites), pinned notes, trashed notes,
+# a note with every block kind, notes with images, a long note, forty filler
+# notes with spread-out dates, and '!' action items — open, done, overdue,
+# due today, due later, undated — in notes of several tags.
 #
 # DATA_DIR is wiped first.  It must be a folder directly inside this
 # repository's dev/ directory and SHARED_DB (the shared database file,

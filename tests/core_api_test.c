@@ -8,9 +8,9 @@
  * end-to-end test of that core.  What it pinned that lives in the core is
  * checked here directly: notes from text, the '!' action-line rules and
  * the task rows they are (uid addressing, due dates ISO and M/D/YY,
- * strike, renames from the row keeping '!', done state and due), folders
- * (nesting, paths, rename, emoji, AI mode, move, sort, trash, restore,
- * delete), tags, pins, the Trash, search, the whole-database counts,
+ * strike, renames from the row keeping '!', done state and due), tags
+ * (the Tags field and the #tags of the text, emoji, favorites, the two
+ * scopes), pins, the Trash, search, the whole-database counts,
  * Markdown and HTML export, embedded images and backups.  Output
  * formatting was the tool's own and went with it.
  *
@@ -29,48 +29,49 @@
 
 
 /*
- * folder_named — a direct child folder of `parent` by name.
+ * note_tags_are — a note's tags with their sources, "name:FT" by name (F
+ * for the Tags field, T for the text, '-' for neither), joined by ','.
  *
  * Inputs:
- *   db     — the database
- *   parent — the parent folder (0 = the top level)
- *   name   — the child's name
- *
- * Output: its id, or 0 when there is none.
- */
-static gint64
-folder_named(OnDatabase *db, gint64 parent, const char *name)
-{
-    gint64 id   = 0;
-    GList *kids = on_db_folder_list(db, parent);
-    for (GList *l = kids; l != NULL && id == 0; l = l->next) {
-        OnFolder *f = l->data;
-        if (strcmp(f->name, name) == 0) id = f->id;
-    }
-    on_db_folder_list_free(kids);
-    return id;
-}
-
-/*
- * folder_names — a parent's direct children's names, joined by ','.
- *
- * Inputs:
- *   db     — the database
- *   parent — the parent folder (0 = the top level)
+ *   db   — the database
+ *   note — the note
  *
  * Output: a new string; g_free it.
  */
 static gchar *
-folder_names(OnDatabase *db, gint64 parent)
+note_tags_are(OnDatabase *db, gint64 note)
 {
     GString *out  = g_string_new(NULL);
-    GList   *kids = on_db_folder_list(db, parent);
-    for (GList *l = kids; l != NULL; l = l->next) {
-        if (out->len > 0) g_string_append_c(out, ',');
-        g_string_append(out, ((OnFolder *)l->data)->name);
+    GList   *tags = on_db_note_tags(db, note);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        g_string_append_printf(out, "%s%s:%c%c", out->len > 0 ? "," : "", t->name,
+                               t->in_field ? 'F' : '-', t->in_text ? 'T' : '-');
     }
-    on_db_folder_list_free(kids);
+    on_db_tag_list_free(tags);
     return g_string_free(out, FALSE);
+}
+
+/*
+ * tag_listed — is a tag of this name among on_db_tag_list(scope)?
+ *
+ * Inputs:
+ *   db    — the database
+ *   scope — ON_TAGS_CARRIED or ON_TAGS_ALL
+ *   name  — the tag's name (exact spelling)
+ *
+ * Output: TRUE when listed.
+ */
+static gboolean
+tag_listed(OnDatabase *db, OnTagScope scope, const char *name)
+{
+    gboolean found = FALSE;
+    GList   *tags  = on_db_tag_list(db, scope);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        if (strcmp(((OnTag *)l->data)->name, name) == 0) found = TRUE;
+    }
+    on_db_tag_list_free(tags);
+    return found;
 }
 
 /*
@@ -276,7 +277,7 @@ tag_count(OnDatabase *db, const char *name)
 {
     int         n      = -1;
     GHashTable *counts = on_db_tag_count_map(db);
-    GList      *tags   = on_db_tag_list(db);
+    GList      *tags   = on_db_tag_list(db, ON_TAGS_ALL);
     for (GList *l = tags; l != NULL; l = l->next) {
         OnTag *t = l->data;
         if (strcmp(t->name, name) == 0) {
@@ -310,8 +311,8 @@ file_png(const char *name)
 /* ── Notes ──────────────────────────────────────────────────────────────── */
 
 /*
- * test_notes — a note from plain text, replacing its content, its
- * modified time, moving and pinning.
+ * test_notes — a note from plain text (with a tag in its Tags field),
+ * replacing its content, its modified time and pinning.
  *
  * Inputs:
  *   db — the database
@@ -321,19 +322,18 @@ test_notes(OnDatabase *db)
 {
     static const char text[] =
         "Stride rollout\n\nSensor rollout.\nTabs\there and \"quotes\" and a \\ backslash.";
-    gint64 folder = on_db_folder_create(db, 0, "Notes test", ON_AI_MODE_NORMAL, NULL);
-    gint64 note   = on_note_new_from_text(db, folder, text);
+    gint64 note   = on_note_new_from_text(db, "Notes test", text);
     check(note != 0, "notes: a note is made from plain text");
     check(note_title_is(db, note, "Stride rollout"), "notes: its first line is its title");
     gchar *body = on_note_text_cached(db, note);
     check(body != NULL && strcmp(body, text) == 0,
           "notes: its plain text reads back byte for byte (tabs, quotes, backslash)");
     g_free(body);
-    OnNoteMeta *meta = on_db_note_get(db, note);
-    check(meta != NULL && meta->folder_id == folder, "notes: it is in the folder asked for");
-    on_db_note_meta_free(meta);
+    gchar *tags = note_tags_are(db, note);
+    check(strcmp(tags, "Notes test:F-") == 0, "notes: it carries the tag asked for, in its Tags field");
+    g_free(tags);
 
-    gint64 blank = on_note_new_from_text(db, 0, "");
+    gint64 blank = on_note_new_from_text(db, NULL, "");
     check(note_title_is(db, blank, SHARED_DB_NOTE_DEFAULT_TITLE),
           "notes: an empty note takes the default title");
 
@@ -358,11 +358,11 @@ test_notes(OnDatabase *db)
     on_db_action_list_free(items);
 
     /* Modified time (importers): listings order by it.                    */
-    gint64 older = on_note_new_from_text(db, 0, "Older\nx");
-    gint64 newer = on_note_new_from_text(db, 0, "Newer\nx");
+    gint64 older = on_note_new_from_text(db, NULL, "Older\nx");
+    gint64 newer = on_note_new_from_text(db, NULL, "Newer\nx");
     check(on_db_note_set_updated_at(db, older, 1790000000) &&
           on_db_note_set_updated_at(db, newer, 1790003600), "set-modified: times are written");
-    meta = on_db_note_get(db, older);
+    OnNoteMeta *meta = on_db_note_get(db, older);
     check(meta != NULL && meta->updated_at == 1790000000, "set-modified: the time reads back");
     on_db_note_meta_free(meta);
     GList *recent = on_db_note_list_recent(db);
@@ -374,16 +374,6 @@ test_notes(OnDatabase *db)
     }
     on_db_note_list_free(recent);
     check(pos_newer >= 0 && pos_newer < pos_older, "set-modified: the newer note lists first");
-
-    /* Move, several at once, and back to the top level.                   */
-    gint64 two[] = { older, newer };
-    check(on_db_notes_move(db, two, 2, folder), "move: two notes move in one call");
-    check(list_has_note(on_db_note_list(db, folder), older) &&
-          list_has_note(on_db_note_list(db, folder), newer) &&
-          !list_has_note(on_db_note_list(db, 0), older),
-          "move: they list in the folder and not at the top level");
-    check(on_db_notes_move(db, &older, 1, 0) && list_has_note(on_db_note_list(db, 0), older),
-          "move: '/' is the top level");
 
     /* Pin.                                                                */
     gint pinned = on_db_note_count_pinned(db);
@@ -407,10 +397,7 @@ test_notes(OnDatabase *db)
 static void
 test_action_lines(OnDatabase *db)
 {
-    gint64 salt   = on_db_folder_create(db, 0, "Salt", ON_AI_MODE_NORMAL, NULL);
-    gint64 deps   = on_db_folder_create(db, salt, "Deployments", ON_AI_MODE_NORMAL, NULL);
-    gint64 stride = on_db_folder_create(db, deps, "Stride", ON_AI_MODE_NORMAL, NULL);
-    gint64 note   = on_note_new_from_text(db, stride,
+    gint64 note   = on_note_new_from_text(db, "Stride",
         "Stride rollout\n\nSensor rollout.\n! Rerun the reports due 2026-09-30\n"
         "! Confirm the version due 10/3/26\n!   Archive dashboards  \nnot ! an item");
     GList *items = items_of(db, note);
@@ -433,8 +420,8 @@ test_action_lines(OnDatabase *db)
 
     OnActionItem *row = on_db_action_get(db, nth_uid(db, note, 1));
     check(row != NULL && row->note_id == note && row->ord == 1 &&
-          strcmp(row->context, "Stride") == 0,
-          "uid: an item is found by uid, its context the note's own folder");
+          strcmp(row->text, "Confirm the version") == 0,
+          "uid: an item is found by uid");
     on_db_action_item_free(row);
 
     /* What is NOT an item.                                                 */
@@ -445,9 +432,6 @@ test_action_lines(OnDatabase *db)
     check(g_list_length(items) == 1 && strcmp(((OnActionItem *)items->data)->text, "Real one") == 0,
           "lines: a line without '!', a bare '!' and a due date alone are not items");
     on_db_action_list_free(items);
-    row = on_db_action_get(db, nth_uid(db, odd, 0));
-    check(row != NULL && strcmp(row->context, "") == 0, "uid: a root note's context is \"\"");
-    on_db_action_item_free(row);
 
     /* Block kinds: a heading can be an item; a list or code line cannot.  */
     OnDocument *doc = on_document_new();
@@ -464,7 +448,7 @@ test_action_lines(OnDatabase *db)
         on_document_insert_block(doc, on_document_n_blocks(doc), b);
     }
     on_document_remove_block(doc, 0);   /* the empty block a new document holds */
-    gint64 kinds = on_db_note_create(db, 0);
+    gint64 kinds = on_db_note_create(db);
     check(on_note_document_save(db, kinds, doc, TRUE, NULL), "kinds: the note is saved");
     on_document_free(doc);
     items = items_of(db, kinds);
@@ -498,8 +482,8 @@ test_action_lines(OnDatabase *db)
 static void
 test_action_list(OnDatabase *db)
 {
-    gint64 first  = on_note_new_from_text(db, 0, "Listing one\n! one-a\n! one-b");
-    gint64 second = on_note_new_from_text(db, 0, "Listing two\n! two-a");
+    gint64 first  = on_note_new_from_text(db, NULL, "Listing one\n! one-a\n! one-b");
+    gint64 second = on_note_new_from_text(db, NULL, "Listing two\n! two-a");
     on_db_note_set_updated_at(db, first, 1890000000);
     on_db_note_set_updated_at(db, second, 1890003600);
 
@@ -556,7 +540,7 @@ static void
 test_action_edit(OnApp *app)
 {
     OnDatabase *db   = app->db;
-    gint64      note = on_note_new_from_text(db, 0, "Edits\n! Call the bank due 2026-11-02\n! Second");
+    gint64      note = on_note_new_from_text(db, NULL, "Edits\n! Call the bank due 2026-11-02\n! Second");
     gint64      uid  = nth_uid(db, note, 0);
     gint open_before = 0, open_after = 0;
     on_db_action_counts(db, NULL, &open_before);
@@ -615,89 +599,80 @@ test_action_edit(OnApp *app)
           "an unknown uid is refused");
 }
 
-/* ── Folders ────────────────────────────────────────────────────────────── */
+/* ── The Tags field ─────────────────────────────────────────────────────── */
 
 /*
- * test_folders — nesting and paths, the Info fields, move, sort.
+ * test_field_tags — the Tags field beside the #tags of the text: a name
+ * of any case uses the existing tag, the two sources are kept apart, the
+ * field cannot take off what the text has, a tag lives while a note
+ * carries it; emoji and Notes' favorite flag; the two scopes; the counts
+ * and the per-note names.
  *
  * Inputs:
  *   db — the database
  */
 static void
-test_folders(OnDatabase *db)
+test_field_tags(OnDatabase *db)
 {
-    gint64 top    = on_db_folder_create(db, 0, "New", ON_AI_MODE_NORMAL, NULL);
-    gint64 nested = on_db_folder_create(db, top, "Nested", ON_AI_MODE_NORMAL, NULL);
-    gint64 deep   = on_db_folder_create(db, nested, "Deep", ON_AI_MODE_NORMAL, NULL);
-    gchar *path   = on_db_folder_path(db, deep);
-    check(strcmp(path, "New/Nested/Deep") == 0, "folders: a nested folder's path");
-    g_free(path);
-    GHashTable *paths = on_db_folder_path_map(db);
-    check(strcmp(g_hash_table_lookup(paths, &deep), "New/Nested/Deep") == 0 &&
-          g_hash_table_lookup(paths, &(gint64){ 0 }) == NULL,
-          "folders: the path map agrees; the top level has no entry");
-    g_hash_table_destroy(paths);
+    gint64 a = on_note_new_from_text(db, "Big Client", "Field one\nbody");
+    gint64 b = on_note_new_from_text(db, NULL, "Field two\nbody");
+    check(on_db_note_field_tag_add(db, b, "  big client ") != 0 &&
+          on_db_note_field_tag_add(db, b, "") == 0 &&
+          on_db_note_field_tag_add(db, 999999, "x") == 0,
+          "field: a name in any case, trimmed; blank and a missing note refused");
+    gchar *tags = note_tags_are(db, b);
+    check(strcmp(tags, "Big Client:F-") == 0, "field: the existing spelling is kept");
+    g_free(tags);
 
-    /* Rename, emoji, AI mode: one update (the Info panel's).               */
-    check(on_db_folder_update(db, nested, "Renamed", ON_AI_MODE_CUSTOM, "\xf0\x9f\x93\x81"),
-          "info: name, AI mode and emoji in one update");
-    gchar *emoji = on_db_folder_get_emoji(db, nested);
-    path = on_db_folder_path(db, deep);
-    check(strcmp(emoji, "\xf0\x9f\x93\x81") == 0 &&
-          on_db_folder_get_ai_mode(db, nested) == ON_AI_MODE_CUSTOM &&
-          strcmp(path, "New/Renamed/Deep") == 0,
-          "info: they read back; the subtree's paths follow the rename");
-    g_free(path);
-    g_free(emoji);
-    check(on_db_folder_update(db, nested, "Renamed", ON_AI_MODE_PROJECT, ""), "info: emoji cleared");
-    emoji = on_db_folder_get_emoji(db, nested);
-    check(*emoji == '\0' && on_db_folder_get_ai_mode(db, nested) == ON_AI_MODE_PROJECT,
-          "info: an empty emoji reads back empty");
-    g_free(emoji);
-    gint64 with = on_db_folder_create(db, 0, "Born with", ON_AI_MODE_PROJECT, "\xf0\x9f\xa7\x82");
-    emoji = on_db_folder_get_emoji(db, with);
-    check(strcmp(emoji, "\xf0\x9f\xa7\x82") == 0 && on_db_folder_get_ai_mode(db, with) == ON_AI_MODE_PROJECT,
-          "folders: emoji and AI mode can be given at creation");
-    g_free(emoji);
+    /* The text gains #big: one row, both sources; the field cannot take it
+     * off, the text can, and the field keeps it.                          */
+    OnDocument *doc = on_note_document_load(db, b);
+    add_tag_line(doc, (const char *[]){ "big", NULL });
+    check(save_with_tags(db, b, doc), "field: a #tag in the text is saved");
+    on_document_free(doc);
+    check(on_db_note_field_tag_add(db, b, "BIG") != 0, "field: and the field gets it too");
+    tags = note_tags_are(db, b);
+    check(strcmp(tags, "big:FT,Big Client:F-") == 0, "field: one row per tag, by source");
+    g_free(tags);
+    OnTag *big = on_db_tag_find(db, "Big");
+    check(big != NULL && on_db_note_field_tag_remove(db, b, big->id) == 0,
+          "field: a tag the text has cannot be taken off in the field");
+    doc = on_note_document_load(db, b);
+    OnText     *t  = on_document_block(doc, 2)->text;
+    on_document_delete_text(doc, (OnPos){ 2, -1, 0 }, t->text->len);
+    check(save_with_tags(db, b, doc), "field: the #tag taken out of the text");
+    on_document_free(doc);
+    tags = note_tags_are(db, b);
+    check(strcmp(tags, "big:F-,Big Client:F-") == 0, "field: the field still has it");
+    g_free(tags);
+    check(big != NULL && on_db_note_field_tag_remove(db, b, big->id) == 1 &&
+          on_db_tag_find(db, "big") == NULL,
+          "field: taken off the field too, the tag nothing carries is gone");
+    on_db_tag_free(big);
 
-    /* Move: anywhere but into itself.                                      */
-    check(on_db_folder_move(db, deep, 0) && folder_named(db, 0, "Deep") == deep,
-          "move: a folder moves to the top level");
-    check(!on_db_folder_move(db, top, nested), "move: not into its own descendant");
-    check(!on_db_folder_move(db, top, top), "move: not into itself");
-    check(on_db_folder_move(db, deep, nested) && folder_named(db, nested, "Deep") == deep,
-          "move: and back under another folder, with its subtree");
-
-    /* Sort one level, case-insensitively.                                  */
-    gint64 parent = on_db_folder_create(db, 0, "Sorting", ON_AI_MODE_NORMAL, NULL);
-    on_db_folder_create(db, parent, "b", ON_AI_MODE_NORMAL, NULL);
-    gint64 big_c = on_db_folder_create(db, parent, "C", ON_AI_MODE_NORMAL, NULL);
-    on_db_folder_create(db, parent, "a", ON_AI_MODE_NORMAL, NULL);
-    on_db_folder_create(db, big_c, "z", ON_AI_MODE_NORMAL, NULL);
-    on_db_folder_create(db, big_c, "y", ON_AI_MODE_NORMAL, NULL);
-    gchar *names = folder_names(db, parent);
-    check(strcmp(names, "b,C,a") == 0, "sort: children list in creation order first");
-    g_free(names);
-    check(on_db_folder_sort_children(db, parent) == 3, "sort: three children sorted");
-    names = folder_names(db, parent);
-    check(strcmp(names, "a,b,C") == 0, "sort: alphabetically, ignoring case");
-    g_free(names);
-    names = folder_names(db, big_c);
-    check(strcmp(names, "z,y") == 0, "sort: one level only");
-    g_free(names);
-    GList *tops = on_db_folder_list(db, 0);
-    gint   n_tops = (gint)g_list_length(tops);
-    on_db_folder_list_free(tops);
-    check(on_db_folder_sort_children(db, 0) == n_tops, "sort: the top level sorts too");
-
-    /* Note counts per folder.                                              */
-    on_note_new_from_text(db, deep, "In deep\nx");
-    on_note_new_from_text(db, deep, "Also in deep\nx");
-    GHashTable *counts = on_db_note_count_map(db);
-    check(GPOINTER_TO_INT(g_hash_table_lookup(counts, &deep)) == 2 &&
-          g_hash_table_lookup(counts, &parent) == NULL,
-          "counts: per folder, a folder with no notes absent");
-    g_hash_table_destroy(counts);
+    /* Emoji and the favorite flag; the scopes.                             */
+    OnTag *client = on_db_tag_find(db, "big client");
+    check(client != NULL && on_db_tag_set_emoji(db, client->id, " \xf0\x9f\x8f\xa2 ") &&
+          on_db_tag_set_favorite(db, client->id, TRUE), "tags: an emoji and a favorite set");
+    OnTag *again = client != NULL ? on_db_tag_get(db, client->id) : NULL;
+    check(again != NULL && strcmp(again->emoji, "\xf0\x9f\x8f\xa2") == 0 && again->favorite,
+          "tags: they read back (the emoji trimmed)");
+    on_db_tag_free(again);
+    check(on_db_notes_trash(db, &a, 1) && on_db_notes_trash(db, &b, 1) &&
+          tag_listed(db, ON_TAGS_ALL, "Big Client") &&
+          !tag_listed(db, ON_TAGS_CARRIED, "Big Client"),
+          "scopes: a tag only trashed notes carry lives, but is not shown");
+    check(on_db_note_restore(db, a) && tag_listed(db, ON_TAGS_CARRIED, "Big Client"),
+          "scopes: a restored note brings it back, with its tags");
+    GHashTable *names = on_db_note_tag_names_map(db);
+    check(strcmp(g_hash_table_lookup(names, &a), "Big Client") == 0 &&
+          g_hash_table_lookup(names, &(gint64){ 999999 }) == NULL,
+          "names: each note's tags as one string; none for an unknown note");
+    g_hash_table_destroy(names);
+    gint64 both[] = { a, b };
+    check(on_db_notes_delete(db, both, 2) && on_db_tag_find(db, "Big Client") == NULL,
+          "field: deleting the last notes takes their field tags");
+    on_db_tag_free(client);
 }
 
 /* ── Tags ───────────────────────────────────────────────────────────────── */
@@ -712,8 +687,8 @@ test_folders(OnDatabase *db)
 static void
 test_tags(OnDatabase *db)
 {
-    gint64 one = on_note_new_from_text(db, 0, "Tagged one\nbody");
-    gint64 two = on_note_new_from_text(db, 0, "Tagged two\nbody");
+    gint64 one = on_note_new_from_text(db, NULL, "Tagged one\nbody");
+    gint64 two = on_note_new_from_text(db, NULL, "Tagged two\nbody");
     OnDocument *doc = on_note_document_load(db, one);
     add_tag_line(doc, (const char *[]){ "salt", "urgent", NULL });
     GList *names = on_document_collect_tags(doc);
@@ -733,7 +708,7 @@ test_tags(OnDatabase *db)
     check(tag_count(db, "salt") == 2 && tag_count(db, "urgent") == 1, "tags: counted per tag");
     GList *labelled = on_db_notes_by_tag(db, 0);
     check(labelled == NULL, "tags: no notes for a tag that does not exist");
-    GList *tags = on_db_tag_list(db);
+    GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     gint64 salt_id = 0;
     for (GList *l = tags; l != NULL; l = l->next) {
         if (strcmp(((OnTag *)l->data)->name, "salt") == 0) salt_id = ((OnTag *)l->data)->id;
@@ -760,7 +735,8 @@ test_tags(OnDatabase *db)
 /* ── Trash ──────────────────────────────────────────────────────────────── */
 
 /*
- * test_trash — notes and folders into the Trash, out again, and emptied.
+ * test_trash — notes into the Trash with their tags, out again, and
+ * emptied.
  *
  * Inputs:
  *   db — the database
@@ -768,11 +744,9 @@ test_tags(OnDatabase *db)
 static void
 test_trash(OnDatabase *db)
 {
-    gint64 old   = on_db_folder_create(db, 0, "Old", ON_AI_MODE_NORMAL, NULL);
-    gint64 y2024 = on_db_folder_create(db, old, "2024", ON_AI_MODE_NORMAL, NULL);
-    gint64 plan  = on_note_new_from_text(db, y2024, "Retired plan\n! retired item");
-    gint64 a     = on_note_new_from_text(db, 0, "Throwaway A\nx");
-    gint64 b     = on_note_new_from_text(db, 0, "Throwaway B\nx");
+    gint64 plan = on_note_new_from_text(db, "Old Projects", "Retired plan\n! retired item");
+    gint64 a    = on_note_new_from_text(db, NULL, "Throwaway A\nx");
+    gint64 b    = on_note_new_from_text(db, NULL, "Throwaway B\nx");
     gint visible = on_db_note_count_visible(db);
     gint trash   = on_db_trash_count(db);
 
@@ -785,49 +759,33 @@ test_trash(OnDatabase *db)
     check(on_db_note_count_visible(db) == visible - 2 && on_db_trash_count(db) == trash + 2,
           "trash: the counts follow");
 
-    check(on_db_folder_trash(db, old), "trash: a folder with a subtree");
-    GList *folders = on_db_folder_list_trashed(db);
-    check(g_list_length(folders) >= 1 && ((OnFolder *)folders->data)->id == old,
-          "trash: the folder lists in the Trash (its subtree with it)");
-    on_db_folder_list_free(folders);
-    check(on_db_note_is_trashed(db, plan) && folder_named(db, 0, "Old") == 0 &&
-          !action_list_has_note(db, plan),
-          "trash: a note in the folder's subtree is trashed with it, its items hidden");
-
-    check(on_db_folder_restore(db, old) && folder_named(db, 0, "Old") == old &&
-          !on_db_note_is_trashed(db, plan), "restore: the folder and what it holds come back");
-    check(on_db_folder_trash(db, old) && on_db_note_restore(db, plan), "restore: a note out of a trashed folder");
-    OnNoteMeta *meta = on_db_note_get(db, plan);
-    check(meta != NULL && meta->folder_id == 0 && !on_db_note_is_trashed(db, plan),
-          "restore: lands at the top level when its folder is still in the Trash");
-    on_db_note_meta_free(meta);
-    check(on_db_folder_restore(db, y2024) && folder_named(db, 0, "2024") == y2024,
-          "restore: a folder whose parent is in the Trash goes to the top level");
+    check(on_db_notes_trash(db, &plan, 1) && !action_list_has_note(db, plan),
+          "trash: a trashed note's items are hidden");
+    gchar *tags = note_tags_are(db, plan);
+    check(strcmp(tags, "Old Projects:F-") == 0, "trash: it keeps its tags");
+    g_free(tags);
+    check(on_db_note_restore(db, plan) && !on_db_note_is_trashed(db, plan) &&
+          action_list_has_note(db, plan), "restore: it comes back, its items with it");
     check(on_db_note_restore(db, a) && !on_db_note_is_trashed(db, a), "restore: a note");
 
     /* Permanent.                                                           */
-    gint64 doomed  = on_db_folder_create(db, 0, "Doomed", ON_AI_MODE_NORMAL, NULL);
-    gint64 inside  = on_note_new_from_text(db, doomed, "Inside\nx");
-    check(on_db_folder_delete(db, doomed) && on_db_note_get(db, inside) == NULL,
-          "delete: a folder deleted outright takes its notes");
     check(on_db_notes_delete(db, &b, 1) && on_db_note_get(db, b) == NULL,
           "delete: a note deleted outright is gone");
 
-    /* Empty: everything flagged, and everything in a trashed subtree.      */
-    gint64 c = on_note_new_from_text(db, 0, "Throwaway C\nx");
-    on_db_notes_trash(db, &c, 1);
-    gint64 holder = on_db_folder_create(db, 0, "Holder", ON_AI_MODE_NORMAL, NULL);
-    gint64 held   = on_note_new_from_text(db, holder, "Held\nx");
-    on_db_folder_trash(db, holder);
+    /* Empty: everything flagged.                                           */
+    gint64 c    = on_note_new_from_text(db, "Doomed", "Throwaway C\nx");
+    gint64 held = on_note_new_from_text(db, NULL, "Held\nx");
+    gint64 cd[] = { c, held };
+    on_db_notes_trash(db, cd, 2);
     GArray *going = on_db_trash_note_ids(db);
     gboolean has_held = FALSE;
     for (guint i = 0; i < going->len; i++) has_held |= g_array_index(going, gint64, i) == held;
     g_array_free(going, TRUE);
-    check(has_held, "empty: the notes that would go include those inside trashed folders");
+    check(has_held, "empty: the notes that would go are listed first");
     check(on_db_trash_empty(db) && on_db_trash_count(db) == 0, "empty: the Trash is empty");
     check(on_db_note_get(db, c) == NULL && on_db_note_get(db, held) == NULL &&
-          folder_named(db, 0, "Holder") == 0 && folder_named(db, 0, "Old") == 0,
-          "empty: flagged notes, trashed folders and their notes are gone");
+          on_db_tag_find(db, "Doomed") == NULL,
+          "empty: the trashed notes are gone, with the tags only they carried");
 }
 
 /* ── Search ─────────────────────────────────────────────────────────────── */
@@ -861,7 +819,7 @@ matches(const char *query, gboolean use_regex, const char *title, const char *bo
 static void
 test_search(OnDatabase *db)
 {
-    gint64 note = on_note_new_from_text(db, 0, "Stride rollout\n\nSensor rollout.\nUnicode caf\xc3\xa9");
+    gint64 note = on_note_new_from_text(db, NULL, "Stride rollout\n\nSensor rollout.\nUnicode caf\xc3\xa9");
     gchar *body = on_note_text_cached(db, note);
     const char *title = "Stride rollout";
     check(matches("rollout", FALSE, title, body), "search: a word");
@@ -894,14 +852,13 @@ test_search(OnDatabase *db)
 static void
 test_stats(OnDatabase *db)
 {
-    gint notes = 0, folders = 0, tags = 0, visible, pinned, actions = 0, open = 0;
-    on_db_totals(db, &notes, &folders, &tags);
+    gint notes = 0, tags = 0, visible, pinned, actions = 0, open = 0;
+    on_db_totals(db, &notes, &tags);
     visible = on_db_note_count_visible(db);
     pinned  = on_db_note_count_pinned(db);
     on_db_action_counts(db, &actions, &open);
 
-    gint64 folder = on_db_folder_create(db, 0, "Stats", ON_AI_MODE_NORMAL, NULL);
-    gint64 note   = on_note_new_from_text(db, folder, "Stats note\n! open one\n! done one");
+    gint64 note   = on_note_new_from_text(db, "Stats", "Stats note\n! open one\n! done one");
     OnDocument *doc = on_note_document_load(db, note);
     add_tag_line(doc, (const char *[]){ "statstag", NULL });
     save_with_tags(db, note, doc);
@@ -910,11 +867,10 @@ test_stats(OnDatabase *db)
     OnApp app = { .db = db };
     on_action_edit_set_done(&app, nth_uid(db, note, 1), TRUE);
 
-    gint n2 = 0, f2 = 0, t2 = 0, a2 = 0, o2 = 0;
-    on_db_totals(db, &n2, &f2, &t2);
+    gint n2 = 0, t2 = 0, a2 = 0, o2 = 0;
+    on_db_totals(db, &n2, &t2);
     on_db_action_counts(db, &a2, &o2);
-    check(n2 == notes + 1 && f2 == folders + 1 && t2 == tags + 1,
-          "stats: notes, folders and tags totals");
+    check(n2 == notes + 1 && t2 == tags + 2, "stats: notes and tags (field and text) totals");
     check(on_db_note_count_visible(db) == visible + 1 && on_db_note_count_pinned(db) == pinned + 1,
           "stats: visible and pinned");
     check(a2 == actions + 2 && o2 == open + 1, "stats: action items, total and open");
@@ -935,8 +891,7 @@ test_images(OnDatabase *db)
     GBytes *folder_png = file_png("folder.png");
     GBytes *file_bytes = file_png("file.png");
     check(folder_png != NULL && file_bytes != NULL, "images: the fixtures load as PNG");
-    gint64 folder = on_db_folder_create(db, 0, "Pictures", ON_AI_MODE_NORMAL, NULL);
-    gint64 note   = on_note_new_from_text(db, folder, "Trip photos\nA line with a picture");
+    gint64 note   = on_note_new_from_text(db, "Pictures", "Trip photos\nA line with a picture");
     OnDocument *doc = on_note_document_load(db, note);
     OnBlock    *line = on_document_block(doc, 1);
     on_text_append(line->text, " " ON_OBJ_CHAR, 1 + ON_OBJ_CHAR_LEN, 0);
@@ -985,21 +940,21 @@ read_file(const char *path, gsize *len)
 }
 
 /*
- * test_export — Markdown and HTML, one file per visible note in a mirror
- * of the folder tree; images as side-car files or inline data.
+ * test_export — Markdown and HTML, one file per visible note in one
+ * folder, its tags first; images as side-car files or inline data.
  *
  * Inputs:
  *   app      — the context, database open
  *   data_dir — the test data directory
- *   pictures — a note with two images, in folder "Pictures"
+ *   pictures — a note with two images, tagged "Pictures"
  */
 static void
 test_export(OnApp *app, const char *data_dir, gint64 pictures)
 {
-    gint64 meetings = on_db_folder_create(app->db, folder_named(app->db, 0, "Salt"), "Meetings",
-                                          ON_AI_MODE_NORMAL, NULL);
-    on_note_new_from_text(app->db, meetings, "Weekly sync\n\n! Circulate the minutes\nDecisions: ship it.");
-    gint64 gone = on_note_new_from_text(app->db, 0, "Trashed export\nx");
+    gint64 sync = on_note_new_from_text(app->db, "Meetings",
+                                        "Weekly sync\n\n! Circulate the minutes\nDecisions: ship it.");
+    on_db_note_field_tag_add(app->db, sync, "Salt");
+    gint64 gone = on_note_new_from_text(app->db, NULL, "Trashed export\nx");
     on_db_notes_trash(app->db, &gone, 1);
     gint visible = on_db_note_count_visible(app->db);
 
@@ -1007,18 +962,19 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
     gchar *err    = NULL;
     check(on_export_all(app, md_dir, ON_EXPORT_MARKDOWN, &err) == visible && err == NULL,
           "export-md: one file per visible note");
-    gchar *path = g_build_filename(md_dir, "Salt", "Meetings", "Weekly sync.md", NULL);
+    gchar *path = g_build_filename(md_dir, "Weekly sync.md", NULL);
     gchar *text = read_file(path, NULL);
-    check(text != NULL && strstr(text, "Circulate the minutes") != NULL &&
+    check(text != NULL && g_str_has_prefix(text, "tags: Meetings, Salt\n\n") &&
+          strstr(text, "Circulate the minutes") != NULL &&
           strstr(text, "Decisions: ship it.") != NULL,
-          "export-md: the note is in its folder's mirror, its text inside");
+          "export-md: one folder, the tags line first, the text after it");
     g_free(text);
     g_free(path);
     path = g_build_filename(md_dir, "Trashed export.md", NULL);
     check(!g_file_test(path, G_FILE_TEST_EXISTS), "export-md: a trashed note is not exported");
     g_free(path);
 
-    path = g_build_filename(md_dir, "Pictures", "Trip photos.md", NULL);
+    path = g_build_filename(md_dir, "Trip photos.md", NULL);
     text = read_file(path, NULL);
     check(text != NULL && strstr(text, "![image](Trip photos-img1.png)") != NULL &&
           strstr(text, "![image](Trip photos-img2.png)") != NULL,
@@ -1029,7 +985,7 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
     gsize   len  = 0, n_file = 0;
     on_db_note_load(app->db, pictures, &blob, &len);
     GBytes *stored = on_note_image_nth_png(blob, len, 1);
-    path = g_build_filename(md_dir, "Pictures", "Trip photos-img2.png", NULL);
+    path = g_build_filename(md_dir, "Trip photos-img2.png", NULL);
     gchar *file = read_file(path, &n_file);
     gsize  n_stored = 0;
     const void *stored_bytes = g_bytes_get_data(stored, &n_stored);
@@ -1043,11 +999,12 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
     gchar *html_dir = g_build_filename(data_dir, "out_html", NULL);
     check(on_export_all(app, html_dir, ON_EXPORT_HTML, NULL) == visible,
           "export-html: one file per visible note");
-    path = g_build_filename(html_dir, "Pictures", "Trip photos.html", NULL);
+    path = g_build_filename(html_dir, "Trip photos.html", NULL);
     text = read_file(path, NULL);
     check(text != NULL && strstr(text, "<title>Trip photos</title>") != NULL &&
+          strstr(text, "<p class=\"tags\">Tags: <span class=\"tag\">Pictures</span></p>") != NULL &&
           strstr(text, "src=\"data:image/png;base64,") != NULL,
-          "export-html: a full page, images inline as data");
+          "export-html: a full page, its tags at the top, images inline as data");
     g_free(text);
     g_free(path);
     g_free(html_dir);
@@ -1071,7 +1028,7 @@ test_backup(OnDatabase *db, const char *data_dir)
     gint  notes = 0;
     gint  copied = -1;
     char *dest = NULL;
-    on_db_totals(db, &notes, NULL, NULL);
+    on_db_totals(db, &notes, NULL);
     check(shared_db_backup(db->shared, &dest, NULL) == 0 && dest != NULL &&
           g_str_has_prefix(dest, dir), "backup: written into the chosen folder");
     shared_db *copy = dest != NULL ? shared_db_open_readonly(dest, NULL) : NULL;
@@ -1106,7 +1063,7 @@ main(void)
     test_action_lines(app.db);
     test_action_list(app.db);
     test_action_edit(&app);
-    test_folders(app.db);
+    test_field_tags(app.db);
     test_tags(app.db);
     test_trash(app.db);
     test_search(app.db);

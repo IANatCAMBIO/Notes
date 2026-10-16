@@ -1,12 +1,11 @@
 /*
  * library_sidebar.m — the library's sidebar.
  *
- * An NSOutlineView over an in-memory tree of SidebarItem objects, built the
- * way the GTK app builds its sidebar (library_window.c, refresh_sidebar):
- * Pinned Notes and All Notes, Action Items, the Notes root with the folder
- * tree, the Tags header with one row per tag, and the Trash with its
- * trashed folders.  The root is a row like any other — selecting it lists
- * the top-level notes; only the Tags header cannot be selected.
+ * An NSOutlineView over an in-memory list of SidebarItem objects: Pinned
+ * Notes and All Notes, Action Items, the Tags header with one row per tag
+ * the notes carry (its emoji, its name, its count when counts are shown),
+ * and the Trash.  Only the Tags header cannot be selected; it starts open
+ * and stays the way the user leaves it.
  *
  * Selecting a row writes lib's selection and refreshes the notes pane
  * (which also updates the status bar).  A right click selects the row and
@@ -14,9 +13,7 @@
  * toolbar and the menu run the same handlers.
  *
  * Drag and drop (on_pasteboard_type_rows, library_state.h): notes onto a
- * folder, the root or the Trash; a folder into another, the root or the
- * Trash, or between two folders to reorder; a trashed folder out of the
- * Trash to restore it there.
+ * tag (it goes in their Tags fields) or onto the Trash.
  *
  * Fit to content: the divider follows the widest row on show (the
  * sidebar_fit_content setting; once at startup whatever it says).
@@ -57,7 +54,7 @@
  *
  * Inputs:
  *   kind       — the row's kind
- *   ident      — its folder or tag id; 0 for the fixed rows
+ *   ident      — its tag id; 0 for the fixed rows
  *   display    — what it shows
  *   raw        — its bare name (the selection's name, status messages)
  *   expandable — YES for a row with children
@@ -83,19 +80,17 @@ item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, BOOL
  * Inputs:
  *   kind — the row's kind
  *
- * Output: YES for the root, the Tags header, Pinned, All, Action Items and
- *         the Trash.
+ * Output: YES for every row but a tag.
  */
 static BOOL
 is_section(on_sb_kind_t kind)
 {
-    return kind == on_sb_root || kind == on_sb_tags_header || kind == on_sb_pinned ||
-           kind == on_sb_all || kind == on_sb_trash || kind == on_sb_actions;
+    return kind != on_sb_tag;
 }
 
 /*
- * section_label — a section row's text: its emoji, a no-break space and a
- * space, its name, and the count when counts are shown.
+ * section_label — a section row's text: its emoji, two spaces, its name,
+ * and the count when counts are shown.
  *
  * Inputs:
  *   emoji — the emoji
@@ -107,58 +102,32 @@ is_section(on_sb_kind_t kind)
 static NSString *
 section_label(NSString *emoji, NSString *name, gint count)
 {
-    return count >= 0 ? [NSString stringWithFormat:@"%@  %@ (%d)", emoji, name, count]
-                      : [NSString stringWithFormat:@"%@  %@", emoji, name];
+    return count >= 0 ? [NSString stringWithFormat:@"%@  %@ (%d)", emoji, name, count]
+                      : [NSString stringWithFormat:@"%@  %@", emoji, name];
 }
 
 /*
- * folder_item — a folder row, normal or in the Trash: an optional emoji
- * before the name (two spaces apart) and the note count when counts are
- * shown (GTK: sb_folder_row).
+ * tag_item — a tag's row: its emoji before its name (two spaces apart, as
+ * Tasks shows it) and the count of notes carrying it when counts are
+ * shown.
  *
  * Inputs:
- *   f           — the folder
- *   kind        — on_sb_folder or on_sb_trash_folder
- *   note_counts — folder id → count, or NULL while counts are hidden
- *   expandable  — YES when it has subfolders to show
+ *   t          — the tag
+ *   tag_counts — tag id → count, or NULL while counts are hidden
  *
  * Output: the item.
  */
 static SidebarItem *
-folder_item(const OnFolder *f, on_sb_kind_t kind, GHashTable *note_counts, BOOL expandable)
+tag_item(const OnTag *t, GHashTable *tag_counts)
 {
     /* %@ and @(...), never %s: an NSString format reads %s in the system
      * encoding, not UTF-8, and an emoji came out as "üß™". */
-    NSString *name = (f->emoji && *f->emoji) ? [NSString stringWithFormat:@"%@  %@", @(f->emoji), @(f->name)]
-                                             : @(f->name);
-    if (note_counts) {
-        gint count = GPOINTER_TO_INT(g_hash_table_lookup(note_counts, &f->id));
-        name = [name stringByAppendingFormat:@" (%d)", count];
-    }
-    return item_new(kind, f->id, name, @(f->name), expandable);
-}
-
-/*
- * add_folder_items — the subfolders of a folder, recursively; a folder
- * with none is a leaf (no disclosure triangle).
- *
- * Inputs:
- *   parent_id   — whose children (0 = the top level)
- *   into        — where to append them
- *   note_counts — folder id → count, or NULL
- *   child_map   — the whole tree, from on_db_folder_child_map
- */
-static void
-add_folder_items(gint64 parent_id, NSMutableArray<SidebarItem *> *into,
-                 GHashTable *note_counts, GHashTable *child_map)
-{
-    for (GList *l = on_db_folder_children(child_map, parent_id); l != NULL; l = l->next) {
-        const OnFolder *f = l->data;
-        BOOL has_kids = on_db_folder_children(child_map, f->id) != NULL;
-        SidebarItem *it = folder_item(f, on_sb_folder, note_counts, has_kids);
-        if (has_kids) add_folder_items(f->id, it.children, note_counts, child_map);
-        [into addObject:it];
-    }
+    NSString *name  = @(t->name);
+    NSString *label = *t->emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(t->emoji), name] : name;
+    if (tag_counts)
+        label = [label stringByAppendingFormat:@" (%d)",
+                       GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id))];
+    return item_new(on_sb_tag, t->id, label, name, NO);
 }
 
 /* ── The outline ─────────────────────────────────────────────────────────── */
@@ -174,16 +143,6 @@ add_folder_items(gint64 parent_id, NSMutableArray<SidebarItem *> *into,
 @property (nonatomic, weak) NotesSidebarController *controller;
 @end
 
-/* Where a drop goes, worked out once for validation and for the drop. */
-typedef enum { drop_none, drop_into, drop_before, drop_after } drop_place_t;
-
-typedef struct {
-    drop_place_t           place;
-    on_drag_kind_t         kind;
-    __unsafe_unretained SidebarItem *target;   /* INTO it, or BEFORE/AFTER it */
-    __unsafe_unretained SidebarItem *parent;   /* BEFORE/AFTER: the new parent */
-} drop_plan_t;
-
 /* ── The controller ─────────────────────────────────────────────────────── */
 
 @interface NotesSidebarController : NSObject <NSOutlineViewDelegate, NSOutlineViewDataSource>
@@ -192,6 +151,7 @@ typedef struct {
 @property (nonatomic, strong) NSMutableArray<SidebarItem *> *roots;
 @property (nonatomic, assign) BOOL                 fit_queued;
 @property (nonatomic, assign) BOOL                 fit_force;
+@property (nonatomic, assign) BOOL                 tags_collapsed;   /* the user closed Tags */
 - (NSMenu *)menu_for_row:(NSInteger)row;
 - (void)queue_fit:(BOOL)force;
 @end
@@ -201,7 +161,7 @@ typedef struct {
 /*
  * mouseDown: — a plain click selects its row at once
  * (on_ui_select_on_mouse_down); NSOutlineView then tracks the click as
- * usual (folder drags, double-clicks).
+ * usual.
  *
  * Inputs:
  *   event — the mouse event
@@ -313,16 +273,15 @@ select_row:(NSInteger)row
 /* ── Building ─────────────────────────────────────────────────────────── */
 
 /*
- * build_roots — the rows from the database, as refresh_sidebar builds them.
+ * build_roots — the rows from the database: the views, the tags the notes
+ * carry, the Trash when it holds anything.
  */
 - (void)
 build_roots
 {
     OnDatabase *db     = self.lib.app->db;
     BOOL        counts = self.lib.app->sidebar_counts;
-    GHashTable *note_counts = counts ? on_db_note_count_map(db) : NULL;
-    GHashTable *tag_counts  = counts ? on_db_tag_count_map(db)  : NULL;
-    GHashTable *child_map   = on_db_folder_child_map(db);
+    GHashTable *tag_counts = counts ? on_db_tag_count_map(db) : NULL;
     NSMutableArray<SidebarItem *> *roots = [NSMutableArray array];
 
     gint n_pinned = on_db_note_count_pinned(db);
@@ -338,119 +297,46 @@ build_roots
         [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items", counts ? n_open : -1),
                                   @"Action Items", NO)];
 
-    gint root_count = note_counts ? GPOINTER_TO_INT(g_hash_table_lookup(note_counts, &(gint64){ 0 })) : -1;
-    SidebarItem *root = item_new(on_sb_root, 0, section_label(@"📓", @"Notes", root_count), @"Notes", YES);
-    add_folder_items(0, root.children, note_counts, child_map);
-    [roots addObject:root];
-
-    GList *tags = on_db_tag_list(db);
+    GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
         SidebarItem *header = item_new(on_sb_tags_header, 0, section_label(@"🏷️", @"Tags", -1), @"Tags", YES);
-        for (GList *l = tags; l != NULL; l = l->next) {
-            const OnTag *t   = l->data;
-            NSString    *raw = [@"#" stringByAppendingString:@(t->name)];
-            NSString    *label = tag_counts
-                ? [raw stringByAppendingFormat:@" (%d)", GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id))]
-                : raw;
-            [header.children addObject:item_new(on_sb_tag, t->id, label, raw, NO)];
-        }
+        for (GList *l = tags; l != NULL; l = l->next)
+            [header.children addObject:tag_item(l->data, tag_counts)];
         [roots addObject:header];
     }
     on_db_tag_list_free(tags);
 
     gint n_trash = on_db_trash_count(db);
-    if (n_trash > 0) {
-        GList *trashed = on_db_folder_list_trashed(db);
-        SidebarItem *trash = item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash", counts ? n_trash : -1),
-                                      @"Trash", trashed != NULL);
-        for (GList *l = trashed; l != NULL; l = l->next)
-            [trash.children addObject:folder_item(l->data, on_sb_trash_folder, note_counts, NO)];
-        on_db_folder_list_free(trashed);
-        [roots addObject:trash];
-    }
+    if (n_trash > 0)
+        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash", counts ? n_trash : -1),
+                                  @"Trash", NO)];
 
-    on_db_folder_child_map_free(child_map);
-    if (note_counts) g_hash_table_destroy(note_counts);
-    if (tag_counts)  g_hash_table_destroy(tag_counts);
+    if (tag_counts) g_hash_table_destroy(tag_counts);
     self.roots = roots;
 }
 
 /*
- * row_key — a row's identity as a string: kind and id, which survive a
- * rebuild (positions do not).
- *
- * Inputs:
- *   it — the row
- *
- * Output: the key.
- */
-static NSString *
-row_key(SidebarItem *it)
-{
-    return [NSString stringWithFormat:@"%d:%" G_GINT64_FORMAT, it.kind, it.ident];
-}
-
-/*
- * expanded_keys:into: — the (kind, id) of every expanded row, which
- * survive a rebuild.
- *
- * Inputs:
- *   items — the items at one level
- *   into  — receives "kind:id" keys
- */
-- (void)
-expanded_keys:(NSArray<SidebarItem *> *)items into:(NSMutableSet<NSString *> *)into
-{
-    for (SidebarItem *it in items) {
-        if (!it.children) continue;
-        if ([self.outline isItemExpanded:it]) [into addObject:row_key(it)];
-        [self expanded_keys:it.children into:into];
-    }
-}
-
-/*
- * expand_keys:in: — expand the rows whose keys are in `keys`, outermost
- * first.
- *
- * Inputs:
- *   keys  — "kind:id" keys
- *   items — the items at one level
- */
-- (void)
-expand_keys:(NSSet<NSString *> *)keys in:(NSArray<SidebarItem *> *)items
-{
-    for (SidebarItem *it in items) {
-        if (!it.children) continue;
-        if ([keys containsObject:row_key(it)]) {
-            [self.outline expandItem:it];
-            [self expand_keys:keys in:it.children];
-        }
-    }
-}
-
-/*
- * refresh — rebuild the rows (GTK: refresh_sidebar), keeping which rows
- * are expanded, the scroll position and the selection.  A selection that
- * no longer exists falls back to the first row, and then the notes pane
- * is refreshed for it.
+ * refresh — rebuild the rows, keeping the Tags header open or closed as
+ * the user left it, the scroll position and the selection.  A selection
+ * that no longer exists (a tag no note carries any more) falls back to
+ * All Notes, and then the notes pane is refreshed for it.
  *
  * Output: YES when the notes pane was refreshed (the selection moved).
  */
 - (BOOL)
 refresh
 {
-    NSMutableSet<NSString *> *expanded = [NSMutableSet set];
-    [self expanded_keys:self.roots into:expanded];
     NSClipView *clip   = self.outline.enclosingScrollView.contentView;
     NSPoint     scroll = clip.bounds.origin;
 
     self.lib.populating++;
     [self build_roots];
     [self.outline reloadData];
-    [self expand_keys:expanded in:self.roots];
+    for (SidebarItem *it in self.roots)
+        if (it.kind == on_sb_tags_header && !self.tags_collapsed) [self.outline expandItem:it];
     NSInteger row      = [self reveal_kind:self.lib.sel_kind ident:self.lib.sel_id];
     BOOL      restored = row >= 0;
-    [self select_row:restored ? row : 0];
+    [self select_row:restored ? row : [self reveal_kind:on_sb_all ident:0]];
     self.lib.populating--;
 
     if (clip) [clip scrollToPoint:scroll];
@@ -557,12 +443,10 @@ command_item(NSString *ident, NSString *title)
 }
 
 /*
- * menu_for_row: — select a row and build its menu (GTK:
- * on_sidebar_pressed): the Trash empties; a trashed folder restores or is
- * deleted; a folder makes a subfolder, shows its info, goes to the Trash
- * and sorts its subfolders; the root makes a folder and sorts; every row
- * but the Trash searches within itself.  The items are commands, run by
- * the library through the responder chain.
+ * menu_for_row: — select a row and build its menu: the Trash empties; a
+ * tag is edited (its emoji and Notes' favorite flag); every row but the
+ * Trash searches within itself.  The items are commands, run by the
+ * library through the responder chain.
  *
  * Inputs:
  *   row — the row clicked, or -1
@@ -578,29 +462,13 @@ menu_for_row:(NSInteger)row
         [self.outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
     }
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-    switch (it.kind) {
-    case on_sb_trash:
+    if (it.kind == on_sb_trash) {
         [menu addItem:command_item(@"empty-trash", nil)];
         return menu;
-    case on_sb_trash_folder:
-        [menu addItem:command_item(@"folder-restore", nil)];
-        [menu addItem:command_item(@"delete-folder", nil)];
+    }
+    if (it.kind == on_sb_tag) {
+        [menu addItem:command_item(@"edit-tag", nil)];
         [menu addItem:NSMenuItem.separatorItem];
-        break;
-    case on_sb_folder:
-        [menu addItem:command_item(@"new-folder", @"New Subfolder…")];
-        [menu addItem:command_item(@"folder-info", @"Info…")];
-        [menu addItem:command_item(@"delete-folder", nil)];
-        [menu addItem:command_item(@"sort-subfolders", nil)];
-        [menu addItem:NSMenuItem.separatorItem];
-        break;
-    case on_sb_root:
-        [menu addItem:command_item(@"new-folder", nil)];
-        [menu addItem:command_item(@"sort-subfolders", nil)];
-        [menu addItem:NSMenuItem.separatorItem];
-        break;
-    default:
-        break;
     }
     [menu addItem:command_item(@"search-here", nil)];
     return menu;
@@ -726,243 +594,99 @@ outlineViewSelectionDidChange:(NSNotification *)note
 }
 
 /*
- * outlineViewItemDidExpand: / outlineViewItemDidCollapse: — rows came or
- * went: the fit follows.
+ * outlineViewItemDidExpand: / outlineViewItemDidCollapse: — the user
+ * opened or closed the Tags: remembered for the next rebuild (not while
+ * the rows are rebuilt in code), and the fit follows.
  *
  * Inputs:
- *   note — the notification (unused)
+ *   note — the notification
  */
 - (void)
 outlineViewItemDidExpand:(NSNotification *)note
 {
+    if (self.lib.populating == 0) self.tags_collapsed = NO;
     [self queue_fit:NO];
 }
 
 - (void)
 outlineViewItemDidCollapse:(NSNotification *)note
 {
+    if (self.lib.populating == 0) self.tags_collapsed = YES;
     [self queue_fit:NO];
 }
 
 /* ── Drag and drop ─────────────────────────────────────────────────────── */
 
 /*
- * outlineView:pasteboardWriterForItem: — folders and trashed folders can
- * be dragged.
+ * drop_target:info: — the row a drag of notes would land on: a tag or the
+ * Trash under the pointer.
  *
  * Inputs:
- *   outline — the outline (unused)
- *   item    — the item
+ *   info — the drag
  *
- * Output: the drag's pasteboard item, or nil for a row that does not move.
+ * Output: the row, or nil when the drag holds no notes or no such row is
+ *         under the pointer.
  */
-- (id<NSPasteboardWriting>)
-outlineView:(NSOutlineView *)outline pasteboardWriterForItem:(id)item
+- (SidebarItem *)
+drop_target:(id<NSDraggingInfo>)info
 {
-    SidebarItem *it = item;
-    if (it.kind == on_sb_folder)       return on_library_drag_item(on_drag_folder, @[@(it.ident)]);
-    if (it.kind == on_sb_trash_folder) return on_library_drag_item(on_drag_trashed_folder, @[@(it.ident)]);
-    return nil;
+    if (on_library_drag_read(info.draggingPasteboard).count == 0) return nil;
+    NSPoint      at    = [self.outline convertPoint:info.draggingLocation fromView:nil];
+    SidebarItem *under = [self.outline itemAtRow:[self.outline rowAtPoint:at]];
+    return under.kind == on_sb_tag || under.kind == on_sb_trash ? under : nil;
 }
 
 /*
- * inside_dragged — is `item`, or one of its ancestors, the dragged folder?
- *
- * Inputs:
- *   outline — the outline
- *   item    — the row
- *   kind    — the dragged folder's row kind
- *   ident   — its id
- *
- * Output: YES when dropping there would put the folder inside itself.
- */
-static BOOL
-inside_dragged(NSOutlineView *outline, SidebarItem *item, on_sb_kind_t kind, gint64 ident)
-{
-    for (SidebarItem *it = item; it != nil; it = [outline parentForItem:it])
-        if (it.kind == kind && it.ident == ident) return YES;
-    return NO;
-}
-
-/*
- * plan_drop:item:index: — where a drop would go, and whether it may (GTK:
- * sidebar_drop_target).  Notes go INTO the folder, root or Trash row under
- * the pointer.  A folder goes INTO a folder, the root or (from the tree)
- * the Trash, or BEFORE/AFTER a folder between two rows — never into itself
- * or its own subtree.
- *
- * Inputs:
- *   info  — the drag
- *   item  — the outline's proposed parent
- *   index — the proposed child index, or NSOutlineViewDropOnItemIndex
- *
- * Output: the plan; place drop_none when refused.
- */
-- (drop_plan_t)
-plan_drop:(id<NSDraggingInfo>)info item:(SidebarItem *)item index:(NSInteger)index
-{
-    drop_plan_t plan = { drop_none, on_drag_notes, nil, nil };
-    on_drag_kind_t kind;
-    NSArray<NSNumber *> *ids = on_library_drag_read(info.draggingPasteboard, &kind);
-    if (ids.count == 0) return plan;
-    plan.kind = kind;
-
-    if (kind == on_drag_notes) {
-        NSPoint at = [self.outline convertPoint:info.draggingLocation fromView:nil];
-        SidebarItem *under = [self.outline itemAtRow:[self.outline rowAtPoint:at]];
-        if (under.kind == on_sb_folder || under.kind == on_sb_root || under.kind == on_sb_trash) {
-            plan.place  = drop_into;
-            plan.target = under;
-        }
-        return plan;
-    }
-
-    on_sb_kind_t src_kind = kind == on_drag_folder ? on_sb_folder : on_sb_trash_folder;
-    gint64       src_id   = ids.firstObject.longLongValue;
-    if (index == NSOutlineViewDropOnItemIndex) {
-        if (item == nil || inside_dragged(self.outline, item, src_kind, src_id)) return plan;
-        if (item.kind == on_sb_folder || item.kind == on_sb_root ||
-            (item.kind == on_sb_trash && src_kind == on_sb_folder)) {
-            plan.place  = drop_into;
-            plan.target = item;
-        }
-        return plan;
-    }
-    if (item.kind == on_sb_trash && src_kind == on_sb_folder) {   /* between trashed folders */
-        plan.place  = drop_into;
-        plan.target = item;
-        return plan;
-    }
-    if ((item.kind != on_sb_folder && item.kind != on_sb_root) || item.children.count == 0 ||
-        inside_dragged(self.outline, item, src_kind, src_id))
-        return plan;
-    BOOL after = (NSUInteger)index >= item.children.count;
-    SidebarItem *anchor = item.children[after ? item.children.count - 1 : (NSUInteger)index];
-    if (anchor.kind == src_kind && anchor.ident == src_id) return plan;
-    plan.place  = after ? drop_after : drop_before;
-    plan.target = anchor;
-    plan.parent = item;
-    return plan;
-}
-
-/*
- * outlineView:validateDrop:proposedItem:proposedChildIndex: — accept a
- * drop where plan_drop says it may go; notes are retargeted onto the row
- * under the pointer.
+ * outlineView:validateDrop:proposedItem:proposedChildIndex: — accept notes
+ * onto a tag or the Trash, retargeted onto the row under the pointer.
  *
  * Inputs:
  *   outline — the outline
  *   info    — the drag
- *   item    — the proposed parent
- *   index   — the proposed child index
+ *   item    — the proposed parent (unused: the row under the pointer counts)
+ *   index   — the proposed child index (unused)
  *
- * Output: NSDragOperationMove, or none.
+ * Output: copy for a tag (the notes keep their other tags), move for the
+ *         Trash, or none.
  */
 - (NSDragOperation)
 outlineView:(NSOutlineView *)outline validateDrop:(id<NSDraggingInfo>)info
 proposedItem:(id)item proposedChildIndex:(NSInteger)index
 {
-    drop_plan_t plan = [self plan_drop:info item:item index:index];
-    if (plan.place == drop_none) return NSDragOperationNone;
-    if (plan.place == drop_into)
-        [outline setDropItem:plan.target dropChildIndex:NSOutlineViewDropOnItemIndex];
-    return NSDragOperationMove;
+    SidebarItem *target = [self drop_target:info];
+    if (target == nil) return NSDragOperationNone;
+    [outline setDropItem:target dropChildIndex:NSOutlineViewDropOnItemIndex];
+    return target.kind == on_sb_tag ? NSDragOperationCopy : NSDragOperationMove;
 }
 
 /*
- * folder_move_beside — re-parent a folder and slot it just before or after
- * a sibling (GTK: folder_move_beside).
- *
- * Inputs:
- *   db        — the database
- *   folder_id — the folder
- *   parent    — its new parent (0 = the top level)
- *   anchor_id — the sibling it goes beside
- *   after     — YES for after it
- *
- * Output: YES on success.
- */
-static BOOL
-folder_move_beside(OnDatabase *db, gint64 folder_id, gint64 parent, gint64 anchor_id, BOOL after)
-{
-    if (!on_db_folder_move(db, folder_id, parent)) return NO;
-    GList  *sibs  = on_db_folder_list(db, parent);
-    gint64 *order = malloc((g_list_length(sibs) + 1) * sizeof *order);
-    size_t  n     = 0;
-    for (GList *l = sibs; l != NULL; l = l->next) {
-        const OnFolder *f = l->data;
-        if (f->id == folder_id) continue;
-        if (f->id == anchor_id && !after) order[n++] = folder_id;
-        order[n++] = f->id;
-        if (f->id == anchor_id && after) order[n++] = folder_id;
-    }
-    on_db_folder_list_free(sibs);
-    gboolean ok = on_db_folder_reorder(db, order, n);
-    free(order);
-    return ok;
-}
-
-/*
- * outlineView:acceptDrop:item:childIndex: — do the drop (GTK:
- * on_sidebar_drop): notes move into a folder (one transaction) or go to
- * the Trash; a folder moves, reorders, goes to the Trash, or comes out of
- * it.  The rebuild waits until the drag has finished.
+ * outlineView:acceptDrop:item:childIndex: — do the drop: the notes get the
+ * tag in their Tags fields, or go to the Trash.  The rebuild waits until
+ * the drag has finished.
  *
  * Inputs:
  *   outline — the outline (unused)
  *   info    — the drag
- *   item    — the drop's parent
- *   index   — its child index
+ *   item    — the drop's row (unused: drop_target says)
+ *   index   — its child index (unused)
  *
- * Output: YES when something moved.
+ * Output: YES when something changed.
  */
 - (BOOL)
 outlineView:(NSOutlineView *)outline acceptDrop:(id<NSDraggingInfo>)info item:(id)item childIndex:(NSInteger)index
 {
-    drop_plan_t plan = [self plan_drop:info item:item index:index];
-    if (plan.place == drop_none) return NO;
-    on_drag_kind_t kind;
-    NSArray<NSNumber *> *ids = on_library_drag_read(info.draggingPasteboard, &kind);
+    SidebarItem *target = [self drop_target:info];
+    if (target == nil) return NO;
+    NSArray<NSNumber *> *ids = on_library_drag_read(info.draggingPasteboard);
     NotesLibrary *lib = self.lib;
-    OnDatabase   *db  = lib.app->db;
-    BOOL ok;
+    BOOL          ok;
 
-    if (plan.kind == on_drag_notes) {
+    if (target.kind == on_sb_trash) {
         gint64 *note_ids = on_ui_ids(ids);
-        size_t  n        = ids.count;
-        if (plan.target.kind == on_sb_trash) {
-            ok = on_library_trash_notes(lib, note_ids, n);
-        } else {
-            ok = on_db_notes_move(db, note_ids, n,
-                                  plan.target.kind == on_sb_folder ? plan.target.ident : 0);
-            if (ok) on_app_status(lib.app, "Moved %zu note%s to “%s”", n,
-                                  n == 1 ? "" : "s", plan.target.raw_name.UTF8String);
-        }
+        ok = on_library_trash_notes(lib, note_ids, ids.count);
         free(note_ids);
     } else {
-        on_sb_kind_t src_kind = plan.kind == on_drag_folder ? on_sb_folder : on_sb_trash_folder;
-        gint64       src_id   = ids.firstObject.longLongValue;
-        NSMutableArray<SidebarItem *> *chain = [NSMutableArray array];
-        NSString *name = [self chain_in:self.roots kind:src_kind ident:src_id into:chain]
-                       ? chain.lastObject.raw_name : @"";
-        NSString *where;
-        if (plan.target.kind == on_sb_trash) {
-            ok    = on_library_trash_folder(lib, src_id, name);
-            where = nil;
-        } else if (plan.place == drop_into) {
-            ok    = on_db_folder_move(db, src_id, plan.target.kind == on_sb_folder ? plan.target.ident : 0);
-            where = plan.target.raw_name;
-        } else {
-            ok    = folder_move_beside(db, src_id, plan.parent.kind == on_sb_folder ? plan.parent.ident : 0,
-                                       plan.target.ident, plan.place == drop_after);
-            where = plan.parent.raw_name;
-        }
-        if (ok && where) {
-            on_app_status(lib.app, src_kind == on_sb_trash_folder ? "Folder “%s” restored to “%s”"
-                                                                  : "Moved folder “%s” to “%s”",
-                          name.UTF8String, where.UTF8String);
-            if (lib.sel_kind == on_sb_trash_folder && lib.sel_id == src_id) lib.sel_kind = on_sb_folder;
-        }
+        ok = on_library_tag_notes(lib, ids, target.raw_name);
     }
     if (ok) dispatch_async(dispatch_get_main_queue(), ^{ on_library_refresh_all(lib); });
     return ok;
@@ -1014,7 +738,6 @@ on_library_sidebar_new(NotesLibrary *lib)
     [outline addTableColumn:column];
     outline.outlineTableColumn = column;
     [outline registerForDraggedTypes:@[on_pasteboard_type_rows]];
-    [outline setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
     ctrl.outline = outline;
 
     NotesSidebarScroll *scroll = [[NotesSidebarScroll alloc] initWithFrame:NSZeroRect];

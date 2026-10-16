@@ -33,7 +33,7 @@
  * pastes as itself.  Written beside NSPasteboardTypeString. */
 extern NSPasteboardType const on_pasteboard_type_fragment;
 
-/* A drag of library rows: notes or a folder (library_state.h). */
+/* A drag of library rows: notes (library_state.h). */
 extern NSPasteboardType const on_pasteboard_type_rows;
 
 /* ── Appearance ─────────────────────────────────────────────────────────── */
@@ -372,7 +372,7 @@ extern NSString *const on_ui_date_iso;    /* "2026-06-03": typed, AI prompt    *
 NSString *on_ui_format_date(int64_t unix_time, NSString *format);
 
 /*
- * on_ui_ids — note or folder ids held as NSNumbers (a selection, a drag),
+ * on_ui_ids — note ids held as NSNumbers (a selection, a drag),
  * as the plain array the core's calls take.
  *
  * Inputs:

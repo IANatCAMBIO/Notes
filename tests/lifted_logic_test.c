@@ -148,7 +148,7 @@ test_unreadable_note(OnApp *app)
 {
     /* "BNBF", version 99: what a future build would write.                 */
     static const guint8 future[] = { 'B', 'N', 'B', 'F', 99, 0, 0, 0, 1, 0, 0, 0, 'x' };
-    gint64 note = on_db_note_create(app->db, 0);
+    gint64 note = on_db_note_create(app->db);
     check(on_db_note_save(app->db, note, "From the future", future, sizeof future, NULL),
           "unreadable: a newer-format blob is stored");
 
@@ -162,7 +162,7 @@ test_unreadable_note(OnApp *app)
 
     /* A note with an action item whose blob then became unreadable: an
      * edit of the item must not write a document over it.                  */
-    gint64 with_item = on_note_new_from_text(app->db, 0, "Had an item\n! Item");
+    gint64 with_item = on_note_new_from_text(app->db, NULL, "Had an item\n! Item");
     GList *items = on_db_action_list_for_note(app->db, with_item);
     gint64 uid   = items != NULL ? ((OnActionItem *)items->data)->uid : 0;
     on_db_action_list_free(items);
@@ -174,17 +174,17 @@ test_unreadable_note(OnApp *app)
           "unreadable: the stored bytes are untouched");
 
     /* A save to a note that is gone fails rather than "succeeding".        */
-    gint64 gone = on_db_note_create(app->db, 0);
+    gint64 gone = on_db_note_create(app->db);
     on_db_notes_delete(app->db, &gone, 1);
     check(!on_db_note_save(app->db, gone, "Gone", future, sizeof future, NULL),
           "a save to a deleted note reports failure");
 }
 
 /*
- * test_export_names — an export never writes two notes to one file, nor
- * outside the folder it was given: titles differing only in case get
- * their own files (the volume is case-insensitive), and a folder named
- * ".." stays inside.
+ * test_export_names — an export is flat and never writes two notes to one
+ * file, nor outside the folder it was given: titles differing only in
+ * case get their own files (the volume is case-insensitive), a title
+ * naming a parent stays inside, and each file starts with its tags.
  *
  * Inputs:
  *   app      — the context, database open, no hooks
@@ -193,31 +193,33 @@ test_unreadable_note(OnApp *app)
 static void
 test_export_names(OnApp *app, const char *data_dir)
 {
-    gint64 up   = on_db_folder_create(app->db, 0, "..", ON_AI_MODE_NORMAL, NULL);
-    on_note_new_from_text(app->db, up, "Plan\nfirst");
-    on_note_new_from_text(app->db, up, "plan\nsecond");
+    on_note_new_from_text(app->db, "Work", "Plan\nfirst");
+    on_note_new_from_text(app->db, NULL, "plan\nsecond");
+    on_note_new_from_text(app->db, NULL, "../Plan\nthird");
     gchar *dest = g_build_filename(data_dir, "export", "inside", NULL);
     on_export_all(app, dest, ON_EXPORT_MARKDOWN, NULL);
-    gchar *dir = g_build_filename(dest, "--", NULL);
+    gchar *dir = g_strdup(dest);
     gint   files = 0;
-    gboolean first = FALSE, second = FALSE;
+    gboolean first = FALSE, second = FALSE, third = FALSE;
     GDir  *d = g_dir_open(dir, 0, NULL);
     for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
         gchar *path = g_build_filename(dir, name, NULL);
         gchar *text = NULL;
         if (g_file_get_contents(path, &text, NULL, NULL)) {
             files++;
-            first  = first  || strstr(text, "first") != NULL;
-            second = second || strstr(text, "second") != NULL;
+            first  = first  || g_str_has_prefix(text, "tags: Work\n\n");
+            second = second || (strstr(text, "second") != NULL &&
+                                !g_str_has_prefix(text, "tags:"));
+            third  = third  || strstr(text, "third") != NULL;
         }
         g_free(text);
         g_free(path);
     }
     if (d != NULL) g_dir_close(d);
-    check(files == 2 && first && second,
-          "export: titles differing only in case get a file each");
+    check(files >= 3 && first && second && third,
+          "export: one folder, a file each (case apart), the tags line first");
     gchar *outside = g_build_filename(data_dir, "export", "Plan.md", NULL);
-    check(!g_file_test(outside, G_FILE_TEST_EXISTS), "export: a folder named '..' stays inside");
+    check(!g_file_test(outside, G_FILE_TEST_EXISTS), "export: a title naming '..' stays inside");
     g_free(outside);
     g_free(dir);
     g_free(dest);
@@ -232,7 +234,7 @@ test_export_names(OnApp *app, const char *data_dir)
 static void
 test_action_edit(OnApp *app)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "Plan\n! Call the bank due 2026-11-02\n! Second");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Plan\n! Call the bank due 2026-11-02\n! Second");
     GList *items = on_db_action_list_for_note(app->db, note);
     check(g_list_length(items) == 2, "two action lines became two task rows");
     gint64 uid = ((OnActionItem *)items->data)->uid;
@@ -280,7 +282,7 @@ test_action_edit(OnApp *app)
     g_free(after);
 
     /* A different, closed note still takes the stored path.                */
-    gint64 other = on_note_new_from_text(app->db, 0, "Other\n! Elsewhere");
+    gint64 other = on_note_new_from_text(app->db, NULL, "Other\n! Elsewhere");
     items = on_db_action_list_for_note(app->db, other);
     gint64 other_uid = ((OnActionItem *)items->data)->uid;
     on_db_action_list_free(items);
@@ -298,7 +300,7 @@ test_action_edit(OnApp *app)
 
 static bool search_done;             /* the job's done callback ran          */
 static int  search_hits;             /* how many hits it reported            */
-static char first_path[256];         /* the first hit's path                 */
+static char first_hit[256];          /* the first hit's "tags | title"       */
 
 /*
  * search_landed — on_search_done_func_t.
@@ -316,14 +318,14 @@ search_landed(const gchar *error, const on_search_hit_t *const *hits, size_t n,
     (void)data;
     search_hits = error != NULL ? -1 : (int)n;
     if (search_hits > 0) {
-        snprintf(first_path, sizeof first_path, "%s", hits[0]->path);
+        snprintf(first_hit, sizeof first_hit, "%s | %s", hits[0]->tags, hits[0]->title);
     }
     search_done = true;
 }
 
 /*
- * test_search_job — a search on a worker, scoped and unscoped, and a
- * cancelled one.
+ * test_search_job — a search on a worker, of every note and of one tag,
+ * and a cancelled one.
  *
  * Inputs:
  *   app — the context, database open
@@ -331,25 +333,25 @@ search_landed(const gchar *error, const on_search_hit_t *const *hits, size_t n,
 static void
 test_search_job(OnApp *app)
 {
-    gint64 folder = on_db_folder_create(app->db, 0, "Recipes", 0, "");
-    on_note_new_from_text(app->db, folder, "Soup\nleeks and potatoes");
-    on_note_new_from_text(app->db, 0, "Shopping\npotatoes, onions");
+    on_note_new_from_text(app->db, "Recipes", "Soup\nleeks and potatoes");
+    on_note_new_from_text(app->db, NULL, "Shopping\npotatoes, onions");
+    OnTag *recipes = on_db_tag_find(app->db, "recipes");
 
     OnQuery *q = on_query_new("potatoes", FALSE, FALSE, NULL);
-    on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0, search_landed, NULL);
-    check(check_pump(&search_done, 10.0), "an unscoped search reports on the main thread");
+    on_search_job_start(app->db->path, q, 0, search_landed, NULL);
+    check(check_pump(&search_done, 10.0), "a search of every note reports on the main thread");
     check(search_hits == 2, "it finds both notes");
 
     search_done = false;
     q = on_query_new("potatoes", FALSE, FALSE, NULL);
-    on_search_job_start(app->db->path, q, TRUE, ON_SCOPE_FOLDER, folder, search_landed, NULL);
-    check(check_pump(&search_done, 10.0) && search_hits == 1, "a folder-scoped search finds one");
-    check(strcmp(first_path, "Recipes/Soup") == 0, "a hit carries its display path");
+    on_search_job_start(app->db->path, q, recipes != NULL ? recipes->id : -1, search_landed, NULL);
+    check(check_pump(&search_done, 10.0) && search_hits == 1, "a tag-scoped search finds one");
+    check(strcmp(first_hit, "Recipes | Soup") == 0, "a hit carries its title and its tags");
+    on_db_tag_free(recipes);
 
     search_done = false;
     q = on_query_new("potatoes", FALSE, FALSE, NULL);
-    on_search_job_t *job = on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0,
-                                           search_landed, NULL);
+    on_search_job_t *job = on_search_job_start(app->db->path, q, 0, search_landed, NULL);
     on_search_job_cancel(job);
     check_pump(NULL, 0.5);
     check(!search_done, "a cancelled search never reports");
@@ -359,7 +361,7 @@ test_search_job(OnApp *app)
     search_done = false;
     check(check_move_aside(app->db->shared, true), "(the database is moved aside)");
     q = on_query_new("potatoes", FALSE, FALSE, NULL);
-    on_search_job_start(app->db->path, q, FALSE, ON_SCOPE_FOLDER, 0, search_landed, NULL);
+    on_search_job_start(app->db->path, q, 0, search_landed, NULL);
     check(check_pump(&search_done, 10.0) && search_hits == -1,
           "a search on a database moved aside fails");
     check(!g_file_test(app->db->path, G_FILE_TEST_EXISTS),

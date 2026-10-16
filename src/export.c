@@ -393,7 +393,7 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
 }
 
 /* ---------------------------------------------------------------------------
- * sanitize_filename() — turn a note title or folder name into a safe file
+ * sanitize_filename() — turn a note title into a safe file
  * name: path separators and control chars become '-', a name of dots only
  * ("." and ".." would leave the export folder) becomes dashes, and long
  * names truncate on a character boundary (a split character is an invalid
@@ -422,30 +422,6 @@ sanitize_filename(const gchar *title)
         name[cut] = '\0';
     }
     return name;
-}
-
-/* ---------------------------------------------------------------------------
- * safe_rel_dir() — a folder path ("Work/Sub") as a relative directory under
- * the export folder: each component through sanitize_filename, so none can
- * be "..".
- * Returns a newly allocated string.
- * ------------------------------------------------------------------------- */
-static gchar *
-safe_rel_dir(const gchar *rel)
-{
-    gchar  **parts = g_strsplit(rel, "/", -1);
-    GString *out   = g_string_new(NULL);
-    for (gchar **p = parts; *p != NULL; p++) {
-        if (**p == '\0')
-            continue;
-        gchar *part = sanitize_filename(*p);
-        if (out->len > 0)
-            g_string_append_c(out, '/');
-        g_string_append(out, part);
-        g_free(part);
-    }
-    g_strfreev(parts);
-    return g_string_free(out, FALSE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -499,9 +475,12 @@ unique_path(const gchar *dir, const gchar *base, const gchar *ext,
 }
 
 /* ---------------------------------------------------------------------------
- * export_one() — render one note into `note_dir` in the given format.
+ * export_one() — render one note into `note_dir` in the given format, its
+ * tags first: a "tags: a, b" line in Markdown, a paragraph of them in
+ * HTML (nothing for a note without tags).
  *   app      — application context (provides the database).
  *   m        — metadata of the note to export.
+ *   tags     — its tags, "Salt, Stride", or NULL / "" for none.
  *   note_dir — directory the file is written into (must exist).
  *   format   — output format.
  *   used     — full paths already emitted this run (see unique_path);
@@ -509,7 +488,7 @@ unique_path(const gchar *dir, const gchar *base, const gchar *ext,
  * Returns TRUE if the file was written.
  * ------------------------------------------------------------------------- */
 static gboolean
-export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
+export_one(OnApp *app, OnNoteMeta *m, const gchar *tags, const gchar *note_dir,
            OnExportFormat format, GHashTable *used)
 {
     OnDocument *doc = on_note_document_load(app->db, m->id);
@@ -551,6 +530,16 @@ export_one(OnApp *app, OnNoteMeta *m, const gchar *note_dir,
             "</style>\n</head>\n<body>\n", esc_title);
         g_free(esc_title);
     }
+    if (tags != NULL && *tags != '\0') {
+        if (format == ON_EXPORT_HTML) {
+            gchar *esc_tags = g_markup_escape_text(tags, -1);
+            g_string_append_printf(ctx.out, "<p class=\"tags\">Tags: "
+                                   "<span class=\"tag\">%s</span></p>\n", esc_tags);
+            g_free(esc_tags);
+        } else {
+            g_string_append_printf(ctx.out, "tags: %s\n\n", tags);
+        }
+    }
 
     render_note_body(&ctx, doc);
 
@@ -591,43 +580,20 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
     GList *notes = on_db_note_list_all(app->db, FALSE);
     gint exported = 0;               /* notes successfully written          */
 
-    /* Paths emitted this run (for within-run uniquification) and a
-     * folder_id → ready-made note_dir cache: notes cluster into few
-     * folders, so the path query + mkdir run once per folder, not per
-     * note.                                                                */
+    /* Paths emitted this run (for within-run uniquification), and every
+     * note's tags in ONE query rather than one per note.                   */
     GHashTable *used = g_hash_table_new_full(g_str_hash, g_str_equal,
                                              g_free, NULL);
-    GHashTable *dirs = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                             g_free, g_free);
-    /* Every folder's path in ONE query, rather than walking the parent
-     * chain per folder with a statement per level.                         */
-    GHashTable *paths = on_db_folder_path_map(app->db);
+    GHashTable *tags = on_db_note_tag_names_map(app->db);
 
     for (GList *l = notes; l != NULL; l = l->next) {
         OnNoteMeta *m = l->data;     /* the note being exported             */
-
-        /* Mirror the folder hierarchy under the destination.               */
-        gchar *note_dir = g_hash_table_lookup(dirs, &m->folder_id);
-        if (note_dir == NULL) {
-            const gchar *rel_dir = (m->folder_id != 0)
-                ? g_hash_table_lookup(paths, &m->folder_id) : NULL;
-            gchar *safe = (rel_dir != NULL) ? safe_rel_dir(rel_dir) : NULL;
-            note_dir = (safe != NULL && *safe != '\0')
-                       ? g_build_filename(dest_dir, safe, NULL)
-                       : g_strdup(dest_dir);
-            g_free(safe);
-            g_mkdir_with_parents(note_dir, 0755);
-            gint64 *key = g_new(gint64, 1);
-            *key = m->folder_id;
-            g_hash_table_insert(dirs, key, note_dir);
-        }
-
-        if (export_one(app, m, note_dir, format, used))
+        if (export_one(app, m, g_hash_table_lookup(tags, &m->id), dest_dir,
+                       format, used))
             exported++;
     }
 
-    g_hash_table_destroy(paths);
-    g_hash_table_destroy(dirs);
+    g_hash_table_destroy(tags);
     g_hash_table_destroy(used);
     on_db_note_list_free(notes);
     return exported;
@@ -644,7 +610,16 @@ on_export_note(OnApp *app, gint64 note_id, const gchar *dest_dir,
     if (m == NULL)
         return FALSE;
 
-    gboolean ok = export_one(app, m, dest_dir, format, NULL);
+    GList   *list  = on_db_note_tags(app->db, note_id);
+    GString *names = g_string_new("");   /* "Salt, Stride"                  */
+    for (GList *l = list; l != NULL; l = l->next) {
+        if (names->len > 0)
+            g_string_append(names, ", ");
+        g_string_append(names, ((const OnTag *)l->data)->name);
+    }
+    on_db_tag_list_free(list);
+    gboolean ok = export_one(app, m, names->str, dest_dir, format, NULL);
+    g_string_free(names, TRUE);
     on_db_note_meta_free(m);
     return ok;
 }

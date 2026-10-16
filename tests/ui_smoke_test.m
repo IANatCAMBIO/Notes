@@ -281,19 +281,19 @@ return_key(NSWindow *window)
 }
 
 /*
- * new_note_in — a note in a folder with the given text
- * (on_note_new_from_text on the test's database).
+ * new_note_tagged — a note with a tag in its Tags field and the given
+ * text (on_note_new_from_text on the test's database).
  *
  * Inputs:
- *   folder_id — its folder (0 = the top level)
- *   text      — its content, one block per line
+ *   tag  — the tag, or NULL for none
+ *   text — its content, one block per line
  *
  * Output: the note's id.
  */
 static gint64
-new_note_in(gint64 folder_id, const char *text)
+new_note_tagged(const char *tag, const char *text)
 {
-    return on_note_new_from_text(app.db, folder_id, text);
+    return on_note_new_from_text(app.db, tag, text);
 }
 
 /*
@@ -307,7 +307,7 @@ new_note_in(gint64 folder_id, const char *text)
 static gint64
 new_note(const char *text)
 {
-    return new_note_in(0, text);
+    return new_note_tagged(NULL, text);
 }
 
 /*
@@ -349,7 +349,7 @@ test_library(NotesLibrary *lib)
         pump(0.6);
         NSWindow *window = lib.window;
         check(window != nil && window.visible, "the library window is on screen");
-        check(lib.sel_kind == on_sb_root, "the library opens on the Notes root, as the GTK app does");
+        check(lib.sel_kind == on_sb_all, "the library opens on All Notes");
         check(window.toolbar.items.count >= 12, "its toolbar is built from the command table");
         BOOL glyphs = YES;
         for (NSToolbarItem *ti in window.toolbar.items) {
@@ -464,7 +464,7 @@ test_editor(void)
     g_free(body);
 
     /* A note left blank is deleted on close; shutdown flushes everything. */
-    gint64 blank = on_db_note_create(app.db, 0);
+    gint64 blank = on_db_note_create(app.db);
     @autoreleasepool {
         on_editor_window_open(&app, blank, NotesEditorRevealNone, 0, nil);
         GList *items = on_db_action_list_for_note(app.db, note_id);
@@ -480,7 +480,7 @@ test_editor(void)
     /* A note that cannot be read is not a blank note: no editor opens on
      * it (an empty one would delete it on close), and it survives.        */
     static const guint8 future[] = { 'B', 'N', 'B', 'F', 99, 0, 0, 0 };
-    gint64 unreadable = on_db_note_create(app.db, 0);
+    gint64 unreadable = on_db_note_create(app.db);
     on_db_note_save(app.db, unreadable, "From the future", future, sizeof future, NULL);
     @autoreleasepool {
         check(!on_editor_window_open(&app, unreadable, NotesEditorRevealNone, 0, nil),
@@ -522,23 +522,6 @@ test_editor(void)
     check(body != NULL && strstr(body, "due 2032-07-08") != NULL,
           "flush_editors saves every open editor before it returns");
     g_free(body);
-}
-
-/*
- * folder_count — how many folders sit directly under a parent.
- *
- * Inputs:
- *   parent_id — the parent folder (0 = the top level)
- *
- * Output: the count.
- */
-static guint
-folder_count(gint64 parent_id)
-{
-    GList *folders = on_db_folder_list(app.db, parent_id);
-    guint  n       = g_list_length(folders);
-    on_db_folder_list_free(folders);
-    return n;
 }
 
 /*
@@ -671,7 +654,7 @@ status_text_centred(NSTextField *label)
 /*
  * test_editor_commands — an editor runs its commands through the same
  * path the menu bar uses, gates them while the find field is typed in,
- * shows its location and save state, and opens at the bottom-right.
+ * shows its title and save state, and opens at the bottom-right.
  */
 static void
 test_editor_commands(void)
@@ -712,9 +695,9 @@ test_editor_commands(void)
               back.offset == first.offset,
               "typing in the find field selects the first match; Next and Previous step from it");
 
-        check(label_with_text(window.contentView, @"/") != nil,
-              "the status bar shows the note's location");
-        check(status_text_centred(label_with_text(window.contentView, @"/")),
+        check(label_with_text(window.contentView, window.title) != nil,
+              "the status bar shows the note's title");
+        check(status_text_centred(label_with_text(window.contentView, window.title)),
               "the editor's status text is 9 pt and centred in its bar");
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
@@ -784,7 +767,7 @@ test_editor_commands(void)
 }
 
 /*
- * id_in — is a note or folder id in a GArray of gint64?  The array is
+ * id_in — is a note id in a GArray of gint64?  The array is
  * freed.
  *
  * Inputs:
@@ -803,21 +786,20 @@ id_in(GArray *ids, gint64 id)
 }
 
 /*
- * folder_under — is a folder a live child of a parent?
+ * tag_shown — is a tag of this name a row of the sidebar now?
  *
  * Inputs:
- *   parent_id — the parent (0 = the top level)
- *   folder_id — the folder
+ *   name — the tag's name (as stored)
  *
- * Output: YES when it is listed there.
+ * Output: YES when a note outside the Trash carries it (the sidebar's rule).
  */
 static BOOL
-folder_under(gint64 parent_id, gint64 folder_id)
+tag_shown(const char *name)
 {
-    GList *folders = on_db_folder_list(app.db, parent_id);
-    BOOL   found   = NO;
-    for (GList *l = folders; l; l = l->next) found = found || ((OnFolder *)l->data)->id == folder_id;
-    on_db_folder_list_free(folders);
+    BOOL   found = NO;
+    GList *tags  = on_db_tag_list(app.db, ON_TAGS_CARRIED);
+    for (GList *l = tags; l != NULL; l = l->next) found = found || strcmp(((OnTag *)l->data)->name, name) == 0;
+    on_db_tag_list_free(tags);
     return found;
 }
 
@@ -870,9 +852,9 @@ select_note_row(NotesLibrary *lib, NSString *title)
 }
 
 /*
- * test_trash — moving notes and folders to the Trash, restoring and
- * deleting them, always closes the editors open on them first; a restored
- * folder goes back where it was.
+ * test_trash — moving notes to the Trash, restoring and deleting them,
+ * always closes the editors open on them first; a trashed note keeps its
+ * tags and comes back with them.
  *
  * Inputs:
  *   lib — the library (its window on screen)
@@ -880,9 +862,7 @@ select_note_row(NotesLibrary *lib, NSString *title)
 static void
 test_trash(NotesLibrary *lib)
 {
-    gint64 parent = on_db_folder_create(app.db, 0, "Trash parent", 0, NULL);
-    gint64 folder = on_db_folder_create(app.db, parent, "Trash child", 0, NULL);
-    gint64 inside = new_note_in(folder, "Inside the folder\nbody");
+    gint64 inside = new_note_tagged("Trash tag", "Inside the tag\nbody");
     gint64 loose  = new_note("Loose note\nbody");
     on_library_refresh_all(lib);
 
@@ -911,23 +891,33 @@ test_trash(NotesLibrary *lib)
           editor_window_titled(@"Loose note") == nil,
           "Move to Trash trashes the note and closes its open editor");
 
-    /* A folder with an open editor on one of its notes. */
+    /* A tagged note with an open editor, trashed from its tag's view: the
+     * tag leaves the sidebar with it (only a trashed note carries it), and
+     * the selection falls back to All Notes; Restore brings both back.    */
     on_editor_window_open(&app, inside, NotesEditorRevealNone, 0, nil);
     pump(0.2);
-    on_library_sidebar_select(lib, on_sb_folder, folder);
-    lib.sel_name = @"Trash child";
-    on_library_run_command(lib, command_item(@"delete-folder"));
+    OnTag *trash_tag = on_db_tag_find(app.db, "Trash tag");
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_tag, trash_tag != NULL ? trash_tag->id : 0);
     pump(0.2);
-    check(!folder_under(parent, folder) && editor_window_titled(@"Inside the folder") == nil &&
-          lib.sel_kind == on_sb_root,
-          "Delete Folder trashes it, closes its notes' editors and leaves the selection on Notes");
-
-    on_library_sidebar_select(lib, on_sb_trash_folder, folder);
-    lib.sel_name = @"Trash child";
-    on_library_run_command(lib, command_item(@"folder-restore"));
+    select_note_row(lib, @"Inside the tag");
+    on_library_run_command(lib, command_item(@"delete-note"));
     pump(0.2);
-    check(folder_under(parent, folder) && lib.sel_kind == on_sb_folder && lib.sel_id == folder,
-          "Restore Folder puts it back under its old parent and selects it");
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(on_db_note_is_trashed(app.db, inside) && editor_window_titled(@"Inside the tag") == nil &&
+          !tag_shown("Trash tag") && lib.sel_kind == on_sb_all,
+          "trashing a tag's last note closes its editor; the tag leaves the sidebar, All Notes is selected");
+    on_library_sidebar_select(lib, on_sb_trash, 0);
+    pump(0.2);
+    select_note_row(lib, @"Inside the tag");
+    on_library_run_command(lib, command_item(@"note-restore"));
+    pump(0.2);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(!on_db_note_is_trashed(app.db, inside) && tag_shown("Trash tag"),
+          "Restore brings the note back with its tag");
+    on_db_tag_free(trash_tag);
 
     /* Empty Trash, with the loose note's editor open again. */
     on_editor_window_open(&app, loose, NotesEditorRevealNone, 0, nil);
@@ -993,19 +983,6 @@ test_trash(NotesLibrary *lib)
     check(kept != NULL && !on_db_note_is_trashed(app.db, saved),
           "a note restored while the question was up is not deleted");
     on_db_note_meta_free(kept);
-
-    on_db_folder_trash(app.db, folder);
-    on_library_refresh_all(lib);
-    pump(0.2);
-    on_library_sidebar_select(lib, on_sb_trash_folder, folder);
-    lib.sel_name = @"Trash child";
-    on_library_run_command(lib, command_item(@"delete-folder"));
-    pump(0.2);
-    on_db_folder_restore(app.db, folder);
-    check(answer_panel(@"Delete"), "Delete of a trashed folder asks first");
-    pump(0.2);
-    check(folder_under(parent, folder),
-          "a folder restored while the question was up is not deleted");
 }
 
 /*
@@ -1176,15 +1153,17 @@ test_pointer(void)
 
 /*
  * test_tag_suggestions — typing "#al" lists the known tags that start so,
- * under the caret; Down and Return choose one, which becomes a tag.
+ * under the caret (a tag whose name cannot be a #word, from a Tags field,
+ * is left out); Down and Return choose one, which becomes a tag.
  */
 static void
 test_tag_suggestions(void)
 {
     gint64 tagged = new_note("Tagged note\nbody");
     GList *tags = g_list_append(g_list_append(NULL, g_strdup("alpha")), g_strdup("alpine"));
-    on_db_note_set_tags(app.db, tagged, tags);
+    on_db_note_set_text_tags(app.db, tagged, tags);
     g_list_free_full(tags, g_free);
+    on_db_note_field_tag_add(app.db, tagged, "al fresco");
     gint64 note_id = new_note("Tag typing\n");
     @autoreleasepool {
         on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
@@ -1249,66 +1228,165 @@ button_titled(NSView *root, NSString *title)
 }
 
 /*
- * test_new_folder — New Folder asks in the app's own tool panel, never a
- * native alert or sheet; an empty name keeps it open, a name creates the
- * folder and closes it.
+ * note_has_field_tag — does a note's Tags field hold a tag of this name?
+ *
+ * Inputs:
+ *   note_id — the note
+ *   name    — the tag's name (exact spelling)
+ *
+ * Output: YES when it does.
+ */
+static BOOL
+note_has_field_tag(gint64 note_id, const char *name)
+{
+    BOOL   found = NO;
+    GList *tags  = on_db_note_tags(app.db, note_id);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        found = found || (t->in_field && strcmp(t->name, name) == 0);
+    }
+    on_db_tag_list_free(tags);
+    return found;
+}
+
+/*
+ * test_editor_tags — the editor's Tags strip: the Tags field's tags as
+ * tokens and the text's #tags beside them; a token typed in becomes a tag
+ * of the note (the existing spelling kept), a deleted one lets go of it,
+ * and a tag the text has cannot be taken out of the field.  New Note in a
+ * tag's view gives the note that tag.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_editor_tags(NotesLibrary *lib)
+{
+    gint64 note  = new_note_tagged("Field tag", "Editor tags\nbody");
+    GList *texty = g_list_append(NULL, g_strdup("texty"));
+    on_db_note_set_text_tags(app.db, note, texty);
+    g_list_free_full(texty, g_free);
+    @autoreleasepool {
+        on_editor_window_open(&app, note, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow     *window = editor_window_titled(@"Editor tags");
+        NSTokenField *field  = (NSTokenField *)view_with_identifier(window.contentView, @"note-tags");
+        check(field != nil && [field.objectValue isEqual:@[@"Field tag"]] &&
+              label_with_text(window.contentView, @"In the text: #texty") != nil,
+              "the Tags strip shows the field's tags as tokens and the text's #tags beside them");
+        check(save_snapshots(window, @"editor-tags"), "editor tags snapshots written, light and dark");
+
+        id<NSTokenFieldDelegate> ed = (id<NSTokenFieldDelegate>)field.delegate;
+        NSArray *made = [ed tokenField:field shouldAddObjects:@[@"  FIELD TAG ", @" Added one "] atIndex:1];
+        check([made isEqual:@[@"Added one"]] && note_has_field_tag(note, "Added one"),
+              "a typed token becomes a tag of the note, trimmed; one the field has is not doubled");
+
+        on_db_note_field_tag_add(app.db, note, "texty");
+        field.objectValue = @[@"Field tag", @"Added one"];
+        [(id<NSTextFieldDelegate>)ed controlTextDidChange:
+            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:field]];
+        pump(0.1);
+        check(note_has_field_tag(note, "texty"),
+              "a tag the text has cannot be taken out of the field");
+        field.objectValue = @[@"Field tag", @"texty"];
+        [(id<NSTextFieldDelegate>)ed controlTextDidChange:
+            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:field]];
+        pump(0.1);
+        OnTag *gone = on_db_tag_find(app.db, "Added one");
+        check(!note_has_field_tag(note, "Added one") && gone == NULL,
+              "a deleted token lets go of its tag, and a tag nothing carries is gone");
+        on_db_tag_free(gone);
+        on_editor_close_notes(&note, 1);
+    }
+    pump(0.2);
+
+    OnTag *field_tag = on_db_tag_find(app.db, "Field tag");
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_tag, field_tag != NULL ? field_tag->id : 0);
+    on_db_tag_free(field_tag);
+    pump(0.2);
+    on_library_run_command(lib, command_item(@"new-note"));
+    pump(0.3);
+    GList *notes = on_db_note_list_recent(app.db);
+    gint64 newest = 0;
+    for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
+    on_db_note_list_free(notes);
+    check(newest > note && note_has_field_tag(newest, "Field tag"),
+          "New Note in a tag's view gives the new note that tag");
+    on_editor_close_all();
+    pump(0.2);
+    on_library_sidebar_select(lib, on_sb_all, 0);
+}
+
+/*
+ * test_edit_tag — Edit Tag asks in the app's own tool panel, never a
+ * native alert or sheet: the tag's name is shown, not editable; OK stores
+ * the emoji and Notes' favorite flag, and the favorite gets a button in
+ * the Favorites bar, which selects the tag.
  *
  * Inputs:
  *   lib — the library (must have a window on screen)
  */
 static void
-test_new_folder(NotesLibrary *lib)
+test_edit_tag(NotesLibrary *lib)
 {
-    gint64 parent = on_library_current_folder_id(lib);
-    guint  before = folder_count(parent);
+    new_note_tagged("Smoke tag", "Edit tag note\nbody");
+    OnTag *tag = on_db_tag_find(app.db, "Smoke tag");
+    gint64 tag_id = tag != NULL ? tag->id : 0;
+    on_db_tag_free(tag);
+    on_library_refresh_all(lib);
+    on_library_sidebar_select(lib, on_sb_tag, tag_id);
+    pump(0.2);
     __weak NSWindow *weak_panel = nil;
     @autoreleasepool {
-        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"New Folder…" action:NULL
-                                               keyEquivalent:@""];
-        item.identifier = @"new-folder";
-        on_library_run_command(lib, item);
+        on_library_run_command(lib, command_item(@"edit-tag"));
         pump(0.3);
 
         NSWindow *panel = nil;
         for (NSWindow *w in NSApp.windows) {
-            if (w.visible && [w.title isEqualToString:@"New Folder"]) panel = w;
+            if (w.visible && [w.title isEqualToString:@"Edit Tag"]) panel = w;
         }
         check(panel != nil && [panel isKindOfClass:NSPanel.class] && lib.window.attachedSheet == nil,
-              "New Folder asks in a tool panel, not an alert sheet");
-        check(save_snapshots(panel, @"new-folder"), "new folder snapshots written, light and dark");
+              "Edit Tag asks in a tool panel, not an alert sheet");
+        check(save_snapshots(panel, @"edit-tag"), "edit tag snapshots written, light and dark");
 
-        NSTextField *field = (NSTextField *)view_with_identifier(panel.contentView, @"folder-name");
-        NSTextField *emoji = (NSTextField *)view_with_identifier(panel.contentView, @"folder-emoji");
-        NSButton *create = default_button(panel);
-        NSButton *project = button_titled(panel.contentView, @"Project");
-        check(field != nil && project != nil && [create.title isEqualToString:@"OK"],
-              "it asks for an emoji, a name and the AI summary mode (GTK's folder prompt)");
-        [create performClick:nil];
-        pump(0.1);
-        check(panel.visible && folder_count(parent) == before,
-              "an empty name keeps the panel open and creates nothing");
-
-        field.stringValue = @"  Smoke folder  ";
-        [project performClick:nil];
-        emoji.stringValue = @"🧪";
-        [create performClick:nil];
-        pump(0.2);
-        check(!panel.visible && folder_count(parent) == before + 1,
-              "a name creates the folder and closes the panel");
-        GList *folders = on_db_folder_list(app.db, parent);
-        gint64 made = 0;
-        for (GList *l = folders; l; l = l->next)
-            if (strcmp(((OnFolder *)l->data)->name, "Smoke folder") == 0) made = ((OnFolder *)l->data)->id;
-        on_db_folder_list_free(folders);
-        gchar *made_emoji = made ? on_db_folder_get_emoji(app.db, made) : g_strdup("");
-        check(made != 0 && strcmp(made_emoji, "🧪") == 0 &&
-              on_db_folder_get_ai_mode(app.db, made) == ON_AI_MODE_PROJECT,
-              "the name is trimmed, and the emoji and AI mode are stored with it");
-        g_free(made_emoji);
+        NSTextField *emoji    = (NSTextField *)view_with_identifier(panel.contentView, @"tag-emoji");
+        NSButton    *favorite = (NSButton *)view_with_identifier(panel.contentView, @"tag-favorite");
+        NSButton    *ok       = default_button(panel);
+        check(emoji != nil && favorite != nil && label_with_text(panel.contentView, @"Smoke tag") &&
+              [ok.title isEqualToString:@"OK"],
+              "it shows the tag's name and asks for an emoji and Favorite");
+        emoji.stringValue = @" 🧪 ";
+        [favorite performClick:nil];
+        [ok performClick:nil];
+        pump(0.3);
+        OnTag *after = on_db_tag_get(app.db, tag_id);
+        check(!panel.visible && after != NULL && strcmp(after->emoji, "🧪") == 0 && after->favorite,
+              "OK stores the trimmed emoji and the favorite flag, and closes the panel");
+        on_db_tag_free(after);
         weak_panel = panel;
     }
     pump(0.2);
     check(weak_panel == nil, "a closed tool panel is deallocated");
+
+    /* The Favorites bar: the favorite's button, lit while its tag is the
+     * selection; a click on it selects the tag.                            */
+    on_library_sidebar_select(lib, on_sb_all, 0);
+    pump(0.2);
+    NSButton *button = button_titled(lib.window.contentView, @"🧪  Smoke tag");
+    check(button != nil && button.state == NSControlStateValueOff,
+          "the Favorites bar has a button for the favorite tag, with its emoji");
+    [button performClick:nil];
+    pump(0.2);
+    button = button_titled(lib.window.contentView, @"🧪  Smoke tag");
+    check(lib.sel_kind == on_sb_tag && lib.sel_id == tag_id && button.state == NSControlStateValueOn,
+          "clicking it selects the tag, and the button is lit");
+    check(save_snapshots(lib.window, @"favorites-bar"), "favorites bar snapshots written, light and dark");
+    on_db_tag_set_favorite(app.db, tag_id, FALSE);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(button_titled(lib.window.contentView, @"🧪  Smoke tag") == nil,
+          "a tag no longer a favorite leaves the bar");
 }
 
 /*
@@ -1352,7 +1430,7 @@ draggingLocation
  *
  * Inputs:
  *   outline — the sidebar
- *   name    — the row's name (e.g. @"Notes", @"Crate")
+ *   name    — the row's name (e.g. @"All Notes", @"Crate")
  *
  * Output: the row, or -1.
  */
@@ -1372,23 +1450,22 @@ sidebar_row(NSOutlineView *outline, NSString *name)
 }
 
 /*
- * drag_of — a drag of library rows, on a private pasteboard, over a row.
+ * drag_of — a drag of notes, on a private pasteboard, over a row.
  *
  * Inputs:
  *   outline — the sidebar
- *   kind    — what is dragged
- *   ids     — the ids
+ *   ids     — the note ids
  *   row     — the row under the pointer
  *
  * Output: the drag (cast to NSDraggingInfo where used).
  */
 static NotesFakeDrag *
-drag_of(NSOutlineView *outline, on_drag_kind_t kind, NSArray<NSNumber *> *ids, NSInteger row)
+drag_of(NSOutlineView *outline, NSArray<NSNumber *> *ids, NSInteger row)
 {
     NotesFakeDrag *drag = [[NotesFakeDrag alloc] init];
     drag.pasteboard = [NSPasteboard pasteboardWithUniqueName];
     [drag.pasteboard clearContents];
-    [drag.pasteboard writeObjects:@[on_library_drag_item(kind, ids)]];
+    [drag.pasteboard writeObjects:@[on_library_drag_item(ids)]];
     NSRect rect = [outline rectOfRow:row];
     drag.location = [outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
     return drag;
@@ -1480,9 +1557,10 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 }
 
 /*
- * test_sidebar — the sidebar's rows, menus, commands and drops, as the
- * GTK app has them; the status bar follows the selection; the sidebar
- * fits its widest row.
+ * test_sidebar — the sidebar's rows (the views, the tags with their
+ * emoji, the Tags open or closed as left), menus and drops (onto a tag or
+ * the Trash); the status bar follows the selection; the sidebar fits its
+ * widest row.
  *
  * Inputs:
  *   lib — the library (its window on screen)
@@ -1491,112 +1569,70 @@ static void
 test_sidebar(NotesLibrary *lib)
 {
     NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
-    gint64 box   = on_db_folder_create(app.db, 0, "Box", 0, NULL);
-    gint64 inner = on_db_folder_create(app.db, box, "Inner", 0, NULL);
-    gint64 zeta  = on_db_folder_create(app.db, box, "Zeta", 0, NULL);
-    gint64 alpha = on_db_folder_create(app.db, box, "Alpha", 0, NULL);
+    gint64 crate = new_note_tagged("Crate", "In the crate\nbody");
     gint64 loose = new_note("Loose for drops\nbody");
+    OnTag *tag   = on_db_tag_find(app.db, "Crate");
+    gint64 crate_tag = tag != NULL ? tag->id : 0;
+    on_db_tag_free(tag);
     on_library_refresh_all(lib);
-    on_library_sidebar_select(lib, on_sb_folder, inner);
+    on_library_sidebar_select(lib, on_sb_all, 0);
     pump(0.2);
 
     /* Menus, per kind of row. */
-    NSInteger root = sidebar_row(outline, @"Notes");
-    NSArray<NSString *> *root_menu = menu_titles(right_click(outline, root));
-    check(lib.sel_kind == on_sb_root &&
-          [root_menu isEqualToArray:@[@"New Folder…", @"Sort Subfolders Alphabetically", @"Search Here…"]],
-          "a right click on the Notes root selects it and offers New Folder, Sort, Search Here");
     NSInteger all = sidebar_row(outline, @"All Notes");
     check([menu_titles(right_click(outline, all)) isEqualToArray:@[@"Search Here…"]],
           "All Notes offers Search Here");
-    NSInteger box_row = sidebar_row(outline, @"Box");
-    NSArray<NSString *> *folder_menu = menu_titles(right_click(outline, box_row));
-    check(lib.sel_kind == on_sb_folder && lib.sel_id == box &&
-          [folder_menu isEqualToArray:@[@"New Subfolder…", @"Info…", @"Move Folder to Trash",
-                                        @"Sort Subfolders Alphabetically", @"Search Here…"]],
-          "a right click on a folder selects it and offers its menu");
-    check([lib.window.contentView.subviews count] > 0 && label_with_text(lib.window.contentView, @"/Box") != nil,
-          "the status bar shows the selected folder's path");
+    NSInteger crate_row = sidebar_row(outline, @"Crate");
+    NSArray<NSString *> *tag_menu = menu_titles(right_click(outline, crate_row));
+    check(lib.sel_kind == on_sb_tag && lib.sel_id == crate_tag &&
+          [tag_menu isEqualToArray:@[@"Edit Tag…", @"Search Here…"]],
+          "a right click on a tag selects it and offers Edit Tag and Search Here");
+    check(label_with_text(lib.window.contentView, @"#Crate") != nil,
+          "the status bar shows the selected tag");
 
     /* Mouse-down selection: a plain press selects, the delegate's veto holds. */
     press(outline, all, NSEventModifierFlagCommand);
-    check(lib.sel_kind == on_sb_folder && lib.sel_id == box, "a ⌘-press is left to the outline");
+    check(lib.sel_kind == on_sb_tag && lib.sel_id == crate_tag, "a ⌘-press is left to the outline");
     press(outline, all, 0);
     check(lib.sel_kind == on_sb_all, "a plain press selects its row on the mouse-down");
     NSInteger tags = sidebar_row(outline, @"Tags");
     press(outline, tags, 0);
     check(tags >= 0 && lib.sel_kind == on_sb_all, "a press on the Tags header leaves it unselected");
-    press(outline, box_row, 0);
 
-    /* Sort Subfolders: Zeta, Alpha (and Inner) become Alpha, Inner, Zeta. */
-    on_library_run_command(lib, command_item(@"sort-subfolders"));
-    pump(0.1);
-    GList *kids = on_db_folder_list(app.db, box);
-    check(kids && ((OnFolder *)kids->data)->id == alpha && ((OnFolder *)g_list_last(kids)->data)->id == zeta,
-          "Sort Subfolders orders a folder's children alphabetically");
-    on_db_folder_list_free(kids);
-
-    /* Folder Info: filled in from the folder, and saved. */
-    on_library_run_command(lib, command_item(@"folder-info"));
-    pump(0.2);
-    NSWindow *info = nil;
-    for (NSWindow *w in NSApp.windows) if (w.visible && [w.title isEqualToString:@"Folder Info"]) info = w;
-    NSTextField *name = (NSTextField *)view_with_identifier(info.contentView, @"folder-name");
-    check([name.stringValue isEqualToString:@"Box"], "Folder Info opens on the folder's name");
-    name.stringValue = @"Crate";
-    ((NSTextField *)view_with_identifier(info.contentView, @"folder-emoji")).stringValue = @"📦";
-    [default_button(info) performClick:nil];
-    pump(0.2);
-    gchar *emoji = on_db_folder_get_emoji(app.db, box);
-    check(strcmp(emoji, "📦") == 0 && sidebar_row(outline, @"Crate") >= 0 &&
-          [((NSTableCellView *)[outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES]).textField.stringValue hasPrefix:@"📦  Crate"],
-          "Folder Info renames the folder and gives it an emoji, shown in the sidebar");
-    g_free(emoji);
-
-    /* Drops. */
-    NSInteger crate = sidebar_row(outline, @"Crate");
-    [outline expandItem:[outline itemAtRow:crate]];
-    check(drop(outline, drag_of(outline, on_drag_notes, @[@(loose)], crate), crate, NSOutlineViewDropOnItemIndex),
-          "notes dropped on a folder are accepted");
-    OnNoteMeta *meta = on_db_note_get(app.db, loose);
-    check(meta && meta->folder_id == box, "and move into it");
-    on_db_note_meta_free(meta);
-
-    crate = sidebar_row(outline, @"Crate");
-    NSInteger alpha_row = sidebar_row(outline, @"Alpha");
-    check(!drop(outline, drag_of(outline, on_drag_folder, @[@(box)], alpha_row), alpha_row, NSOutlineViewDropOnItemIndex),
-          "a folder cannot be dropped into its own subfolder");
-    NSInteger zeta_row = sidebar_row(outline, @"Zeta");
-    check(drop(outline, drag_of(outline, on_drag_folder, @[@(zeta)], crate), crate, 0),
-          "a folder dropped between two rows is accepted");
-    kids = on_db_folder_list(app.db, box);
-    check(kids && ((OnFolder *)kids->data)->id == zeta, "and goes before the row it was dropped above");
-    on_db_folder_list_free(kids);
-
-    NSInteger trash_target = sidebar_row(outline, @"Notes");
-    check(drop(outline, drag_of(outline, on_drag_folder, @[@(alpha)], trash_target), trash_target,
-               NSOutlineViewDropOnItemIndex) && folder_under(0, alpha),
-          "a folder dropped on the Notes root moves to the top level");
-    (void)zeta_row;
-
-    NSInteger root_row = sidebar_row(outline, @"Notes");
-    check(drop(outline, drag_of(outline, on_drag_notes, @[@(loose)], root_row), root_row, NSOutlineViewDropOnItemIndex),
-          "notes dropped on the Notes root are accepted");
-    meta = on_db_note_get(app.db, loose);
-    check(meta && meta->folder_id == 0, "and move to the top level");
-    on_db_note_meta_free(meta);
-
-    on_library_trash_folder(lib, alpha, @"Alpha");
+    /* The Tags open and close as the user leaves them, across a rebuild.  */
+    [outline collapseItem:[outline itemAtRow:tags]];
     on_library_refresh_all(lib);
-    pump(0.2);
-    NSInteger trash_row = sidebar_row(outline, @"Trash");
-    [outline expandItem:[outline itemAtRow:trash_row]];
-    root_row = sidebar_row(outline, @"Notes");
-    check(drop(outline, drag_of(outline, on_drag_trashed_folder, @[@(alpha)], root_row), root_row,
-               NSOutlineViewDropOnItemIndex) && folder_under(0, alpha),
-          "a folder dragged out of the Trash onto the root is restored there");
-    trash_row = -1;
-    pump(0.2);
+    pump(0.1);
+    check(sidebar_row(outline, @"Crate") < 0, "closed Tags stay closed when the sidebar is rebuilt");
+    [outline expandItem:[outline itemAtRow:sidebar_row(outline, @"Tags")]];
+    on_library_refresh_all(lib);
+    pump(0.1);
+    check(sidebar_row(outline, @"Crate") >= 0, "and open ones stay open");
+
+    /* An emoji (from either app) shows before the tag's name.               */
+    on_db_tag_set_emoji(app.db, crate_tag, "📦");
+    on_library_refresh_all(lib);
+    pump(0.1);
+    crate_row = sidebar_row(outline, @"Crate");
+    check(crate_row >= 0 &&
+          [((NSTableCellView *)[outline viewAtColumn:0 row:crate_row makeIfNecessary:YES]).textField.stringValue
+              hasPrefix:@"📦  Crate"],
+          "a tag's emoji shows before its name in the sidebar");
+
+    /* Drops: notes onto a tag get it (their other tags kept); onto the Trash
+     * they are trashed; nothing else takes a drop.                         */
+    crate_row = sidebar_row(outline, @"Crate");
+    check(drop(outline, drag_of(outline, @[@(loose)], crate_row), crate_row, NSOutlineViewDropOnItemIndex),
+          "notes dropped on a tag are accepted");
+    GList *loose_tags = on_db_note_tags(app.db, loose);
+    check(g_list_length(loose_tags) == 1 && ((OnTag *)loose_tags->data)->in_field &&
+          strcmp(((OnTag *)loose_tags->data)->name, "Crate") == 0,
+          "and get it in their Tags fields");
+    on_db_tag_list_free(loose_tags);
+    all = sidebar_row(outline, @"All Notes");
+    check(!drop(outline, drag_of(outline, @[@(loose)], all), all, NSOutlineViewDropOnItemIndex),
+          "a view row takes no drop");
+
     gint64 doomed = new_note("Doomed note\nbody");
     on_library_trash_notes(lib, &doomed, 1);
     on_library_refresh_all(lib);
@@ -1604,19 +1640,19 @@ test_sidebar(NotesLibrary *lib)
     gint64 dropped = new_note("Dropped on trash\nbody");
     on_library_refresh_all(lib);
     pump(0.2);
-    trash_row = sidebar_row(outline, @"Trash");
-    check(drop(outline, drag_of(outline, on_drag_notes, @[@(dropped)], trash_row), trash_row,
+    NSInteger trash_row = sidebar_row(outline, @"Trash");
+    check(drop(outline, drag_of(outline, @[@(dropped)], trash_row), trash_row,
                NSOutlineViewDropOnItemIndex) && id_in(on_db_trash_note_ids(app.db), dropped),
           "notes dropped on the Trash are trashed");
+    (void)crate;
 
-    /* Fit to content: a long folder name widens the sidebar. */
+    /* Fit to content: a long tag name widens the sidebar. */
     app.sidebar_fit_content = TRUE;
-    on_db_folder_create(app.db, 0, "A folder with a really quite remarkably long name indeed", 0, NULL);
+    new_note_tagged("A tag with a really quite remarkably long name indeed", "Long tag\nbody");
     on_library_refresh_all(lib);
-    [outline expandItem:[outline itemAtRow:sidebar_row(outline, @"Notes")]];
     pump(0.3);
     check(outline.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
-          "with fit-to-content on, the sidebar widens to a long folder name");
+          "with fit-to-content on, the sidebar widens to a long tag name");
     app.sidebar_fit_content = FALSE;
 }
 
@@ -1791,15 +1827,17 @@ action_due(const char *text)
 static void
 test_notes_pane(NotesLibrary *lib)
 {
-    gint64 folder  = on_db_folder_create(app.db, 0, "Pane", 0, NULL);
-    gint64 bravo   = new_note_in(folder, "Bravo\nbravo body");
-    gint64 alpha   = new_note_in(folder, "alpha\n\n   the preview line\nmore");
-    gint64 charlie = new_note_in(folder, "Charlie\ncharlie body");
+    gint64 bravo   = new_note_tagged("Pane", "Bravo\nbravo body");
+    gint64 alpha   = new_note_tagged("Pane", "alpha\n\n   the preview line\nmore");
+    gint64 charlie = new_note_tagged("Pane", "Charlie\ncharlie body");
+    OnTag *pane    = on_db_tag_find(app.db, "Pane");
+    gint64 pane_id = pane != NULL ? pane->id : 0;
+    on_db_tag_free(pane);
     add_image(charlie);
     lib.grid_pref         = NO;
     app.comfortable_list  = FALSE;
     on_library_refresh_all(lib);
-    on_library_sidebar_select(lib, on_sb_folder, folder);
+    on_library_sidebar_select(lib, on_sb_tag, pane_id);
     pump(0.2);
 
     /* Columns. */
@@ -1807,23 +1845,26 @@ test_notes_pane(NotesLibrary *lib)
     NSClipView  *clip  = table.enclosingScrollView.contentView;
     check(NSMinY(clip.bounds) <= NSMinY([table rectOfRow:0]) - clip.contentInsets.top,
           "a navigation starts at the top: the first row is below the column headers");
-    check([visible_columns(table) isEqualToArray:@[@"title", @"modified"]],
-          "the list shows Title and Modified by default (Path and Created hidden)");
+    check([visible_columns(table) isEqualToArray:@[@"title", @"tags", @"modified"]],
+          "the list shows Title, Tags and Modified by default (Created hidden)");
     check(table.doubleAction != NULL && table.target != nil && table.allowsColumnReordering,
           "the list opens notes on a double-click and its headers reorder");
     NSMenu *header = open_menu(table.headerView.menu);
-    check([menu_titles(header) isEqualToArray:@[@"Title", @"Path", @"Modified", @"Created"]],
+    check([menu_titles(header) isEqualToArray:@[@"Title", @"Tags", @"Modified", @"Created"]],
           "the header menu lists every column");
-    [NSApp sendAction:[header itemWithTitle:@"Path"].action to:[header itemWithTitle:@"Path"].target
-                 from:[header itemWithTitle:@"Path"]];
+    [NSApp sendAction:[header itemWithTitle:@"Created"].action to:[header itemWithTitle:@"Created"].target
+                 from:[header itemWithTitle:@"Created"]];
     gchar *layout = on_app_config_get("list_columns");
-    check([visible_columns(table) containsObject:@"path"] && layout && strstr(layout, "path:1") != NULL,
+    check([visible_columns(table) containsObject:@"created"] && layout && strstr(layout, "created:1") != NULL,
           "the header menu shows a column and the layout is saved");
     g_free(layout);
-    check([cell_text(table, @"path", 0) isEqualToString:@"/Pane"], "the Path column shows the note's folder");
+    check([cell_text(table, @"tags", 0) isEqualToString:@"Pane"], "the Tags column shows the note's tags");
     header = open_menu(table.headerView.menu);
-    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Path"].target
-                 from:[header itemWithTitle:@"Path"]];
+    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Created"].target
+                 from:[header itemWithTitle:@"Created"]];
+    header = open_menu(table.headerView.menu);
+    [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Tags"].target
+                 from:[header itemWithTitle:@"Tags"]];
     header = open_menu(table.headerView.menu);
     [NSApp sendAction:@selector(toggle_column:) to:[header itemWithTitle:@"Modified"].target
                  from:[header itemWithTitle:@"Modified"]];
@@ -1957,9 +1998,8 @@ test_notes_pane(NotesLibrary *lib)
     [pb clearContents];
     [pb writeObjects:@[[table.dataSource tableView:table pasteboardWriterForRow:0],
                        [table.dataSource tableView:table pasteboardWriterForRow:1]]];
-    on_drag_kind_t kind;
-    NSArray<NSNumber *> *dragged = on_library_drag_read(pb, &kind);
-    check(kind == on_drag_notes && dragged.count == 2, "dragging two rows drags both notes");
+    NSArray<NSNumber *> *dragged = on_library_drag_read(pb);
+    check(dragged.count == 2, "dragging two rows drags both notes");
     [pb releaseGlobally];
 
     /* Export: the selected note, then every note, into a folder (the
@@ -1991,7 +2031,7 @@ test_notes_pane(NotesLibrary *lib)
 
     /* Comfortable density. */
     app.comfortable_list = TRUE;
-    on_library_sidebar_select(lib, on_sb_folder, folder);
+    on_library_sidebar_select(lib, on_sb_tag, pane_id);
     pump(0.1);
     table = pane_table(lib);
     NSInteger arow = row_with_text(table, @"title", @"alpha");
@@ -2017,19 +2057,19 @@ test_notes_pane(NotesLibrary *lib)
           "Restore takes the note out of the Trash and says so");
 
     /* Action Items. */
-    new_note_in(folder, "Tasks\n! Zeta task\n! Alpha task");
+    new_note_tagged("Pane", "Tasks\n! Zeta task\n! Alpha task");
     on_library_refresh_all(lib);
     on_library_sidebar_select(lib, on_sb_actions, 0);
     pump(0.2);
     table = pane_table(lib);
-    check([visible_columns(table) isEqualToArray:@[@"done", @"context", @"action", @"due"]],
-          "Action Items shows Done, Context, Action and Due Date");
+    check([visible_columns(table) isEqualToArray:@[@"done", @"tags", @"action", @"due"]],
+          "Action Items shows Done, Tags, Action and Due Date");
     check(on_library_notes_selected_ids(lib).count == 0, "and has no note selection");
     table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"action" ascending:YES]];
     NSInteger a_row = row_with_text(table, @"action", @"Alpha task");
     NSInteger z_row = row_with_text(table, @"action", @"Zeta task");
-    check(a_row >= 0 && z_row > a_row && [cell_text(table, @"context", a_row) isEqualToString:@"Pane"],
-          "Action items sort by their text and show their folder as the context");
+    check(a_row >= 0 && z_row > a_row && [cell_text(table, @"tags", a_row) isEqualToString:@"Pane"],
+          "Action items sort by their text and show their note's tags");
 
     NSButton *box = [table viewAtColumn:[table columnWithIdentifier:@"done"] row:a_row makeIfNecessary:YES];
     [box performClick:nil];
@@ -2100,7 +2140,7 @@ test_notes_pane(NotesLibrary *lib)
     check(editor_window_titled(@"Tasks") != nil, "a double-click elsewhere opens the item's note");
     on_editor_close_all();
     pump(0.2);
-    on_library_sidebar_select(lib, on_sb_root, 0);
+    on_library_sidebar_select(lib, on_sb_all, 0);
 }
 
 /*
@@ -2118,7 +2158,8 @@ test_shell(NotesLibrary *lib)
         if ([item.itemIdentifier isEqualToString:@"media"]) media = item;
     NSTextField *path_label = nil;
     for (NSView *v in lib.window.contentView.subviews)
-        if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue hasPrefix:@"/"]) path_label = (NSTextField *)v;
+        if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue isEqualToString:@"All Notes"])
+            path_label = (NSTextField *)v;
     check(path_label != nil && status_text_centred(path_label),
           "the library's status text is 9 pt and centred in its bar");
     check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"],
@@ -2289,7 +2330,7 @@ test_secondary_windows(NotesLibrary *lib)
         NSButton *bold = button_titled(root, @"Bold titles in comfortable list density");
         check(app.bold_list_titles && bold.state == NSControlStateValueOn,
               "a checkbox whose default is on starts ticked");
-        NSButton *counts = button_titled(root, @"Show note counts next to folders and tags");
+        NSButton *counts = button_titled(root, @"Show note counts next to views and tags");
         gboolean counts_was = app.sidebar_counts;
         [counts performClick:nil];
         check(app.sidebar_counts == !counts_was && on_app_config_get_bool("sidebar_counts", counts_was) == !counts_was,
@@ -2313,12 +2354,12 @@ test_secondary_windows(NotesLibrary *lib)
         check([health.stringValue hasPrefix:@"Healthy — checked"] &&
               label_with_text(lib.window.contentView, @"Database check passed") != nil,
               "Update runs the health check and says so");
-        gint n_notes = 0, n_folders = 0;
-        on_db_totals(app.db, &n_notes, &n_folders, NULL);
+        gint n_notes = 0, n_tags = 0;
+        on_db_totals(app.db, &n_notes, &n_tags);
         NSTextField *data = (NSTextField *)view_with_identifier(root, @"data");
-        check([data.stringValue isEqualToString:[NSString stringWithFormat:@"%d notes in %d folders",
-                                                 n_notes, n_folders]],
-              "the plate counts the notes and folders");
+        check([data.stringValue isEqualToString:[NSString stringWithFormat:@"%d notes, %d tags",
+                                                 n_notes, n_tags]],
+              "the plate counts the notes and tags");
         NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
         int64_t backup_enabled = 0;
         shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_ENABLED, &backup_enabled, NULL);
@@ -2339,19 +2380,14 @@ test_secondary_windows(NotesLibrary *lib)
         ai_cmd.stringValue = @"/bin/cat";
         [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
             [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
-        NSTextView *prompt = (NSTextView *)view_with_identifier(root, @"ai-prompt");
-        prompt.string = @"Summarise briefly.";
-        [prompt.delegate textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:prompt]];
-        check(g_strcmp0(app.ai_command, "/bin/cat") == 0 && g_strcmp0(app.ai_custom_prompt, "Summarise briefly.") == 0,
-              "the AI command and custom prompt are written as they are typed");
+        check(g_strcmp0(app.ai_command, "/bin/cat") == 0 && view_with_identifier(root, @"ai-prompt") == nil,
+              "the AI command is written as it is typed (there is no custom prompt: no AI modes)");
         ai_cmd.stringValue = @"";
         [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
             [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
-        prompt.string = @"";
-        [prompt.delegate textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:prompt]];
         [ai performClick:nil];
-        check(app.ai_command == NULL && app.ai_custom_prompt == NULL && app.ai_enabled == ai_was,
-              "and clearing them clears the settings");
+        check(app.ai_command == NULL && app.ai_enabled == ai_was,
+              "and clearing it clears the setting");
 
         weak_settings = settings_win;
         [settings_win close];
@@ -2435,14 +2471,12 @@ test_secondary_windows(NotesLibrary *lib)
     pump(0.3);
     check(weak_search == nil, "closed search window is deallocated");
 
-    /* Search Here and Find start on the selection when it is a folder. */
+    /* Search Here and Find start on the selection when it is a tag. */
     @autoreleasepool {
-        gint64 pane = 0;
-        GList *folders = on_db_folder_list(app.db, 0);
-        for (GList *l = folders; l != NULL; l = l->next)
-            if (g_strcmp0(((OnFolder *)l->data)->name, "Pane") == 0) pane = ((OnFolder *)l->data)->id;
-        on_db_folder_list_free(folders);
-        on_library_sidebar_select(lib, on_sb_folder, pane);
+        OnTag *pane_tag = on_db_tag_find(app.db, "Pane");
+        gint64 pane     = pane_tag != NULL ? pane_tag->id : 0;
+        on_db_tag_free(pane_tag);
+        on_library_sidebar_select(lib, on_sb_tag, pane);
         on_library_run_command(lib, command_item(@"find"));
         pump(0.3);
         NSWindow *scoped_win = nil;
@@ -2458,11 +2492,11 @@ test_secondary_windows(NotesLibrary *lib)
         query.stringValue = @"body";
         [NSApp sendAction:query.action to:query.target from:query];
         for (int i = 0; i < 40 && [status.stringValue isEqualToString:@"Searching…"]; i++) pump(0.05);
-        check(pane != 0 && button_titled(root, @"Selected Folder/Tag").state == NSControlStateValueOn &&
-              [status.stringValue hasSuffix:@" in “Pane”"],
-              "Find on a selected folder searches that folder, and says so");
+        check(pane != 0 && button_titled(root, @"Selected Tag").state == NSControlStateValueOn &&
+              [status.stringValue hasSuffix:@" in “#Pane”"],
+              "Find on a selected tag searches that tag's notes, and says so");
         [scoped_win close];
-        on_library_sidebar_select(lib, on_sb_root, 0);
+        on_library_sidebar_select(lib, on_sb_all, 0);
     }
     pump(0.3);
 
@@ -2612,12 +2646,9 @@ test_secondary_windows(NotesLibrary *lib)
               "with no command it says where to set one");
 
         app.ai_command = g_strdup("/bin/cat");
-        gint64 pane_folder = 0;
-        GList *folders = on_db_folder_list(app.db, 0);
-        for (GList *l = folders; l != NULL; l = l->next)
-            if (g_strcmp0(((OnFolder *)l->data)->name, "Pane") == 0) pane_folder = ((OnFolder *)l->data)->id;
-        on_db_folder_list_free(folders);
-        on_library_sidebar_select(lib, on_sb_folder, pane_folder);
+        OnTag *pane_tag = on_db_tag_find(app.db, "Pane");
+        on_library_sidebar_select(lib, on_sb_tag, pane_tag != NULL ? pane_tag->id : 0);
+        on_db_tag_free(pane_tag);
         pump(0.1);
         on_library_run_command(lib, command_item(@"ai-summary"));
         check([ai_text.string isEqualToString:@"Select one or more notes to summarize."],
@@ -2646,7 +2677,7 @@ test_secondary_windows(NotesLibrary *lib)
         g_free(app.ai_command);
         app.ai_command = NULL;
         app.ai_enabled = ai_was;
-        on_library_sidebar_select(lib, on_sb_root, 0);
+        on_library_sidebar_select(lib, on_sb_all, 0);
     }
 }
 
@@ -3092,7 +3123,8 @@ main(void)
         test_strike_snapshot();
         test_tag_suggestions();
         test_pointer();
-        test_new_folder(lib);
+        test_edit_tag(lib);
+        test_editor_tags(lib);
         test_trash(lib);
         test_sidebar(lib);
         test_notes_pane(lib);

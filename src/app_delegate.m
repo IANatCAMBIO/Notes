@@ -64,13 +64,13 @@ run_about(id target, id sender)
 {
     NotesLibrary *lib = target;
     OnDatabase   *db  = lib.app->db;
-    gint notes = 0, folders = 0, tags = 0;
-    on_db_totals(db, &notes, &folders, &tags);
+    gint notes = 0, tags = 0;
+    on_db_totals(db, &notes, &tags);
     NSNumber *size = [NSFileManager.defaultManager attributesOfItemAtPath:@(db->path)
                                                                     error:nil][NSFileSize];
     NSString *credits = [NSString stringWithFormat:
-        @"%@\n%d notes in %d folders, %d tags — %@",
-        @(db->path), notes, folders, tags, on_ui_format_bytes(size.longLongValue)];
+        @"%@\n%d notes, %d tags — %@",
+        @(db->path), notes, tags, on_ui_format_bytes(size.longLongValue)];
 
     NSMutableParagraphStyle *centred = [[NSMutableParagraphStyle alloc] init];
     centred.alignment = NSTextAlignmentCenter;
@@ -558,11 +558,11 @@ build_menu_bar
     /* ── File menu ── */
     NSMenu *file_menu = add_menu(bar, @"File");
     add_commands(file_menu, @[
-        @"new-note", @"new-folder", @"quicknote", menu_rule,
+        @"new-note", @"quicknote", menu_rule,
         @"open-db", menu_rule,
         @"export-html", @"export-md", @"note-export-html", @"note-export-md", menu_rule,
-        @"folder-info", @"sort-subfolders", menu_rule,
-        @"delete-note", @"note-restore", @"delete-folder", @"folder-restore", @"empty-trash",
+        @"edit-tag", menu_rule,
+        @"delete-note", @"note-restore", @"empty-trash",
         menu_rule,
     ]);
     [file_menu addItem:make_item(@"Close Window", @selector(performClose:), @"w", cmd)];

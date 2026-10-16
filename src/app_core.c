@@ -47,9 +47,7 @@ on_app_prefs_load(OnApp *app)
         *field = on_app_config_get_bool(bool_prefs[i].key, bool_prefs[i].def);
     }
     g_free(app->ai_command);
-    g_free(app->ai_custom_prompt);
-    app->ai_command       = on_app_config_get("ai_command");
-    app->ai_custom_prompt = on_app_config_get("ai_custom_prompt");
+    app->ai_command = on_app_config_get("ai_command");
 }
 
 /*
@@ -78,25 +76,10 @@ on_app_location_text(OnApp *app, const gchar *location)
     if (!app->statusbar_db_path || app->db == NULL || app->db->path == NULL) {
         return g_strdup(location);
     }
-    /* One continuous path: folder locations already start with "/"; the
-     * non-path views ("#tag", "Pinned Notes", …) get one inserted.         */
+    /* One continuous path: a "/" between the file and the view.           */
     return g_strdup_printf("%s%s%s", app->db->path,
                            location != NULL && location[0] == '/' ? "" : "/",
                            location);
-}
-
-/*
- * on_app_folder_location — see app_core.h.
- */
-gchar *
-on_app_folder_location(OnApp *app, gint64 folder_id)
-{
-    gchar *folder   = on_db_folder_path(app->db, folder_id);
-    gchar *location = g_strconcat("/", folder, NULL);
-    gchar *text     = on_app_location_text(app, location);
-    g_free(location);
-    g_free(folder);
-    return text;
 }
 
 /*

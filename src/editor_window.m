@@ -216,7 +216,8 @@ separator(void)
 
 /* ── Window controller ───────────────────────────────────────────────────── */
 
-@interface NotesEditorWindow : NSWindowController <NSWindowDelegate, NSSearchFieldDelegate>
+@interface NotesEditorWindow : NSWindowController <NSWindowDelegate, NSSearchFieldDelegate,
+                                                   NSTokenFieldDelegate>
 
 @property (nonatomic, assign) OnApp            *app;
 @property (nonatomic, assign) gint64            note_id;
@@ -226,6 +227,11 @@ separator(void)
 @property (nonatomic, strong) NSStackView      *format_groups;/* rebuilt on settings  */
 @property (nonatomic, strong) NotesStatusBar   *status_bar;
 @property (nonatomic, strong) NotesImageViewer *image_viewer;
+
+/* The Tags strip: the note's Tags field (one token per tag) and, beside
+ * it, the #tags of its text, which come off only in the text.            */
+@property (nonatomic, strong) NSTokenField     *tag_field;
+@property (nonatomic, strong) NSTextField      *text_tags_label;
 
 /* Format bar toggle buttons, kept to mirror the inline format state. */
 @property (nonatomic, copy)   NSArray<NSButton *> *inline_buttons;
@@ -671,22 +677,81 @@ build_note_view
 }
 
 /*
+ * build_tags_strip — the Tags row under the format bar: "Tags:", the
+ * note's Tags field (tokens; typing offers every tag, Tasks' too, and
+ * Return makes a new one), and the #tags of its text after it.
+ *
+ * Output: the strip, its height fixed.
+ */
+- (NSView *)
+build_tags_strip
+{
+    NSView      *strip = [[NSView alloc] initWithFrame:NSZeroRect];
+    NSTextField *label = [NSTextField labelWithString:@"Tags:"];
+    label.font = [NSFont systemFontOfSize:on_look_ui_font];
+    strip.translatesAutoresizingMaskIntoConstraints = NO;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSTokenField *field = [[NSTokenField alloc] initWithFrame:NSZeroRect];
+    field.font              = [NSFont systemFontOfSize:on_look_ui_font];
+    field.bezelStyle        = NSTextFieldRoundedBezel;
+    field.placeholderString = @"Add a tag";
+    field.toolTip           = @"The note's tags. Type to pick one or make a new one; "
+                              @"a #tag in the text is a tag too.";
+    field.identifier        = @"note-tags";
+    field.delegate          = self;
+    field.completionDelay   = 0;
+    field.cell.wraps        = NO;
+    field.cell.scrollable   = YES;
+    field.translatesAutoresizingMaskIntoConstraints = NO;
+    self.tag_field = field;
+
+    NSTextField *text_tags = [NSTextField labelWithString:@""];
+    text_tags.font          = [NSFont systemFontOfSize:on_look_ui_font];
+    text_tags.textColor     = NSColor.secondaryLabelColor;
+    text_tags.lineBreakMode = NSLineBreakByTruncatingTail;
+    text_tags.toolTip       = @"Tags written as #words in the note's text";
+    text_tags.translatesAutoresizingMaskIntoConstraints = NO;
+    [text_tags setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                        forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.text_tags_label = text_tags;
+
+    for (NSView *v in @[label, field, text_tags]) [strip addSubview:v];
+    [NSLayoutConstraint activateConstraints:@[
+        [strip.heightAnchor      constraintEqualToConstant:on_look_format_bar_h],
+        [label.leadingAnchor     constraintEqualToAnchor:strip.leadingAnchor constant:on_look_status_inset],
+        [label.centerYAnchor     constraintEqualToAnchor:strip.centerYAnchor],
+        [field.leadingAnchor     constraintEqualToAnchor:label.trailingAnchor constant:on_look_status_inset],
+        [field.centerYAnchor     constraintEqualToAnchor:strip.centerYAnchor],
+        [field.widthAnchor       constraintGreaterThanOrEqualToConstant:on_look_tool_field_w],
+        [text_tags.leadingAnchor constraintEqualToAnchor:field.trailingAnchor constant:on_look_status_inset],
+        [text_tags.centerYAnchor constraintEqualToAnchor:strip.centerYAnchor],
+        [text_tags.trailingAnchor constraintLessThanOrEqualToAnchor:strip.trailingAnchor
+                                                           constant:-on_look_status_inset],
+    ]];
+    return strip;
+}
+
+/*
  * build_layout — fill the window under its ordinary title bar: the format
- * bar, a rule, the note, a rule and the status bar.  Nothing is put in the
- * title bar (no NSToolbar, no titlebar accessory): the GTK editor's
- * formatting row was part of the window body, and so is this one.
+ * bar, a rule, the Tags strip, a rule, the note, a rule and the status
+ * bar.  Nothing is put in the title bar (no NSToolbar, no titlebar
+ * accessory): the GTK editor's formatting row was part of the window body,
+ * and so is this one.
  */
 - (void)
 build_layout
 {
     NSView *content = self.window.contentView;
     NSView *bar     = [self build_format_bar];
+    NSView *tags    = [self build_tags_strip];
     NSBox  *top_sep = separator();
+    NSBox  *tag_sep = separator();
     NSBox  *bot_sep = separator();
     NotesStatusBar *status = [[NotesStatusBar alloc] initWithFrame:NSZeroRect];
     self.status_bar = status;
 
-    for (NSView *v in @[bar, top_sep, self.scroll, bot_sep, status]) [content addSubview:v];
+    for (NSView *v in @[bar, top_sep, tags, tag_sep, self.scroll, bot_sep, status]) [content addSubview:v];
 
     [NSLayoutConstraint activateConstraints:@[
         [bar.topAnchor          constraintEqualToAnchor:content.topAnchor],
@@ -698,7 +763,15 @@ build_layout
         [top_sep.leadingAnchor  constraintEqualToAnchor:content.leadingAnchor],
         [top_sep.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
 
-        [self.scroll.topAnchor      constraintEqualToAnchor:top_sep.bottomAnchor],
+        [tags.topAnchor         constraintEqualToAnchor:top_sep.bottomAnchor],
+        [tags.leadingAnchor     constraintEqualToAnchor:content.leadingAnchor],
+        [tags.trailingAnchor    constraintEqualToAnchor:content.trailingAnchor],
+
+        [tag_sep.topAnchor      constraintEqualToAnchor:tags.bottomAnchor],
+        [tag_sep.leadingAnchor  constraintEqualToAnchor:content.leadingAnchor],
+        [tag_sep.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+
+        [self.scroll.topAnchor      constraintEqualToAnchor:tag_sep.bottomAnchor],
         [self.scroll.leadingAnchor  constraintEqualToAnchor:content.leadingAnchor],
         [self.scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [self.scroll.bottomAnchor   constraintEqualToAnchor:bot_sep.topAnchor],
@@ -1242,10 +1315,9 @@ save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
 }
 
 /*
- * update_status — refresh the status bar: the note's folder path ("/" at
- * the top level, "/Folder/Sub" below; with the database path in front when
- * statusbar_db_path is on), "id:N" when statusbar_note_id is on, and the
- * save-state dot.
+ * update_status — refresh the status bar — the note's title (with the
+ * database path in front when statusbar_db_path is on), "id:N" when
+ * statusbar_note_id is on, and the save-state dot — and the Tags strip.
  */
 - (void)
 update_status
@@ -1254,7 +1326,7 @@ update_status
     NSString   *path = @"";
     OnNoteMeta *meta = on_db_note_get(app->db, self.note_id);
     if (meta != NULL) {
-        gchar *full = on_app_folder_location(app, meta->folder_id);
+        gchar *full = on_app_location_text(app, meta->title != NULL ? meta->title : "");
         path = @(full);
         g_free(full);
         on_db_note_meta_free(meta);
@@ -1262,14 +1334,232 @@ update_status
     NSString *note_id = app->statusbar_note_id
         ? [NSString stringWithFormat:@"id:%" G_GINT64_FORMAT, self.note_id] : nil;
     [self.status_bar update_path:path note_id:note_id dirty:self.dirty];
+    [self show_tags];
+}
+
+/* ── Tags ───────────────────────────────────────────────────────────── */
+
+/*
+ * has_name — whether a name is among some tag names: tag names compare
+ * case-insensitively, as the database compares them.
+ *
+ * Inputs:
+ *   names — the names
+ *   name  — the name looked for
+ *
+ * Output: YES when it is there.
+ */
+static BOOL
+has_name(NSArray<NSString *> *names, NSString *name)
+{
+    for (NSString *have in names) {
+        if ([have caseInsensitiveCompare:name] == NSOrderedSame) return YES;
+    }
+    return NO;
+}
+
+/*
+ * field_tag_names — the names of the tags in the note's Tags field, as
+ * stored.
+ *
+ * Output: the names, alphabetical.
+ */
+- (NSArray<NSString *> *)
+field_tag_names
+{
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    GList                      *tags  = on_db_note_tags(self.app->db, self.note_id);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        if (t->in_field) [names addObject:@(t->name)];
+    }
+    on_db_tag_list_free(tags);
+    return names;
+}
+
+/*
+ * show_tags — the Tags strip from the database: the field's tags as
+ * tokens (left alone while the field is being edited: its tokens are
+ * written as they are made, and the field is shown again when the edit
+ * ends) and the text's #tags beside it.
+ */
+- (void)
+show_tags
+{
+    NSMutableArray<NSString *> *field = [NSMutableArray array];
+    NSMutableArray<NSString *> *text  = [NSMutableArray array];
+    GList *tags = on_db_note_tags(self.app->db, self.note_id);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        if (t->in_field) [field addObject:@(t->name)];
+        if (t->in_text)  [text addObject:[@"#" stringByAppendingString:@(t->name)]];
+    }
+    on_db_tag_list_free(tags);
+    if (self.tag_field.currentEditor == nil && ![self.tag_field.objectValue isEqual:field])
+        self.tag_field.objectValue = field;
+    self.text_tags_label.stringValue = text.count > 0
+        ? [@"In the text: " stringByAppendingString:[text componentsJoinedByString:@" "]] : @"";
+}
+
+/*
+ * drop_removed_tags — take out of the Tags field every tag that is no
+ * longer a token (the user deleted it).  Text still being typed never
+ * names a stored tag that is not also a token, so it removes nothing.  A
+ * tag the note's text has stays: the removal is refused, said so, and the
+ * token comes back (on the next pass: the field is mid-edit).
+ */
+- (void)
+drop_removed_tags
+{
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    for (id token in self.tag_field.objectValue) {
+        if ([token isKindOfClass:NSString.class]) [tokens addObject:token];
+    }
+
+    OnApp   *app     = self.app;
+    GList   *tags    = on_db_note_tags(app->db, self.note_id);
+    BOOL     changed = NO;
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *tag = l->data;
+        if (!tag->in_field || has_name(tokens, @(tag->name))) continue;
+
+        gint removed = on_db_note_field_tag_remove(app->db, self.note_id, tag->id);
+        if (removed > 0) {
+            changed = YES;
+        } else if (removed == 0) {
+            on_app_status(app, "\xe2\x80\x9c#%s\xe2\x80\x9d is in the note's text "
+                               "\xe2\x80\x94 take it out there", tag->name);
+            NSArray *restored = [tokens arrayByAddingObject:@(tag->name)];
+            __weak NotesEditorWindow *ws = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ws.tag_field.objectValue = restored;
+            });
+        } else {
+            on_app_status(app, "Could not remove the tag \xe2\x80\x9c%s\xe2\x80\x9d", tag->name);
+        }
+    }
+    on_db_tag_list_free(tags);
+    if (changed && app->notify_notes_changed != NULL) app->notify_notes_changed(app);
+}
+
+/*
+ * tokenField:completionsForSubstring:indexOfToken:indexOfSelectedItem: —
+ * the existing tags offered while a tag is typed (every tag, Tasks'
+ * too): those whose name starts with the text, then those containing it
+ * elsewhere, leaving out the tags the field already has.  Nothing is
+ * preselected, so Return makes the text as typed a tag — a new one when
+ * no tag has that name.
+ *
+ * Inputs:
+ *   field       — the tag field (unused)
+ *   substring   — the text typed for this token
+ *   token_index — its place among the tokens (unused)
+ *   selected    — out: the preselected completion, -1 for none
+ *
+ * Output: the names to offer.
+ */
+- (NSArray *)
+tokenField:(NSTokenField *)field
+completionsForSubstring:(NSString *)substring
+indexOfToken:(NSInteger)token_index
+indexOfSelectedItem:(NSInteger *)selected
+{
+    NSArray<NSString *>        *have   = [self field_tag_names];
+    NSMutableArray<NSString *> *starts = [NSMutableArray array];
+    NSMutableArray<NSString *> *inside = [NSMutableArray array];
+    GList                      *tags   = on_db_tag_list(self.app->db, ON_TAGS_ALL);
+
+    for (GList *l = tags; l != NULL; l = l->next) {
+        NSString *name  = @(((const OnTag *)l->data)->name);
+        NSRange   found = [name rangeOfString:substring options:NSCaseInsensitiveSearch];
+        if (found.location == NSNotFound || has_name(have, name)) continue;
+        [found.location == 0 ? starts : inside addObject:name];
+    }
+    on_db_tag_list_free(tags);
+    if (selected != NULL) *selected = -1;
+    return [starts arrayByAddingObjectsFromArray:inside];
+}
+
+/*
+ * tokenField:shouldAddObjects:atIndex: — tokens are being made from typed
+ * or chosen text: put each tag in the Tags field at once (the existing tag
+ * of that name, in any case, or a new one) and show it as stored.  A name
+ * the field already has, an empty one and one that could not be saved are
+ * not made into tokens.
+ *
+ * Inputs:
+ *   field  — the tag field (unused)
+ *   tokens — the new tokens' texts
+ *   index  — where they go (unused)
+ *
+ * Output: the tokens to insert: the stored names of the tags added.
+ */
+- (NSArray *)
+tokenField:(NSTokenField *)field shouldAddObjects:(NSArray *)tokens atIndex:(NSUInteger)index
+{
+    OnApp                      *app   = self.app;
+    NSArray<NSString *>        *have  = [self field_tag_names];
+    NSMutableArray<NSString *> *added = [NSMutableArray array];
+
+    for (id token in tokens) {
+        if (![token isKindOfClass:NSString.class]) continue;
+        NSString *name = [token stringByTrimmingCharactersInSet:
+                             NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (name.length == 0 || has_name(have, name) || has_name(added, name)) continue;
+
+        gint64 tag_id = on_db_note_field_tag_add(app->db, self.note_id, name.UTF8String);
+        OnTag *tag    = tag_id != 0 ? on_db_tag_get(app->db, tag_id) : NULL;
+        if (tag == NULL) {
+            on_app_status(app, "Could not add the tag \xe2\x80\x9c%s\xe2\x80\x9d", name.UTF8String);
+            continue;
+        }
+        [added addObject:@(tag->name)];
+        on_db_tag_free(tag);
+    }
+    if (added.count > 0 && app->notify_notes_changed != NULL) app->notify_notes_changed(app);
+    return added;
+}
+
+/*
+ * controlTextDidChange: — the Tags field changed under the user's hands:
+ * a deleted token takes its tag out of the field at once (a new one is
+ * added as it is made: tokenField:shouldAddObjects:).  Other fields are
+ * not this method's.
+ *
+ * Inputs:
+ *   note — the notification; its object is the field
+ */
+- (void)
+controlTextDidChange:(NSNotification *)note
+{
+    if (note.object == self.tag_field) [self drop_removed_tags];
+}
+
+/*
+ * controlTextDidEndEditing: — the user left the Tags field: deleted tokens
+ * let go of their tags, and the field is shown again from the database
+ * (on the next pass: the field still counts as being edited here).
+ *
+ * Inputs:
+ *   note — the notification; its object is the field
+ */
+- (void)
+controlTextDidEndEditing:(NSNotification *)note
+{
+    if (note.object != self.tag_field) return;
+    [self drop_removed_tags];
+    __weak NotesEditorWindow *ws = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [ws show_tags];
+    });
 }
 
 /* ── NSWindowDelegate ───────────────────────────────────────────────────── */
 
 /*
- * windowDidBecomeKey: — the editor is in front again: re-read the note's
- * location, so a move or folder rename made in the library while it sat
- * in the background shows.
+ * windowDidBecomeKey: — the editor is in front again: re-read the status
+ * and the tags, so a tag given in the library (a drop on a tag) while it
+ * sat in the background shows.
  *
  * Inputs:
  *   note — the notification (unused)

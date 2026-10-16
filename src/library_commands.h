@@ -5,9 +5,9 @@
 #include "export.h"
 
 /*
- * library_commands — the library's commands that have no view of their own
- *: new note and folder, the folder tool panel, trash /
- * delete / restore / empty, sort, export, Open Database File.
+ * library_commands — the library's commands that have no view of their own:
+ * new note, the Edit Tag panel, tagging dropped notes, trash / delete /
+ * empty, export, Open Database File.
  *
  * The specification is the GTK build's src/library_window.c (its
  * "commands" sections).
@@ -25,10 +25,10 @@ void on_library_commands_install(NotesLibrary *lib);
 /*
  * on_library_trash_notes — move notes to the Trash: their editors are
  * closed (each saving first), the notes are flagged in ONE transaction and
- * a status line is posted.  No confirmation: the move is reversible.
- * Refresh-free — the caller refreshes when it suits it (a drop finishes
- * its drag first).  Used by the Move to Trash command and by drops on the
- * Trash row.
+ * a status line is posted.  No confirmation: the move is reversible (the
+ * notes keep their tags).  Refresh-free — the caller refreshes when it
+ * suits it (a drop finishes its drag first).  Used by the Move to Trash
+ * command and by drops on the Trash row.
  *
  * Inputs:
  *   lib — the library
@@ -41,20 +41,30 @@ void on_library_commands_install(NotesLibrary *lib);
 BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
 
 /*
- * on_library_trash_folder — move a folder, with its whole subtree, to the
- * Trash: the editors of its notes are closed, the folder is flagged, a
- * status line is posted, and the selection is pulled off the folder if it
- * was on it.  Refresh-free, like on_library_trash_notes.
+ * on_library_tag_notes — put a tag in the Tags field of several notes, in
+ * ONE transaction (all or none), and post a status line.  Refresh-free,
+ * like on_library_trash_notes.  Used by drops on a tag's row.
  *
  * Inputs:
- *   lib       — the library
- *   folder_id — the folder
- *   name      — its bare name, for the status line
+ *   lib  — the library
+ *   ids  — the notes (NSNumber note ids)
+ *   name — the tag's name (the existing tag of that name, in any case)
  *
- * Output: YES when the database move succeeded; NO also when an editor
- *         could not save (a tool panel says so, nothing moved).
+ * Output: YES when every note got it.
  */
-BOOL on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name);
+BOOL on_library_tag_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids, NSString *name);
+
+/*
+ * on_library_edit_tag — the Edit Tag panel for a tag: its name (fixed),
+ * an emoji (shown by Notes and Tasks) and whether it is a favorite in
+ * Notes (a button in the Favorites bar).  OK writes both and refreshes the
+ * library.  The sidebar's Edit Tag… and the Favorites bar's menu open it.
+ *
+ * Inputs:
+ *   lib    — the library (the panel sits over its window)
+ *   tag_id — the tag; a tag that has gone shows nothing
+ */
+void on_library_edit_tag(NotesLibrary *lib, gint64 tag_id);
 
 /*
  * on_library_delete_notes — the Trash view's delete: ask once ("This cannot

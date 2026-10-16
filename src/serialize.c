@@ -232,7 +232,7 @@ gboolean
 on_note_document_save_tags(OnDatabase *db, gint64 id, const OnDocument *doc)
 {
     GList   *tags = on_document_collect_tags(doc);
-    gboolean ok   = on_db_note_set_tags(db, id, tags);
+    gboolean ok   = on_db_note_set_text_tags(db, id, tags);
     g_list_free_full(tags, g_free);
     return ok;
 }
@@ -241,14 +241,17 @@ on_note_document_save_tags(OnDatabase *db, gint64 id, const OnDocument *doc)
  * on_note_new_from_text — see serialize.h.
  */
 gint64
-on_note_new_from_text(OnDatabase *db, gint64 folder_id, const gchar *text)
+on_note_new_from_text(OnDatabase *db, const gchar *tag, const gchar *text)
 {
     gboolean own;                    /* this call's transaction?            */
     if (!on_db_txn_begin(db, &own))
         return 0;
-    gint64      id  = on_db_note_create(db, folder_id);
+    gint64      id  = on_db_note_create(db);
     OnDocument *doc = on_document_from_text(text);
-    gboolean    ok  = id != 0 && on_note_document_save(db, id, doc, TRUE, NULL);
+    gboolean    ok  = id != 0 &&
+                      (tag == NULL || on_db_note_field_tag_add(db, id, tag) != 0) &&
+                      on_note_document_save(db, id, doc, TRUE, NULL) &&
+                      on_note_document_save_tags(db, id, doc);
     on_note_document_release(db, doc);
     return on_db_txn_end(db, own, ok) ? id : 0;
 }

@@ -12,6 +12,15 @@ AppKit code is written here); then the GTK source of what you are
 changing, in git at the last GTK commit (`git show 51ec5a4:src/<file>`) —
 that code is the behavioural specification.
 
+**Tags replace folders (2026-10-15, `../shared_data/PLAN_TAGS.md`).**
+Where the GTK specification has folders, this build has tags shared with
+Tasks: no folder API in `db.h` (notes live in one store; a note's tags
+come from its Tags field and its #tags), no folder commands, no AI modes,
+a flat export.  The sidebar (F) lists the views, the tags the notes carry
+and the Trash, as Tasks' does; `library_favorites.[hm]` (the Favorites
+bar) and the editor's Tags strip are new; Edit Tag lives in
+`library_commands`.  `on_sb_kind_t` and the drag API carry no folders.
+
 Contents: 1 hard rules · 2 layout of the tree · 3 the core you program
 against · 4 frozen headers · 5 packages, ownership, start order · 6 commands
 and the keyboard map · 7 threading · 8 the byte-offset rule · 9 memory and
@@ -223,8 +232,8 @@ Each header's file comment states its contract and its STATUS; each stub
 - **Drags** between the notes pane (G, source), the sidebar (F, source and
   the only drop target): `on_library_drag_item` / `on_library_drag_read`
   with pasteboard type `on_pasteboard_type_rows`.  Drop actions call
-  `on_library_trash_notes` / `on_library_trash_folder` (library_commands.h)
-  and the `on_db_*` move functions, then `on_library_refresh_all`.
+  `on_library_trash_notes` / `on_library_tag_notes` (library_commands.h),
+  then `on_library_refresh_all`.
 - **Editors** are opened with `on_editor_window_open(app, id, reveal,
   ordinal, search_term)`.  Before trashing or deleting notes call
   `on_editor_close_notes` (the two trash functions already do).  After a
@@ -243,7 +252,7 @@ Each header's file comment states its contract and its STATUS; each stub
 | **C** Note view | the editor view, the lifted editing policy, the probe | `note_view.[hm]`, `note_edit.[ch]`, new `tests/ui_probe_test.m` (+ `tests/ui/*.txt`) | `note_view.c`, `tests/ui_probe.c` | doc_layout.h (stub is enough to start) |
 | **D** Editor window + image viewer | toolbar, find field, status bar, placement, viewer hosting; the viewer | `editor_window.[hm]`, `image_viewer.[hm]` | `editor_window.c`, `image_viewer.c` | note_view.h (stub is enough) |
 | **E** App + library shell + commands | launch/quit, menus, library frame, toolbar, status bar, every command with no view of its own | `main.m`, `app_delegate.[hm]`, `commands.[hm]`, `library_state.[hm]`, `library_window.[hm]`, `library_commands.[hm]` (+ `ui_util` additions) | `main.c`, `library_window.c` 2111–3489, 3651–3749, 5047–5416, 6074–6197 | nothing |
-| **F** Sidebar | outline, counts, expansion + selection restore, fit-to-content, context menu, drop target, folder drag source | `library_sidebar.[hm]` | `library_window.c` 403–820, 1339–1386, 1702–2109, 2994–3134, 5456–5663 | library_state.h |
+| **F** Sidebar | outline (views, tags, Trash), counts, selection restore, fit-to-content, context menu, drop target | `library_sidebar.[hm]` | `library_window.c` 403–820, 1339–1386, 1702–2109, 2994–3134, 5456–5663 | library_state.h |
 | **G** Notes + Action Items | list + grid with one selection, sorting, column layout, density, thumbnails, note menu, note drag source, one-row update; Action Items list, due-date sheet | `library_notes.[hm]` (+ your own new files, e.g. `library_actions.[hm]`, `library_columns.[hm]`) | `library_window.c` 822–1337, 1406–1700, 3491–3649, 4313–5045, 5665–5849; `list_rows.[ch]` | library_state.h, action_edit.h |
 | **H** Secondary windows | Settings, Search, Media, AI summary | `settings_window.[hm]`, `search_window.[hm]`, `media_window.[hm]`, `library_ai.[hm]` | `settings_window.c`, `search_window.c`, `media_window.c`, `library_window.c` 3751–4155 | library_state.h, search_job.h, image_viewer.h |
 
@@ -309,7 +318,6 @@ writes a second dispatch scheme.
 | Shortcut | Command | Scope | vs. GTK build |
 |---|---|---|---|
 | ⌘N | New Note | app | same |
-| ⇧⌘N | New Folder… | app | new |
 | ⌘, | Settings… | app | same |
 | ⌘Q | Quit | AppKit | same |
 | ⌘W | Close Window | AppKit | new (standard) |
@@ -528,11 +536,12 @@ its inputs as locals, and never reads `self.…` off the main thread.
   layouts — and this port persists the same, in the same keys (`list_columns`
   as `key:vis,…`, not `autosaveName`).  The keys `native_menubar` and
   `touch_assist` are GTK-only and gone.
-- **`make seed`** rebuilds `dev/data/shared_data.db`: nested folders with emoji,
-  six tags, pinned notes, trashed notes and a trashed folder, a note with
-  every block kind (note 1), images, a 200-line note, 40 dated filler notes,
-  and 13 action items — open, done, overdue, due today, undated — in several
-  contexts, with due dates relative to today — all through the core API
+- **`make seed`** rebuilds `dev/data/shared_data.db`: notes with tags in
+  their Tags fields (as the move from folders made them) and #tags in their
+  text, emoji on three tags and two favorites, pinned notes, three trashed
+  notes, a note with every block kind (note 1), images, a 200-line note, 40
+  dated filler notes, and 13 action items — open, done, overdue, due today,
+  undated — with due dates relative to today — all through the core API
   (`tools/dev_seed.c`).  It refuses to run while an app holds `dev/data`.
 - **`make run`** runs the app on `dev/data` in the foreground (its log, with
   `[status]` lines, on your terminal).
@@ -590,7 +599,7 @@ its inputs as locals, and never reads `self.…` off the main thread.
   sheet: every message and question is a tool panel (`tool_panel.h`,
   ported from the Files app) — `on_ui_show_notice` and `on_ui_confirm` for
   the common cases, `NotesToolPanel` directly for anything with controls
-  (New Folder) or several answers.  Tool panels are not modal: whatever
+  (Edit Tag) or several answers.  Tool panels are not modal: whatever
   must wait for the answer goes in the handler.  The one system panel kept
   is the file picker (`on_ui_pick_path`), as in Files.
 - **Type size**: the app's own text is 11 pt (`on_look_ui_font`) —
@@ -667,7 +676,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 | 7: view API with a callbacks struct | C functions + three `copy` handler blocks; `load`, `serialize`, `first_line`, `collect_tags` dropped; `action_strike/due/text` replaced by `begin/end_external_edit` | Files' callback convention; the dropped ones duplicated `on_document_*` calls on `on_note_view_document()`; action edits now live in the core |
 | 8: four open variants, five `*_all` refreshers | one `on_editor_window_open` with reveal + search term; one `on_editor_settings_changed` | no near-duplicates |
 | 9: plain-C row structs, `library_set_selection`, `trash_notes_core` in library_state.h | rows are private record classes of F and G; selection is set by `on_library_sidebar_select`; trash functions are in library_commands.h; `folder_path_cache` left to G | table/outline items must be objects; one module per function |
-| 10: "existing action names as command ids" | kept, except: the `sidebar-hide/show` and `done-hide/show` pairs became `toggle-sidebar` / `toggle-done` with a state function; `inline(s)` / `para(s)` became one id per value; `show-library`, `find-next`, `find-previous`, `find-selection`, `inline-strike` added (New Subfolder… on a folder's menu is `new-folder`, which makes the folder under the selection); `quit` is AppKit's; `insert-emoji` (the editor's Insert menu, as in GTK) opens AppKit's character palette, which inserts through the note view's text input | the two-item device was a GTK workaround; AppKit items carry no parameter |
+| 10: "existing action names as command ids" | kept, except: the `sidebar-hide/show` and `done-hide/show` pairs became `toggle-sidebar` / `toggle-done` with a state function; `inline(s)` / `para(s)` became one id per value; `show-library`, `find-next`, `find-previous`, `find-selection`, `inline-strike` added (the folder commands went with the folders; `edit-tag` was added); `quit` is AppKit's; `insert-emoji` (the editor's Insert menu, as in GTK) opens AppKit's character palette, which inserts through the note view's text input | the two-item device was a GTK workaround; AppKit items carry no parameter |
 | 11: adoption of the bundle-adjacent ini; shared socket hash | none: new identity, new directory | owner's decision: the fork must not be able to reach the GTK build |
 | note_edit.h | minimal: key vocabulary + the blank-note rule | it is package C's internal seam; freezing forty signatures C must then reshape helps nobody |
 

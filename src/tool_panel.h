@@ -17,7 +17,7 @@
 /*
  * panel_with_title:hero_title:subtitle:symbol:content:buttons:handler: —
  * build a panel that asks for something: the caller's controls above its
- * buttons (a folder's OK / Cancel, the due date's Set / Clear / Cancel).
+ * buttons (a tag's OK / Cancel, the due date's Set / Clear / Cancel).
  * show_over: displays it; it keeps itself alive while it is on screen.
  *
  * Inputs:

@@ -1,5 +1,6 @@
 #import "library_window.h"
 #import "library_ai.h"
+#import "library_favorites.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
 #import "search_window.h"
@@ -28,7 +29,7 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(BOOL ai)
 {
     NSArray<NSToolbarItemIdentifier> *head = @[
-        @"toggle-sidebar", @"new-folder", @"delete-folder", NSToolbarSpaceItemIdentifier,
+        @"toggle-sidebar", NSToolbarSpaceItemIdentifier,
         @"quicknote", @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
         @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
     ];
@@ -131,8 +132,8 @@ init_with_library:(NotesLibrary *)lib
 }
 
 /*
- * build_content — the split view (sidebar | notes over the AI pane) above
- * the status bar.
+ * build_content — the Favorites bar across the window, the split view
+ * (sidebar | notes over the AI pane) under it, above the status bar.
  */
 - (void)
 build_content
@@ -156,9 +157,10 @@ build_content
 
     NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType = NSBoxSeparator;
-    NSView *content = self.window.contentView;
-    NSView *panes   = self.split.view;
-    for (NSView *view in @[panes, rule]) {
+    NSView *content   = self.window.contentView;
+    NSView *panes     = self.split.view;
+    NSView *favorites = on_library_favorites_new(self.lib);
+    for (NSView *view in @[favorites, panes, rule]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:view];
     }
@@ -169,7 +171,10 @@ build_content
     self.status_event = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
     CGFloat inset = on_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
-        [panes.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [favorites.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [favorites.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [favorites.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [panes.topAnchor constraintEqualToAnchor:favorites.bottomAnchor],
         [panes.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [panes.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [panes.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
@@ -468,4 +473,5 @@ void
 on_library_window_location_changed(NotesLibrary *lib)
 {
     [library_window update_status_path];
+    on_library_favorites_refresh(lib);
 }

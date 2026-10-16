@@ -1,7 +1,7 @@
 /* ===========================================================================
  * db.h — SQLite persistence layer for Notes
  *
- * All notes, folders and tags live in the ONE SQLite file Notes shares with
+ * All notes and tags live in the ONE SQLite file Notes shares with
  * the Tasks app (../shared_data, shared_db.h): that module resolves where
  * the file is (shared_db_path), opens every connection (WAL, busy timeout,
  * foreign keys, local disk only), and holds the schema — every table,
@@ -12,13 +12,12 @@
  *
  * Schema (created by shared_db.c; what this module reads and writes)
  * ------
- *   folders   (id, parent_id, name, sort_order, trashed, ai_mode, emoji) -- nested via parent_id
- *   notes     (id, folder_id, title, content BLOB,
- *              sort_order, created_at, updated_at,
+ *   notes     (id, title, content BLOB, created_at, updated_at,
  *              pinned, body_text, trashed)
- *   tags      (id, name UNIQUE)
- *   note_tags    (note_id, tag_id)                       -- many-to-many
- *   list_groups, lists, tasks                            -- the Tasks app's tables
+ *   tags      (id, name UNIQUE NOCASE, emoji,           -- SHARED with Tasks
+ *              favorite_tasks, favorite_notes)
+ *   note_tags (note_id, tag_id, in_field, in_text)       -- a note's tags, by source
+ *   tasks, task_tags                                     -- the Tasks app's tables
  *   note_task (uid, task_id, note_id, ord,               -- a '!' line's task, keyed by the
  *              seen_title, seen_done, seen_due,             uid the note blob carries, and
  *              seen_deleted)                                what the line last agreed with
@@ -30,20 +29,24 @@
  * Both apps edit those three fields; the seen_* columns are the baseline
  * that tells whose side changed (serialize.h: the push on save, the pull
  * of outside changes).  Notes writes only title/status/due/completed_at/
- * updated_at/deleted of a task — and list_id, parent_id, position when it
- * creates one — never the Tasks-only columns.  The action_items_ctx view
- * is what every listing reads.
+ * updated_at/deleted of a task — and parent_id, position when it creates
+ * one (the schema tags it "Action Items") — never the Tasks-only columns.
+ * The action_items view is what every listing reads.
  *
- * A NULL parent_id means "top-level folder"; a NULL folder_id means the
- * note lives at the top level ("Notes" root).
+ * TAGS, not folders, organise the notes: all notes live in one store.  A
+ * note's tags come from two sources, kept apart (note_tags.in_field /
+ * in_text): its Tags field (on_db_note_field_tag_add / _remove) and the
+ * #word tags of its text (on_db_note_set_text_tags, from every save).  A
+ * tag the text has cannot be taken off in the field.  The tags are the two
+ * apps': a name compares case-insensitively and is never renamed, the
+ * emoji is shared, the favorite flag is each app's (favorite_notes here).
+ * The schema's triggers delete a tag once no note and no live task carries
+ * it, so nothing here prunes.
  *
- * Trash is a soft-delete FLAG, not a folder: deleting sets trashed=1 and
- * leaves folder_id/parent_id untouched (that is the "restore to" location).
- * A trashed folder keeps its whole subtree attached — only the top folder
- * is flagged; its descendants (and their notes) are implicitly trashed via
- * the trash_folder_ids view (recursive closure of flagged folders).  All
- * normal listings/counts filter trash out; on_db_note_list_all() can
- * include it so search still finds deleted notes.
+ * Trash is a soft-delete FLAG: deleting sets trashed=1 and the note keeps
+ * its tags; Restore clears the flag.  All normal listings/counts filter
+ * trash out; on_db_note_list_all() can include it so search still finds
+ * deleted notes.
  * =========================================================================== */
 
 #ifndef BLUE_DB_H
@@ -53,16 +56,6 @@
 #include <sqlite3.h>
 
 #include "shared_db.h"
-
-/* ---------------------------------------------------------------------------
- * DB constants
- * ------------------------------------------------------------------------- */
-/* Maximum depth walked when building a folder path string.  A corrupt cycle
- * in the parent_id chain (hand-edited DB) would otherwise spin forever.     */
-#define ON_DB_FOLDER_PATH_DEPTH_LIMIT  128
-
-/* Maximum depth checked when validating a folder move for cycles.           */
-#define ON_DB_FOLDER_CYCLE_DEPTH_LIMIT 1000
 
 /* ---------------------------------------------------------------------------
  * OnDbHealth — the outcome of one health pass over a database.
@@ -110,26 +103,10 @@ typedef struct {
 } OnDatabase;
 
 /* ---------------------------------------------------------------------------
- * OnFolder — metadata for one folder row.
- *
- * Fields:
- *   id    — primary key of the folder.
- *   name  — display name (owned string).
- *   emoji — optional display prefix shown in the sidebar (owned string;
- *            "" when not set).
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gint64  id;
-    gchar  *name;
-    gchar  *emoji;
-} OnFolder;
-
-/* ---------------------------------------------------------------------------
  * OnNoteMeta — lightweight note metadata used by list views.
  *
  * Fields:
  *   id         — primary key of the note.
- *   folder_id  — id of the containing folder, or 0 for top level.
  *   title      — display title, derived from the first line (owned string).
  *   updated_at — UNIX timestamp of the last save.
  *   created_at — UNIX timestamp of the note's creation.
@@ -137,7 +114,6 @@ typedef struct {
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   id;
-    gint64   folder_id;
     gchar   *title;
     gint64   updated_at;
     gint64   created_at;
@@ -145,20 +121,37 @@ typedef struct {
 } OnNoteMeta;
 
 /* ---------------------------------------------------------------------------
- * OnTag — one tag row.
+ * OnTag — one tag (shared with Tasks).
  *
  * Fields:
- *   id   — primary key of the tag.
- *   name — tag text without the leading '#' (owned string).
+ *   id       — primary key of the tag.
+ *   name     — the name, without a leading '#' (owned string); never
+ *              renamed, compared case-insensitively.
+ *   emoji    — display prefix, "" for none (owned string; shared).
+ *   favorite — favorite_notes: a button in Notes' Favorites bar.
+ *   in_field — read by on_db_note_tags only: the note's Tags field has it.
+ *   in_text  — read by on_db_note_tags only: a #word in its text has it.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    gint64  id;
-    gchar  *name;
+    gint64   id;
+    gchar   *name;
+    gchar   *emoji;
+    gboolean favorite;
+    gboolean in_field;
+    gboolean in_text;
 } OnTag;
+
+/* Which tags on_db_tag_list lists.                                          */
+typedef enum {
+    ON_TAGS_CARRIED,                 /* those a note outside the Trash
+                                      * carries: what Notes shows           */
+    ON_TAGS_ALL                      /* every tag, Tasks' too: what Notes
+                                      * offers wherever a tag is chosen     */
+} OnTagScope;
 
 /* ---------------------------------------------------------------------------
  * OnActionItem — one action item as the listings hand it out (a row of
- * the action_items_ctx view: a task with its note's placement) and as a
+ * the action_items view) and as a
  * save hands the note's '!' lines in (on_note_document_save builds one
  * per line for on_db_note_save_actions).
  *
@@ -174,13 +167,6 @@ typedef struct {
  *             blob (BNBF ACTION record), note_task maps it to the task.
  *             Allocated once from action_uid_seq when a line is first
  *             saved, never reused once retired.
- *   context — the CONTAINER the owning note lives in: the name of its
- *             own folder, whatever sits above that — a note in
- *             Salt/Deployments/Stride has the context "Stride" ("" for a
- *             note at the root).  Derived by the view from the folder
- *             tree — never stored: a stored copy would go stale the
- *             moment a note moved or a folder was renamed.  NULL on an
- *             item built from a line, which knows no folder.
  * ------------------------------------------------------------------------- */
 typedef struct {
     gint64   note_id;
@@ -189,7 +175,6 @@ typedef struct {
     gboolean done;
     gint64   due;
     gint64   uid;
-    gchar   *context;
 } OnActionItem;
 
 /* --------------------------- lifecycle ---------------------------------- */
@@ -270,110 +255,14 @@ const OnDbHealth *on_db_health(OnDatabase *db);
  * ------------------------------------------------------------------------- */
 gchar *on_db_file_sha256(const gchar *path);
 
-/* ---------------------------- folders ----------------------------------- */
-
-/* Create a folder.
- *   parent_id — id of the parent folder, or 0 for top level.
- *   name      — display name for the new folder.
- * Returns the new folder's id, or 0 on failure.                             */
-/* Create a folder under `parent_id` (0 = top level), appended after its
- * existing siblings.  ai_mode (ON_AI_MODE_*) and emoji ("" or NULL for none)
- * are written by the same INSERT.
- * Returns the new folder's id, or 0 on failure.                              */
-gint64 on_db_folder_create(OnDatabase *db, gint64 parent_id,
-                           const gchar *name, gint ai_mode,
-                           const gchar *emoji);
-
-/* Set a folder's name, AI mode and emoji in ONE statement (the Info dialog
- * can change all three).  Returns TRUE on success.                          */
-gboolean on_db_folder_update(OnDatabase *db, gint64 id, const gchar *name,
-                             gint ai_mode, const gchar *emoji);
-
-/* ai_mode values stored in folders.ai_mode.                                 */
-#define ON_AI_MODE_NORMAL  0
-#define ON_AI_MODE_PROJECT 1
-#define ON_AI_MODE_CUSTOM  2
-
-gint     on_db_folder_get_ai_mode(OnDatabase *db, gint64 id);
-
-/* Get a folder's display emoji. Returns a new string (g_free() it; never
- * NULL — "" when not set).                                                   */
-gchar   *on_db_folder_get_emoji(OnDatabase *db, gint64 id);
-
-/* Move folder `id` (with its whole subtree, implicitly) under
- * `parent_id` (0 = top level), appending it after that parent's existing
- * children.  Also clears the trashed flag, so dragging a folder out of
- * the Trash restores it to the drop location.  Refuses cycles: moving a
- * folder into itself or any of its descendants returns FALSE.               */
-gboolean on_db_folder_move(OnDatabase *db, gint64 id, gint64 parent_id);
-
-/* Persist an explicit ordering of folders within one parent.
- *   folder_ids — ids in the desired order (sort_order = array index).
- *   n          — number of ids.
- * All updates run in one transaction. Returns TRUE on success.               */
-gboolean on_db_folder_reorder(OnDatabase *db, const gint64 *folder_ids,
-                              gsize n);
-
-/* Order one folder's DIRECT children alphabetically (case-insensitive) and
- * persist that as their sort_order — THE "Sort Subfolders Alphabetically"
- * operation of the folder context menu.  One level
- * only: each child's own children keep the order they had.
- *   parent_id — whose children to sort (0 = the top level).
- * Returns how many children were sorted, or -1 on failure.                  */
-gint on_db_folder_sort_children(OnDatabase *db, gint64 parent_id);
-
-/* PERMANENTLY delete folder `id`; all descendant folders and contained
- * notes are removed by ON DELETE CASCADE and orphaned tags are pruned.
- * The GUI trashes folders instead (on_db_folder_trash); this is the
- * delete-from-the-Trash path. Returns TRUE on success.                      */
-gboolean on_db_folder_delete(OnDatabase *db, gint64 id);
-
-/* List the *direct* children of `parent_id` (0 = top level), ordered by
- * sort_order then name.
- * Returns a GList of OnFolder*; free with on_db_folder_list_free().         */
-GList *on_db_folder_list(OnDatabase *db, gint64 parent_id);
-
-/* Free a list returned by on_db_folder_list().                              */
-void on_db_folder_list_free(GList *folders);
-
-/* ---------------------------------------------------------------------------
- * on_db_folder_child_map() — every non-trashed folder in ONE query, grouped
- * by parent.  Building a folder tree by recursing with on_db_folder_list()
- * costs one query per folder (115 of them on a 114-folder database, on every
- * sidebar rebuild); walking this map costs one, the same trick
- * on_db_folder_path_map() uses.  Children come out in exactly the order
- * on_db_folder_list() returns them.
- * Returns a map of parent id → GList of OnFolder* (read it with
- * on_db_folder_children()); free the whole thing with
- * on_db_folder_child_map_free().  The lists and folders belong to the map —
- * never pass one to on_db_folder_list_free().
- * ------------------------------------------------------------------------- */
-GHashTable *on_db_folder_child_map(OnDatabase *db);
-
-/* Direct children of `parent_id` (0 = top level) within a child map, or
- * NULL when that folder has none.  Borrowed: owned by the map.              */
-GList *on_db_folder_children(GHashTable *map, gint64 parent_id);
-
-/* Free a map from on_db_folder_child_map() and every folder in it.  NULL-safe. */
-void on_db_folder_child_map_free(GHashTable *map);
-
 /* ----------------------------- notes ------------------------------------ */
 
-/* Create an empty note in folder `folder_id` (0 = top level).
- * Returns the new note's id, or 0 on failure.                               */
-gint64 on_db_note_create(OnDatabase *db, gint64 folder_id);
+/* Create an empty note.  Returns the new note's id, or 0 on failure.       */
+gint64 on_db_note_create(OnDatabase *db);
 
-/* Permanently delete `n` notes in ONE transaction, pruning orphaned tags
- * once at the end. Returns TRUE on success.                                 */
+/* Permanently delete `n` notes in ONE transaction (the schema drops the
+ * tags nothing carries any more). Returns TRUE on success.                  */
 gboolean on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n);
-
-/* Move `n` notes into folder `folder_id` (0 = top level) in ONE
- * transaction (per-note moves would fsync per call — a big
- * multi-selection drop froze the GUI), appended in array order.  Clears
- * each note's trashed flag (drag out of Trash = restore).  Returns TRUE
- * if every move succeeded (all-or-nothing: failure rolls the batch back).   */
-gboolean on_db_notes_move(OnDatabase *db, const gint64 *note_ids, gsize n,
-                          gint64 folder_id);
 
 /* Persist a note's title, serialized content, and searchable plain text.
  *   id        — note to save.
@@ -439,15 +328,9 @@ gboolean on_db_note_load(OnDatabase *db, gint64 id, guint8 **out,
  * on_db_note_meta_free(), or NULL if not found.                             */
 OnNoteMeta *on_db_note_get(OnDatabase *db, gint64 id);
 
-/* List notes directly inside folder `folder_id` (0 = top level), ordered
- * by sort_order then updated_at descending.
- * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
-GList *on_db_note_list(OnDatabase *db, gint64 folder_id);
-
-/* List ALL notes in the database, ordered by folder then sort_order.
- *   include_trash — TRUE to include trashed notes and notes inside
- *                   trashed folders (search wants them); FALSE for the
- *                   normal visible set (export).
+/* List ALL notes in the database, newest first.
+ *   include_trash — TRUE to include trashed notes (search wants them);
+ *                   FALSE for the normal visible set (export).
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
 GList *on_db_note_list_all(OnDatabase *db, gboolean include_trash);
 
@@ -469,22 +352,59 @@ gint on_db_note_count_pinned(OnDatabase *db);
 /* Free one OnNoteMeta and its strings.                                      */
 void on_db_note_meta_free(OnNoteMeta *meta);
 
-/* Free a list returned by on_db_note_list()/on_db_note_list_all().          */
+/* Free a list of OnNoteMeta* (on_db_note_list_all and the other listings). */
 void on_db_note_list_free(GList *notes);
 
 /* ------------------------------ tags ------------------------------------ */
 
-/* List every known tag, ordered by name.
+/* The tags of `scope`, ordered by name (case-insensitive).
  * Returns a GList of OnTag*; free with on_db_tag_list_free().               */
-GList *on_db_tag_list(OnDatabase *db);
+GList *on_db_tag_list(OnDatabase *db, OnTagScope scope);
 
-/* Free a list returned by on_db_tag_list().                                 */
+/* Free a list of OnTag* (on_db_tag_list, on_db_note_tags).                   */
 void on_db_tag_list_free(GList *tags);
 
-/* Replace note `note_id`'s tag set with `tag_names` (a GList of "const
- * gchar*" tag names, without '#'). Creates missing tags and prunes tags
- * that no longer label any note. Returns TRUE on success.                   */
-gboolean on_db_note_set_tags(OnDatabase *db, gint64 note_id, GList *tag_names);
+/* Free one OnTag (NULL-safe).                                               */
+void on_db_tag_free(OnTag *tag);
+
+/* One tag by id, or NULL when it has gone.  Free with on_db_tag_free.       */
+OnTag *on_db_tag_get(OnDatabase *db, gint64 id);
+
+/* The tag of a name (trimmed, compared case-insensitively), or NULL when
+ * there is none.  Free with on_db_tag_free.                                 */
+OnTag *on_db_tag_find(OnDatabase *db, const gchar *name);
+
+/* Set a tag's emoji ("" or NULL for none; Tasks shows it too) or Notes'
+ * favorite flag.  A tag's name never changes.  Each returns TRUE when
+ * written.                                                                  */
+gboolean on_db_tag_set_emoji(OnDatabase *db, gint64 id, const gchar *emoji);
+gboolean on_db_tag_set_favorite(OnDatabase *db, gint64 id, gboolean favorite);
+
+/* A note's tags, by name, each with its sources (OnTag.in_field /
+ * in_text).  Returns a GList of OnTag*; free with on_db_tag_list_free().    */
+GList *on_db_note_tags(OnDatabase *db, gint64 note_id);
+
+/* The note's TEXT tags become exactly `tag_names` (a GList of "const
+ * gchar*" names, without '#'; an existing tag of a name in any case is
+ * used, a missing one made): a tag the text no longer has keeps its row
+ * while the Tags field has it and goes otherwise.  The Tags field is not
+ * touched.  Runs in the caller's transaction when one is open.  Returns
+ * TRUE on success.                                                          */
+gboolean on_db_note_set_text_tags(OnDatabase *db, gint64 note_id,
+                                  GList *tag_names);
+
+/* Put the tag `name` (trimmed; the existing tag of that name in any case,
+ * else a new one) in the note's Tags field.  The note's content and
+ * updated_at are not touched.  Returns the tag's id, or 0 when the name
+ * is blank, the note is missing or the write failed.                       */
+gint64 on_db_note_field_tag_add(OnDatabase *db, gint64 note_id,
+                                const gchar *name);
+
+/* Take tag `tag_id` out of the note's Tags field.  Refused while the
+ * note's text has it (it comes off in the text).  Returns 1 when written
+ * (also when the field did not have it), 0 when refused, -1 when the
+ * write failed (logged).                                                    */
+gint on_db_note_field_tag_remove(OnDatabase *db, gint64 note_id, gint64 tag_id);
 
 /* List all notes labeled with tag `tag_id`, newest first.
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
@@ -493,9 +413,9 @@ GList *on_db_notes_by_tag(OnDatabase *db, gint64 tag_id);
 /* --------------------------- action items -------------------------------- */
 
 /* A struck line is a task with status SHARED_DB_TASK_STATUS_DONE; every
- * other status is "not done" (shared_db.h names them).  New items go into
- * the managed list SHARED_DB_ACTION_LIST_NAME / SHARED_DB_ACTION_LIST_EMOJI
- * (shared_db.h).                                                          */
+ * other status is "not done" (shared_db.h names them).  New items carry
+ * the tag SHARED_DB_ACTION_LIST_NAME / SHARED_DB_ACTION_LIST_EMOJI (the
+ * schema gives it).                                                       */
 
 /* Allocate a fresh uid from the action_uid_seq high-water mark: only ever
  * incremented, so a uid retired with a deleted item is never handed out
@@ -660,7 +580,7 @@ typedef void (*OnDbTxnHook)(gpointer data, gboolean committed);
  * ------------------------------------------------------------------------- */
 gboolean on_db_txn_on_end(OnDatabase *db, OnDbTxnHook hook, gpointer data);
 
-/* One live item by uid, off the view (context included); NULL when no
+/* One live item by uid, off the view; NULL when no
  * live task carries that uid.  Free with on_db_action_item_free().        */
 OnActionItem *on_db_action_get(OnDatabase *db, gint64 uid);
 
@@ -675,9 +595,8 @@ gboolean on_db_action_set(OnDatabase *db, gint64 uid, guint mask,
 void on_db_action_item_free(OnActionItem *it);
 
 /* Every action item of every visible (non-trashed) note, newest note
- * first, note order preserved within a note, each with its `context` (the
- * name of the note's folder).  Returns a GList of OnActionItem*; free with
- * on_db_action_list_free().                                                 */
+ * first, note order preserved within a note.  Returns a GList of
+ * OnActionItem*; free with on_db_action_list_free().                        */
 GList *on_db_action_list(OnDatabase *db);
 
 /* All action items for one specific note, ordered by ord.  Returns a GList
@@ -694,52 +613,32 @@ void on_db_action_list_free(GList *items);
 
 /* ----------------------------- trash ------------------------------------ */
 
-/* Move `n` notes to the Trash in one transaction (trashed=1; folder_id is
- * kept as the restore location). Returns TRUE on success.                   */
+/* Move `n` notes to the Trash in one transaction (trashed=1; their tags
+ * stay). Returns TRUE on success.                                           */
 gboolean on_db_notes_trash(OnDatabase *db, const gint64 *ids, gsize n);
 
-/* Restore note `id` from the Trash.  Its folder_id is kept unless that
- * folder is itself (implicitly) trashed, in which case the note lands at
- * the top level. Also un-nests a note out of a trashed folder (moves it
- * to the top level) even when the note itself carries no trashed flag.
- * Returns TRUE on success.                                                  */
+/* Restore note `id` from the Trash, with its tags.  Returns TRUE on
+ * success.                                                                  */
 gboolean on_db_note_restore(OnDatabase *db, gint64 id);
 
-/* Move folder `id` (with its whole subtree, implicitly) to the Trash.       */
-gboolean on_db_folder_trash(OnDatabase *db, gint64 id);
-
-/* Restore folder `id` to its original parent, or to the top level when
- * that parent is itself still in the Trash. Returns TRUE on success.        */
-gboolean on_db_folder_restore(OnDatabase *db, gint64 id);
-
-/* List the directly-trashed folders (the Trash section's children),
- * ordered by name. Returns a GList of OnFolder*; free with
- * on_db_folder_list_free().                                                 */
-GList *on_db_folder_list_trashed(OnDatabase *db);
-
-/* List the directly-trashed notes (what selecting Trash shows), newest
- * first. Returns a GList of OnNoteMeta*; free with on_db_note_list_free(). */
+/* List the trashed notes (what selecting Trash shows), newest first.
+ * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */
 GList *on_db_note_list_trashed(OnDatabase *db);
 
-/* TRUE when note `id` is in the Trash — either flagged itself or sitting
- * inside a trashed folder's subtree (the same rule every visible listing
+/* TRUE when note `id` is in the Trash (the rule every visible listing
  * filters on).  A missing note reads as trashed: nothing visible to keep. */
 gboolean on_db_note_is_trashed(OnDatabase *db, gint64 id);
 
-/* Number of items directly in the Trash: trashed notes + trashed folders. */
+/* Number of notes in the Trash.                                            */
 gint on_db_trash_count(OnDatabase *db);
 
-/* Ids of EVERY note that would go with an empty-trash: directly-trashed
- * notes plus all notes inside trashed folder subtrees.  Used to close
- * their editors first. Returns a GArray of gint64; g_array_free(_, TRUE).   */
+/* Ids of every note in the Trash: what an empty-trash deletes (used to
+ * close their editors first). Returns a GArray of gint64;
+ * g_array_free(_, TRUE).                                                    */
 GArray *on_db_trash_note_ids(OnDatabase *db);
 
-/* Ids of every note in folder `folder_id`'s subtree (the folder itself
- * included). Returns a GArray of gint64; g_array_free(_, TRUE).             */
-GArray *on_db_folder_note_ids(OnDatabase *db, gint64 folder_id);
-
-/* Permanently delete everything in the Trash (one transaction, orphaned
- * tags pruned). Returns TRUE on success.                                    */
+/* Permanently delete every note in the Trash (one transaction; the schema
+ * drops the tags nothing carries any more). Returns TRUE on success.       */
 gboolean on_db_trash_empty(OnDatabase *db);
 
 /* ----------------------------- counts ----------------------------------- */
@@ -748,13 +647,9 @@ gboolean on_db_trash_empty(OnDatabase *db);
  * count shown on the "All Notes" sidebar row.                               */
 gint on_db_note_count_visible(OnDatabase *db);
 
-/* Total row counts across the whole database (any out-param may be NULL). */
-void on_db_totals(OnDatabase *db, gint *notes, gint *folders, gint *tags);
-
-/* Per-folder note counts in ONE query (folder id 0 = top level).
- * Returns a GHashTable of gint64* → GINT_TO_POINTER(count); destroy with
- * g_hash_table_destroy(). Missing keys mean zero.                           */
-GHashTable *on_db_note_count_map(OnDatabase *db);
+/* Totals for the About dialog (either out-param may be NULL): every note,
+ * and the tags notes carry.                                                 */
+void on_db_totals(OnDatabase *db, gint *notes, gint *tags);
 
 /* ---------------------------------------------------------------------------
  * on_db_note_text_map() — every filled body_text row in ONE query: note id
@@ -769,23 +664,16 @@ GHashTable *on_db_note_count_map(OnDatabase *db);
  * Destroy with g_hash_table_destroy().                                      */
 GHashTable *on_db_note_text_map(OnDatabase *db, gint max_chars);
 
-/* Per-tag note counts in one query; same shape as above.                    */
+/* Per-tag counts of visible notes in ONE query: tag id (gint64*) →
+ * GINT_TO_POINTER(count); missing keys mean zero.  Destroy with
+ * g_hash_table_destroy().                                                   */
 GHashTable *on_db_tag_count_map(OnDatabase *db);
 
-/* ---------------------------- utilities --------------------------------- */
-
-/* Build the "/Folder/Sub" style path of folder `folder_id` (empty string
- * for 0). Used by the exporter to mirror the hierarchy on disk.
- * Returns a newly allocated string; g_free() it.                            */
-gchar *on_db_folder_path(OnDatabase *db, gint64 folder_id);
-
-/* All folder paths in ONE query: folder id (gint64*) → "Folder/Sub"
- * string (same format as on_db_folder_path, no leading slash).  Trashed
- * folders are included so Trash listings resolve too; the top level (0)
- * has no entry — callers treat a miss as "".  Per-note path lookups in
- * the library go through this map, never per-row on_db_folder_path —
- * per-query latency hurts on shared/network DBs.
- * Free with g_hash_table_destroy().                                         */
-GHashTable *on_db_folder_path_map(OnDatabase *db);
+/* Every note's tags as one display string, in ONE query: note id
+ * (gint64*) → "Salt, Stride" (by name, case-insensitive; owned).  A note
+ * with no tag has no entry — callers treat a miss as "".  The notes list's
+ * Tags column, the search results and the exporter read this, never one
+ * query per note.  Destroy with g_hash_table_destroy().                     */
+GHashTable *on_db_note_tag_names_map(OnDatabase *db);
 
 #endif /* BLUE_DB_H */

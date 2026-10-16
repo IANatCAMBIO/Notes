@@ -3,16 +3,18 @@
  *
  * `make seed` (tools/seed-dev.sh) builds dev/data/shared_data.db (the file
  * $CAMBIO_SHARED_DB names) with this tool:
- * nested folders (some with an emoji, one in project AI mode), six tags,
- * pinned notes, two trashed notes and a trashed folder, a note with every
+ * tags in notes' Tags fields (a deployment's notes carry Salt,
+ * Deployments and its own; some tags with an emoji, two Notes
+ * favorites), #tags in the text, pinned notes, three trashed notes (one
+ * with tags of its own), a note with every
  * block kind (note 1: headings, lists, task boxes, code, a table, block
  * and inline images, inline styles, a #tag, action lines), a picture
  * note, a 200-line note, forty dated filler notes, and 13 '!' action items
- * — open, two done, overdue, due today, due later, undated — in several
- * contexts.  Due dates are relative to today, so the Action Items view
+ * — open, two done, overdue, due today, due later, undated — in notes of
+ * several tags.  Due dates are relative to today, so the Action Items view
  * always shows each case.  Everything goes through the same calls the app
  * makes: on_note_new_from_text / on_note_document_save, the tag links,
- * on_action_edit_set_done, the folder, pin and trash calls.
+ * on_action_edit_set_done, the Tags field, tag, pin and trash calls.
  *
  *   dev_seed check                 exit 0 when no app holds the data
  *                                  directory (so it may be wiped)
@@ -225,12 +227,12 @@ day(int offset, char out[static 11])
 }
 
 /*
- * note — a new note from text, optionally with #tags and images appended,
- * saved through THE save with its tag links.
+ * note — a new note from text with tags in its Tags field, optionally with
+ * #tags and images appended, saved through THE save with its tag links.
  *
  * Inputs:
  *   db     — the database
- *   folder — its folder (0 = the top level)
+ *   field  — NULL-terminated names for its Tags field, or NULL for none
  *   text   — its content, one line per block
  *   tags   — NULL-terminated tag names to append to the last line, or NULL
  *   images — NULL-terminated PNGs to append as image blocks, or NULL
@@ -238,10 +240,13 @@ day(int offset, char out[static 11])
  * Output: the note's id; 0 on failure (reported on stderr).
  */
 static gint64
-note(OnDatabase *db, gint64 folder, const char *text,
+note(OnDatabase *db, const char *const *field, const char *text,
      const char *const *tags, GBytes *const *images)
 {
-    gint64 id = on_note_new_from_text(db, folder, text);
+    gint64 id = on_note_new_from_text(db, NULL, text);
+    for (const char *const *f = field; id != 0 && f != NULL && *f != NULL; f++) {
+        if (on_db_note_field_tag_add(db, id, *f) == 0) id = 0;
+    }
     if (id == 0 || (tags == NULL && images == NULL)) {
         if (id == 0) fprintf(stderr, "dev_seed: could not create a note\n");
         return id;
@@ -325,19 +330,17 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     day(-3, d_3); day(0, d0); day(1, d1); day(2, d2);
     day(5, d5); day(9, d9); day(-10, d_10); day(14, d14);
 
-    gint64 salt     = on_db_folder_create(db, 0, "Salt", ON_AI_MODE_NORMAL, "\xf0\x9f\xa7\x82");
-    gint64 deps     = on_db_folder_create(db, salt, "Deployments", ON_AI_MODE_PROJECT, NULL);
-    gint64 stride_f = on_db_folder_create(db, deps, "Stride", ON_AI_MODE_NORMAL, NULL);
-    gint64 apollo_f = on_db_folder_create(db, deps, "Apollo", ON_AI_MODE_NORMAL, NULL);
-    gint64 meet_f   = on_db_folder_create(db, salt, "Meetings", ON_AI_MODE_NORMAL, NULL);
-    gint64 home     = on_db_folder_create(db, 0, "Home", ON_AI_MODE_NORMAL, "\xf0\x9f\x8f\xa1");
-    gint64 kitchen  = on_db_folder_create(db, home, "Kitchen", ON_AI_MODE_NORMAL, NULL);
-    gint64 garden_f = on_db_folder_create(db, home, "Garden", ON_AI_MODE_NORMAL, NULL);
-    gint64 reading  = on_db_folder_create(db, 0, "Reading", ON_AI_MODE_NORMAL, "\xf0\x9f\x93\x9a");
-    gint64 old      = on_db_folder_create(db, 0, "Old Projects", ON_AI_MODE_NORMAL, NULL);
-    gint64 y2024    = on_db_folder_create(db, old, "2024", ON_AI_MODE_NORMAL, NULL);
-    gboolean ok = salt && deps && stride_f && apollo_f && meet_f && home && kitchen &&
-                  garden_f && reading && old && y2024;
+    /* The Tags fields, as the move from folders made them: every folder on
+     * a note's path became a tag of it.                                    */
+    const char *const stride_f[] = { "Salt", "Deployments", "Stride", NULL };
+    const char *const apollo_f[] = { "Salt", "Deployments", "Apollo", NULL };
+    const char *const meet_f[]   = { "Salt", "Meetings", NULL };
+    const char *const kitchen[]  = { "Home", "Kitchen", NULL };
+    const char *const garden_f[] = { "Home", "Garden", NULL };
+    const char *const home[]     = { "Home", NULL };
+    const char *const reading[]  = { "Reading", NULL };
+    const char *const y2024[]    = { "Old Projects", "2024", NULL };
+    gboolean ok = TRUE;
 
     gint64 rich = note(db, reading, "Every block kind\n\nThis note shows each thing the editor draws.",
                        NULL, NULL);
@@ -375,8 +378,8 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
          note(db, garden_f, text, (const char *[]){ "home", NULL }, NULL) != 0;
     g_free(text);
 
-    text = g_strdup_printf("Loose note\n\nNot in any folder.\n! A root action item due %s", d14);
-    ok = ok && note(db, 0, text, NULL, NULL) != 0;
+    text = g_strdup_printf("Loose note\n\nNo tag at all.\n! An untagged note's item due %s", d14);
+    ok = ok && note(db, NULL, text, NULL, NULL) != 0;
     g_free(text);
 
     ok = ok && note(db, home, "Trip photos\n\nTwo pictures appended from files.", NULL,
@@ -392,6 +395,23 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     ok = ok && on_db_note_set_pinned(db, stride, TRUE) &&
          on_db_note_set_pinned(db, groceries, TRUE);
 
+    /* Emoji on three tags (Tasks shows them too), and two Notes favorites. */
+    static const struct {
+        const char *name;
+        const char *emoji;
+        gboolean    favorite;
+    } looks[] = {
+        { "Salt",    "\xf0\x9f\xa7\x82", TRUE  },
+        { "Home",    "\xf0\x9f\x8f\xa1", TRUE  },
+        { "Reading", "\xf0\x9f\x93\x9a", FALSE },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(looks) && ok; i++) {
+        OnTag *tag = on_db_tag_find(db, looks[i].name);
+        ok = tag != NULL && on_db_tag_set_emoji(db, tag->id, looks[i].emoji) &&
+             on_db_tag_set_favorite(db, tag->id, looks[i].favorite);
+        on_db_tag_free(tag);
+    }
+
     /* Forty filler notes a day apart, for list scrolling and sorting.      */
     gint64 now = (gint64)time(NULL);
     for (int i = 1; i <= 40 && ok; i++) {
@@ -402,14 +422,13 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
         ok = id != 0 && on_db_note_set_updated_at(db, id, now - i * 86400);
     }
 
-    /* The Trash: two notes, and a folder with a note inside it.            */
-    gint64 gone[2] = {
-        note(db, 0, "Draft to throw away\n\nNothing important.", NULL, NULL),
+    /* The Trash: three notes, one keeping tags only it carries.           */
+    gint64 gone[3] = {
+        note(db, NULL, "Draft to throw away\n\nNothing important.", NULL, NULL),
         note(db, kitchen, "Old shopping list\n\n! Something that no longer matters", NULL, NULL),
+        note(db, y2024, "Retired plan\n\nFrom 2024.", NULL, NULL),
     };
-    ok = ok && gone[0] != 0 && gone[1] != 0 && on_db_notes_trash(db, gone, 2) &&
-         note(db, y2024, "Retired plan\n\nFrom 2024.", NULL, NULL) != 0 &&
-         on_db_folder_trash(db, old);
+    ok = ok && gone[0] != 0 && gone[1] != 0 && gone[2] != 0 && on_db_notes_trash(db, gone, 3);
     return ok;
 }
 
@@ -422,12 +441,12 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
 static void
 print_counts(OnDatabase *db)
 {
-    gint notes = 0, folders = 0, tags = 0, actions = 0, open = 0;
-    on_db_totals(db, &notes, &folders, &tags);
+    gint notes = 0, tags = 0, actions = 0, open = 0;
+    on_db_totals(db, &notes, &tags);
     on_db_action_counts(db, &actions, &open);
-    printf("notes\t%d (%d visible)\nfolders\t%d\ntags\t%d\npinned\t%d\ntrash\t%d\n"
+    printf("notes\t%d (%d visible)\ntags\t%d\npinned\t%d\ntrash\t%d\n"
            "actions\t%d\t%d open\ndatabase\t%s\n",
-           notes, on_db_note_count_visible(db), folders, tags, on_db_note_count_pinned(db),
+           notes, on_db_note_count_visible(db), tags, on_db_note_count_pinned(db),
            on_db_trash_count(db), actions, open, db->path);
 }
 

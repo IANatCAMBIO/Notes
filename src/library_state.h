@@ -1,7 +1,6 @@
 #import <Cocoa/Cocoa.h>
 
 #include "app_core.h"
-#include "search_job.h"              /* OnSearchScope */
 
 #import "commands.h"
 
@@ -22,10 +21,11 @@
  * all.
  *
  * REFRESH RULES (the GTK build's, kept):
- *   - on_library_refresh_all      after anything structural: notes or
- *                                 folders created, moved, trashed, deleted;
- *                                 the tag set or an action item changed;
- *                                 the database switched.
+ *   - on_library_refresh_all      after anything structural: notes
+ *                                 created, trashed, deleted; a note's tags,
+ *                                 a tag's emoji or favorite flag, or an
+ *                                 action item changed; the database
+ *                                 switched.
  *   - on_library_notes_note_saved after an editor saved ONE note's content
  *                                 (library_notes.h): that row only — the
  *                                 sidebar is not rebuilt per autosave.
@@ -35,15 +35,12 @@
 
 /* What a sidebar row is; also what kind of selection the library has. */
 typedef enum {
-    on_sb_root,                      /* the fixed "Notes" root row          */
-    on_sb_folder,                    /* a folder                            */
-    on_sb_tags_header,               /* the "Tags" header (not selectable)  */
-    on_sb_tag,                       /* one tag                             */
     on_sb_pinned,                    /* "Pinned Notes"                      */
     on_sb_all,                       /* "All Notes"                         */
-    on_sb_trash,                     /* "Trash"                             */
-    on_sb_trash_folder,              /* a trashed folder under Trash        */
     on_sb_actions,                   /* "Action Items"                      */
+    on_sb_tags_header,               /* the "Tags" header (not selectable)  */
+    on_sb_tag,                       /* one tag                             */
+    on_sb_trash,                     /* "Trash"                             */
 } on_sb_kind_t;
 
 /* What the notes pane shows. */
@@ -52,13 +49,6 @@ typedef enum {
     on_library_view_grid,
     on_library_view_actions,         /* while Action Items is selected      */
 } on_library_view_t;
-
-/* What a drag of library rows carries. */
-typedef enum {
-    on_drag_notes,                   /* one or more notes                   */
-    on_drag_folder,                  /* one folder                          */
-    on_drag_trashed_folder,          /* one folder dragged out of the Trash */
-} on_drag_kind_t;
 
 @interface NotesLibrary : NSObject
 
@@ -71,8 +61,9 @@ typedef enum {
 /* The sidebar selection: which notes are listed.  Set by the sidebar
  * (library_sidebar.m) when the user selects a row; everyone else reads. */
 @property (nonatomic, assign) on_sb_kind_t sel_kind;
-@property (nonatomic, assign) gint64 sel_id;        /* folder id or tag id; 0 otherwise */
-@property (nonatomic, copy) NSString *sel_name;     /* the row's bare name */
+@property (nonatomic, assign) gint64 sel_id;        /* the tag id; 0 otherwise */
+@property (nonatomic, copy) NSString *sel_name;     /* the row's bare name (a tag's
+                                                     * name, no '#')        */
 
 /* The user's list-or-grid choice, kept while Action Items is showing so
  * leaving it returns to the right one. */
@@ -87,7 +78,7 @@ typedef enum {
  * Inputs:
  *   app — the application context, its database open
  *
- * Output: the state, with the Notes root selected.
+ * Output: the state, with All Notes selected.
  */
 - (instancetype)init_with_app:(OnApp *)app NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -124,27 +115,25 @@ NotesLibrary *on_library(void);
 on_library_view_t on_library_view(NotesLibrary *lib);
 
 /*
- * on_library_in_trash_view — is the notes pane showing Trash contents (the
- * Trash row or a trashed folder)?  Deleting there is permanent, and the
- * note menu offers Restore.
+ * on_library_in_trash_view — is the notes pane showing the Trash?
+ * Deleting there is permanent, and the note menu offers Restore.
  *
  * Output: YES in a Trash view.
  */
 BOOL on_library_in_trash_view(NotesLibrary *lib);
 
 /*
- * on_library_current_folder_id — the folder a new note or folder lands in.
+ * on_library_current_tag — the tag a new note is given (in its Tags field).
  *
- * Output: the selected folder's id, or 0 (the top level) when anything
- *         else is selected.
+ * Output: the selected tag's name, or nil when anything else is selected.
  */
-gint64 on_library_current_folder_id(NotesLibrary *lib);
+NSString *on_library_current_tag(NotesLibrary *lib);
 
 /*
  * on_library_notes_for_selection — the notes the selection lists, in
  * display order.  THE one mapping from a selection to a note set: the notes
  * pane, the media browser and the AI summary all use it, so they cannot
- * disagree about what "this folder" means.
+ * disagree about what "this tag" means.
  *
  * Output: a GList of OnNoteMeta *; free with on_db_note_list_free.
  */
@@ -152,8 +141,8 @@ GList *on_library_notes_for_selection(NotesLibrary *lib);
 
 /*
  * on_library_location_text — the selection as the status bar shows it:
- * "/Folder/Sub" for a folder, the row's name for the other views, with the
- * database path in front when that preference is on.
+ * "#tag" for a tag, the row's name for the other views, with the database
+ * path in front when that preference is on.
  *
  * Output: the text.
  */
@@ -161,17 +150,16 @@ NSString *on_library_location_text(NotesLibrary *lib);
 
 /*
  * on_library_search_scope — the selection as a search scope, for the search
- * window's "Selected Folder/Tag".
+ * window's "Selected Tag".
  *
  * Inputs:
- *   lib   — the library
- *   scope — receives folder or tag
- *   ident — receives the folder or tag id (0 = the root)
+ *   lib    — the library
+ *   tag_id — receives the selected tag's id, or 0 (every note) when no tag
+ *            is selected
  *
- * Output: the scope's display name.  Selections that are neither a folder
- *         nor a tag (All Notes, Pinned, Trash, Action Items) give the root.
+ * Output: the scope's display name: "#tag", or "All Notes".
  */
-NSString *on_library_search_scope(NotesLibrary *lib, OnSearchScope *scope, gint64 *ident);
+NSString *on_library_search_scope(NotesLibrary *lib, gint64 *tag_id);
 
 /* ── Refreshing (library_state.m, calling the panes) ────────────────────── */
 
@@ -222,26 +210,23 @@ BOOL on_library_validate_command(NotesLibrary *lib, id item);
 /* ── Drags of rows (library_state.m) ────────────────────────────────────── */
 
 /*
- * on_library_drag_item — what a dragged note selection or folder puts on
- * the pasteboard (type on_pasteboard_type_rows).  In-app only.
+ * on_library_drag_item — what a dragged note selection puts on the
+ * pasteboard (type on_pasteboard_type_rows).  In-app only.
  *
  * Inputs:
- *   kind — what is dragged
- *   ids  — the note ids, or the one folder id
+ *   ids — the note ids
  *
  * Output: a pasteboard item for the drag.
  */
-NSPasteboardItem *on_library_drag_item(on_drag_kind_t kind, NSArray<NSNumber *> *ids);
+NSPasteboardItem *on_library_drag_item(NSArray<NSNumber *> *ids);
 
 /*
- * on_library_drag_read — read a drag of rows back: the ids of every
- * pasteboard item of the first item's kind (a table drag writes one item
- * per row).
+ * on_library_drag_read — read a drag of notes back: the ids of every
+ * pasteboard item (a table drag writes one item per row).
  *
  * Inputs:
  *   pasteboard — the dragging pasteboard
- *   kind       — receives what is dragged
  *
- * Output: the ids, or nil when the pasteboard holds no row drag.
+ * Output: the ids, or nil when the pasteboard holds no note drag.
  */
-NSArray<NSNumber *> *on_library_drag_read(NSPasteboard *pasteboard, on_drag_kind_t *kind);
+NSArray<NSNumber *> *on_library_drag_read(NSPasteboard *pasteboard);

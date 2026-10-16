@@ -1265,6 +1265,26 @@ tag_capture_end(NotesNoteView *v, BOOL apply)
 }
 
 /*
+ * word_tag_name — can a tag be written as a #word?  Every tag is offered
+ * (the two apps share them), but only a name of tag characters (letters,
+ * digits, '_', '-') reads back as one; "Big Client", made in a Tags field,
+ * cannot.
+ *
+ * Inputs:
+ *   name — the tag's name (UTF-8)
+ *
+ * Output: YES when every character is a tag character.
+ */
+static BOOL
+word_tag_name(const gchar *name)
+{
+    if (name == NULL || *name == '\0' || !g_utf8_validate(name, -1, NULL)) return NO;
+    for (const gchar *p = name; *p != '\0'; p = g_utf8_next_char(p))
+        if (!on_document_tag_char(g_utf8_get_char(p))) return NO;
+    return YES;
+}
+
+/*
  * tag_popup_update — show the known tags that start (case-insensitively)
  * with what follows the '#', under the '#'; end the capture if the '#' is
  * gone.
@@ -1287,6 +1307,7 @@ tag_popup_update(NotesNoteView *v)
                                              encoding:NSUTF8StringEncoding] ?: @"";
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (GList *l = v.tag_choices; l != NULL && names.count < on_look_tag_popup_max; l = l->next) {
+        if (!word_tag_name(((const OnTag *)l->data)->name)) continue;
         NSString *name = @(((const OnTag *)l->data)->name);
         if ([name rangeOfString:typed options:NSCaseInsensitiveSearch | NSAnchoredSearch].location == 0)
             [names addObject:name];
@@ -1372,7 +1393,7 @@ tag_capture_consider(NotesNoteView *v, const char *text, size_t n)
         at_pos.offset = at;
         v.tag_start = at_pos;
         on_db_tag_list_free(v.tag_choices);
-        v.tag_choices = v.app && v.app->db ? on_db_tag_list(v.app->db) : NULL;
+        v.tag_choices = v.app && v.app->db ? on_db_tag_list(v.app->db, ON_TAGS_ALL) : NULL;
     }
     if (v.tag_capturing) tag_popup_update(v);
 }

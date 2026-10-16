@@ -3,11 +3,12 @@
  *
  * The exporter walks every note in the database, loads its BNBF blob into
  * an OnDocument (document.h — no GTK, no image decoded), and renders that
- * to either an .html or a .md file.  The on-disk layout mirrors the folder
- * hierarchy:
+ * to either an .html or a .md file, all in one folder (notes have tags,
+ * not folders), each starting with its tags — a "tags: Work, Clients"
+ * line in Markdown, a paragraph in HTML:
  *
- *     <dest>/Work/Project ideas.html
- *     <dest>/Personal/Travel/Packing list.html
+ *     <dest>/Project ideas.html
+ *     <dest>/Packing list.html
  *
  * Images are embedded as base64 data URIs in HTML; for Markdown they are
  * written as PNG files next to the note and referenced relatively.
@@ -37,8 +38,7 @@ gint on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
                    gchar **out_err);
 
 /* ---------------------------------------------------------------------------
- * on_export_note() — export a single note into `dest_dir` (no folder
- * mirroring; the file lands directly in the chosen directory).
+ * on_export_note() — export a single note into `dest_dir`, with its tags.
  *   app      — global application context.
  *   note_id  — the note to export.
  *   dest_dir — destination directory (created if missing).

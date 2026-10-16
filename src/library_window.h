@@ -3,10 +3,11 @@
 #import "library_state.h"
 
 /*
- * library_window — the library window's frame: the
- * toolbar, the split between the sidebar and the notes pane, the AI pane
- * under the notes, and the status bar.  The panes themselves come from
- * their own modules (library_sidebar.h, library_notes.h, library_ai.h).
+ * library_window — the library window's frame: the toolbar, the
+ * Favorites bar across the window, the split between the sidebar and the
+ * notes pane under it, the AI pane under the notes, and the status bar.
+ * The panes themselves come from their own modules (library_favorites.h,
+ * library_sidebar.h, library_notes.h, library_ai.h).
  *
  * There is at most one library window.  Closing it does not quit the app
  * while editors are open; it is built again when it is next asked for.
@@ -39,7 +40,8 @@ void on_library_window_show(NotesLibrary *lib);
 
 /*
  * on_library_window_location_changed — the selection changed (or what it
- * names did): the status bar's left side shows the new location.  Called
+ * names did): the status bar's left side shows the new location and the
+ * Favorites bar lights the selected tag (and shows a changed tag).  Called
  * by the notes pane whenever it lists a selection.
  *
  * Inputs:

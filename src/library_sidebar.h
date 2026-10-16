@@ -3,17 +3,17 @@
 #import "library_state.h"
 
 /*
- * library_sidebar — the library's sidebar: the folder tree, the tags, and
- * the fixed rows (Pinned Notes, All Notes, Action Items, Trash).
+ * library_sidebar — the library's sidebar: the views (Pinned Notes, All
+ * Notes, Action Items), then the tags the notes carry, and the Trash —
+ * the design of the Tasks app's sidebar.  A right-click on a tag offers
+ * Edit Tag… (its emoji and Notes' favorite flag; a tag's name never
+ * changes).
  *
  * It owns the selection: when the user selects a row it writes
  * lib.sel_kind / sel_id / sel_name and calls on_library_notes_refresh and
  * the window's status update.  It is also the library's only DROP target
- * (notes and folders dragged onto folders, the root and the Trash).
- *
- * The specification is the GTK build's src/library_window.c
- * (refresh_sidebar, the sidebar menus, the drop validation, the
- * fit-to-content sizing).
+ * (notes dragged onto a tag get it in their Tags fields; onto the Trash,
+ * they go there).
  */
 
 /*
@@ -28,10 +28,10 @@
 NSView *on_library_sidebar_new(NotesLibrary *lib);
 
 /*
- * on_library_sidebar_refresh — rebuild the rows from the database: folders,
- * tags, counts, which fixed rows exist.  Expansion state and the selection
- * survive; a selection that no longer exists falls back to the first row
- * (updating lib's selection and refreshing the notes pane for it).  When
+ * on_library_sidebar_refresh — rebuild the rows from the database: tags,
+ * counts, which fixed rows exist.  The selection survives; a selection that
+ * no longer exists falls back to All Notes (updating lib's selection and
+ * refreshing the notes pane for it).  When
  * the selection survives the notes pane is not refreshed: the caller does
  * that.
  *
@@ -40,14 +40,14 @@ NSView *on_library_sidebar_new(NotesLibrary *lib);
 BOOL on_library_sidebar_refresh(NotesLibrary *lib);
 
 /*
- * on_library_sidebar_select — select a row from code (after creating a
- * folder, restoring one, leaving a deleted one), expanding its ancestors,
+ * on_library_sidebar_select — select a row from code (a Favorites bar
+ * button, leaving an emptied Trash), opening the Tags when it is a tag,
  * and update lib's selection to match.
  *
  * Inputs:
  *   lib   — the library
  *   kind  — the row's kind
- *   ident — its folder or tag id (0 for the fixed rows)
+ *   ident — its tag id (0 for the fixed rows)
  */
 void on_library_sidebar_select(NotesLibrary *lib, on_sb_kind_t kind, gint64 ident);
 

@@ -61,8 +61,6 @@
  *   ai_enabled             "ai_enabled"               0  AI summary available
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
- *   ai_custom_prompt       "ai_custom_prompt" prompt for Custom-mode folders
- *                                             (owned; NULL when unset)
  *
  * Backups (backup.h) and the pull (action_sync.h):
  *   backup_running — a backup pass is on its worker; keeps a timer tick
@@ -78,7 +76,7 @@
  *                    has not run yet (one post for any number of commits).
  *
  * Hooks (see the invariant above; each says who calls it):
- *   notify_notes_changed — the set of notes, folders, tags or action items
+ *   notify_notes_changed — the set of notes, tags or action items
  *                    changed: rebuild the sidebar and the notes pane.
  *                    Called by the UI after structural changes and by
  *                    on_app_switch_db.
@@ -151,7 +149,6 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    ai_enabled;
     gchar      *ai_command;
-    gchar      *ai_custom_prompt;
 
     gboolean    backup_running;
     on_timer_id_t   backup_timer;
@@ -204,30 +201,18 @@ void on_app_prefs_load(OnApp *app);
 void on_app_status(OnApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
 /* ---------------------------------------------------------------------------
- * on_app_location_text() — a folder path as a status bar shows it: with the
- * statusbar_db_path preference on, the database file's path is prepended as
- * one continuous path (a "/" inserted for the non-path views such as
- * "#tag"); otherwise the location as given.
+ * on_app_location_text() — a view's name as a status bar shows it: with
+ * the statusbar_db_path preference on, the database file's path is
+ * prepended as one continuous path ("/" between); otherwise the location
+ * as given.
  *
  * Inputs:
  *   app      — the application context
- *   location — the folder-path part ("/Work/Projects", "#tag", …)
+ *   location — the view ("#Stride", "Pinned Notes", …)
  *
  * Output: a new string; g_free it.
  * ------------------------------------------------------------------------- */
 gchar *on_app_location_text(OnApp *app, const gchar *location);
-
-/* ---------------------------------------------------------------------------
- * on_app_folder_location() — a folder's location as a status bar shows it:
- * "/Folder/Sub" ("/" for the top level) through on_app_location_text.
- *
- * Inputs:
- *   app       — the application context, its database open
- *   folder_id — the folder; 0 for the top level
- *
- * Output: a new string; g_free it.
- * ------------------------------------------------------------------------- */
-gchar *on_app_folder_location(OnApp *app, gint64 folder_id);
 
 /* ---------------------------------------------------------------------------
  * on_app_db_health_start() — THE integrity check of the open database:

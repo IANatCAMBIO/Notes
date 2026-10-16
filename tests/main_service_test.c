@@ -236,7 +236,7 @@ test_core_jobs(const char *data_dir)
     app.db = on_db_open(NULL, NULL);
     check(app.db != NULL && g_str_has_prefix(app.db->path, data_dir),
           "the default database opens inside the test data directory");
-    on_db_note_create(app.db, 0);
+    on_db_note_create(app.db);
 
     on_db_health_check_async(app.db, health_landed, NULL);
     const OnDbHealth *h = on_db_health(app.db);

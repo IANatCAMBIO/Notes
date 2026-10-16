@@ -16,7 +16,7 @@
 
 /* Above this many candidate notes, one bulk body_text query beats reading
  * the rows one at a time; at or below it the bulk fetch would pull the whole
- * column to inspect a handful of notes (a folder- or tag-scoped search).    */
+ * column to inspect a handful of notes (a tag-scoped search).               */
 #define SEARCH_BULK_TEXT_MIN 64
 
 
@@ -28,7 +28,8 @@
  *               and by the main-thread hand-back.
  *   db_path   — database file to open privately (owned).
  *   query     — the parsed query (owned).
- *   scoped, scope, scope_id — the candidate notes.
+ *   tag_id    — the candidate notes: those carrying this tag, or every
+ *               note (the Trash's too) for 0.
  *   done, data — where the result goes.
  *   hits      — on_search_hit_t *, filled by the worker.
  *   error     — the worker's failure message, or NULL (owned).
@@ -37,9 +38,7 @@ struct on_search_job_t {
     atomic_int        cancelled;
     gchar            *db_path;
     OnQuery          *query;
-    gboolean          scoped;
-    OnSearchScope     scope;
-    gint64            scope_id;
+    gint64            tag_id;
     on_search_done_func_t  done;
     gpointer          data;
     GPtrArray        *hits;
@@ -58,7 +57,8 @@ static void
 search_hit_free(gpointer data)
 {
     on_search_hit_t *h = data;
-    g_free(h->path);
+    g_free(h->title);
+    g_free(h->tags);
     g_free(h);
 }
 
@@ -108,17 +108,12 @@ search_worker(void *data)
         return;
     }
 
-    GList *notes;                    /* OnNoteMeta * candidates              */
-    if (!job->scoped) {
-        notes = on_db_note_list_all(db, TRUE);
-    } else if (job->scope == ON_SCOPE_TAG) {
-        notes = on_db_notes_by_tag(db, job->scope_id);
-    } else {
-        notes = on_db_note_list(db, job->scope_id);
-    }
+    GList *notes = job->tag_id != 0      /* OnNoteMeta * candidates          */
+                   ? on_db_notes_by_tag(db, job->tag_id)
+                   : on_db_note_list_all(db, TRUE);
 
-    /* Folder-id -> path strings, all fetched in one query.                 */
-    GHashTable *paths = on_db_folder_path_map(db);
+    /* Note id -> its tags' names, all fetched in one query.               */
+    GHashTable *tags = on_db_note_tag_names_map(db);
 
     /* Note bodies: ONE query for the whole column beats a SELECT per
      * candidate when searching everything; a scoped search with a handful
@@ -144,18 +139,18 @@ search_worker(void *data)
             continue;
         }
 
-        const gchar     *folder = g_hash_table_lookup(paths, &m->folder_id);
-        on_search_hit_t *h      = g_new0(on_search_hit_t, 1);
+        const gchar     *names = g_hash_table_lookup(tags, &m->id);
+        on_search_hit_t *h     = g_new0(on_search_hit_t, 1);
         h->id         = m->id;
-        h->path       = g_strdup_printf("%s/%s", folder != NULL ? folder : "",
-                                        m->title);
+        h->title      = g_strdup(m->title != NULL ? m->title : "");
+        h->tags       = g_strdup(names != NULL ? names : "");
         h->updated_at = m->updated_at;
         g_ptr_array_add(job->hits, h);
     }
     if (bodies != NULL) {
         g_hash_table_destroy(bodies);
     }
-    g_hash_table_destroy(paths);
+    g_hash_table_destroy(tags);
     on_db_note_list_free(notes);
     on_db_close(db);
 
@@ -166,17 +161,14 @@ search_worker(void *data)
  * on_search_job_start — see search_job.h.
  */
 on_search_job_t *
-on_search_job_start(const gchar *db_path, OnQuery *query, gboolean scoped,
-                    OnSearchScope scope, gint64 scope_id,
+on_search_job_start(const gchar *db_path, OnQuery *query, gint64 tag_id,
                     on_search_done_func_t done, gpointer data)
 {
     on_search_job_t *job = g_new0(on_search_job_t, 1);
     atomic_init(&job->cancelled, 0);
     job->db_path  = g_strdup(db_path);
     job->query    = query;
-    job->scoped   = scoped;
-    job->scope    = scope;
-    job->scope_id = scope_id;
+    job->tag_id   = tag_id;
     job->done     = done;
     job->data     = data;
     job->hits     = g_ptr_array_new_with_free_func(search_hit_free);

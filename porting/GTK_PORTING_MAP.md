@@ -6,6 +6,10 @@ research; nothing in notes/, tasks/ or files/ was modified, nothing was built
 or run (the installed GUI, pid 56318, was running on the real database the
 whole time, so no CLI command was executed either).
 
+This map describes the GTK app.  Its folders, folder AI modes and the
+action-item "context" are gone from the port: tags shared with Tasks
+replaced them (`porting/INTERFACES.md`, "Tags replace folders").
+
 How this was produced: I read in full `document.h`, `bnbf.h`, `db.h`,
 `serialize.[ch]`, `doc_layout.[ch]`, `note_view.[ch]`, `ipc.[ch]`, `main.c`,
 `app.h`, `cli.h`, `export.h`, `backup.h`, `search_query.h`, `editor_window.h`,

@@ -8,8 +8,7 @@
  * sidebar, notes, settings, search, media, AI — with room to spare). */
 #define MAX_COMMAND_TABLES 12
 
-/* Keys of the property list a row drag carries. */
-static NSString * const drag_key_kind = @"kind";
+/* The key of the property list a note drag carries. */
 static NSString * const drag_key_ids  = @"ids";
 
 /* The registered handler tables.  Static tables, kept by reference. */
@@ -30,8 +29,8 @@ init_with_app:(OnApp *)app
     self = [super init];
     if (!self) return nil;
     _app      = app;
-    _sel_kind = on_sb_root;              /* the GTK app starts on the Notes root */
-    _sel_name = @"Notes";
+    _sel_kind = on_sb_all;
+    _sel_name = @"All Notes";
     return self;
 }
 
@@ -75,16 +74,16 @@ on_library_view(NotesLibrary *lib)
 BOOL
 on_library_in_trash_view(NotesLibrary *lib)
 {
-    return lib.sel_kind == on_sb_trash || lib.sel_kind == on_sb_trash_folder;
+    return lib.sel_kind == on_sb_trash;
 }
 
 /*
- * on_library_current_folder_id — see library_state.h.
+ * on_library_current_tag — see library_state.h.
  */
-gint64
-on_library_current_folder_id(NotesLibrary *lib)
+NSString *
+on_library_current_tag(NotesLibrary *lib)
 {
-    return lib.sel_kind == on_sb_folder ? lib.sel_id : 0;
+    return lib.sel_kind == on_sb_tag ? lib.sel_name : nil;
 }
 
 /*
@@ -105,10 +104,6 @@ on_library_notes_for_selection(NotesLibrary *lib)
     case on_sb_actions:              /* Action Items spans every note       */
     case on_sb_tags_header:          /* never selected; listed for the enum */
         return on_db_note_list_recent(db);
-    case on_sb_root:
-    case on_sb_folder:
-    case on_sb_trash_folder:
-        return on_db_note_list(db, lib.sel_id);
     }
 }
 
@@ -118,22 +113,8 @@ on_library_notes_for_selection(NotesLibrary *lib)
 NSString *
 on_library_location_text(NotesLibrary *lib)
 {
-    NSString *location;
-    switch (lib.sel_kind) {
-    case on_sb_root:
-    case on_sb_folder: {
-        gchar    *full = on_app_folder_location(lib.app, lib.sel_id);
-        NSString *text = @(full);
-        g_free(full);
-        return text;
-    }
-    case on_sb_trash_folder:
-        location = [@"Trash/" stringByAppendingString:lib.sel_name ?: @""];
-        break;
-    default:
-        location = lib.sel_name ?: @"";
-        break;
-    }
+    NSString *location = lib.sel_kind == on_sb_tag ? [@"#" stringByAppendingString:lib.sel_name ?: @""]
+                                                   : lib.sel_name ?: @"";
     gchar    *full = on_app_location_text(lib.app, location.UTF8String);
     NSString *text = @(full);
     g_free(full);
@@ -144,13 +125,11 @@ on_library_location_text(NotesLibrary *lib)
  * on_library_search_scope — see library_state.h.
  */
 NSString *
-on_library_search_scope(NotesLibrary *lib, OnSearchScope *scope, gint64 *ident)
+on_library_search_scope(NotesLibrary *lib, gint64 *tag_id)
 {
-    BOOL scoped = lib.sel_kind == on_sb_tag || lib.sel_kind == on_sb_folder ||
-                  lib.sel_kind == on_sb_trash_folder || lib.sel_kind == on_sb_root;
-    *scope = (scoped && lib.sel_kind == on_sb_tag) ? ON_SCOPE_TAG : ON_SCOPE_FOLDER;
-    *ident = scoped ? lib.sel_id : 0;
-    return (scoped && lib.sel_name) ? lib.sel_name : @"Notes";
+    BOOL tag = lib.sel_kind == on_sb_tag;
+    *tag_id = tag ? lib.sel_id : 0;
+    return tag ? [@"#" stringByAppendingString:lib.sel_name ?: @""] : @"All Notes";
 }
 
 /*
@@ -178,8 +157,8 @@ on_library_add_commands(const on_command_handler_t *table, size_t n)
 /*
  * acts_on_library — does a command act on what the library window shows,
  * so that from the menu bar with the window closed it must open it first?
- * (New Folder lands in the selection; the view and sidebar toggles, Media
- * and AI Summary act on the window itself.)
+ * (The view and sidebar toggles, Media and AI Summary act on the window
+ * itself.)
  *
  * Inputs:
  *   sender — the menu or toolbar item
@@ -191,7 +170,7 @@ acts_on_library(id sender)
 {
     static NSSet<NSString *> *idents;
     if (idents == nil)
-        idents = [NSSet setWithArray:@[@"new-folder", @"view-list", @"view-grid", @"toggle-view",
+        idents = [NSSet setWithArray:@[@"view-list", @"view-grid", @"toggle-view",
                                        @"toggle-sidebar", @"toggle-done", @"media", @"ai-summary"]];
     NSString *ident = on_command_ident(sender);
     return ident != nil && [idents containsObject:ident];
@@ -231,11 +210,10 @@ on_library_validate_command(NotesLibrary *lib, id item)
  * on_library_drag_item — see library_state.h.
  */
 NSPasteboardItem *
-on_library_drag_item(on_drag_kind_t kind, NSArray<NSNumber *> *ids)
+on_library_drag_item(NSArray<NSNumber *> *ids)
 {
     NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
-    [item setPropertyList:@{ drag_key_kind: @(kind), drag_key_ids: ids }
-                  forType:on_pasteboard_type_rows];
+    [item setPropertyList:@{ drag_key_ids: ids } forType:on_pasteboard_type_rows];
     return item;
 }
 
@@ -243,23 +221,17 @@ on_library_drag_item(on_drag_kind_t kind, NSArray<NSNumber *> *ids)
  * on_library_drag_read — see library_state.h.
  */
 NSArray<NSNumber *> *
-on_library_drag_read(NSPasteboard *pasteboard, on_drag_kind_t *kind)
+on_library_drag_read(NSPasteboard *pasteboard)
 {
-    /* A table writes one item per dragged row: gather the ids of every
-     * item of the same kind. */
-    NSMutableArray<NSNumber *> *all = [NSMutableArray array];
-    NSNumber *first_kind = nil;
+    /* A table writes one item per dragged row: gather the ids of all.    */
+    NSMutableArray<NSNumber *> *all = nil;
     for (NSPasteboardItem *item in pasteboard.pasteboardItems) {
         NSDictionary *plist = [item propertyListForType:on_pasteboard_type_rows];
         if (![plist isKindOfClass:NSDictionary.class]) continue;
-        NSNumber *boxed_kind = plist[drag_key_kind];
-        NSArray  *ids        = plist[drag_key_ids];
-        if (![boxed_kind isKindOfClass:NSNumber.class] || ![ids isKindOfClass:NSArray.class]) continue;
-        if (first_kind && ![first_kind isEqual:boxed_kind]) continue;
-        first_kind = boxed_kind;
+        NSArray *ids = plist[drag_key_ids];
+        if (![ids isKindOfClass:NSArray.class]) continue;
+        if (all == nil) all = [NSMutableArray array];
         [all addObjectsFromArray:ids];
     }
-    if (first_kind == nil) return nil;
-    *kind = (on_drag_kind_t)first_kind.integerValue;
     return all;
 }

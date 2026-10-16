@@ -21,7 +21,7 @@
  *     below) — so Notes' own saves never refresh the library;
  *   - 'tasks' moved (or the last pull failed): the pull runs;
  *   - only 'notes' moved: no pull — the editors check their notes and the
- *     library refreshes (another writer changed notes, folders or tags);
+ *     library refreshes (another writer changed notes or tags);
  *   - neither moved (e.g. only shared_settings changed): nothing.
  * A pull that left a note unsynced sets app->pull_failed, and the next
  * tick pulls again whether or not anything else committed.  A note whose

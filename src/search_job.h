@@ -3,7 +3,7 @@
  *
  * The search window's worker, lifted out of the GTK window so it has no
  * toolkit in it: the window parses the query on the main thread (so a bad
- * pattern is reported at once — search_query.h), resolves the scope from
+ * pattern is reported at once — search_query.h), takes the scope (a tag) from
  * the library's selection, and starts a job; the job opens its OWN SQLite
  * connection on a worker (one connection per thread), matches every
  * candidate note's title and cached body text against the query, and hands
@@ -23,18 +23,12 @@
 
 #include "search_query.h"
 
-/* What a scoped search targets.  (All Notes is "not scoped".)              */
-typedef enum {
-    ON_SCOPE_FOLDER,                 /* one folder's direct notes            */
-    ON_SCOPE_TAG,                    /* notes carrying one tag               */
-} OnSearchScope;
-
 /* One matching note, formatted by the worker so the main thread only shows
  * it.  Owned by the job's hits array.                                       */
 typedef struct {
     gint64  id;                      /* the note, for opening it             */
-    gchar  *path;                    /* "Folder/Sub/Title"; "/Title" for a
-                                        note in the root                     */
+    gchar  *title;                   /* its title                            */
+    gchar  *tags;                    /* its tags, "Salt, Stride"; "" for none */
     gint64  updated_at;              /* modified, UNIX time                  */
 } on_search_hit_t;
 
@@ -58,26 +52,24 @@ typedef void (*on_search_done_func_t)(const gchar *error,
 /* ---------------------------------------------------------------------------
  * on_search_job_start() — begin a search.  Main thread.
  *
- * An unscoped search covers every note INCLUDING the Trash: deleted notes
- * stay findable until the Trash is emptied.
+ * A search of every note covers the Trash too: deleted notes stay findable
+ * until the Trash is emptied.
  *
  * Inputs:
  *   db_path  — the database file (app->db->path); the worker opens its own
  *              connection to it
  *   query    — the parsed query; OWNERSHIP IS TAKEN (it is immutable, so
  *              the worker matches with it freely)
- *   scoped   — FALSE for All Notes; TRUE to search `scope`/`scope_id` only
- *   scope    — folder or tag (ignored when not scoped)
- *   scope_id — the folder id (0 = the root) or tag id
+ *   tag_id   — search the (visible) notes carrying this tag only; 0 for
+ *              every note
  *   done     — completion callback; must not be NULL
  *   data     — passed to done
  *
  * Output: the job's handle (see LIFETIME above); never NULL.
  * ------------------------------------------------------------------------- */
 on_search_job_t *on_search_job_start(const gchar *db_path, OnQuery *query,
-                                 gboolean scoped, OnSearchScope scope,
-                                 gint64 scope_id, on_search_done_func_t done,
-                                 gpointer data);
+                                     gint64 tag_id, on_search_done_func_t done,
+                                     gpointer data);
 
 /* ---------------------------------------------------------------------------
  * on_search_job_cancel() — abandon a job: `done` will not be called, and

@@ -86,9 +86,10 @@ gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                                gboolean sync_actions, gboolean *changed);
 
 /* ---------------------------------------------------------------------------
- * on_note_document_save_tags() — rewrite note `id`'s tag links from the
- * document's #tag runs (on_document_collect_tags → on_db_note_set_tags,
- * which creates missing tags and prunes orphans).  The second half of a
+ * on_note_document_save_tags() — rewrite note `id`'s TEXT tags from the
+ * document's #tag runs (on_document_collect_tags →
+ * on_db_note_set_text_tags, which makes missing tags; the Tags field is
+ * not touched).  The second half of a
  * save whose document's tags changed: the editor calls it when its tags
  * were touched, everything else after every save.
  *   db  — open database.
@@ -102,16 +103,17 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
 /* ---------------------------------------------------------------------------
  * on_note_new_from_text() — a new note holding plain text: one PARA block
  * per line (on_document_from_text), the first line its title, every '!'
- * line an action item — created and written through THE save, in ONE
- * write transaction (the caller's, when one is open): a failed save leaves
- * no note behind.  What the development seeder and the tests build their
- * notes with (it was the command-line tool's `note new`).
- *   db        — open database.
- *   folder_id — the folder (0 = top level).
- *   text      — the content, UTF-8 (invalid bytes become U+FFFD).
+ * line an action item, every #tag a text tag — created and written
+ * through THE save, in ONE write transaction (the caller's, when one is
+ * open): a failed save leaves no note behind.  What the development
+ * seeder and the tests build their notes with (it was the command-line
+ * tool's `note new`).
+ *   db   — open database.
+ *   tag  — a tag for its Tags field, or NULL for none.
+ *   text — the content, UTF-8 (invalid bytes become U+FFFD).
  * Returns the new note's id, or 0 on failure.
  * ------------------------------------------------------------------------- */
-gint64 on_note_new_from_text(OnDatabase *db, gint64 folder_id,
+gint64 on_note_new_from_text(OnDatabase *db, const gchar *tag,
                              const gchar *text);
 
 /* ---------------------------------------------------------------------------
@@ -171,8 +173,8 @@ gint on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
 /* ---------------------------------------------------------------------------
  * on_note_count_images() — how many IMAGE records a BNBF blob holds, found
  * by the same cheap record walk as on_note_extract_text(): the PNG payloads
- * are skipped, never decoded.  The media view asks this of every note in a
- * folder, so it must not pay per-image decode costs just to know the count.
+ * are skipped, never decoded.  The media view asks this of every note it
+ * lists, so it must not pay per-image decode costs just to know the count.
  *   data — BNBF bytes (NULL is answered 0).
  *   len  — length of `data`.
  * Returns the number of embedded images, 0 for an unreadable blob.

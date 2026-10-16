@@ -29,9 +29,9 @@ void on_search_install(NotesLibrary *lib);
  *
  * Inputs:
  *   lib                — the library (its selection is the "Selected
- *                        Folder/Tag" scope, read each time Search is
+ *                        Tag" scope, read each time Search is
  *                        pressed: on_library_search_scope)
- *   scope_to_selection — YES preselects "Selected Folder/Tag" (Search
+ *   scope_to_selection — YES preselects "Selected Tag" (Search
  *                        Here…); NO preselects All Notes
  *   query              — text to search for at once (the library toolbar's
  *                        search field); nil or @"" just opens the window

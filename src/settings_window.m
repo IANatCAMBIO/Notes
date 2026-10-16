@@ -42,9 +42,6 @@ static const CGFloat sub_inset = 24.0;
 /* How much wider than its content the window opens, for breathing room. */
 static const CGFloat extra_w = 20.0;
 
-/* The custom prompt editor's height. */
-static const CGFloat prompt_h = 72.0;
-
 /* How much of the 64-character digest is shown (GTK SHA_HEAD / SHA_TAIL). */
 static const NSUInteger sha_head = 8;
 static const NSUInteger sha_tail = 4;
@@ -72,8 +69,8 @@ typedef struct {
 } bool_setting_t;
 
 static const bool_setting_t appearance_settings[] = {
-    { "Show note counts next to folders and tags",   "sidebar_counts",      apply_notes       },
-    { "Fit the sidebar width to the folders on show", "sidebar_fit_content", apply_sidebar_fit },
+    { "Show note counts next to views and tags",      "sidebar_counts",      apply_notes       },
+    { "Fit the sidebar width to the rows on show",    "sidebar_fit_content", apply_sidebar_fit },
     { "Bold titles in comfortable list density",      "bold_list_titles",    apply_notes       },
     { "Show completed action items",                  "show_done_actions",   apply_notes       },
     { "Show database path prefix in status bar",      "statusbar_db_path",   apply_status_path },
@@ -299,7 +296,7 @@ policy_store(OnApp *app, const char *key, gint64 value)
 
 /* ── The window ─────────────────────────────────────────────────────────── */
 
-@interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate>
+@interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate>
 @property (nonatomic, weak)   NotesLibrary *lib;
 @property (nonatomic, strong) NSTextField  *led;
 @property (nonatomic, strong) NSTextField  *health;
@@ -319,7 +316,6 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSButton     *backup_now;
 @property (nonatomic, strong) NSTextField  *viewer;
 @property (nonatomic, strong) NSTextField  *ai_command;
-@property (nonatomic, strong) NSTextView   *ai_prompt;
 @property (nonatomic, strong) NSStackView  *ai_sub;
 @property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
@@ -558,7 +554,7 @@ add_database:(NSMutableArray<NSView *> *)rows
 
     NSButton *update = small_button(@"Update", self, @selector(update_health:));
     update.toolTip = @"Re-read every line above: run PRAGMA integrity_check and PRAGMA foreign_key_check "
-                      "against this database, then re-count its notes and folders and re-read its size "
+                      "against this database, then re-count its notes and tags and re-read its size "
                       "and SHA-256.";
     NSStackView *plate_box = self.plate_box = [NSStackView stackViewWithViews:@[plate, update]];
     plate_box.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -648,8 +644,7 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
 }
 
 /*
- * add_ai: — the AI master switch and, enabled with it, the command and
- * the custom prompt.
+ * add_ai: — the AI master switch and, enabled with it, the command.
  *
  * Inputs:
  *   rows — the column to append to
@@ -662,10 +657,9 @@ add_ai:(NSMutableArray<NSView *> *)rows
     OnApp *app = self.lib.app;
     NSTextField *head = heading(@"AI Features");
     [rows addObject:head];
-    [rows addObject:indented(note_text(@"The AI button in the library toolbar generates a summary of the current "
-                                        "folder’s notes using an external AI command. Normal or Project mode is "
-                                        "set per-folder in the New/Rename Folder dialog. This switch is a master "
-                                        "kill switch: disabling it hides the button and prevents all AI commands "
+    [rows addObject:indented(note_text(@"The AI button in the library toolbar generates a summary of the selected "
+                                        "notes using an external AI command. This switch is a master kill "
+                                        "switch: disabling it hides the button and prevents all AI commands "
                                         "from running."), indent)];
     NSButton *enable = [NSButton checkboxWithTitle:@"Enable AI features" target:self action:@selector(ai_toggled:)];
     enable.state = app->ai_enabled ? NSControlStateValueOn : NSControlStateValueOff;
@@ -677,28 +671,12 @@ add_ai:(NSMutableArray<NSView *> *)rows
     self.ai_command.delegate          = self;
     [self.ai_command.widthAnchor constraintEqualToConstant:text_w - sub_inset - 90].active = YES;
 
-    NSScrollView *prompt_scroll = [NSTextView scrollableTextView];
-    self.ai_prompt = prompt_scroll.documentView;
-    self.ai_prompt.identifier = @"ai-prompt";
-    self.ai_prompt.string     = app->ai_custom_prompt ? @(app->ai_custom_prompt) : @"";
-    self.ai_prompt.font       = [NSFont systemFontOfSize:on_look_ui_font];
-    self.ai_prompt.richText   = NO;
-    self.ai_prompt.textContainerInset = NSMakeSize(4, 4);
-    self.ai_prompt.delegate   = self;
-    prompt_scroll.borderType  = NSBezelBorder;
-    prompt_scroll.translatesAutoresizingMaskIntoConstraints = NO;
-    [prompt_scroll.widthAnchor  constraintEqualToConstant:text_w - sub_inset].active = YES;
-    [prompt_scroll.heightAnchor constraintEqualToConstant:prompt_h].active = YES;
-
     NSTextField *cmd_hint = note_text(@"Run “which claude” in a terminal to find your Claude Code command path. "
                                        "The command must read the prompt from stdin and write the response to "
                                        "stdout.");
-    NSTextField *prompt_hint = note_text(@"Used when a folder’s AI mode is set to Custom. Notes and action items "
-                                          "are appended after this prompt.");
-    cmd_hint.preferredMaxLayoutWidth = prompt_hint.preferredMaxLayoutWidth = text_w - sub_inset;
+    cmd_hint.preferredMaxLayoutWidth = text_w - sub_inset;
     self.ai_sub = [NSStackView stackViewWithViews:@[
         row(@[[NSTextField labelWithString:@"AI command:"], self.ai_command]), cmd_hint,
-        [NSTextField labelWithString:@"Custom prompt:"], prompt_scroll, prompt_hint,
     ]];
     self.ai_sub.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.ai_sub.alignment   = NSLayoutAttributeLeading;
@@ -742,10 +720,10 @@ refresh_db
     self.health.toolTip     = tip;
     self.db_path.stringValue = @(db->path);
 
-    gint notes = 0, folders = 0;
-    on_db_totals(db, &notes, &folders, NULL);
-    self.db_data.stringValue = [NSString stringWithFormat:@"%d note%s in %d folder%s",
-                                notes, notes == 1 ? "" : "s", folders, folders == 1 ? "" : "s"];
+    gint notes = 0, tags = 0;
+    on_db_totals(db, &notes, &tags);
+    self.db_data.stringValue = [NSString stringWithFormat:@"%d note%s, %d tag%s",
+                                notes, notes == 1 ? "" : "s", tags, tags == 1 ? "" : "s"];
     struct stat st;
     self.db_size.stringValue = stat(db->path, &st) == 0 ? on_ui_format_bytes((int64_t)st.st_size) : @"unknown";
 
@@ -837,15 +815,12 @@ refresh_backup
 }
 
 /*
- * refresh_ai — the command and prompt are usable only while AI is on.
+ * refresh_ai — the command is usable only while AI is on.
  */
 - (void)
 refresh_ai
 {
-    BOOL on = self.lib.app->ai_enabled;
-    self.ai_command.enabled  = on;
-    self.ai_prompt.editable  = on;
-    self.ai_prompt.textColor = on ? NSColor.textColor : NSColor.disabledControlTextColor;
+    self.ai_command.enabled = self.lib.app->ai_enabled;
 }
 
 /* ── Actions ──────────────────────────────────────────────────────────── */
@@ -912,19 +887,6 @@ controlTextDidChange:(NSNotification *)note
     const char  *value = field.stringValue.length ? field.stringValue.UTF8String : NULL;
     if (field == self.viewer)          [self write_setting:"image_viewer" value:value];
     else if (field == self.ai_command) [self write_setting:"ai_command" value:value];
-}
-
-/*
- * textDidChange: — the custom prompt, written as it is typed.
- *
- * Inputs:
- *   note — the notification (unused)
- */
-- (void)
-textDidChange:(NSNotification *)note
-{
-    NSString *text = self.ai_prompt.string;
-    [self write_setting:"ai_custom_prompt" value:text.length ? text.UTF8String : NULL];
 }
 
 /*

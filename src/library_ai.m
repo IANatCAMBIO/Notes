@@ -6,8 +6,7 @@
  * section (run_ai_summary, build_ai_pane, on_ai_button_clicked).
  *
  * The AI Summary command summarises the SELECTED notes: their text and
- * action items go, after a header chosen by the folder's AI mode (Normal,
- * Project or the Custom prompt from Settings), to the configured command's
+ * action items go, after a short request, to the configured command's
  * stdin, and what it writes to stdout (and stderr) is shown in the pane.
  * The command line is run by /bin/sh, so it is quoted as in a shell (the
  * GTK build split it with the same rules).  The command runs off the main
@@ -38,34 +37,27 @@ static const double throbber_s = 0.12;
 /* The pane's height when it first opens, if the notes have room. */
 static const CGFloat first_pane_h = 220.0;
 
-/* The prompt's opening, per folder AI mode (GTK run_ai_summary). */
+/* The prompt's opening (GTK run_ai_summary's Normal mode). */
 static NSString * const prompt_normal  = @"Provide me a brief summary of these notes.\n\n";
-static NSString * const prompt_project = @"This series of notes chronologically details the progress of a project. "
-                                          "Provide me a summary of them all especially focusing on the current state "
-                                          "and any remaining action items.\n\n";
 static NSString * const prompt_plain   = @"Respond in plain text only. Do not use markdown formatting such as headers, "
                                           "bold, italics, or bullet symbols.\n\n";
 
 /*
- * build_prompt — the text sent to the AI command: the mode's header, the
+ * build_prompt — the text sent to the AI command: the request, the
  * plain-text instruction, then each note with its date, body and action
  * items.
  *
  * Inputs:
- *   db   — the database
- *   mode — the folder's ON_AI_MODE_*
- *   app  — for the custom prompt
- *   ids  — the notes, in order
+ *   db  — the database
+ *   ids — the notes, in order
  *
  * Output: the prompt, or nil when none of the notes exists.
  */
 static NSString *
-build_prompt(OnDatabase *db, gint mode, const OnApp *app, NSArray<NSNumber *> *ids)
+build_prompt(OnDatabase *db, NSArray<NSNumber *> *ids)
 {
     NSMutableString *p = [NSMutableString string];
-    if (mode == ON_AI_MODE_PROJECT)     [p appendString:prompt_project];
-    else if (mode == ON_AI_MODE_CUSTOM) [p appendFormat:@"%@\n\n", @(app->ai_custom_prompt ? app->ai_custom_prompt : "")];
-    else                                [p appendString:prompt_normal];
+    [p appendString:prompt_normal];
     [p appendString:prompt_plain];
     [p appendString:@"=== Notes ===\n\n"];
     NSUInteger found = 0;
@@ -276,13 +268,8 @@ summarise
         [self fail:@"No AI command configured. Please set one in Settings → AI Features."];
         return;
     }
-    if (lib.sel_kind == on_sb_trash || lib.sel_kind == on_sb_trash_folder || lib.sel_kind == on_sb_actions) {
+    if (lib.sel_kind == on_sb_trash || lib.sel_kind == on_sb_actions) {
         [self fail:@"Select notes to summarize."];
-        return;
-    }
-    gint mode = lib.sel_kind == on_sb_folder ? on_db_folder_get_ai_mode(app->db, lib.sel_id) : ON_AI_MODE_NORMAL;
-    if (mode == ON_AI_MODE_CUSTOM && (app->ai_custom_prompt == NULL || *app->ai_custom_prompt == '\0')) {
-        [self fail:@"No custom AI prompt configured. Set one in Settings → AI Features."];
         return;
     }
     NSArray<NSNumber *> *ids = on_library_notes_selected_ids(lib);
@@ -290,7 +277,7 @@ summarise
         [self fail:@"Select one or more notes to summarize."];
         return;
     }
-    NSString *prompt = build_prompt(app->db, mode, app, ids);
+    NSString *prompt = build_prompt(app->db, ids);
     if (prompt == nil) {
         [self fail:@"No notes to summarize."];
         return;

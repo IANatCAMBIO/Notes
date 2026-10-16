@@ -4,17 +4,17 @@
  * Specification: the GTK build's src/search_window.c.
  *
  *   [ query                              ] [Search] (spinner)
- *   (•) All Notes  ( ) Selected Folder/Tag
+ *   (•) All Notes  ( ) Selected Tag
  *   [ ] Case sensitive  [ ] Regular expression
- *   ┌ Path ─────────────────────────────── Modified ┐
- *   └───────────────────────────────────────────────┘
- *   3 matches in “Work”
+ *   ┌ Title ──────────────── Tags ───────── Modified ┐
+ *   └────────────────────────────────────────────────┘
+ *   3 matches in “#Work”
  *
  * A search runs when Return is pressed in the query or Search is clicked,
  * never per keystroke.  The query is parsed on the main thread
  * (search_query.h: a bad pattern is reported at once); the matching runs on
  * a worker (search_job.h) and a newer search, an empty query or closing the
- * window abandons the one in flight.  "Selected Folder/Tag" is read from
+ * window abandons the one in flight.  "Selected Tag" is read from
  * the library's selection each time a search starts.  A result opens on a
  * double-click or Return, with the query's first positive term highlighted
  * in the note.  Several search windows may be open; each opens at the size
@@ -35,10 +35,11 @@
 #include "search_job.h"
 #include "search_query.h"
 
-/* One result: the note and its two columns. */
+/* One result: the note and its three columns. */
 @interface NotesSearchHit : NSObject
 @property (nonatomic, assign) gint64    note_id;
-@property (nonatomic, copy)   NSString *path;
+@property (nonatomic, copy)   NSString *title;
+@property (nonatomic, copy)   NSString *tags;
 @property (nonatomic, copy)   NSString *when;
 @end
 
@@ -88,7 +89,8 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
     for (size_t i = 0; i < n; i++) {
         NotesSearchHit *h = [[NotesSearchHit alloc] init];
         h.note_id = hits[i]->id;
-        h.path    = @(hits[i]->path ?: "");
+        h.title   = @(hits[i]->title ?: "");
+        h.tags    = @(hits[i]->tags ?: "");
         h.when    = on_ui_format_date(hits[i]->updated_at, on_ui_date_list);
         [rows addObject:h];
     }
@@ -106,7 +108,7 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
  *
  * Inputs:
  *   lib    — the library
- *   scoped — YES preselects Selected Folder/Tag
+ *   scoped — YES preselects Selected Tag
  *
  * Output: the controller (the window not yet shown).
  */
@@ -149,9 +151,9 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     self.spinner.hidden      = YES;
 
     self.scope_all       = [NSButton radioButtonWithTitle:@"All Notes" target:self action:@selector(scope_clicked:)];
-    self.scope_selection = [NSButton radioButtonWithTitle:@"Selected Folder/Tag" target:self
+    self.scope_selection = [NSButton radioButtonWithTitle:@"Selected Tag" target:self
                                                    action:@selector(scope_clicked:)];
-    self.scope_selection.toolTip = @"Search only whatever folder or tag is selected in the library when you press "
+    self.scope_selection.toolTip = @"Search only the notes of the tag selected in the library when you press "
                                     "Search";
     (scoped ? self.scope_selection : self.scope_all).state = NSControlStateValueOn;
 
@@ -161,15 +163,20 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
                            "regular-expression meaning instead";
 
     self.results = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
-    NSTableColumn *path = [[NSTableColumn alloc] initWithIdentifier:@"path"];
-    path.title        = @"Path";
-    path.width        = 380;
-    path.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
+    NSTableColumn *title = [[NSTableColumn alloc] initWithIdentifier:@"title"];
+    title.title        = @"Title";
+    title.width        = 250;
+    title.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
+    NSTableColumn *tags = [[NSTableColumn alloc] initWithIdentifier:@"tags"];
+    tags.title        = @"Tags";
+    tags.width        = 130;
+    tags.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
     NSTableColumn *when = [[NSTableColumn alloc] initWithIdentifier:@"when"];
     when.title        = @"Modified";
     when.width        = 130;
     when.resizingMask = NSTableColumnUserResizingMask;
-    [self.results addTableColumn:path];
+    [self.results addTableColumn:title];
+    [self.results addTableColumn:tags];
     [self.results addTableColumn:when];
     self.results.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
     self.results.style                   = NSTableViewStylePlain;
@@ -262,15 +269,15 @@ run_search
     const gchar *term = on_query_highlight_term(parsed);
     self.highlight = term ? @(term) : nil;
 
-    BOOL          scoped   = self.scope_selection.state == NSControlStateValueOn;
-    OnSearchScope scope    = ON_SCOPE_FOLDER;
-    gint64        scope_id = 0;
-    self.scope_desc = scoped ? [NSString stringWithFormat:@" in “%@”",
-                                on_library_search_scope(self.lib, &scope, &scope_id)] : nil;
+    BOOL     scoped = self.scope_selection.state == NSControlStateValueOn;
+    gint64   tag_id = 0;
+    NSString *where = on_library_search_scope(self.lib, &tag_id);
+    if (!scoped) tag_id = 0;
+    self.scope_desc = tag_id != 0 ? [NSString stringWithFormat:@" in “%@”", where] : nil;
     self.status.stringValue = @"Searching…";
     self.spinner.hidden = NO;
     [self.spinner startAnimation:nil];
-    self.job = on_search_job_start(self.lib.app->db->path, parsed, scoped, scope, scope_id, search_done,
+    self.job = on_search_job_start(self.lib.app->db->path, parsed, tag_id, search_done,
                                    (__bridge gpointer)self);
 }
 
@@ -339,7 +346,7 @@ numberOfRowsInTableView:(NSTableView *)table
 }
 
 /*
- * tableView:viewForTableColumn:row: — a result's path or time.
+ * tableView:viewForTableColumn:row: — a result's title, tags or time.
  *
  * Inputs:
  *   table  — the results
@@ -353,7 +360,8 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 {
     NSTableCellView *cell = on_ui_label_cell(table, column.identifier);
     NotesSearchHit  *h    = self.hits[(NSUInteger)row];
-    cell.textField.stringValue = [column.identifier isEqualToString:@"path"] ? h.path : h.when;
+    cell.textField.stringValue = [column.identifier isEqualToString:@"title"] ? h.title
+                               : [column.identifier isEqualToString:@"tags"]  ? h.tags : h.when;
     return cell;
 }
 
@@ -376,23 +384,23 @@ windowWillClose:(NSNotification *)note
 /* ── Commands ───────────────────────────────────────────────────────────── */
 
 /*
- * selection_is_narrow — is the library's selection a folder or a tag, so
- * the window should start scoped to it (GTK on_open_search)?
+ * selection_is_narrow — is the library's selection a tag, so the window
+ * should start scoped to it (GTK on_open_search)?
  *
  * Inputs:
  *   lib — the library
  *
- * Output: YES for a folder, tag or trashed folder.
+ * Output: YES for a tag.
  */
 static BOOL
 selection_is_narrow(NotesLibrary *lib)
 {
-    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_tag || lib.sel_kind == on_sb_trash_folder;
+    return lib.sel_kind == on_sb_tag;
 }
 
 /*
  * run_search — "search" and "find": a search window, scoped to the
- * selection when that is a folder or a tag.
+ * selection when that is a tag.
  *
  * Inputs:
  *   target — the NotesLibrary

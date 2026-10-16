@@ -453,7 +453,7 @@ show_status
                                    (unsigned long)n, n == 1 ? @"" : @"s", (long)self.n_notes,
                                    self.n_notes == 1 ? @"" : @"s",
                                    self.truncated ? @" — more were found than can be shown; browse a smaller "
-                                                     "folder to see the rest" : @""];
+                                                     "tag to see the rest" : @""];
 }
 
 /* ── Grid ──────────────────────────────────────────────────────────────── */

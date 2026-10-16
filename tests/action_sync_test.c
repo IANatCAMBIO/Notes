@@ -209,7 +209,7 @@ edit_note(OnDatabase *db, gint64 note, gint ord, const char *text, int strike,
 /* ── The push ───────────────────────────────────────────────────────────── */
 
 /*
- * test_push_new — a new line is a new task in the managed list, with the
+ * test_push_new — a new line is a new task tagged "Action Items", with the
  * schema's defaults, and its baseline is the line.
  *
  * Inputs:
@@ -218,9 +218,7 @@ edit_note(OnDatabase *db, gint64 note, gint ord, const char *text, int strike,
 static void
 test_push_new(OnDatabase *db)
 {
-    /* A list with the right name but another emoji is not the managed one. */
-    exec_sql(db, "INSERT INTO lists (name, emoji) VALUES ('Action Items', '')");
-    gint64 note = on_note_new_from_text(db, 0, "Push\n! Call the bank due 2026-11-02\n! Done one");
+    gint64 note = on_note_new_from_text(db, NULL, "Push\n! Call the bank due 2026-11-02\n! Done one");
     gint64 uid  = nth_uid(db, note, 0);
     check(uid != 0, "push: the line has a uid");
     check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_NEW && task_int(db, uid, "due") == check_midnight(2026, 11, 2) &&
@@ -232,14 +230,15 @@ test_push_new(OnDatabase *db)
           task_int(db, uid, "priority") == 0 && task_int(db, uid, "parent_id") <= 0,
           "push: every other column is the shared schema's default (due_time 17:00)");
     sqlite3_stmt *st = NULL;
-    sqlite3_prepare_v2(db->handle, "SELECT l.name, l.emoji FROM lists l JOIN tasks t ON t.list_id = l.id"
-                       " JOIN note_task n ON n.task_id = t.id WHERE n.uid = ?", -1, &st, NULL);
+    sqlite3_prepare_v2(db->handle, "SELECT g.name, g.emoji FROM task_tags tt JOIN tags g ON g.id = tt.tag_id"
+                       " JOIN note_task n ON n.task_id = tt.task_id WHERE n.uid = ?", -1, &st, NULL);
     sqlite3_bind_int64(st, 1, uid);
-    gboolean managed = sqlite3_step(st) == SQLITE_ROW &&
-                       strcmp((const char *)sqlite3_column_text(st, 0), SHARED_DB_ACTION_LIST_NAME) == 0 &&
-                       strcmp((const char *)sqlite3_column_text(st, 1), SHARED_DB_ACTION_LIST_EMOJI) == 0;
+    gboolean tagged = sqlite3_step(st) == SQLITE_ROW &&
+                      strcmp((const char *)sqlite3_column_text(st, 0), SHARED_DB_ACTION_LIST_NAME) == 0 &&
+                      strcmp((const char *)sqlite3_column_text(st, 1), SHARED_DB_ACTION_LIST_EMOJI) == 0 &&
+                      sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
-    check(managed, "push: it is filed in the managed list, found by name AND emoji");
+    check(tagged, "push: it carries the action tag, and only that");
 
     OnActionLink row;
     check(link_of(db, uid, note, &row) && strcmp(row.seen_title, "Call the bank") == 0 &&
@@ -264,7 +263,7 @@ test_push_new(OnDatabase *db)
 static void
 test_push_fields(OnDatabase *db, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(db, 0, "Fields\n! Write the report due 2026-12-01");
+    gint64 note = on_note_new_from_text(db, NULL, "Fields\n! Write the report due 2026-12-01");
     gint64 uid  = nth_uid(db, note, 0);
 
     /* Tasks: priority and due.  Notes, not having pulled: renames.          */
@@ -297,12 +296,18 @@ test_push_fields(OnDatabase *db, OnDatabase *other)
     edit_note(db, note, 0, NULL, 0, NULL);
     check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_IN_PROGRESS, "fields: un-striking a DONE task makes it In Progress");
 
-    /* Moved to another list in Tasks: Notes never writes list_id again.    */
-    exec_sql(other, "INSERT INTO lists (name, emoji) VALUES ('Work', '')");
-    exec_uid(other, uid, "UPDATE tasks SET list_id = (SELECT MAX(id) FROM lists) WHERE id = ?1");
-    gint64 moved = task_int(db, uid, "list_id");
-    edit_note(db, note, 0, "Report, moved", -1, NULL);
-    check(task_int(db, uid, "list_id") == moved, "fields: a list set in Tasks sticks");
+    /* Retagged in Tasks: Notes never writes a task's tags again.          */
+    exec_sql(other, "INSERT INTO tags (name) VALUES ('Work')");
+    exec_uid(other, uid, "INSERT INTO task_tags (task_id, tag_id)"
+                         " SELECT ?1, id FROM tags WHERE name = 'Work'");
+    exec_uid(other, uid, "DELETE FROM task_tags WHERE task_id = ?1 AND tag_id ="
+                         " (SELECT id FROM tags WHERE name = '" SHARED_DB_ACTION_LIST_NAME "')");
+    edit_note(db, note, 0, "Report, retagged", -1, NULL);
+    gint64 kept = -1;
+    check(uid_sql(db, uid, "SELECT COUNT(*) FROM task_tags tt JOIN tags g ON g.id = tt.tag_id"
+                           " WHERE tt.task_id = ?1 AND g.name = 'Work'", &kept) && kept == 1 &&
+          uid_sql(db, uid, "SELECT COUNT(*) FROM task_tags WHERE task_id = ?1", &kept) && kept == 1,
+          "fields: tags set in Tasks stick");
 }
 
 /*
@@ -316,7 +321,7 @@ test_push_fields(OnDatabase *db, OnDatabase *other)
 static void
 test_push_delete(OnDatabase *db, OnDatabase *other)
 {
-    gint64      note = on_note_new_from_text(db, 0, "Delete\n! Keep me\n! Remove me");
+    gint64      note = on_note_new_from_text(db, NULL, "Delete\n! Keep me\n! Remove me");
     gint64      uid  = nth_uid(db, note, 1);
     OnDocument *doc  = on_note_document_load(db, note);
     GArray     *bl   = on_document_action_blocks(doc);
@@ -348,7 +353,7 @@ test_push_delete(OnDatabase *db, OnDatabase *other)
 
     /* The Trash hides a note's items but leaves their tasks; a hard delete
      * tombstones them (the shared trigger).                                */
-    gint64 trashed = on_note_new_from_text(db, 0, "Trashed\n! In the trash");
+    gint64 trashed = on_note_new_from_text(db, NULL, "Trashed\n! In the trash");
     gint64 tuid    = nth_uid(db, trashed, 0);
     on_db_notes_trash(db, &trashed, 1);
     check(task_int(db, tuid, "deleted") == 0 && on_db_action_get(db, tuid) != NULL,
@@ -377,14 +382,16 @@ test_push_delete(OnDatabase *db, OnDatabase *other)
 static void
 test_push_subtasks(OnDatabase *db, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(db, 0, "Subtasks\n! Parent with kids\n! Sibling");
+    gint64 note = on_note_new_from_text(db, NULL, "Subtasks\n! Parent with kids\n! Sibling");
     gint64 uid  = nth_uid(db, note, 0);
-    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, updated_at)"
-                         " SELECT list_id, id, 'kid', 7 FROM tasks WHERE id = ?1");
-    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, updated_at)"
-                         " SELECT list_id, id, 'kid', 7 FROM tasks WHERE id = ?1");
-    exec_uid(other, uid, "INSERT INTO tasks (list_id, parent_id, title, deleted, updated_at)"
-                         " SELECT list_id, id, 'gone before', 1, 5 FROM tasks WHERE id = ?1");
+    exec_uid(other, uid, "INSERT INTO tasks (parent_id, title, updated_at) VALUES (?1, 'kid', 7)");
+    exec_uid(other, uid, "INSERT INTO tasks (parent_id, title, updated_at) VALUES (?1, 'kid', 7)");
+    exec_uid(other, uid, "INSERT INTO tasks (parent_id, title, deleted, updated_at)"
+                         " VALUES (?1, 'gone before', 1, 5)");
+    /* Tasks gives a subtask its parent's tags.                            */
+    exec_uid(other, uid, "INSERT INTO task_tags (task_id, tag_id)"
+                         " SELECT t.id, tt.tag_id FROM tasks t, task_tags tt"
+                         " WHERE t.parent_id = ?1 AND t.deleted = 0 AND tt.task_id = ?1");
 
     OnDocument *doc = on_note_document_load(db, note);
     GArray     *bl  = on_document_action_blocks(doc);
@@ -557,7 +564,7 @@ make_pull_notes(OnDatabase *db, gint64 notes[4], gint64 uids[4])
         "!! Delete me due 2026-11-04\nbody four",
     };
     for (int i = 0; i < 4; i++) {
-        notes[i] = on_note_new_from_text(db, 0, text[i]);
+        notes[i] = on_note_new_from_text(db, NULL, text[i]);
         uids[i]  = nth_uid(db, notes[i], 0);
     }
 }
@@ -694,7 +701,7 @@ test_pull_process(OnApp *app)
 static void
 test_pull_refused(OnApp *app, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "Refused\n! Keep my text\n! Mine too");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Refused\n! Keep my text\n! Mine too");
     gint64 a    = nth_uid(app->db, note, 0);
     gint64 b    = nth_uid(app->db, note, 1);
     on_action_sync_poll(app);
@@ -717,7 +724,7 @@ test_pull_refused(OnApp *app, OnDatabase *other)
         "UPDATE tasks SET title = CAST(X'626164FF75746638' AS TEXT) WHERE id = ?1",
     };
     static const char *const what[] = { "a \\r", "\\r\\n", "U+2029", "a NUL", "invalid UTF-8" };
-    gint64 dated = on_note_new_from_text(app->db, 0, "! Keep me due 2026-11-20\nafter");
+    gint64 dated = on_note_new_from_text(app->db, NULL, "! Keep me due 2026-11-20\nafter");
     gint64 uid   = nth_uid(app->db, dated, 0);
     on_action_sync_poll(app);
     for (guint i = 0; i < G_N_ELEMENTS(bad); i++) {
@@ -753,7 +760,7 @@ test_pull_refused(OnApp *app, OnDatabase *other)
 static void
 test_concurrent(OnApp *app, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "Concurrent\n! Plan the trip due 2026-11-10");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Concurrent\n! Plan the trip due 2026-11-10");
     gint64 uid  = nth_uid(app->db, note, 0);
     on_action_sync_poll(app);
 
@@ -808,7 +815,7 @@ test_concurrent(OnApp *app, OnDatabase *other)
 static void
 test_restored_elsewhere(OnApp *app, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "Restore\n! Keep\n! Restored in Tasks");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Restore\n! Keep\n! Restored in Tasks");
     gint64 uid  = nth_uid(app->db, note, 1);
     OnDocument *doc = on_note_document_load(app->db, note);
     GArray     *bl  = on_document_action_blocks(doc);
@@ -853,13 +860,13 @@ static void
 test_failed_save_uids(OnDatabase *db)
 {
     /* The save fails after allocating: its note was deleted meanwhile.     */
-    gint64      gone = on_note_new_from_text(db, 0, "Gone");
+    gint64      gone = on_note_new_from_text(db, NULL, "Gone");
     OnDocument *doc  = on_document_from_text("Failed\n! A line that was never saved");
     on_db_notes_delete(db, &gone, 1);
     check(!on_note_document_save(db, gone, doc, TRUE, NULL) && first_uid(doc) == 0,
           "failed save: the line's fresh uid is reset to 0 (it was rolled back)");
-    gint64 other = on_note_new_from_text(db, 0, "Other\n! Somebody else's line");
-    gint64 note  = on_note_new_from_text(db, 0, "Retry");
+    gint64 other = on_note_new_from_text(db, NULL, "Other\n! Somebody else's line");
+    gint64 note  = on_note_new_from_text(db, NULL, "Retry");
     check(on_note_document_save(db, note, doc, TRUE, NULL) && first_uid(doc) != 0 &&
           first_uid(doc) != nth_uid(db, other, 0),
           "failed save: the retry allocates anew; no two notes share a uid");
@@ -872,7 +879,7 @@ test_failed_save_uids(OnDatabase *db)
 
     /* The save succeeds inside the caller's transaction, which then rolls
      * back (as a pull's does when a later step fails).                     */
-    gint64   later = on_note_new_from_text(db, 0, "Enclosed");
+    gint64   later = on_note_new_from_text(db, NULL, "Enclosed");
     gboolean own;
     doc = on_document_from_text("Enclosed\n! Saved, then rolled back");
     check(on_db_txn_begin(db, &own) && own && on_note_document_save(db, later, doc, TRUE, NULL) &&
@@ -897,7 +904,7 @@ test_new_from_text_atomic(OnDatabase *db, OnDatabase *other)
     gint before = on_db_note_count_visible(db);
     exec_sql(other, "CREATE TEMP TABLE seq_keep AS SELECT * FROM action_uid_seq;"
                     "DELETE FROM action_uid_seq");
-    check(on_note_new_from_text(db, 0, "Atomic\n! cannot get a uid") == 0 &&
+    check(on_note_new_from_text(db, NULL, "Atomic\n! cannot get a uid") == 0 &&
           on_db_note_count_visible(db) == before,
           "new note from text: a failed save leaves no note (one transaction)");
     exec_sql(other, "INSERT INTO action_uid_seq SELECT * FROM seq_keep; DROP TABLE seq_keep");
@@ -946,14 +953,14 @@ count_check(OnApp *app)
 static void
 test_poll_revs(OnApp *app, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "Poll\n! Watch me");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Poll\n! Watch me");
     gint64 uid  = nth_uid(app->db, note, 0);
     on_action_sync_poll(app);
     app->notify_notes_changed = count_refresh;
     app->check_editors        = count_check;
 
     refreshes = editor_checks = 0;
-    on_note_new_from_text(app->db, 0, "Own commit");
+    on_note_new_from_text(app->db, NULL, "Own commit");
     check(!on_action_sync_poll(app) && refreshes == 0 && editor_checks == 0,
           "poll: Notes' own commits neither pull nor refresh");
     shared_settings_set(other->shared, "poll_test", "1", NULL);
@@ -1020,14 +1027,14 @@ test_commit_look(OnApp *app, OnDatabase *other)
     on_action_sync_start(app, FALSE);
     on_timer_remove(app->sync_timer);    /* the test polls by hand          */
     app->sync_timer = 0;
-    gint64 note = on_note_new_from_text(app->db, 0, "Look\n! Looked at");
+    gint64 note = on_note_new_from_text(app->db, NULL, "Look\n! Looked at");
     gint64 uid  = nth_uid(app->db, note, 0);
     check_pump(NULL, 0.1);
     app->notify_notes_changed = count_refresh;
     app->check_editors        = count_check;
 
     refreshes = editor_checks = 0;
-    on_note_new_from_text(app->db, 0, "Own commit, looked at");
+    on_note_new_from_text(app->db, NULL, "Own commit, looked at");
     check(app->commit_look_posted, "commit look: Notes' own commit posts one look");
     check_pump(NULL, 0.1);
     check(!app->commit_look_posted && refreshes == 0, "commit look: it adopts Notes' own revs, no refresh");
@@ -1035,7 +1042,7 @@ test_commit_look(OnApp *app, OnDatabase *other)
     check(on_action_sync_poll(app) && refreshes == 0 && editor_checks == 0,
           "commit look: a later outside 'tasks' commit pulls, and nothing refreshes");
 
-    on_note_new_from_text(app->db, 0, "Own commit, not looked at");
+    on_note_new_from_text(app->db, NULL, "Own commit, not looked at");
     exec_uid(other, uid, "UPDATE tasks SET priority = 1 WHERE id = ?1");
     check(on_action_sync_poll(app) && refreshes == 1,
           "control: without that look the poll counts Notes' own 'notes' movement and refreshes");
@@ -1043,7 +1050,7 @@ test_commit_look(OnApp *app, OnDatabase *other)
 
     refreshes = editor_checks = 0;
     exec_sql(other, "UPDATE notes SET title = 'Renamed before' WHERE title = 'Look'");
-    on_note_new_from_text(app->db, 0, "Own commit after an outside one");
+    on_note_new_from_text(app->db, NULL, "Own commit after an outside one");
     check_pump(NULL, 0.1);
     check(refreshes == 1 && editor_checks == 1,
           "commit look: an outside commit before Notes' own is handled by the look (refresh once)");
@@ -1083,7 +1090,7 @@ held_hook(OnApp *app, gint64 note_id)
 static void
 test_held(OnApp *app, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(app->db, 0, "! Held back\nbody");
+    gint64 note = on_note_new_from_text(app->db, NULL, "! Held back\nbody");
     gint64 uid  = nth_uid(app->db, note, 0);
     on_action_sync_poll(app);
     held_note       = note;
@@ -1119,14 +1126,14 @@ test_held(OnApp *app, OnDatabase *other)
 static void
 test_migrated_tombstone(OnDatabase *db, OnDatabase *other)
 {
-    gint64 note = on_note_new_from_text(db, 0, "!! Deleted before migration due 2026-11-05\nbody");
+    gint64 note = on_note_new_from_text(db, NULL, "!! Deleted before migration due 2026-11-05\nbody");
     gint64 uid  = nth_uid(db, note, 0);
     gchar *sql  = g_strdup_printf(
         "BEGIN;"
         "CREATE TEMP TABLE mig AS SELECT * FROM note_task WHERE uid = %1$lld;"
         "DELETE FROM note_task WHERE uid = %1$lld;"
-        "INSERT INTO tasks (list_id, title, due, deleted, updated_at)"
-        " SELECT t.list_id, t.title, t.due, 1, 1 FROM tasks t JOIN mig ON t.id = mig.task_id;"
+        "INSERT INTO tasks (title, due, deleted, updated_at)"
+        " SELECT t.title, t.due, 1, 1 FROM tasks t JOIN mig ON t.id = mig.task_id;"
         "INSERT INTO note_task (uid, task_id, note_id, ord, seen_title, seen_done, seen_due,"
         " seen_deleted) SELECT uid, last_insert_rowid(), note_id, ord, seen_title, seen_done,"
         " seen_due, 0 FROM mig;"

@@ -1,7 +1,7 @@
 # Notes AppKit
 
 An experimental, macOS-only AppKit port of **Notes** — an Apple Notes–style
-app in C over SQLite: nested folders, tags, rich-text notes with images,
+app in C over SQLite: tags shared with Tasks, rich-text notes with images,
 tables, code blocks, task lists, and `!` action items with due dates.  The
 original is a GTK4 app; this fork replaces its user interface with native
 AppKit while keeping its document model and database.
@@ -42,8 +42,8 @@ bundle, so reinstalling never touches them.
 ## Where your data is
 
 Notes keeps its notes in **one database file it shares with the Tasks app**:
-a Notes action item (a `!` line) *is* a task in that file, shown in Tasks'
-managed list "Action Items" ❗ (until you move it to another list there).
+a Notes action item (a `!` line) *is* a task in that file, tagged
+"Action Items" ❗ in Tasks.
 
 | What | Where |
 |---|---|
@@ -57,8 +57,11 @@ The database must be on a local disk, outside iCloud Drive, Dropbox and
 other synced folders (the app refuses such a file).  File ▸ Open Database
 File… opens another shared database for this session, or with **Set as
 Default** for both apps from now on.  A file that is not a shared database
-— an old `notes.db` or `tasks.db` — is refused untouched; the migration
-tool in `shared_data/migrate` converts one.
+— an old `notes.db` or `tasks.db` — is refused untouched.  A shared file
+from before tags (schema 100) is backed up and converted the first time
+either app opens it: every folder becomes a tag on the notes in it (all
+of a note's ancestors too), a trashed folder's notes become trashed notes,
+and each action item gets its folder's name before its title once.
 
 Backups are the shared module's: a verified copy (`VACUUM INTO`) made by
 whichever app is running when one is due, policy in the database itself, so
@@ -76,7 +79,7 @@ open at once (SQLite WAL mode).  Edits flow both ways:
 
 - **In Notes**: a line's text, its strike-through and its `due <date>`
   are the task's title, done state and due date.  A save writes to the task
-  only the fields you changed in Notes, so a priority, note, list or due
+  only the fields you changed in Notes, so a priority, note, tag or due
   date set in Tasks meanwhile is never overwritten.  Removing a `!` line
   deletes its task; undo brings the same task back.
 - **From Tasks**: Notes notices another app's changes within about a second
@@ -89,6 +92,29 @@ open at once (SQLite WAL mode).  Edits flow both ways:
 - **A note changed by another program while it is open**: an editor with
   no unsaved edits shows the new version; one with unsaved edits keeps
   yours and offers to reload.
+
+## Tags
+
+Notes has no folders: **tags** organise the notes, and they are the same
+tags Tasks uses (one set in the shared file).
+
+- A note's tags come from its **Tags field** (the row under the editor's
+  format bar: type to pick a tag or make one, any name) and from the
+  **#tags in its text**.  A #tag in the text is shown beside the field and
+  comes off only in the text.
+- The sidebar lists **Pinned Notes**, **All Notes**, **Action Items**, then
+  every tag a note carries (with counts when Settings ▸ Appearance shows
+  them), and the **Trash**.  Drop notes on a tag to give them the tag, on
+  the Trash to trash them.  New Note in a tag's view gives the note that
+  tag.
+- Right-click a tag, **Edit Tag…**: an emoji (Tasks shows it too) and
+  whether it is a **favorite** — a button in the **Favorites bar** across
+  the top of the window.  Favorites are each app's own.  A tag's name
+  never changes.
+- A tag lives while a note (trashed too) or a task carries it.  A trashed
+  note keeps its tags; Restore brings it back with them.
+- Export writes one file per note into one folder, each starting with its
+  tags (a `tags:` line in Markdown, a paragraph in HTML).
 
 ## First run
 

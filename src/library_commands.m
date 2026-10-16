@@ -16,29 +16,36 @@
  */
 
 /*
- * open_new_note — create an empty note in a folder, show it in the library
- * and open its editor in front.
+ * open_new_note — create an empty note, with a tag in its Tags field when
+ * one is given, show it in the library and open its editor in front.
  *
  * Inputs:
- *   lib       — the library
- *   folder_id — where the note goes (0 = the top level)
+ *   lib — the library
+ *   tag — the tag's name, or nil for none
  *
  * Output: none; nothing happens when the note cannot be created.
  */
 static void
-open_new_note(NotesLibrary *lib, gint64 folder_id)
+open_new_note(NotesLibrary *lib, NSString *tag)
 {
-    gint64 note_id = on_db_note_create(lib.app->db, folder_id);
+    gboolean own;
+    gint64   note_id = 0;
+    if (on_db_txn_begin(lib.app->db, &own)) {
+        note_id = on_db_note_create(lib.app->db);
+        BOOL ok = note_id != 0 && (tag == nil ||
+                                   on_db_note_field_tag_add(lib.app->db, note_id, tag.UTF8String) != 0);
+        if (!on_db_txn_end(lib.app->db, own, ok)) note_id = 0;
+    }
     if (note_id == 0) return;
-    /* The full refresh: a new note changes its folder's count as well as
-     * the notes pane. */
+    /* The full refresh: a new note changes the counts as well as the
+     * notes pane. */
     on_library_refresh_all(lib);
     on_editor_window_open(lib.app, note_id, NotesEditorRevealNone, 0, nil);
 }
 
 /*
- * run_new_note — "new-note": a note in the selected folder (the top level
- * when the selection is not a folder).
+ * run_new_note — "new-note": a note with the selected tag (none when the
+ * selection is not a tag).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -48,12 +55,12 @@ static void
 run_new_note(id target, id sender)
 {
     NotesLibrary *lib = target;
-    open_new_note(lib, on_library_current_folder_id(lib));
+    open_new_note(lib, on_library_current_tag(lib));
 }
 
 /*
- * run_quicknote — "quicknote": a note at the top level whatever is
- * selected, its editor in front.
+ * run_quicknote — "quicknote": a note with no tag whatever is selected,
+ * its editor in front.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -62,33 +69,19 @@ run_new_note(id target, id sender)
 static void
 run_quicknote(id target, id sender)
 {
-    open_new_note(target, 0);
+    open_new_note(target, nil);
 }
 
 /*
- * NotesFolderFields — the controls of the folder prompt (New Folder,
- * Folder Info), and what they hold.
+ * NotesTagFields — the controls of the Edit Tag panel, and what they hold.
  */
-@interface NotesFolderFields : NSObject
-@property (nonatomic, strong) NSView      *view;     /* the grid, for the panel */
+@interface NotesTagFields : NSObject
+@property (nonatomic, strong) NSView      *view;       /* the grid, for the panel */
 @property (nonatomic, strong) NSTextField *emoji;
-@property (nonatomic, strong) NSTextField *name;
-@property (nonatomic, strong) NSArray<NSButton *> *modes;   /* Normal, Project, Custom */
+@property (nonatomic, strong) NSButton    *favorite;
 @end
 
-@implementation NotesFolderFields
-
-/*
- * mode_clicked: — the AI mode radios act as one group.
- *
- * Inputs:
- *   sender — the radio clicked
- */
-- (void)
-mode_clicked:(NSButton *)sender
-{
-    on_ui_select_radio(self.modes, sender);
-}
+@implementation NotesTagFields
 
 /*
  * pick_emoji: — the emoji field's button: the character palette, typing
@@ -104,75 +97,49 @@ pick_emoji:(id)sender
     [NSApp orderFrontCharacterPalette:sender];
 }
 
-/*
- * ai_mode — the AI summary mode the radios say.
- *
- * Output: ON_AI_MODE_NORMAL, _PROJECT or _CUSTOM.
- */
-- (gint)
-ai_mode
-{
-    for (NSUInteger i = 0; i < self.modes.count; i++)
-        if (self.modes[i].state == NSControlStateValueOn) return (gint)i;
-    return ON_AI_MODE_NORMAL;
-}
-
 @end
 
 /*
- * folder_fields — the folder prompt's controls (GTK: prompt_for_folder):
- * an optional emoji with a picker, the folder's name, and the AI summary
- * mode (Normal / Project / Custom), filled in from what the folder has.
+ * tag_fields — the Edit Tag panel's controls: the tag's name (fixed), an
+ * optional emoji with a picker, and Favorite, filled in from the tag.
  *
  * Inputs:
- *   name  — the name to show, or nil
- *   emoji — the emoji to show, or nil
- *   mode  — the AI mode to select (ON_AI_MODE_*)
+ *   tag — the tag
  *
  * Output: the fields, their grid in .view.
  */
-static NotesFolderFields *
-folder_fields(NSString *name, NSString *emoji, gint mode)
+static NotesTagFields *
+tag_fields(const OnTag *tag)
 {
-    NotesFolderFields *f = [[NotesFolderFields alloc] init];
-    NSFont *font = [NSFont systemFontOfSize:on_look_ui_font];
+    NotesTagFields *f    = [[NotesTagFields alloc] init];
+    NSFont         *font = [NSFont systemFontOfSize:on_look_ui_font];
 
-    f.emoji = [NSTextField textFieldWithString:emoji ?: @""];
-    f.emoji.font      = [NSFont systemFontOfSize:on_look_ui_font + 3];
-    f.emoji.alignment = NSTextAlignmentCenter;
-    f.emoji.toolTip   = @"Optional emoji";
-    f.emoji.identifier = @"folder-emoji";
+    f.emoji = [NSTextField textFieldWithString:@(tag->emoji)];
+    f.emoji.font       = [NSFont systemFontOfSize:on_look_ui_font + 3];
+    f.emoji.alignment  = NSTextAlignmentCenter;
+    f.emoji.toolTip    = @"Optional emoji";
+    f.emoji.identifier = @"tag-emoji";
     [f.emoji.widthAnchor constraintEqualToConstant:on_look_tool_emoji_w].active = YES;
     NSButton *picker = [NSButton buttonWithTitle:@"Pick…" target:f action:@selector(pick_emoji:)];
     picker.font = font;
     NSStackView *emoji_row = [NSStackView stackViewWithViews:@[f.emoji, picker]];
 
-    f.name = [NSTextField textFieldWithString:name ?: @""];
-    f.name.placeholderString = @"Folder Name";
-    f.name.identifier = @"folder-name";
-    f.name.font = font;
-    [f.name.widthAnchor constraintEqualToConstant:on_look_tool_field_w].active = YES;
-
-    NSMutableArray<NSButton *> *modes = [NSMutableArray array];
-    for (NSString *title in @[@"Normal", @"Project", @"Custom"]) {
-        NSButton *radio = [NSButton radioButtonWithTitle:title target:f action:@selector(mode_clicked:)];
-        radio.font = font;
-        [modes addObject:radio];
-    }
-    f.modes = modes;
-    [f mode_clicked:modes[(NSUInteger)MAX(0, MIN(mode, 2))]];
-    NSStackView *mode_row = [NSStackView stackViewWithViews:modes];
-    mode_row.spacing = on_look_tool_btn_gap;
+    f.favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar" target:nil action:nil];
+    f.favorite.font       = font;
+    f.favorite.identifier = @"tag-favorite";
+    f.favorite.state      = tag->favorite ? NSControlStateValueOn : NSControlStateValueOff;
 
     NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *text) {
         NSTextField *l = [NSTextField labelWithString:text];
         l.font = font;
         return l;
     };
+    NSTextField *name = label(@(tag->name));
+    name.font = [NSFont boldSystemFontOfSize:on_look_ui_font];
     NSGridView *grid = [NSGridView gridViewWithViews:@[
-        @[label(@"Emoji (optional):"), emoji_row],
-        @[label(@"Folder Name:"),      f.name],
-        @[label(@"AI summary mode:"),  mode_row],
+        @[label(@"Tag:"),               name],
+        @[label(@"Emoji (optional):"),  emoji_row],
+        @[label(@"Favorite:"),          f.favorite],
     ]];
     grid.rowSpacing    = on_look_tool_btn_gap;
     grid.columnSpacing = on_look_tool_btn_gap;
@@ -183,90 +150,52 @@ folder_fields(NSString *name, NSString *emoji, gint mode)
 }
 
 /*
- * prompt_for_folder — the folder prompt in a tool panel.  OK hands the
- * trimmed name, the AI mode and the trimmed emoji to `done`; an empty name
- * keeps the panel open with the problem shown.
- *
- * Inputs:
- *   lib     — the library (the panel sits over its window)
- *   title   — "New Folder" or "Folder Info"
- *   symbol  — the hero's SF Symbol
- *   name, emoji, mode — what the fields start with
- *   done    — writes the answer; returns nil, or a problem to show
+ * on_library_edit_tag — see library_commands.h.
  */
-static void
-prompt_for_folder(NotesLibrary *lib, NSString *title, NSString *symbol,
-                  NSString *name, NSString *emoji, gint mode,
-                  NSString *(^done)(NSString *name, gint mode, NSString *emoji))
+void
+on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
 {
-    NotesFolderFields *f = folder_fields(name, emoji, mode);
+    OnTag *tag = on_db_tag_get(lib.app->db, tag_id);
+    if (tag == NULL) return;
+    NotesTagFields *f     = tag_fields(tag);
     NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+    NSString       *path  = @(lib.app->db->path);
     NotesToolPanel *panel = [NotesToolPanel
-        panel_with_title:title hero_title:title
-                subtitle:@"A folder's emoji shows before its name in the sidebar."
-                  symbol:symbol content:f.view buttons:@[@"OK", @"Cancel"]
+        panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
+                subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
+                  symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"]
                  handler:^NSString *(NSInteger index) {
         if (index != 0) return nil;                  /* Cancel */
-        NSString *trimmed = [f.name.stringValue stringByTrimmingCharactersInSet:space];
-        if (trimmed.length == 0) return @"The folder needs a name.";
-        return done(trimmed, [f ai_mode], [f.emoji.stringValue stringByTrimmingCharactersInSet:space]);
+        /* The panel is not modal: the database may have been switched. */
+        if (lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return nil;
+        NSString *emoji = [f.emoji.stringValue stringByTrimmingCharactersInSet:space];
+        if (!on_db_tag_set_emoji(lib.app->db, tag_id, emoji.UTF8String) ||
+            !on_db_tag_set_favorite(lib.app->db, tag_id, f.favorite.state == NSControlStateValueOn))
+            return @"The tag could not be changed.";
+        on_library_refresh_all(lib);
+        return nil;
     }];
+    on_db_tag_free(tag);
     [panel show_over:lib.window];
-    [panel.window makeFirstResponder:f.name];
+    [panel.window makeFirstResponder:f.emoji];
 }
 
 /*
- * run_new_folder — "new-folder" (also New Subfolder… on a folder's menu):
- * the folder prompt, then the folder is made under the selected folder
- * (the top level otherwise) — the parent is taken now, as the selection
- * may move while the prompt is up.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the menu or toolbar item (unused)
- */
-static void
-run_new_folder(id target, id sender)
-{
-    NotesLibrary *lib    = target;
-    gint64        parent = on_library_current_folder_id(lib);
-    prompt_for_folder(lib, @"New Folder", @"folder.badge.plus", nil, nil, ON_AI_MODE_NORMAL,
-                      ^NSString *(NSString *name, gint mode, NSString *emoji) {
-        if (on_db_folder_create(lib.app->db, parent, name.UTF8String, mode, emoji.UTF8String) == 0)
-            return @"The folder could not be created.";
-        on_library_refresh_all(lib);
-        return nil;
-    });
-}
-
-/*
- * run_folder_info — "folder-info": the folder prompt over the selected
- * folder's name, emoji and AI mode; OK writes all three.
+ * run_edit_tag — "edit-tag": the Edit Tag panel for the selected tag.
  *
  * Inputs:
  *   target — the NotesLibrary
  *   sender — the menu item (unused)
  */
 static void
-run_folder_info(id target, id sender)
+run_edit_tag(id target, id sender)
 {
     NotesLibrary *lib = target;
-    if (lib.sel_kind != on_sb_folder) return;
-    gint64  folder = lib.sel_id;
-    gchar  *emoji  = on_db_folder_get_emoji(lib.app->db, folder);
-    gint    mode   = on_db_folder_get_ai_mode(lib.app->db, folder);
-    prompt_for_folder(lib, @"Folder Info", @"folder", lib.sel_name, @(emoji), mode,
-                      ^NSString *(NSString *name, gint new_mode, NSString *new_emoji) {
-        if (!on_db_folder_update(lib.app->db, folder, name.UTF8String, new_mode, new_emoji.UTF8String))
-            return @"The folder could not be changed.";
-        on_library_refresh_all(lib);
-        return nil;
-    });
-    g_free(emoji);
+    if (lib.sel_kind == on_sb_tag) on_library_edit_tag(lib, lib.sel_id);
 }
 
 /*
- * validate_folder_selected — a folder (not one in the Trash) is selected.
+ * validate_tag_selected — a tag is selected.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -275,45 +204,9 @@ run_folder_info(id target, id sender)
  * Output: YES to enable it.
  */
 static BOOL
-validate_folder_selected(id target, id item)
+validate_tag_selected(id target, id item)
 {
-    return ((NotesLibrary *)target).sel_kind == on_sb_folder;
-}
-
-/*
- * run_sort_subfolders — "sort-subfolders": the selected folder's (or the
- * Notes root's) direct children, sorted alphabetically and kept that way.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the menu item (unused)
- */
-static void
-run_sort_subfolders(id target, id sender)
-{
-    NotesLibrary *lib = target;
-    if (lib.sel_kind != on_sb_folder && lib.sel_kind != on_sb_root) return;
-    gint n = on_db_folder_sort_children(lib.app->db, lib.sel_kind == on_sb_folder ? lib.sel_id : 0);
-    if (n > 1) {
-        on_app_status(lib.app, "Sorted %d subfolders alphabetically", n);
-        on_library_refresh_all(lib);
-    }
-}
-
-/*
- * validate_sort_subfolders — a folder or the Notes root is selected.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   item   — the item (unused)
- *
- * Output: YES to enable it.
- */
-static BOOL
-validate_sort_subfolders(id target, id item)
-{
-    NotesLibrary *lib = target;
-    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_root;
+    return ((NotesLibrary *)target).sel_kind == on_sb_tag;
 }
 
 /*
@@ -444,8 +337,8 @@ run_export_md(id target, id sender)
 
 /*
  * close_editors_for_ids — close (each saving first) the editors of notes
- * held in a GArray of gint64, as on_db_folder_note_ids and
- * on_db_trash_note_ids return them; the array is freed.  When an editor
+ * held in a GArray of gint64, as on_db_trash_note_ids returns them; the
+ * array is freed.  When an editor
  * cannot save, a tool panel says the operation was stopped.
  *
  * Inputs:
@@ -489,118 +382,9 @@ confirm_permanent(NotesLibrary *lib, NSString *question, NSString *action, void 
 }
 
 /*
- * folder_in_trash — whether a folder sits directly in the Trash now.
- *
- * Inputs:
- *   db        — the database
- *   folder_id — the folder
- *
- * Output: YES when it is one of the Trash's folders.
- */
-static BOOL
-folder_in_trash(OnDatabase *db, gint64 folder_id)
-{
-    GList *trashed = on_db_folder_list_trashed(db);
-    BOOL   found   = NO;
-    for (GList *l = trashed; l != NULL && !found; l = l->next) {
-        found = ((OnFolder *)l->data)->id == folder_id;
-    }
-    on_db_folder_list_free(trashed);
-    return found;
-}
-
-/*
- * run_delete_folder — "delete-folder": the selected folder (with its
- * subtree) goes to the Trash, no question asked — it can be restored; a
- * folder already in the Trash is deleted permanently after one
- * confirmation.  Editors on its notes are closed first either way.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the menu or toolbar item (unused)
- */
-static void
-run_delete_folder(id target, id sender)
-{
-    NotesLibrary *lib = target;
-    if (lib.sel_kind == on_sb_folder) {
-        if (on_library_trash_folder(lib, lib.sel_id, lib.sel_name)) on_library_refresh_all(lib);
-        return;
-    }
-    if (lib.sel_kind != on_sb_trash_folder) return;
-    gint64 folder_id = lib.sel_id;
-    confirm_permanent(lib, @"Permanently delete this folder and everything inside it?", @"Delete", ^{
-        if (!folder_in_trash(lib.app->db, folder_id)) {      /* restored meanwhile */
-            on_library_refresh_all(lib);
-            return;
-        }
-        if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id),
-                                   @"Nothing was deleted")) return;
-        on_db_folder_delete(lib.app->db, folder_id);
-        if (lib.sel_kind == on_sb_trash_folder && lib.sel_id == folder_id)
-            on_library_sidebar_select(lib, on_sb_trash, 0);
-        on_library_refresh_all(lib);
-    });
-}
-
-/*
- * validate_delete_folder — a folder, or a folder in the Trash, is selected;
- * for the latter the item says "Delete Permanently".
- *
- * Inputs:
- *   target — the NotesLibrary
- *   item   — the menu or toolbar item
- *
- * Output: YES to enable it.
- */
-static BOOL
-validate_delete_folder(id target, id item)
-{
-    NotesLibrary *lib = target;
-    on_command_item_update(item, lib.sel_kind == on_sb_trash_folder ? @"Delete Folder Permanently"
-                                                                    : nil, nil, NO);
-    return lib.sel_kind == on_sb_folder || lib.sel_kind == on_sb_trash_folder;
-}
-
-/*
- * run_folder_restore — "folder-restore": the selected trashed folder (with
- * its subtree) goes back where it was deleted from; the selection follows.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the menu item (unused)
- */
-static void
-run_folder_restore(id target, id sender)
-{
-    NotesLibrary *lib = target;
-    if (lib.sel_kind != on_sb_trash_folder) return;
-    gint64 folder_id = lib.sel_id;
-    if (!on_db_folder_restore(lib.app->db, folder_id)) return;
-    on_app_status(lib.app, "Folder “%s” restored", lib.sel_name.UTF8String);
-    on_library_refresh_all(lib);
-    on_library_sidebar_select(lib, on_sb_folder, folder_id);
-}
-
-/*
- * validate_folder_restore — a folder in the Trash is selected.
- *
- * Inputs:
- *   target — the NotesLibrary
- *   item   — the item (unused)
- *
- * Output: YES to enable it.
- */
-static BOOL
-validate_folder_restore(id target, id item)
-{
-    return ((NotesLibrary *)target).sel_kind == on_sb_trash_folder;
-}
-
-/*
  * run_empty_trash — "empty-trash": after one confirmation, close the
- * editors of every note the purge takes (trashed folders' notes too) and
- * delete everything in the Trash.
+ * editors of every note the purge takes and delete everything in the
+ * Trash.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -614,7 +398,7 @@ run_empty_trash(id target, id sender)
         if (!close_editors_for_ids(lib, on_db_trash_note_ids(lib.app->db), @"Nothing was deleted")) return;
         if (!on_db_trash_empty(lib.app->db)) return;
         on_app_status(lib.app, "Trash emptied");
-        if (on_library_in_trash_view(lib)) on_library_sidebar_select(lib, on_sb_trash, 0);
+        if (on_library_in_trash_view(lib)) on_library_sidebar_select(lib, on_sb_all, 0);
         on_library_refresh_all(lib);
     });
 }
@@ -658,17 +442,13 @@ validate_notes_selected(id target, id item)
 static const on_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
     { @"quicknote",   run_quicknote,   NULL },
-    { @"new-folder",  run_new_folder,  NULL },
+    { @"edit-tag",    run_edit_tag,    validate_tag_selected },
     { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },
     { @"note-export-html", run_note_export_html, validate_notes_selected },
     { @"note-export-md",   run_note_export_md,   validate_notes_selected },
-    { @"delete-folder",  run_delete_folder,  validate_delete_folder  },
-    { @"folder-info",     run_folder_info,     validate_folder_selected  },
-    { @"sort-subfolders", run_sort_subfolders, validate_sort_subfolders  },
-    { @"folder-restore", run_folder_restore, validate_folder_restore },
-    { @"empty-trash",    run_empty_trash,    NULL                    },
+    { @"empty-trash", run_empty_trash, NULL },
 };
 
 /*
@@ -696,19 +476,20 @@ on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n)
 }
 
 /*
- * on_library_trash_folder — see library_commands.h.
+ * on_library_tag_notes — see library_commands.h.
  */
 BOOL
-on_library_trash_folder(NotesLibrary *lib, gint64 folder_id, NSString *name)
+on_library_tag_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids, NSString *name)
 {
-    if (!close_editors_for_ids(lib, on_db_folder_note_ids(lib.app->db, folder_id),
-                               @"Nothing was moved to the Trash"))
-        return NO;
-    if (!on_db_folder_trash(lib.app->db, folder_id)) return NO;
-    on_app_status(lib.app, "Folder “%s” moved to Trash", name.UTF8String);
-    if (lib.sel_kind == on_sb_folder && lib.sel_id == folder_id) {
-        on_library_sidebar_select(lib, on_sb_root, 0);
-    }
+    OnDatabase *db = lib.app->db;
+    gboolean    own;
+    if (ids.count == 0 || !on_db_txn_begin(db, &own)) return NO;
+    BOOL ok = YES;
+    for (NSNumber *nid in ids)
+        ok = ok && on_db_note_field_tag_add(db, nid.longLongValue, name.UTF8String) != 0;
+    if (!on_db_txn_end(db, own, ok)) return NO;
+    on_app_status(lib.app, "Tagged %lu note%s “%s”", (unsigned long)ids.count,
+                  ids.count == 1 ? "" : "s", name.UTF8String);
     return YES;
 }
 

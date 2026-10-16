@@ -297,7 +297,7 @@ static const column_spec_t note_columns[] = {
 };
 
 static const column_spec_t action_columns[] = {
-    { @"done",    @"",         @"Done",     24,  column_fixed },
+    { @"done",    @"",         @"Done",     28,  column_fixed },   /* shared_look_check_col_w */
     { @"tags",    @"Tags",     @"Tags",     120, column_fit   },
     { @"action",  @"Action",   @"Action",   260, column_fill  },
     { @"due",     @"Due Date", @"Due Date", 110, column_fit   },
@@ -727,21 +727,20 @@ scroll_for(NSView *doc)
 }
 
 /*
- * struck — text in the cell font, struck through when an item is done
- * (on_ui_strike_key: the cell draws the line where the editor does), cut
- * short with "…" when the column is too narrow.  (An attributed string's
- * paragraph style replaces the label's line break mode, and the default
- * one wraps.)
+ * struck — text in the cell font, struck through (AppKit's strikethrough,
+ * as Tasks strikes a done task's title) when asked, cut short with "…"
+ * when the column is too narrow.  (An attributed string's paragraph style
+ * replaces the label's line break mode, and the default one wraps.)
  *
  * Inputs:
  *   text   — the text
- *   done   — YES to strike it
+ *   strike — YES to strike it
  *   colour — its colour, or nil for the label colour
  *
  * Output: the attributed text.
  */
 static NSAttributedString *
-struck(NSString *text, BOOL done, NSColor *colour)
+struck(NSString *text, BOOL strike, NSColor *colour)
 {
     static NSParagraphStyle *one_line;
     static dispatch_once_t   once;
@@ -755,7 +754,7 @@ struck(NSString *text, BOOL done, NSColor *colour)
         NSForegroundColorAttributeName: colour ?: NSColor.labelColor,
         NSParagraphStyleAttributeName:  one_line,
     }];
-    if (done) attrs[on_ui_strike_key] = @YES;
+    if (strike) attrs[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
     return [[NSAttributedString alloc] initWithString:text ?: @"" attributes:attrs];
 }
 
@@ -1660,19 +1659,28 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
     }
     NotesActionRecord *r = self.action_records[(NSUInteger)row];
     if ([key isEqualToString:@"done"]) {
-        NSButton *check = [table makeViewWithIdentifier:@"done" owner:nil];
-        if (check == nil) {
-            check = [NSButton checkboxWithTitle:@"" target:self action:@selector(toggle_action:)];
-            check.identifier  = @"done";
+        /* The checkbox centred in a cell view, as Tasks' done column. */
+        NSTableCellView *cell = [table makeViewWithIdentifier:@"done" owner:nil];
+        if (cell == nil) {
+            cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
+            cell.identifier = @"done";
+            NSButton *check = [NSButton checkboxWithTitle:@"" target:self action:@selector(toggle_action:)];
             check.controlSize = NSControlSizeSmall;
+            check.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell addSubview:check];
+            [NSLayoutConstraint activateConstraints:@[
+                [check.centerXAnchor constraintEqualToAnchor:cell.centerXAnchor],
+                [check.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+            ]];
         }
-        check.state = r.done ? NSControlStateValueOn : NSControlStateValueOff;
-        return check;
+        ((NSButton *)cell.subviews.firstObject).state = r.done ? NSControlStateValueOn : NSControlStateValueOff;
+        return cell;
     }
     NSTableCellView *cell = on_ui_label_cell(table, key);
     NSString *text   = [self text_of:table key:key row:(NSUInteger)row];
     NSColor  *colour = [key isEqualToString:@"due"] && r.due ? due_colour(r.due) : nil;
-    cell.textField.attributedStringValue = struck(text, r.done, colour);
+    /* A done item's text is struck through, its tags and date left alone (as Tasks'). */
+    cell.textField.attributedStringValue = struck(text, r.done && [key isEqualToString:@"action"], colour);
     return cell;
 }
 

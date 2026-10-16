@@ -24,7 +24,7 @@ typedef struct {
 static const bool_pref_t bool_prefs[] = {
     { "code_copy_button",         TRUE,  offsetof(OnApp, code_copy_buttons)      },
     { "code_line_numbers",        TRUE,  offsetof(OnApp, code_line_numbers)      },
-    { "sidebar_counts",           FALSE, offsetof(OnApp, sidebar_counts)         },
+    { "sidebar_counts",           TRUE,  offsetof(OnApp, sidebar_counts)         },
     { "sidebar_fit_content",      TRUE,  offsetof(OnApp, sidebar_fit_content)    },
     { "sidebar_visible",          TRUE,  offsetof(OnApp, sidebar_visible)        },
     { "favorites_bar_visible",    TRUE,  offsetof(OnApp, favorites_bar_visible)  },

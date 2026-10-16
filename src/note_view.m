@@ -1286,21 +1286,29 @@ tag_popup_update(NotesNoteView *v)
     NSString *typed = [[NSString alloc] initWithBytes:t->text->str + s.offset + 1
                                                length:e.offset - s.offset - 1
                                              encoding:NSUTF8StringEncoding] ?: @"";
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (GList *l = v.tag_choices; l != NULL && names.count < on_look_tag_popup_max; l = l->next) {
+    /* The names that start with the typed text first, then those that
+     * contain it (as Tasks' tag field offers them), at most
+     * shared_look_tag_suggestions_max; each tag's word once. */
+    NSMutableArray<NSString *> *starts = [NSMutableArray array];
+    NSMutableArray<NSString *> *inside = [NSMutableArray array];
+    for (GList *l = v.tag_choices; l != NULL; l = l->next) {
         gchar *word = on_document_tag_word(((const OnTag *)l->data)->name);
         if (word == NULL) continue;
         NSString *name = @(word);
         g_free(word);
         BOOL offered = NO;           /* another tag's word already          */
-        for (NSString *have in names)
+        for (NSString *have in [starts arrayByAddingObjectsFromArray:inside])
             offered = offered || [have caseInsensitiveCompare:name] == NSOrderedSame;
+        if (offered) continue;
         /* An empty string is found nowhere: the bare '#' lists them all.   */
-        if (!offered && (typed.length == 0 ||
-                         [name rangeOfString:typed
-                                     options:NSCaseInsensitiveSearch | NSAnchoredSearch].location == 0))
-            [names addObject:name];
+        NSRange found = typed.length == 0 ? NSMakeRange(0, 0)
+                      : [name rangeOfString:typed options:NSCaseInsensitiveSearch];
+        if (found.location == NSNotFound) continue;
+        [found.location == 0 ? starts : inside addObject:name];
     }
+    NSArray<NSString *> *names = [starts arrayByAddingObjectsFromArray:inside];
+    if (names.count > (NSUInteger)shared_look_tag_suggestions_max)
+        names = [names subarrayWithRange:NSMakeRange(0, (NSUInteger)shared_look_tag_suggestions_max)];
     on_rect_t r;
     on_doc_layout_caret_rect(v.layout, s, &r);
     if (v.tag_popup == nil) {

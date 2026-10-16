@@ -115,15 +115,6 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_strike_key — an attribute for the text of an on_ui_label_cell:
- * the characters carrying it (any value) are struck through, at the
- * middle of the lowercase letters (half the x-height above the baseline),
- * as the note view strikes text.  AppKit's own NSStrikethroughStyle runs
- * a point or two lower, so the app's tables use this instead.
- */
-extern NSAttributedStringKey const on_ui_strike_key;
-
-/*
  * on_ui_label_cell — a table's reusable one-line text cell: a label in the
  * cell font, truncated at the tail, centred vertically in its row.  (A
  * bare NSTextField returned as a cell sits at the top of the row.)
@@ -132,10 +123,10 @@ extern NSAttributedStringKey const on_ui_strike_key;
  *   table — the table
  *   ident — the cell's reuse identifier (the column's, usually)
  *
- * Output: the cell; its textField is the label, which strikes through
- *         text carrying on_ui_strike_key, and shows attributed text that
- *         carries its own colour (a due date's tint) in the selection's
- *         text colour while the row is selected, as a plain label is.
+ * Output: the cell; its textField is the label, which shows attributed
+ *         text that carries its own colour (a due date's tint) in the
+ *         selection's text colour while the row is selected, as a plain
+ *         label is.
  */
 NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
 

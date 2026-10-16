@@ -49,7 +49,7 @@
  * defaults are one table in app_core.c):
  *   code_copy_buttons      "code_copy_button"         1  code runs show "copy"
  *   code_line_numbers      "code_line_numbers"        1  gutter numbers
- *   sidebar_counts         "sidebar_counts"           0  counts in the sidebar
+ *   sidebar_counts         "sidebar_counts"           1  counts in the sidebar (Tasks' key too)
  *   sidebar_fit_content    "sidebar_fit_content"      1  sidebar fits its rows
  *   sidebar_visible        "sidebar_visible"          1  the sidebar shows
  *   favorites_bar_visible  "favorites_bar_visible"    1  the Favorites bar shows

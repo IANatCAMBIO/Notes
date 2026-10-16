@@ -2241,18 +2241,20 @@ test_notes_pane(NotesLibrary *lib)
     check(a_row >= 0 && z_row > a_row && [cell_text(table, @"tags", a_row) isEqualToString:@"Pane"],
           "Action items sort by their text and show their note's tags");
 
-    NSButton *box = [table viewAtColumn:[table columnWithIdentifier:@"done"] row:a_row makeIfNecessary:YES];
+    NSTableCellView *box_cell = [table viewAtColumn:[table columnWithIdentifier:@"done"] row:a_row makeIfNecessary:YES];
+    NSButton *box = (NSButton *)box_cell.subviews.firstObject;
+    check([box isKindOfClass:NSButton.class] && box.controlSize == NSControlSizeSmall &&
+          fabs(NSMidX(box.frame) - NSMidX(box_cell.bounds)) < 1.0,
+          "the done checkbox is small and centred in its cell, as Tasks'");
     [box performClick:nil];
     pump(0.1);
     a_row = row_with_text(table, @"action", @"Alpha task");
     NSTableCellView *done_cell = [table viewAtColumn:[table columnWithIdentifier:@"action"] row:a_row
                                      makeIfNecessary:YES];
     check(app.show_done_actions && a_row >= 0 &&
-          [done_cell.textField.attributedStringValue attribute:on_ui_strike_key atIndex:0
-                                                effectiveRange:NULL] != nil &&
           [done_cell.textField.attributedStringValue attribute:NSStrikethroughStyleAttributeName atIndex:0
-                                                effectiveRange:NULL] == nil,
-          "ticking an item strikes it through while completed items are shown");
+                                                effectiveRange:NULL] != nil,
+          "ticking an item strikes its text through while completed items are shown");
     {
         /* The line is the label's most-inked pixel row: it should sit
          * half the x-height above the baseline (the label is flipped). */

@@ -135,12 +135,8 @@ section_label(NSString *emoji, NSString *name)
 static SidebarItem *
 tag_item(const OnTag *t, GHashTable *tag_counts)
 {
-    /* %@ and @(...), never %s: an NSString format reads %s in the system
-     * encoding, not UTF-8, and an emoji came out as "üß™". */
-    NSString *name  = @(t->name);
-    NSString *label = *t->emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(t->emoji), name] : name;
-    gint      count = tag_counts ? GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id)) : -1;
-    return item_new(on_sb_tag, t->id, label, name, count);
+    gint count = tag_counts ? GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id)) : -1;
+    return item_new(on_sb_tag, t->id, on_ui_tag_label(t->emoji, t->name), @(t->name), count);
 }
 
 /* ── The outline ─────────────────────────────────────────────────────────── */

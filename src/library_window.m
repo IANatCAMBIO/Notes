@@ -129,7 +129,7 @@ init_with_library:(NotesLibrary *)lib
 
     [self build_content];
     on_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
-    [self update_status_path];
+    [self update_location];
     return self;
 }
 
@@ -201,12 +201,25 @@ build_content
 }
 
 /*
- * update_status_path — the status bar's left side: where the selection is.
+ * update_location — show where the selection is: in the status bar's left
+ * side, and in the window title, "Notes — <tag or view>" as in Tasks (a
+ * tag with its emoji, as the sidebar shows it).
  */
 - (void)
-update_status_path
+update_location
 {
-    self.status_path.stringValue = on_library_location_text(self.lib);
+    NotesLibrary *lib  = self.lib;
+    NSString     *name = lib.sel_name;
+    if (lib.sel_kind == on_sb_tag) {
+        OnTag *tag = on_db_tag_get(lib.app->db, lib.sel_id);
+        if (tag) {
+            name = on_ui_tag_label(tag->emoji, tag->name);
+            on_db_tag_free(tag);
+        }
+    }
+    self.window.title = name.length ? [@ON_APP_NAME stringByAppendingFormat:@" \xe2\x80\x94 %@", name]
+                                    : @ON_APP_NAME;
+    self.status_path.stringValue = on_library_location_text(lib);
 }
 
 /*
@@ -539,6 +552,6 @@ on_library_window_ai_changed(NotesLibrary *lib)
 void
 on_library_window_location_changed(NotesLibrary *lib)
 {
-    [library_window update_status_path];
+    [library_window update_location];
     on_library_favorites_refresh(lib);
 }

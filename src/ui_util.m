@@ -582,3 +582,15 @@ on_ui_pin_edges(NSView *view, NSView *to)
         [view.trailingAnchor constraintEqualToAnchor:to.trailingAnchor],
     ]];
 }
+
+/*
+ * on_ui_tag_label — a tag's emoji and name.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSString *
+on_ui_tag_label(const char *emoji, const char *name)
+{
+    /* %@ and @(...), never %s: an NSString format reads %s in the system
+     * encoding, not UTF-8, and an emoji came out as "üß™". */
+    return *emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(emoji), @(name)] : @(name);
+}

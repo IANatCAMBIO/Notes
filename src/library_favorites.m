@@ -11,6 +11,7 @@
 #import "library_commands.h"
 #import "library_sidebar.h"
 #import "look.h"
+#import "ui_util.h"
 
 #include "db.h"
 
@@ -202,8 +203,7 @@ reload
     for (GList *l = tags; l != NULL; l = l->next) {
         const OnTag *t = l->data;
         if (!t->favorite) continue;
-        NSString *title = *t->emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(t->emoji), @(t->name)]
-                                            : @(t->name);
+        NSString *title = on_ui_tag_label(t->emoji, t->name);
         CGFloat w = MAX(on_look_favorite_btn_min_w, ceil([title sizeWithAttributes:attrs].width) + btn_text_pad);
         NotesFavoriteButton *btn = [[NotesFavoriteButton alloc]
                                       initWithFrame:NSMakeRect(x, y, w, on_look_favorite_btn_h)];

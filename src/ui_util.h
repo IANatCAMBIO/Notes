@@ -389,3 +389,17 @@ void on_ui_select_radio(NSArray<NSButton *> *group, NSButton *chosen);
  *   to   — the view whose edges it takes
  */
 void on_ui_pin_edges(NSView *view, NSView *to);
+
+/*
+ * on_ui_tag_label — a tag as the sidebar, the Favorites bar and the window
+ * title show it: its
+ * emoji, two spaces and its name (as Tasks shows it), or the name alone
+ * when it has no emoji.
+ *
+ * Inputs:
+ *   emoji — the tag's emoji, UTF-8; "" for none
+ *   name  — its name, UTF-8
+ *
+ * Output: the label.
+ */
+NSString *on_ui_tag_label(const char *emoji, const char *name);

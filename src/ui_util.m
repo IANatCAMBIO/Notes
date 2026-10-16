@@ -531,10 +531,10 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
 
 /*
  * vetted_selection — the selection a click on one row would make, after
- * the delegate's say; an outline's delegate is asked its own questions.
+ * the delegate's say.
  *
  * Inputs:
- *   table — the table or outline
+ *   table — the table
  *   row   — the clicked row, >= 0
  *
  * Output: the rows to select; empty when the delegate refuses.
@@ -544,16 +544,6 @@ vetted_selection(NSTableView *table, NSInteger row)
 {
     NSIndexSet *rows = [NSIndexSet indexSetWithIndex:(NSUInteger)row];
     id          d    = table.delegate;
-    if ([table isKindOfClass:NSOutlineView.class]) {
-        NSOutlineView *outline = (NSOutlineView *)table;
-        if ([d respondsToSelector:@selector(selectionShouldChangeInOutlineView:)] &&
-            ![d selectionShouldChangeInOutlineView:outline]) return [NSIndexSet indexSet];
-        if ([d respondsToSelector:@selector(outlineView:selectionIndexesForProposedSelection:)])
-            return [d outlineView:outline selectionIndexesForProposedSelection:rows];
-        if ([d respondsToSelector:@selector(outlineView:shouldSelectItem:)] &&
-            ![d outlineView:outline shouldSelectItem:[outline itemAtRow:row]]) return [NSIndexSet indexSet];
-        return rows;
-    }
     if ([d respondsToSelector:@selector(selectionShouldChangeInTableView:)] &&
         ![d selectionShouldChangeInTableView:table]) return [NSIndexSet indexSet];
     if ([d respondsToSelector:@selector(tableView:selectionIndexesForProposedSelection:)])

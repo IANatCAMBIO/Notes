@@ -247,8 +247,8 @@ editor_window_titled(NSString *title)
  * Inputs:
  *   root    — where to start (itself included)
  *   cls     — the class wanted
- *   exclude — a subclass of cls to skip (e.g. NSOutlineView when looking
- *             for a plain table); Nil = none
+ *   exclude — a subclass of cls to skip (e.g. the sidebar's table when
+ *             looking for the notes list); Nil = none
  *
  * Output: the view, or nil.
  */
@@ -261,6 +261,17 @@ find_view(NSView *root, Class cls, Class exclude)
         if (found) return found;
     }
     return nil;
+}
+
+/*
+ * sidebar_class — the sidebar's table class (private to library_sidebar.m).
+ *
+ * Output: the class.
+ */
+static Class
+sidebar_class(void)
+{
+    return NSClassFromString(@"NotesSidebarTable");
 }
 
 /*
@@ -844,8 +855,7 @@ answer_panel(NSString *title)
 static NSInteger
 select_note_row(NotesLibrary *lib, NSString *title)
 {
-    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class,
-                                                  NSOutlineView.class);
+    NSTableView *table = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, sidebar_class());
     NSInteger row = -1;
     for (NSInteger r = 0; r < table.numberOfRows; r++) {
         NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:r
@@ -1415,8 +1425,8 @@ test_edit_tag(NotesLibrary *lib)
     check([toggle.title isEqualToString:@"Hide Favorites Bar"], "the View menu offers Hide Favorites Bar");
     on_library_run_command(lib, toggle);
     pump(0.6);
-    NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
-    NSRect side = [outline.enclosingScrollView convertRect:outline.enclosingScrollView.bounds toView:nil];
+    NSTableView *sidebar_table = (NSTableView *)find_view(lib.window.contentView, sidebar_class(), Nil);
+    NSRect side = [sidebar_table.enclosingScrollView convertRect:sidebar_table.enclosingScrollView.bounds toView:nil];
     gchar *kept = on_app_config_get("favorites_bar_visible");
     check(!app.favorites_bar_visible && g_strcmp0(kept, "0") == 0 &&
           fabs(NSMaxY(side) - NSHeight(lib.window.contentView.bounds)) < 1.5,
@@ -1469,16 +1479,16 @@ draggingLocation
  * front (up to two spaces); the count is a label of its own.
  *
  * Inputs:
- *   outline — the sidebar
+ *   sidebar_table — the sidebar
  *   name    — the row's name (e.g. @"All Notes", @"Crate")
  *
  * Output: the row, or -1.
  */
 static NSInteger
-sidebar_row(NSOutlineView *outline, NSString *name)
+sidebar_row(NSTableView *sidebar_table, NSString *name)
 {
-    for (NSInteger r = 0; r < outline.numberOfRows; r++) {
-        NSString *text = ((NSTableCellView *)[outline viewAtColumn:0 row:r makeIfNecessary:YES]).textField.stringValue;
+    for (NSInteger r = 0; r < sidebar_table.numberOfRows; r++) {
+        NSString *text = ((NSTableCellView *)[sidebar_table viewAtColumn:0 row:r makeIfNecessary:YES]).textField.stringValue;
         NSRange   gap  = [text rangeOfString:@"  "];
         if (gap.location == NSNotFound) gap = [text rangeOfString:@"\u00a0 "];
         if (gap.location != NSNotFound) text = [text substringFromIndex:NSMaxRange(gap)];
@@ -1491,21 +1501,21 @@ sidebar_row(NSOutlineView *outline, NSString *name)
  * drag_of — a drag of notes, on a private pasteboard, over a row.
  *
  * Inputs:
- *   outline — the sidebar
+ *   sidebar_table — the sidebar
  *   ids     — the note ids
  *   row     — the row under the pointer
  *
  * Output: the drag (cast to NSDraggingInfo where used).
  */
 static NotesFakeDrag *
-drag_of(NSOutlineView *outline, NSArray<NSNumber *> *ids, NSInteger row)
+drag_of(NSTableView *sidebar_table, NSArray<NSNumber *> *ids, NSInteger row)
 {
     NotesFakeDrag *drag = [[NotesFakeDrag alloc] init];
     drag.pasteboard = [NSPasteboard pasteboardWithUniqueName];
     [drag.pasteboard clearContents];
     [drag.pasteboard writeObjects:@[on_library_drag_item(ids)]];
-    NSRect rect = [outline rectOfRow:row];
-    drag.location = [outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
+    NSRect rect = [sidebar_table rectOfRow:row];
+    drag.location = [sidebar_table convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
     return drag;
 }
 
@@ -1514,22 +1524,21 @@ drag_of(NSOutlineView *outline, NSArray<NSNumber *> *ids, NSInteger row)
  * accept when valid.
  *
  * Inputs:
- *   outline — the sidebar
- *   drag    — the drag
- *   row     — the proposed row (the drop parent), or -1 for the top level
- *   index   — the child index, or NSOutlineViewDropOnItemIndex
+ *   sidebar_table — the sidebar
+ *   drag          — the drag
+ *   row           — the proposed row
+ *   operation     — NSTableViewDropOn or NSTableViewDropAbove
  *
  * Output: YES when the drop was accepted.
  */
 static BOOL
-drop(NSOutlineView *outline, NotesFakeDrag *drag, NSInteger row, NSInteger index)
+drop(NSTableView *sidebar_table, NotesFakeDrag *drag, NSInteger row, NSTableViewDropOperation operation)
 {
-    id item = row >= 0 ? [outline itemAtRow:row] : nil;
-    id<NSOutlineViewDataSource> ds = outline.dataSource;
+    id<NSTableViewDataSource> ds = sidebar_table.dataSource;
     id<NSDraggingInfo> info = (id<NSDraggingInfo>)drag;
-    if ([ds outlineView:outline validateDrop:info proposedItem:item proposedChildIndex:index] == NSDragOperationNone)
+    if ([ds tableView:sidebar_table validateDrop:info proposedRow:row proposedDropOperation:operation] == NSDragOperationNone)
         return NO;
-    BOOL ok = [ds outlineView:outline acceptDrop:info item:item childIndex:index];
+    BOOL ok = [ds tableView:sidebar_table acceptDrop:info row:row dropOperation:operation];
     pump(0.2);
     [drag.pasteboard releaseGlobally];
     return ok;
@@ -1557,20 +1566,20 @@ menu_titles(NSMenu *menu)
  * notes row).
  *
  * Inputs:
- *   outline — the table
+ *   sidebar_table — the table
  *   row     — the row
  *
  * Output: the menu, or nil.
  */
 static NSMenu *
-right_click(NSTableView *outline, NSInteger row)
+right_click(NSTableView *sidebar_table, NSInteger row)
 {
-    NSRect   rect  = [outline rectOfRow:row];
+    NSRect   rect  = [sidebar_table rectOfRow:row];
     NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
-                                        location:[outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil]
-                                   modifierFlags:0 timestamp:0 windowNumber:outline.window.windowNumber
+                                        location:[sidebar_table convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil]
+                                   modifierFlags:0 timestamp:0 windowNumber:sidebar_table.window.windowNumber
                                          context:nil eventNumber:0 clickCount:1 pressure:1];
-    return [outline menuForEvent:event];
+    return [sidebar_table menuForEvent:event];
 }
 
 /* Defined with the notes pane's tests; the sidebar's menus use it too. */
@@ -1582,7 +1591,7 @@ static NSMenu *open_menu(NSMenu *menu);
  * which a synthetic event cannot drive.
  *
  * Inputs:
- *   table — the table or outline
+ *   table — the table or sidebar_table
  *   row   — the row
  *   mods  — the modifier flags held
  */
@@ -1609,7 +1618,7 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 static void
 test_sidebar(NotesLibrary *lib)
 {
-    NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
+    NSTableView *sidebar_table = (NSTableView *)find_view(lib.window.contentView, sidebar_class(), Nil);
     gint64 crate = new_note_tagged("Crate", "In the crate\nbody");
     gint64 loose = new_note("Loose for drops\nbody");
     OnTag *tag   = on_db_tag_find(app.db, "Crate");
@@ -1621,11 +1630,11 @@ test_sidebar(NotesLibrary *lib)
 
     /* Menus, per kind of row: a right click leaves the selection alone and
      * its items carry the row. */
-    NSInteger all = sidebar_row(outline, @"All Notes");
-    check([menu_titles(open_menu(right_click(outline, all))) isEqualToArray:@[@"Search Here…"]],
+    NSInteger all = sidebar_row(sidebar_table, @"All Notes");
+    check([menu_titles(open_menu(right_click(sidebar_table, all))) isEqualToArray:@[@"Search Here…"]],
           "All Notes offers Search Here");
-    NSInteger crate_row = sidebar_row(outline, @"Crate");
-    NSMenu   *tag_menu  = open_menu(right_click(outline, crate_row));
+    NSInteger crate_row = sidebar_row(sidebar_table, @"Crate");
+    NSMenu   *tag_menu  = open_menu(right_click(sidebar_table, crate_row));
     on_sb_ref_t ref;
     check(lib.sel_kind == on_sb_all &&
           [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Search Here…"]] &&
@@ -1639,38 +1648,34 @@ test_sidebar(NotesLibrary *lib)
           "the status bar shows the selected tag");
 
     /* Mouse-down selection: a plain press selects, the delegate's veto holds. */
-    press(outline, all, NSEventModifierFlagCommand);
-    check(lib.sel_kind == on_sb_tag && lib.sel_id == crate_tag, "a ⌘-press is left to the outline");
-    press(outline, all, 0);
+    press(sidebar_table, all, NSEventModifierFlagCommand);
+    check(lib.sel_kind == on_sb_tag && lib.sel_id == crate_tag, "a ⌘-press is left to the table");
+    press(sidebar_table, all, 0);
     check(lib.sel_kind == on_sb_all, "a plain press selects its row on the mouse-down");
-    NSInteger tags = sidebar_row(outline, @"Tags");
-    press(outline, tags, 0);
+    NSInteger tags = sidebar_row(sidebar_table, @"Tags");
+    press(sidebar_table, tags, 0);
     check(tags >= 0 && lib.sel_kind == on_sb_all, "a press on the Tags header leaves it unselected");
 
-    /* A flat list, as in Tasks: the tags are top-level rows after the Tags
-     * group row, nothing collapses, and a tag's text starts where a view's
-     * does, where a table's would be (16 pt: no room for disclosure
-     * triangles, as nothing is expandable).                               */
-    tags = sidebar_row(outline, @"Tags");
+    /* A flat list, as in Tasks: a table, the tags rows after the Tags
+     * group row, and a tag's text starts where a view's does (16 pt).  */
+    tags = sidebar_row(sidebar_table, @"Tags");
     NSInteger first_tag = tags + 1;
-    NSTableCellView *view_cell = [outline viewAtColumn:0 row:all makeIfNecessary:YES];
-    NSTableCellView *tag_cell  = [outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES];
-    check([outline levelForRow:sidebar_row(outline, @"Crate")] == 0 &&
-          ![outline isExpandable:[outline itemAtRow:tags]] &&
-          [outline.delegate outlineView:outline isGroupItem:[outline itemAtRow:tags]] &&
-          first_tag < outline.numberOfRows &&
-          fabs(NSMinX([view_cell convertRect:view_cell.bounds toView:outline]) -
-               NSMinX([tag_cell convertRect:tag_cell.bounds toView:outline])) < 0.5 &&
-          NSMinX([view_cell convertRect:view_cell.bounds toView:outline]) <= 16.5,
+    NSTableCellView *view_cell = [sidebar_table viewAtColumn:0 row:all makeIfNecessary:YES];
+    NSTableCellView *tag_cell  = [sidebar_table viewAtColumn:0 row:sidebar_row(sidebar_table, @"Crate") makeIfNecessary:YES];
+    check([sidebar_table.delegate tableView:sidebar_table isGroupRow:tags] &&
+          first_tag < sidebar_table.numberOfRows &&
+          fabs(NSMinX([view_cell convertRect:view_cell.bounds toView:sidebar_table]) -
+               NSMinX([tag_cell convertRect:tag_cell.bounds toView:sidebar_table])) < 0.5 &&
+          NSMinX([view_cell convertRect:view_cell.bounds toView:sidebar_table]) <= 16.5,
           "the sidebar is flat: tags are top-level rows under a Tags group row, flush with the views");
 
     /* An emoji (from either app) shows before the tag's name.               */
     on_db_tag_set_emoji(app.db, crate_tag, "📦");
     on_library_refresh_all(lib);
     pump(0.1);
-    crate_row = sidebar_row(outline, @"Crate");
+    crate_row = sidebar_row(sidebar_table, @"Crate");
     check(crate_row >= 0 &&
-          [((NSTableCellView *)[outline viewAtColumn:0 row:crate_row makeIfNecessary:YES]).textField.stringValue
+          [((NSTableCellView *)[sidebar_table viewAtColumn:0 row:crate_row makeIfNecessary:YES]).textField.stringValue
               hasPrefix:@"📦  Crate"],
           "a tag's emoji shows before its name in the sidebar");
 
@@ -1680,7 +1685,7 @@ test_sidebar(NotesLibrary *lib)
     app.sidebar_counts = TRUE;
     on_library_refresh_all(lib);
     pump(0.1);
-    NSTableCellView *crate_cell = [outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES];
+    NSTableCellView *crate_cell = [sidebar_table viewAtColumn:0 row:sidebar_row(sidebar_table, @"Crate") makeIfNecessary:YES];
     NSTextField     *crate_count = nil;
     for (NSView *v in crate_cell.subviews)
         if ([v.identifier isEqualToString:@"sidebar.count"]) crate_count = (NSTextField *)v;
@@ -1696,8 +1701,8 @@ test_sidebar(NotesLibrary *lib)
 
     /* Drops: notes onto a tag get it (their other tags kept); onto the Trash
      * they are trashed; nothing else takes a drop.                         */
-    crate_row = sidebar_row(outline, @"Crate");
-    check(drop(outline, drag_of(outline, @[@(loose)], crate_row), crate_row, NSOutlineViewDropOnItemIndex),
+    crate_row = sidebar_row(sidebar_table, @"Crate");
+    check(drop(sidebar_table, drag_of(sidebar_table, @[@(loose)], crate_row), crate_row, NSTableViewDropOn),
           "notes dropped on a tag are accepted");
     GList *loose_tags = on_db_note_tags(app.db, loose);
     gchar *loose_body = on_note_text_cached(app.db, loose);
@@ -1707,8 +1712,8 @@ test_sidebar(NotesLibrary *lib)
           "and get it as a #tag on their bottom lines");
     g_free(loose_body);
     on_db_tag_list_free(loose_tags);
-    all = sidebar_row(outline, @"All Notes");
-    check(!drop(outline, drag_of(outline, @[@(loose)], all), all, NSOutlineViewDropOnItemIndex),
+    all = sidebar_row(sidebar_table, @"All Notes");
+    check(!drop(sidebar_table, drag_of(sidebar_table, @[@(loose)], all), all, NSTableViewDropOn),
           "a view row takes no drop");
 
     gint64 doomed = new_note("Doomed note\nbody");
@@ -1718,9 +1723,9 @@ test_sidebar(NotesLibrary *lib)
     gint64 dropped = new_note("Dropped on trash\nbody");
     on_library_refresh_all(lib);
     pump(0.2);
-    NSInteger trash_row = sidebar_row(outline, @"Trash");
-    check(drop(outline, drag_of(outline, @[@(dropped)], trash_row), trash_row,
-               NSOutlineViewDropOnItemIndex) && id_in(on_db_trash_note_ids(app.db), dropped),
+    NSInteger trash_row = sidebar_row(sidebar_table, @"Trash");
+    check(drop(sidebar_table, drag_of(sidebar_table, @[@(dropped)], trash_row), trash_row,
+               NSTableViewDropOn) && id_in(on_db_trash_note_ids(app.db), dropped),
           "notes dropped on the Trash are trashed");
     (void)crate;
 
@@ -1729,9 +1734,24 @@ test_sidebar(NotesLibrary *lib)
     new_note_tagged("ATagWithAReallyQuiteRemarkablyLongNameIndeed", "Long tag\nbody");
     on_library_refresh_all(lib);
     pump(0.3);
-    check(outline.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
+    check(sidebar_table.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
           "with fit-to-content on, the sidebar widens to a long tag name");
     app.sidebar_fit_content = FALSE;
+
+    /* The sidebar's width and visibility are remembered (sidebar_width,
+     * sidebar_visible), as Tasks remembers them. */
+    NSSplitView *split = (NSSplitView *)find_view(lib.window.contentView, NSSplitView.class, Nil);
+    [split setPosition:233 ofDividerAtIndex:0];
+    pump(0.1);
+    check(on_app_config_get_int("sidebar_width", 0) == 233,
+          "moving the divider remembers the sidebar's width");
+    on_library_run_command(lib, command_item(@"toggle-sidebar"));
+    pump(0.4);
+    check(!on_app_config_get_bool("sidebar_visible", TRUE) && !app.sidebar_visible,
+          "hiding the sidebar is remembered");
+    on_library_run_command(lib, command_item(@"toggle-sidebar"));
+    pump(0.4);
+    check(app.sidebar_visible, "and showing it again");
 }
 
 /*
@@ -1745,7 +1765,7 @@ test_sidebar(NotesLibrary *lib)
 static NSTableView *
 pane_table(NotesLibrary *lib)
 {
-    return (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
+    return (NSTableView *)find_view(lib.window.contentView, NSTableView.class, sidebar_class());
 }
 
 /*
@@ -2099,10 +2119,10 @@ test_notes_pane(NotesLibrary *lib)
     check(m && m->pinned && [pin.title isEqualToString:@"Unpin"], "Pin pins it, and the item then says Unpin");
     on_db_note_meta_free(m);
     {
-        NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
+        NSTableView *sidebar_table = (NSTableView *)find_view(lib.window.contentView, sidebar_class(), Nil);
         on_library_refresh_all(lib);
         pump(0.1);
-        NSInteger all_row = sidebar_row(outline, @"All Notes"), pinned_row = sidebar_row(outline, @"Pinned Notes");
+        NSInteger all_row = sidebar_row(sidebar_table, @"All Notes"), pinned_row = sidebar_row(sidebar_table, @"Pinned Notes");
         check(all_row == 0 && pinned_row == 1, "the sidebar lists All Notes, then Pinned Notes");
     }
     on_library_run_command(lib, command_item(@"note-pin"));
@@ -2602,7 +2622,7 @@ test_secondary_windows(NotesLibrary *lib)
         check(first != nil && fabs(NSMidY(first.textField.frame) - NSMidY(first.bounds)) < 1.0,
               "a result's text is centred vertically in its row");
         check(hits.rowHeight == on_look_row_h && hits.intercellSpacing.height ==
-              ((NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class)).intercellSpacing.height,
+              ((NSTableView *)find_view(lib.window.contentView, NSTableView.class, sidebar_class())).intercellSpacing.height,
               "result rows are as tall as the library list's compact rows");
         [hits selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [search_win makeFirstResponder:query];
@@ -2803,7 +2823,7 @@ test_secondary_windows(NotesLibrary *lib)
         on_library_run_command(lib, command_item(@"ai-summary"));
         check([ai_text.string isEqualToString:@"Select one or more notes to summarize."],
               "it summarises the selected notes, and asks for some");
-        NSTableView *list = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, NSOutlineView.class);
+        NSTableView *list = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, sidebar_class());
         [list selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] byExtendingSelection:NO];
         on_library_run_command(lib, command_item(@"ai-summary"));
         on_library_run_command(lib, command_item(@"ai-summary"));    /* ignored while running */

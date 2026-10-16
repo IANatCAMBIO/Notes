@@ -245,14 +245,39 @@ on_app_config_get_size(const gchar *key_w, const gchar *key_h,
 }
 
 /*
+ * on_app_config_get_int — see config.h.
+ */
+gint
+on_app_config_get_int(const gchar *key, gint def)
+{
+    gchar *str = on_app_config_get(key);
+    gchar *end = NULL;
+    gint   value = def;
+    if (str != NULL) {
+        gint64 parsed = g_ascii_strtoll(str, &end, 10);
+        if (end != str && *end == '\0') value = (gint)parsed;
+    }
+    g_free(str);
+    return value;
+}
+
+/*
+ * on_app_config_set_int — see config.h.
+ */
+void
+on_app_config_set_int(const gchar *key, gint value)
+{
+    gchar num[24];
+    g_snprintf(num, sizeof num, "%d", value);
+    on_app_config_set(key, num);
+}
+
+/*
  * on_app_config_set_size — see config.h.
  */
 void
 on_app_config_set_size(const gchar *key_w, const gchar *key_h, gint w, gint h)
 {
-    gchar num[24];
-    g_snprintf(num, sizeof num, "%d", w);
-    on_app_config_set(key_w, num);
-    g_snprintf(num, sizeof num, "%d", h);
-    on_app_config_set(key_h, num);
+    on_app_config_set_int(key_w, w);
+    on_app_config_set_int(key_h, h);
 }

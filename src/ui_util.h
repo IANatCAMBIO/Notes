@@ -304,20 +304,20 @@ NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
 
 /*
  * on_ui_select_on_mouse_down — select the row under a plain click on the
- * mouse-DOWN, as Finder does (a stock table or outline selects only on
- * mouse-up, once it knows the click is not a drag).  Every table's and
- * outline's mouseDown: calls this, then super, whose tracking loop still
- * tells clicks from drags and sends double-clicks.  An already-selected
- * row is left alone, so a multi-row selection can still be dragged, as
- * are ⌘-, ⇧- and ^-clicks, and a press on a button in a cell (ticking
- * an unselected action item must not drop the selection).  The delegate
- * is asked first, as a click would ask it (selectionShouldChange…, then
- * …selectionIndexesForProposedSelection: or else shouldSelectRow: /
- * shouldSelectItem:), so a row it refuses — the sidebar's Tags header —
- * stays unselectable.
+ * mouse-DOWN, as Finder does (a stock table selects only on mouse-up,
+ * once it knows the click is not a drag).  Every table's mouseDown:
+ * calls this, then super, whose tracking loop still tells clicks from
+ * drags and sends double-clicks.  An already-selected row is left alone,
+ * so a multi-row selection can still be dragged, as are ⌘-, ⇧- and
+ * ^-clicks, and a press on a button in a cell (ticking an unselected
+ * action item must not drop the selection).  The delegate is asked
+ * first, as a click would ask it (selectionShouldChangeInTableView:,
+ * then tableView:selectionIndexesForProposedSelection: or else
+ * tableView:shouldSelectRow:), so a row it refuses — the sidebar's Tags
+ * header — stays unselectable.
  *
  * Inputs:
- *   table — the table or outline receiving the click
+ *   table — the table receiving the click
  *   event — its mouse-down event
  */
 void on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event);

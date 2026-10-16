@@ -1,12 +1,11 @@
 /*
  * library_sidebar.m — the library's sidebar.
  *
- * An NSOutlineView over a flat list of SidebarItem objects, laid out and
+ * An NSTableView over a flat list of SidebarItem objects, laid out and
  * formatted as Tasks' sidebar: All Notes and Pinned Notes, Action Items,
  * the Tags header (a group row) followed by one row per tag the notes
  * carry (its emoji, its name, and its count at the right when counts are
- * shown), and the Trash.  Nothing nests or collapses; only the Tags header
- * cannot be selected.
+ * shown), and the Trash.  Only the Tags header cannot be selected.
  *
  * Selecting a row writes lib's selection and refreshes the notes pane
  * (which also updates the status bar).  A right click shows the row's
@@ -44,7 +43,7 @@
 @interface SidebarItem : NSObject
 @property (nonatomic, assign) on_sb_kind_t kind;
 @property (nonatomic, assign) gint64       ident;
-@property (nonatomic, copy)   NSString    *display;   /* shown in the outline */
+@property (nonatomic, copy)   NSString    *display;   /* shown in the table   */
 @property (nonatomic, copy)   NSString    *raw_name;  /* bare name            */
 @property (nonatomic, assign) gint         count;     /* shown at the right; -1 = none */
 @end
@@ -145,36 +144,36 @@ tag_item(const OnTag *t)
     return item_new(on_sb_tag, t->id, on_ui_tag_label(t->emoji, t->name), @(t->name));
 }
 
-/* ── The outline ─────────────────────────────────────────────────────────── */
+/* ── The table ───────────────────────────────────────────────────────────── */
 
 @class NotesSidebarController;
 
 /*
- * NotesSidebarOutline — the outline view; a click selects its row on the
- * mouse-down.  (A right click opens the outline's menu, filled per row by
+ * NotesSidebarTable — the table view; a click selects its row on the
+ * mouse-down.  (A right click opens the table's menu, filled per row by
  * the controller, NSMenuDelegate.)
  */
-@interface NotesSidebarOutline : NSOutlineView
+@interface NotesSidebarTable : NSTableView
 @property (nonatomic, weak) NotesSidebarController *controller;
 @end
 
 /* ── The controller ─────────────────────────────────────────────────────── */
 
-@interface NotesSidebarController : NSObject <NSOutlineViewDelegate, NSOutlineViewDataSource,
+@interface NotesSidebarController : NSObject <NSTableViewDelegate, NSTableViewDataSource,
                                               NSMenuDelegate>
-@property (nonatomic, weak)   NotesLibrary        *lib;
-@property (nonatomic, weak)   NotesSidebarOutline *outline;
+@property (nonatomic, weak)   NotesLibrary      *lib;
+@property (nonatomic, weak)   NotesSidebarTable *table;
 @property (nonatomic, strong) NSMutableArray<SidebarItem *> *roots;
-@property (nonatomic, assign) BOOL                 fit_queued;
-@property (nonatomic, assign) BOOL                 fit_force;
+@property (nonatomic, assign) BOOL               fit_queued;
+@property (nonatomic, assign) BOOL               fit_force;
 - (void)queue_fit:(BOOL)force;
 @end
 
-@implementation NotesSidebarOutline
+@implementation NotesSidebarTable
 
 /*
  * mouseDown: — a plain click selects its row at once
- * (on_ui_select_on_mouse_down); NSOutlineView then tracks the click as
+ * (on_ui_select_on_mouse_down); NSTableView then tracks the click as
  * usual.
  *
  * Inputs:
@@ -205,6 +204,20 @@ viewDidMoveToWindow
 /* ── Finding rows ──────────────────────────────────────────────────────── */
 
 /*
+ * item_at: — the row's item.
+ *
+ * Inputs:
+ *   row — a row index, or anything out of range
+ *
+ * Output: the item, or nil when there is no such row.
+ */
+- (SidebarItem *)
+item_at:(NSInteger)row
+{
+    return row >= 0 && (NSUInteger)row < self.roots.count ? self.roots[(NSUInteger)row] : nil;
+}
+
+/*
  * row_of_kind:ident: — the row (kind, ident).
  *
  * Inputs:
@@ -231,10 +244,10 @@ row_of_kind:(on_sb_kind_t)kind ident:(gint64)ident
 - (void)
 select_row:(NSInteger)row
 {
-    SidebarItem *it = [self.outline itemAtRow:row];
+    SidebarItem *it = [self item_at:row];
     if (it == nil) return;
     self.lib.populating++;
-    [self.outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
     self.lib.populating--;
     self.lib.sel_kind = it.kind;
     self.lib.sel_id   = it.ident;
@@ -319,9 +332,9 @@ refresh_counts
 {
     if (!self.lib.app->sidebar_counts) return;
     [self read_counts];
-    [self.outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:
-                                           NSMakeRange(0, (NSUInteger)self.outline.numberOfRows)]
-                            columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    [self.table reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:
+                                         NSMakeRange(0, (NSUInteger)self.table.numberOfRows)]
+                          columnIndexes:[NSIndexSet indexSetWithIndex:0]];
 }
 
 /*
@@ -335,12 +348,12 @@ refresh_counts
 - (BOOL)
 refresh
 {
-    NSClipView *clip   = self.outline.enclosingScrollView.contentView;
+    NSClipView *clip   = self.table.enclosingScrollView.contentView;
     NSPoint     scroll = clip.bounds.origin;
 
     self.lib.populating++;
     [self build_roots];
-    [self.outline reloadData];
+    [self.table reloadData];
     NSInteger row      = [self row_of_kind:self.lib.sel_kind ident:self.lib.sel_id];
     BOOL      restored = row >= 0;
     [self select_row:restored ? row : [self row_of_kind:on_sb_all ident:0]];
@@ -366,7 +379,7 @@ select_kind:(on_sb_kind_t)kind ident:(gint64)ident
     NSInteger row = [self row_of_kind:kind ident:ident];
     if (row < 0) return;
     [self select_row:row];
-    [self.outline scrollRowToVisible:row];
+    [self.table scrollRowToVisible:row];
     on_library_notes_refresh(self.lib);
 }
 
@@ -409,21 +422,21 @@ fit:(BOOL)force
 {
     if (!force && !self.lib.app->sidebar_fit_content) return;
     NSSplitView *split = nil;
-    for (NSView *v = self.outline.superview; v && !split; v = v.superview)
+    for (NSView *v = self.table.superview; v && !split; v = v.superview)
         if ([v isKindOfClass:NSSplitView.class]) split = (NSSplitView *)v;
     if (split == nil || split.bounds.size.width <= 0) return;
 
     CGFloat want = 0;
-    for (NSInteger row = 0; row < self.outline.numberOfRows; row++) {
-        SidebarItem *it   = [self.outline itemAtRow:row];
-        NSRect       cell = [self.outline frameOfCellAtColumn:0 row:row];
+    for (NSInteger row = 0; row < self.table.numberOfRows; row++) {
+        SidebarItem *it   = [self item_at:row];
+        NSRect       cell = [self.table frameOfCellAtColumn:0 row:row];
         CGFloat text = [it.display sizeWithAttributes:@{ NSFontAttributeName: row_font(it.kind) }].width;
         if (it.count >= 0)
             text += count_gap + [[NSString stringWithFormat:@"%d", it.count]
                                     sizeWithAttributes:@{ NSFontAttributeName: count_font() }].width;
         want = MAX(want, NSMinX(cell) + on_look_sidebar_text_pad + on_look_sidebar_count_pad + ceil(text));
     }
-    NSScrollView *scroll = self.outline.enclosingScrollView;
+    NSScrollView *scroll = self.table.enclosingScrollView;
     if (scroll.scrollerStyle == NSScrollerStyleLegacy && !scroll.verticalScroller.hidden)
         want += [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:NSScrollerStyleLegacy];
     want = MAX(want, on_look_sidebar_min_w);
@@ -451,7 +464,7 @@ command_item(NSString *ident, NSString *title)
 }
 
 /*
- * menuNeedsUpdate: — the outline's menu is about to open on the row under
+ * menuNeedsUpdate: — the table's menu is about to open on the row under
  * the pointer (clickedRow; the selection is left alone): the Trash
  * empties; a tag is edited (its emoji and Notes' favorite flag); every
  * row but the Trash searches within itself.  The items are commands, run
@@ -459,14 +472,13 @@ command_item(NSString *ident, NSString *title)
  * Nothing for empty space or the Tags header.
  *
  * Inputs:
- *   menu — the outline's menu
+ *   menu — the table's menu
  */
 - (void)
 menuNeedsUpdate:(NSMenu *)menu
 {
     [menu removeAllItems];
-    NSInteger    row = self.outline.clickedRow;
-    SidebarItem *it  = row >= 0 ? [self.outline itemAtRow:row] : nil;
+    SidebarItem *it = [self item_at:self.table.clickedRow];
     if (it == nil || it.kind == on_sb_tags_header) return;
     NSValue *ref = on_library_sb_ref_value(it.kind, it.ident);
 
@@ -485,89 +497,56 @@ menuNeedsUpdate:(NSMenu *)menu
 /* ── Data source ───────────────────────────────────────────────────────── */
 
 /*
- * outlineView:numberOfChildrenOfItem: — how many rows under an item.
+ * numberOfRowsInTableView: — the rows on show.
  *
  * Inputs:
- *   outline — the outline (unused)
- *   item    — the item, or nil for the top level
+ *   table — the table (unused)
  *
  * Output: the count.
  */
 - (NSInteger)
-outlineView:(NSOutlineView *)outline numberOfChildrenOfItem:(id)item
+numberOfRowsInTableView:(NSTableView *)table
 {
-    return item ? 0 : (NSInteger)self.roots.count;
-}
-
-/*
- * outlineView:isItemExpandable: — no row has children: the sidebar is a
- * flat list, as Tasks' is.
- *
- * Inputs:
- *   outline — the outline (unused)
- *   item    — the item (unused)
- *
- * Output: NO.
- */
-- (BOOL)
-outlineView:(NSOutlineView *)outline isItemExpandable:(id)item
-{
-    return NO;
-}
-
-/*
- * outlineView:isGroupItem: — the Tags header is a group row, drawn as a
- * section heading, as in Tasks' sidebar.
- *
- * Inputs:
- *   outline — the outline (unused)
- *   item    — the item
- *
- * Output: YES for the header.
- */
-- (BOOL)
-outlineView:(NSOutlineView *)outline isGroupItem:(id)item
-{
-    return ((SidebarItem *)item).kind == on_sb_tags_header;
-}
-
-/*
- * outlineView:child:ofItem: — a child row.
- *
- * Inputs:
- *   outline — the outline (unused)
- *   index   — which
- *   item    — the parent, or nil for the top level
- *
- * Output: the item.
- */
-- (id)
-outlineView:(NSOutlineView *)outline child:(NSInteger)index ofItem:(id)item
-{
-    return self.roots[(NSUInteger)index];
+    return (NSInteger)self.roots.count;
 }
 
 /* ── Delegate ──────────────────────────────────────────────────────────── */
 
 /*
- * outlineView:viewForTableColumn:item: — a row's cell, formatted as Tasks'
+ * tableView:isGroupRow: — the Tags header is a group row, drawn as a
+ * section heading, as in Tasks' sidebar.
+ *
+ * Inputs:
+ *   table — the table (unused)
+ *   row   — the row
+ *
+ * Output: YES for the header.
+ */
+- (BOOL)
+tableView:(NSTableView *)table isGroupRow:(NSInteger)row
+{
+    return [self item_at:row].kind == on_sb_tags_header;
+}
+
+/*
+ * tableView:viewForTableColumn:row: — a row's cell, formatted as Tasks'
  * sidebar formats its rows (row_font; the Tags header grey);
  * while counts are shown, the count at the row's right in a small grey
  * label with even-width digits, as Tasks shows its tags' counts.  To
  * VoiceOver the cell is one static text, row_speech, not two labels.
  *
  * Inputs:
- *   outline — the outline
- *   column  — the column (unused)
- *   item    — the item
+ *   table  — the table
+ *   column — the column (unused)
+ *   row    — the row
  *
  * Output: the cell.
  */
 - (NSView *)
-outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column item:(id)item
+tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
-    SidebarItem *it = item;
-    NSTableCellView *cell = [outline makeViewWithIdentifier:@"sidebar" owner:self];
+    SidebarItem *it = [self item_at:row];
+    NSTableCellView *cell = [table makeViewWithIdentifier:@"sidebar" owner:self];
     if (cell == nil) {
         cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"sidebar";
@@ -610,50 +589,50 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
 }
 
 /*
- * outlineView:typeSelectStringForTableColumn:item: — type-select finds a
- * row by its bare name, so typing a letter reaches a row whose text
- * starts with an emoji.
+ * tableView:typeSelectStringForTableColumn:row: — type-select finds a row
+ * by its bare name, so typing a letter reaches a row whose text starts
+ * with an emoji.
  *
  * Inputs:
- *   outline — the outline (unused)
- *   column  — the column (unused)
- *   item    — the item
+ *   table  — the table (unused)
+ *   column — the column (unused)
+ *   row    — the row
  *
  * Output: the row's name.
  */
 - (NSString *)
-outlineView:(NSOutlineView *)outline typeSelectStringForTableColumn:(NSTableColumn *)column item:(id)item
+tableView:(NSTableView *)table typeSelectStringForTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
-    return ((SidebarItem *)item).raw_name;
+    return [self item_at:row].raw_name;
 }
 
 /*
- * outlineView:shouldSelectItem: — every row but the Tags header.
+ * tableView:shouldSelectRow: — every row but the Tags header.
  *
  * Inputs:
- *   outline — the outline (unused)
- *   item    — the item
+ *   table — the table (unused)
+ *   row   — the row
  *
  * Output: YES to allow it.
  */
 - (BOOL)
-outlineView:(NSOutlineView *)outline shouldSelectItem:(id)item
+tableView:(NSTableView *)table shouldSelectRow:(NSInteger)row
 {
-    return ((SidebarItem *)item).kind != on_sb_tags_header;
+    return [self item_at:row].kind != on_sb_tags_header;
 }
 
 /*
- * outlineViewSelectionDidChange: — the user selected a row: it becomes the
+ * tableViewSelectionDidChange: — the user selected a row: it becomes the
  * library's selection and the notes pane lists it.
  *
  * Inputs:
  *   note — the notification (unused)
  */
 - (void)
-outlineViewSelectionDidChange:(NSNotification *)note
+tableViewSelectionDidChange:(NSNotification *)note
 {
     if (self.lib.populating > 0) return;
-    SidebarItem *it = self.outline.selectedRow >= 0 ? [self.outline itemAtRow:self.outline.selectedRow] : nil;
+    SidebarItem *it = [self item_at:self.table.selectedRow];
     if (it == nil) return;
     self.lib.sel_kind = it.kind;
     self.lib.sel_id   = it.ident;
@@ -677,49 +656,50 @@ outlineViewSelectionDidChange:(NSNotification *)note
 drop_target:(id<NSDraggingInfo>)info
 {
     if (on_library_drag_read(info.draggingPasteboard).count == 0) return nil;
-    NSPoint      at    = [self.outline convertPoint:info.draggingLocation fromView:nil];
-    SidebarItem *under = [self.outline itemAtRow:[self.outline rowAtPoint:at]];
+    NSPoint      at    = [self.table convertPoint:info.draggingLocation fromView:nil];
+    SidebarItem *under = [self item_at:[self.table rowAtPoint:at]];
     return under.kind == on_sb_tag || under.kind == on_sb_trash ? under : nil;
 }
 
 /*
- * outlineView:validateDrop:proposedItem:proposedChildIndex: — accept notes
+ * tableView:validateDrop:proposedRow:proposedDropOperation: — accept notes
  * onto a tag or the Trash, retargeted onto the row under the pointer.
  *
  * Inputs:
- *   outline — the outline
- *   info    — the drag
- *   item    — the proposed parent (unused: the row under the pointer counts)
- *   index   — the proposed child index (unused)
+ *   table     — the table
+ *   info      — the drag
+ *   row       — the proposed row (unused: the row under the pointer counts)
+ *   operation — the proposed operation (unused)
  *
  * Output: copy for a tag (the notes keep their other tags), move for the
  *         Trash, or none.
  */
 - (NSDragOperation)
-outlineView:(NSOutlineView *)outline validateDrop:(id<NSDraggingInfo>)info
-proposedItem:(id)item proposedChildIndex:(NSInteger)index
+tableView:(NSTableView *)table validateDrop:(id<NSDraggingInfo>)info
+proposedRow:(NSInteger)row proposedDropOperation:(NSTableViewDropOperation)operation
 {
     SidebarItem *target = [self drop_target:info];
     if (target == nil) return NSDragOperationNone;
-    [outline setDropItem:target dropChildIndex:NSOutlineViewDropOnItemIndex];
+    [table setDropRow:(NSInteger)[self.roots indexOfObject:target] dropOperation:NSTableViewDropOn];
     return target.kind == on_sb_tag ? NSDragOperationCopy : NSDragOperationMove;
 }
 
 /*
- * outlineView:acceptDrop:item:childIndex: — do the drop: the notes get the
- * tag on their bottom lines (on_library_tag_notes), or go to the Trash.  The rebuild waits until
- * the drag has finished.
+ * tableView:acceptDrop:row:dropOperation: — do the drop: the notes get the
+ * tag on their bottom lines (on_library_tag_notes), or go to the Trash.
+ * The rebuild waits until the drag has finished.
  *
  * Inputs:
- *   outline — the outline (unused)
- *   info    — the drag
- *   item    — the drop's row (unused: drop_target says)
- *   index   — its child index (unused)
+ *   table     — the table (unused)
+ *   info      — the drag
+ *   row       — the drop's row (unused: drop_target says)
+ *   operation — the drop operation (unused)
  *
  * Output: YES when something changed.
  */
 - (BOOL)
-outlineView:(NSOutlineView *)outline acceptDrop:(id<NSDraggingInfo>)info item:(id)item childIndex:(NSInteger)index
+tableView:(NSTableView *)table acceptDrop:(id<NSDraggingInfo>)info
+      row:(NSInteger)row dropOperation:(NSTableViewDropOperation)operation
 {
     SidebarItem *target = [self drop_target:info];
     if (target == nil) return NO;
@@ -769,35 +749,33 @@ on_library_sidebar_new(NotesLibrary *lib)
     ctrl.roots = [NSMutableArray array];
     sidebar    = ctrl;
 
-    NotesSidebarOutline *outline = [[NotesSidebarOutline alloc] initWithFrame:NSZeroRect];
-    outline.controller            = ctrl;
-    outline.headerView            = nil;
-    outline.allowsMultipleSelection = NO;
-    outline.allowsEmptySelection  = NO;     /* a ⌘-click cannot deselect: the library always lists something */
-    outline.style                 = NSTableViewStyleSourceList;
-    outline.rowHeight             = on_look_sidebar_row_h;
-    outline.autosaveExpandedItems = NO;
-    outline.focusRingType         = NSFocusRingTypeNone;
-    outline.delegate              = ctrl;
-    outline.dataSource            = ctrl;
-    outline.menu                  = [[NSMenu alloc] initWithTitle:@""];
-    outline.menu.delegate         = ctrl;
+    NotesSidebarTable *table = [[NotesSidebarTable alloc] initWithFrame:NSZeroRect];
+    table.controller            = ctrl;
+    table.headerView            = nil;
+    table.allowsMultipleSelection = NO;
+    table.allowsEmptySelection  = NO;     /* a ⌘-click cannot deselect: the library always lists something */
+    table.style                 = NSTableViewStyleSourceList;
+    table.rowHeight             = on_look_sidebar_row_h;
+    table.focusRingType         = NSFocusRingTypeNone;
+    table.delegate              = ctrl;
+    table.dataSource            = ctrl;
+    table.menu                  = [[NSMenu alloc] initWithTitle:@""];
+    table.menu.delegate         = ctrl;
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"main"];
     column.resizingMask = NSTableColumnAutoresizingMask;
-    [outline addTableColumn:column];
-    outline.outlineTableColumn = column;
-    [outline registerForDraggedTypes:@[on_pasteboard_type_rows]];
-    ctrl.outline = outline;
+    [table addTableColumn:column];
+    [table registerForDraggedTypes:@[on_pasteboard_type_rows]];
+    ctrl.table = table;
 
     NotesSidebarScroll *scroll = [[NotesSidebarScroll alloc] initWithFrame:NSZeroRect];
     scroll.controller            = ctrl;
-    scroll.documentView          = outline;
+    scroll.documentView          = table;
     scroll.hasVerticalScroller   = YES;
     scroll.hasHorizontalScroller = NO;
     scroll.autohidesScrollers    = YES;
     scroll.drawsBackground       = NO;
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
-    outline.backgroundColor      = NSColor.clearColor;
+    table.backgroundColor        = NSColor.clearColor;
 
     /* The sidebar material BEHIND the list, a sibling under it, as Tasks'
      * sidebar has it: the rows then draw in the window's own appearance,

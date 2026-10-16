@@ -36,6 +36,41 @@ toolbar_idents(BOOL ai)
                arrayByAddingObjectsFromArray:tail];
 }
 
+/* The settings the sidebar's width and visibility are kept in, as Tasks
+ * keeps them (sidebar_width, sidebar_visible). */
+static const char *const sidebar_width_key   = "sidebar_width";
+static const char *const sidebar_visible_key = "sidebar_visible";
+
+/*
+ * NotesSplitController — the split view controller for sidebar | notes,
+ * which also remembers the sidebar's width: every time the divider moves
+ * while the sidebar shows (a drag, a fit to content), the width is saved
+ * for the next launch.
+ */
+@interface NotesSplitController : NSSplitViewController
+@end
+
+@implementation NotesSplitController
+
+/*
+ * splitViewDidResizeSubviews: — the divider moved: save the sidebar's
+ * width, unless the sidebar is collapsed (its width is then no width).
+ *
+ * Inputs:
+ *   note — the notification
+ */
+- (void)
+splitViewDidResizeSubviews:(NSNotification *)note
+{
+    [super splitViewDidResizeSubviews:note];
+    NSSplitViewItem *sidebar = self.splitViewItems.firstObject;
+    if (sidebar.collapsed) return;
+    gint width = (gint)round(NSWidth(sidebar.viewController.view.frame));
+    if (width >= on_look_sidebar_min_w) on_app_config_set_int(sidebar_width_key, width);
+}
+
+@end
+
 @interface NotesLibraryWindow : NSWindowController <NSWindowDelegate, NSToolbarDelegate,
                                                     NSUserInterfaceValidations>
 @property (nonatomic, strong) NotesLibrary *lib;
@@ -158,9 +193,10 @@ build_content
     [main_pane addArrangedSubview:on_library_ai_pane_new(self.lib)];
     [main_pane setHoldingPriority:NSLayoutPriorityDefaultLow - 1 forSubviewAtIndex:0];
 
-    self.split        = [[NSSplitViewController alloc] init];
+    self.split        = [[NotesSplitController alloc] init];
     self.sidebar_item = pane_item(on_library_sidebar_new(self.lib), on_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;
+    self.sidebar_item.collapsed       = !self.lib.app->sidebar_visible;  /* as it was left */
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
     [self.split addSplitViewItem:self.sidebar_item];
     [self.split addSplitViewItem:pane_item(main_pane, on_look_pane_min_w)];
@@ -210,7 +246,11 @@ build_content
         [self.status_event.leadingAnchor
             constraintGreaterThanOrEqualToAnchor:self.status_path.trailingAnchor constant:inset],
     ]];
-    [self.split.splitView setPosition:on_look_sidebar_w ofDividerAtIndex:0];
+    /* The width it was last dragged to, at least the narrowest drag; the
+     * initial width until the first drag. */
+    gint saved = on_app_config_get_int(sidebar_width_key, 0);
+    [self.split.splitView setPosition:saved > 0 ? MAX(saved, on_look_sidebar_min_w) : on_look_sidebar_w
+                   ofDividerAtIndex:0];
 }
 
 /*
@@ -254,12 +294,16 @@ show_status:(NSString *)message
 }
 
 /*
- * toggle_sidebar — slide the sidebar away, or back.
+ * toggle_sidebar — slide the sidebar away, or back, and remember which
+ * (the sidebar_visible setting).
  */
 - (void)
 toggle_sidebar
 {
-    self.sidebar_item.animator.collapsed = !self.sidebar_item.collapsed;
+    BOOL show = self.sidebar_item.collapsed;
+    on_app_config_set(sidebar_visible_key, show ? "1" : "0");
+    on_app_prefs_load(self.lib.app);
+    self.sidebar_item.animator.collapsed = !show;
 }
 
 /*

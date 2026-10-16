@@ -129,6 +129,29 @@ gboolean on_app_config_get_bool(const gchar *key, gboolean def);
 void on_app_config_set(const gchar *key, const gchar *value);
 
 /* ---------------------------------------------------------------------------
+ * on_app_config_get_int() — read a whole-number setting (a width, a count).
+ *
+ * Inputs:
+ *   key — the setting's name
+ *   def — the answer when the key is unset or not a number
+ *
+ * Output: the setting.
+ * ------------------------------------------------------------------------- */
+gint on_app_config_get_int(const gchar *key, gint def);
+
+/* ---------------------------------------------------------------------------
+ * on_app_config_set_int() — persist a whole-number setting, as
+ * on_app_config_get_int reads it back.
+ *
+ * Inputs:
+ *   key   — the setting's name
+ *   value — the number
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_app_config_set_int(const gchar *key, gint value);
+
+/* ---------------------------------------------------------------------------
  * on_app_config_get_size() — read a persisted window size from two keys.
  *
  * Inputs:

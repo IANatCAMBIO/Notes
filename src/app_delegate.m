@@ -45,8 +45,6 @@ hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
 
 /* Links in the About panel's credits: the author's site and the license
  * (as the Files and Tasks apps have them; GTK: author and BSD license). */
-static NSString * const about_site_url    = @"https://camb.io";
-static NSString * const about_license_url = @"https://opensource.org/license/bsd-3-clause";
 
 /*
  * run_about — "about": the standard About panel, as Files and Tasks show
@@ -67,38 +65,9 @@ run_about(id target, id sender)
     on_db_totals(db, &notes, &tags);
     NSNumber *size = [NSFileManager.defaultManager attributesOfItemAtPath:@(db->path)
                                                                     error:nil][NSFileSize];
-    NSString *credits = [NSString stringWithFormat:
-        @"%@\n%d notes, %d tags — %@",
-        @(db->path), notes, tags, shared_ui_format_bytes(size.longLongValue)];
-
-    NSMutableParagraphStyle *centred = [[NSMutableParagraphStyle alloc] init];
-    centred.alignment = NSTextAlignmentCenter;
-    NSDictionary *plain = @{
-        NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
-        NSForegroundColorAttributeName: NSColor.labelColor,
-        NSParagraphStyleAttributeName:  centred,
-    };
-    NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
-        initWithString:[credits stringByAppendingString:@"\n\n"] attributes:plain];
-    NSArray<NSArray<NSString *> *> *links = @[ @[@"camb.io", about_site_url], @[@"BSD License", about_license_url] ];
-    for (NSArray<NSString *> *link in links) {
-        if (link != links.firstObject)
-            [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"  ·  " attributes:plain]];
-        NSMutableDictionary *attrs = [plain mutableCopy];
-        attrs[NSLinkAttributeName] = [NSURL URLWithString:link[1]];
-        [text appendAttributedString:[[NSAttributedString alloc] initWithString:link[0] attributes:attrs]];
-    }
-    NSMutableDictionary *options = [NSMutableDictionary dictionary];
-    options[NSAboutPanelOptionCredits] = text;
-    if (on_ui_app_icon()) options[NSAboutPanelOptionApplicationIcon] = on_ui_app_icon();
-
-    NSString *stamp = NSBundle.mainBundle.infoDictionary[build_date_key];
-    NSDate   *built = stamp ? [[[NSISO8601DateFormatter alloc] init] dateFromString:stamp] : nil;
-    if (built) {
-        options[NSAboutPanelOptionApplicationVersion] = [@"built " stringByAppendingString:
-            shared_ui_format_date((int64_t)built.timeIntervalSince1970, shared_ui_date_list)];
-    }
-    [NSApp orderFrontStandardAboutPanelWithOptions:options];
+    shared_ui_show_about([NSString stringWithFormat:@"%@\n%d notes, %d tags — %@",
+                          @(db->path), notes, tags, shared_ui_format_bytes(size.longLongValue)],
+                         on_ui_app_icon(), build_date_key);
 }
 
 /*

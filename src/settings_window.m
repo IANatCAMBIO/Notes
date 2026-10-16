@@ -46,10 +46,9 @@ static const CGFloat extra_w = 20.0;
 static const NSUInteger sha_head = 8;
 static const NSUInteger sha_tail = 4;
 
-/* The health LED: green only for a check that ran and passed. */
-static NSString * const led_ok      = @"\U0001F7E2";
-static NSString * const led_bad     = @"\U0001F534";
-static NSString * const led_unknown = @"⚪";
+/* The health light: a ● tinted green only for a check that ran and
+ * passed, red for one that failed, grey otherwise (as Tasks' plate). */
+static NSString * const health_light = @"●";
 
 /* ── The on/off settings ────────────────────────────────────────────────── */
 
@@ -117,42 +116,9 @@ setting_on(const OnApp *app, const char *key)
 /* ── Small builders ─────────────────────────────────────────────────────── */
 
 /*
- * heading — a bold section heading.
- *
- * Inputs:
- *   text — the heading
- *
- * Output: the label.
- */
-static NSTextField *
-heading(NSString *text)
-{
-    NSTextField *label = [NSTextField labelWithString:text];
-    label.font = [NSFont boldSystemFontOfSize:shared_look_ui_font];
-    return label;
-}
-
-/*
- * note_text — small secondary text, wrapped (GTK's <small> lines).
- *
- * Inputs:
- *   text — the text
- *
- * Output: the label.
- */
-static NSTextField *
-note_text(NSString *text)
-{
-    NSTextField *label = [NSTextField wrappingLabelWithString:text];
-    label.textColor = NSColor.secondaryLabelColor;
-    label.preferredMaxLayoutWidth = text_w;
-    return label;
-}
-
-/*
  * plate_type — the health plate's text at the status bars' size
- * (shared_look_status_font), the SHA-256 in monospace.  Applied after the
- * window's shared_ui_use_ui_font, which would make it 11 pt.
+ * (shared_look_status_font).  Applied after the window's
+ * shared_ui_use_ui_font; the copy links keep their own attributed titles.
  *
  * Inputs:
  *   root — the plate's grid, or a view inside it
@@ -160,9 +126,7 @@ note_text(NSString *text)
 static void
 plate_type(NSView *root)
 {
-    if ([root isKindOfClass:NSButton.class])
-        ((NSButton *)root).font = [NSFont monospacedSystemFontOfSize:shared_look_status_font weight:NSFontWeightRegular];
-    else if ([root isKindOfClass:NSTextField.class])
+    if ([root isKindOfClass:NSTextField.class])
         ((NSTextField *)root).font = [NSFont systemFontOfSize:shared_look_status_font];
     for (NSView *v in root.subviews) plate_type(v);
 }
@@ -303,7 +267,8 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSTextField  *db_path;
 @property (nonatomic, strong) NSTextField  *db_data;
 @property (nonatomic, strong) NSTextField  *db_size;
-@property (nonatomic, strong) NSButton     *sha;
+@property (nonatomic, strong) NSTextField  *sha;
+@property (nonatomic, strong) NSButton     *sha_copy;      /* copies the whole digest */
 @property (nonatomic, copy)   NSString     *sha_full;
 @property (nonatomic, assign) NSUInteger    sha_gen;      /* the hash in flight */
 @property (nonatomic, strong) NSButton     *backup_on;
@@ -393,6 +358,22 @@ init_with_lib:(NotesLibrary *)lib
 
     shared_ui_use_ui_font(stack);
     plate_type(self.plate_grid);
+    self.sha.font = [NSFont monospacedSystemFontOfSize:shared_look_status_font weight:NSFontWeightRegular];
+    /* The digest arrives from a worker after the window is sized: the line
+     * is as wide as its head…tail form from the start, so it cannot widen
+     * the plate past the window. */
+    NSString *digest_form = [NSString stringWithFormat:@"%@…%@",
+                             [@"" stringByPaddingToLength:sha_head withString:@"0" startingAtIndex:0],
+                             [@"" stringByPaddingToLength:sha_tail withString:@"0" startingAtIndex:0]];
+    NSTextField *digest_probe = [NSTextField labelWithString:digest_form];
+    digest_probe.font = self.sha.font;
+    [self.sha.widthAnchor constraintGreaterThanOrEqualToConstant:ceil(digest_probe.fittingSize.width)].active = YES;
+    /* The lines are filled in before the window is sized to them: the
+     * database path decides the plate's width. */
+    [self refresh_db];
+    [self refresh_backup];
+    [self refresh_ai];
+    [stack layoutSubtreeIfNeeded];        /* the copy links measure nothing before a pass */
     NSSize fit = stack.fittingSize;
     SharedFlippedView *doc = [[SharedFlippedView alloc] initWithFrame:NSZeroRect];
     doc.translatesAutoresizingMaskIntoConstraints   = NO;
@@ -415,9 +396,6 @@ init_with_lib:(NotesLibrary *)lib
     [panel setContentSize:NSMakeSize(fit.width + extra_w + bar, MIN(fit.height, on_look_settings_max_h))];
     [panel center];
 
-    [self refresh_db];
-    [self refresh_backup];
-    [self refresh_ai];
     lib.app->notify_db_state = settings_notify_db_state;
     return self;
 }
@@ -453,7 +431,7 @@ check_for:(const bool_setting_t *)s
 - (NSView *)
 add_appearance:(NSMutableArray<NSView *> *)rows
 {
-    NSTextField *head = heading(@"Appearance");
+    NSTextField *head = shared_ui_heading(@"Appearance");
     [rows addObject:head];
     NSPopUpButton *density = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [density addItemsWithTitles:@[@"Compact", @"Comfortable"]];
@@ -478,7 +456,7 @@ add_appearance:(NSMutableArray<NSView *> *)rows
 - (NSView *)
 add_editor:(NSMutableArray<NSView *> *)rows
 {
-    NSTextField *head = heading(@"Editor");
+    NSTextField *head = shared_ui_heading(@"Editor");
     [rows addObject:head];
     for (size_t i = 0; i < sizeof editor_settings / sizeof *editor_settings; i++)
         [rows addObject:indented([self check_for:&editor_settings[i]], indent)];
@@ -508,10 +486,11 @@ add_editor:(NSMutableArray<NSView *> *)rows
 - (NSView *)
 add_database:(NSMutableArray<NSView *> *)rows
 {
-    NSTextField *head = heading(@"Database");
+    NSTextField *head = shared_ui_heading(@"Database");
     [rows addObject:head];
 
-    self.led    = [NSTextField labelWithString:led_unknown];
+    self.led    = [NSTextField labelWithString:health_light];
+    self.led.textColor = NSColor.tertiaryLabelColor;
     self.health = [NSTextField labelWithString:@""];
     self.health.identifier = @"health";
     self.db_path = [NSTextField wrappingLabelWithString:@""];
@@ -520,15 +499,16 @@ add_database:(NSMutableArray<NSView *> *)rows
     self.db_data = [NSTextField labelWithString:@""];
     self.db_data.identifier = @"data";
     self.db_size = [NSTextField labelWithString:@""];
-    self.sha = [NSButton buttonWithTitle:@"—" target:self action:@selector(copy_sha:)];
-    self.sha.bordered = NO;
+    self.sha      = [NSTextField labelWithString:@"—"];
+    self.sha_copy = shared_ui_copy_link(self, @selector(copy_sha:));
 
     NSArray<NSArray<NSView *> *> *cells = @[
         @[[NSTextField labelWithString:@"Health:"],           row(@[self.led, self.health])],
-        @[[NSTextField labelWithString:@"Current database:"], self.db_path],
+        @[[NSTextField labelWithString:@"Current database:"],
+          row(@[self.db_path, shared_ui_copy_link(self, @selector(copy_path:))])],
         @[[NSTextField labelWithString:@"Data:"],             self.db_data],
         @[[NSTextField labelWithString:@"Size on disk:"],     self.db_size],
-        @[[NSTextField labelWithString:@"SHA-256:"],          self.sha],
+        @[[NSTextField labelWithString:@"SHA-256:"],          row(@[self.sha, self.sha_copy])],
     ];
     NSGridView *grid = self.plate_grid = [NSGridView gridViewWithViews:cells];
     grid.rowSpacing    = 2;
@@ -590,7 +570,7 @@ add_database:(NSMutableArray<NSView *> *)rows
                                    [NSTextField labelWithString:@"minutes, keeping"], self.keep, self.keep_step,
                                    [NSTextField labelWithString:@"files"]]), indent)];
 
-    self.backup_path = note_text(@"");
+    self.backup_path = shared_ui_note(@"", text_w);
     self.backup_path.identifier = @"backup-path";
     [rows addObject:indented(self.backup_path, indent)];
     self.backup_choose = small_button(@"Change Folder…", self, @selector(choose_backup_folder:));
@@ -655,12 +635,12 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
 add_ai:(NSMutableArray<NSView *> *)rows
 {
     OnApp *app = self.lib.app;
-    NSTextField *head = heading(@"AI Features");
+    NSTextField *head = shared_ui_heading(@"AI Features");
     [rows addObject:head];
-    [rows addObject:indented(note_text(@"The AI button in the library toolbar generates a summary of the selected "
+    [rows addObject:indented(shared_ui_note(@"The AI button in the library toolbar generates a summary of the selected "
                                         "notes using an external AI command. This switch is a master kill "
                                         "switch: disabling it hides the button and prevents all AI commands "
-                                        "from running."), indent)];
+                                        "from running.", text_w), indent)];
     NSButton *enable = [NSButton checkboxWithTitle:@"Enable AI features" target:self action:@selector(ai_toggled:)];
     enable.state = app->ai_enabled ? NSControlStateValueOn : NSControlStateValueOff;
     [rows addObject:indented(enable, indent)];
@@ -671,9 +651,9 @@ add_ai:(NSMutableArray<NSView *> *)rows
     self.ai_command.delegate          = self;
     [self.ai_command.widthAnchor constraintEqualToConstant:text_w - sub_inset - 90].active = YES;
 
-    NSTextField *cmd_hint = note_text(@"Run “which claude” in a terminal to find your Claude Code command path. "
+    NSTextField *cmd_hint = shared_ui_note(@"Run “which claude” in a terminal to find your Claude Code command path. "
                                        "The command must read the prompt from stdin and write the response to "
-                                       "stdout.");
+                                       "stdout.", text_w);
     cmd_hint.preferredMaxLayoutWidth = text_w - sub_inset;
     self.ai_sub = [NSStackView stackViewWithViews:@[
         row(@[[NSTextField labelWithString:@"AI command:"], self.ai_command]), cmd_hint,
@@ -697,25 +677,26 @@ refresh_db
 {
     OnDatabase       *db = self.lib.app->db;
     const OnDbHealth *h  = on_db_health(db);
-    NSString *led, *text, *tip;
+    NSColor  *led;
+    NSString *text, *tip;
     if (h == NULL) {
-        led  = led_unknown;
+        led  = NSColor.tertiaryLabelColor;
         text = @"Not checked";
         tip  = @"Nothing has verified this database yet.  Press Update.";
     } else if (h->pending) {
-        led  = led_unknown;
+        led  = NSColor.tertiaryLabelColor;
         text = @"Checking…";
         tip  = @"PRAGMA integrity_check is running on a worker thread; the verdict lands here.";
     } else {
         NSString *when = when_stamp(h->when);
-        led  = h->ok ? led_ok : led_bad;
+        led  = h->ok ? NSColor.systemGreenColor : NSColor.systemRedColor;
         text = h->ok ? [NSString stringWithFormat:@"Healthy — checked %@", when]
              : h->ran ? [NSString stringWithFormat:@"Problems found — %@", when]
                       : [NSString stringWithFormat:@"Check did not complete — %@", when];
         tip  = h->detail ? @(h->detail)
              : @"PRAGMA integrity_check and PRAGMA foreign_key_check both passed against this file.";
     }
-    self.led.stringValue    = led;
+    self.led.textColor      = led;
     self.health.stringValue = text;
     self.health.toolTip     = tip;
     self.db_path.stringValue = @(db->path);
@@ -730,8 +711,8 @@ refresh_db
     /* The whole file is read for the digest: on a worker, so a large or
      * iCloud-held database never stalls the window.  A newer refresh
      * outdates the one in flight.                                          */
-    self.sha.title   = @"…";
-    self.sha.enabled = NO;
+    self.sha.stringValue  = @"…";
+    self.sha_copy.enabled = NO;
     NSUInteger gen  = ++self.sha_gen;
     NSString  *path = @(db->path);
     __weak NotesSettingsWindow *ws = self;
@@ -760,15 +741,15 @@ show_sha:(NSString *)full
 {
     self.sha_full = full;
     if (self.sha_full.length > sha_head + sha_tail) {
-        self.sha.title   = [NSString stringWithFormat:@"%@…%@", [self.sha_full substringToIndex:sha_head],
-                            [self.sha_full substringFromIndex:self.sha_full.length - sha_tail]];
-        self.sha.toolTip = [NSString stringWithFormat:@"%@\n\nThe file as it stands.  A database in use changes "
-                            "with the next edit, so this moves.\n\nClick to copy.", self.sha_full];
-        self.sha.enabled = YES;
+        self.sha.stringValue  = [NSString stringWithFormat:@"%@…%@", [self.sha_full substringToIndex:sha_head],
+                                 [self.sha_full substringFromIndex:self.sha_full.length - sha_tail]];
+        self.sha.toolTip      = [NSString stringWithFormat:@"%@\n\nThe file as it stands.  A database in use changes "
+                                 "with the next edit, so this moves.", self.sha_full];
+        self.sha_copy.enabled = YES;
     } else {
-        self.sha.title   = @"—";
-        self.sha.toolTip = @"The database file could not be read.";
-        self.sha.enabled = NO;
+        self.sha.stringValue  = @"—";
+        self.sha.toolTip      = @"The database file could not be read.";
+        self.sha_copy.enabled = NO;
     }
 }
 
@@ -937,6 +918,21 @@ copy_sha:(id)sender
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:self.sha_full forType:NSPasteboardTypeString];
     on_app_status(self.lib.app, "SHA-256 copied to the clipboard");
+}
+
+/*
+ * copy_path: — the plate's "copy" beside the path: the database's path
+ * to the clipboard.
+ *
+ * Inputs:
+ *   sender — the link (unused)
+ */
+- (void)
+copy_path:(id)sender
+{
+    [NSPasteboard.generalPasteboard clearContents];
+    [NSPasteboard.generalPasteboard setString:@(self.lib.app->db->path) forType:NSPasteboardTypeString];
+    on_app_status(self.lib.app, "Database path copied to the clipboard");
 }
 
 /*

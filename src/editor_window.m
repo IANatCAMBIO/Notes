@@ -43,7 +43,6 @@
 /* ── Timing ─────────────────────────────────────────────────────────────── */
 
 /* Seconds of quiet after the last edit before the note is saved. */
-static const double autosave_delay = 1.2;
 
 /* Open editors: note id -> window controller.  Main thread only. */
 static NSMutableDictionary<NSNumber *, NSWindowController *> *editors;
@@ -1097,7 +1096,7 @@ queue_autosave
     [self.autosave_timer invalidate];
     __weak NotesEditorWindow *ws = self;
     self.autosave_timer =
-        [NSTimer scheduledTimerWithTimeInterval:autosave_delay
+        [NSTimer scheduledTimerWithTimeInterval:shared_look_autosave_delay
                                         repeats:NO
                                           block:^(NSTimer *t) {
         NotesEditorWindow *s = ws;

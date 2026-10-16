@@ -41,6 +41,12 @@ toolbar_idents(BOOL ai)
 static const char *const sidebar_width_key   = "sidebar_width";
 static const char *const sidebar_visible_key = "sidebar_visible";
 
+/* The window's place and size, saved when it closes (as Tasks' win_x/y/w/h). */
+static const char *const win_x_key = "win_x";
+static const char *const win_y_key = "win_y";
+static const char *const win_w_key = "win_w";
+static const char *const win_h_key = "win_h";
+
 @interface NotesLibraryWindow : NSWindowController <NSWindowDelegate, NSToolbarDelegate,
                                                     NSUserInterfaceValidations>
 @property (nonatomic, strong) NotesLibrary *lib;
@@ -105,11 +111,21 @@ init_with_library:(NotesLibrary *)lib
                     backing:NSBackingStoreBuffered
                       defer:NO];
     win.title              = @ON_APP_NAME;
-    win.minSize            = NSMakeSize(on_look_library_min_w, on_look_library_min_h);
+    win.contentMinSize     = NSMakeSize(on_look_library_min_w, on_look_library_min_h);
     win.toolbarStyle       = NSWindowToolbarStyleExpanded;
     win.releasedWhenClosed = NO;
-    [win center];
-    [win setFrameAutosaveName:@"notes.library"];
+    /* Where it was last time (win_x/y/w/h in the config, as Tasks keeps
+     * them), kept on a screen; centred on first run. */
+    gint w = (gint)on_look_library_w, h = (gint)on_look_library_h;
+    on_app_config_get_size(win_w_key, win_h_key, &w, &h);
+    [win setContentSize:NSMakeSize(w, h)];
+    if (on_app_config_get(win_x_key) != NULL) {
+        NSRect frame = win.frame;
+        frame.origin = NSMakePoint(on_app_config_get_int(win_x_key, 0), on_app_config_get_int(win_y_key, 0));
+        [win setFrame:[win constrainFrameRect:frame toScreen:win.screen] display:NO];
+    } else {
+        [win center];
+    }
 
     self = [super initWithWindow:win];
     if (!self) return nil;
@@ -397,6 +413,15 @@ willBeInsertedIntoToolbar:(BOOL)flag
 - (void)
 windowWillClose:(NSNotification *)note
 {
+    /* The place and size for the next launch; a full-screen window's are
+     * the screen's, not its own. */
+    if (!(self.window.styleMask & NSWindowStyleMaskFullScreen)) {
+        NSRect frame = self.window.frame;
+        NSSize size  = self.window.contentView.frame.size;
+        on_app_config_set_int(win_x_key, (gint)frame.origin.x);
+        on_app_config_set_int(win_y_key, (gint)frame.origin.y);
+        on_app_config_set_size(win_w_key, win_h_key, (gint)size.width, (gint)size.height);
+    }
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
     on_library_notes_closed();

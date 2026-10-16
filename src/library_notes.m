@@ -195,9 +195,9 @@ casecmp(NSString *a, NSString *b)
 }
 
 /*
- * note_order — the list's (and grid's) order for a column key.  The time
- * columns are inverted so that ascending — the first click — shows the
- * newest first (GTK cmp_updated); equal tags fall back to the title.
+ * note_order — the list's (and grid's) order for a column key: ascending
+ * is the natural order (an earlier time first, as Tasks sorts); equal
+ * tags fall back to the title.
  *
  * Inputs:
  *   key — "title", "tags", "modified" or "created"
@@ -216,7 +216,7 @@ note_order(NSString *key, id ra, id rb)
     }
     gint64 ta = [key isEqualToString:@"created"] ? a.created_at : a.updated_at;
     gint64 tb = [key isEqualToString:@"created"] ? b.created_at : b.updated_at;
-    return tb > ta ? NSOrderedDescending : tb < ta ? NSOrderedAscending : NSOrderedSame;
+    return ta < tb ? NSOrderedAscending : ta > tb ? NSOrderedDescending : NSOrderedSame;
 }
 
 /*
@@ -240,6 +240,17 @@ action_order(NSString *key, id ra, id rb)
     if ([key isEqualToString:@"action"])  return casecmp(a.text, b.text);
     gint64 da = a.due ? a.due : G_MAXINT64, db = b.due ? b.due : G_MAXINT64;
     return da < db ? NSOrderedAscending : da > db ? NSOrderedDescending : NSOrderedSame;
+}
+
+/*
+ * newest_first — the list's default sort: Modified, descending.
+ *
+ * Output: the descriptor.
+ */
+static NSSortDescriptor *
+newest_first(void)
+{
+    return [NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:NO];
 }
 
 /*
@@ -362,6 +373,48 @@ apply_layout(NSTableView *table, const char *cfg_key, const char *fallback)
     BOOL any = NO;
     for (NSTableColumn *c in table.tableColumns) any |= !c.hidden;
     if (!any) table.tableColumns.firstObject.hidden = NO;
+}
+
+/*
+ * saved_sort — a table's remembered sort (its ini key: "modified" for
+ * ascending, "-modified" for descending), or a default.
+ *
+ * Inputs:
+ *   table    — the table (its columns' keys)
+ *   cfg_key  — its ini key ("list_sort" / "action_sort")
+ *   fallback — the sort when none is saved; nil for none
+ *
+ * Output: the descriptor, or nil.
+ */
+static NSSortDescriptor *
+saved_sort(NSTableView *table, const char *cfg_key, NSSortDescriptor *fallback)
+{
+    gchar *cfg = on_app_config_get(cfg_key);
+    if (cfg == NULL || *cfg == '\0') {
+        g_free(cfg);
+        return fallback;
+    }
+    BOOL      ascending = cfg[0] != '-';
+    NSString *key       = @(cfg + (ascending ? 0 : 1));
+    g_free(cfg);
+    return [table columnWithIdentifier:key] >= 0
+         ? [NSSortDescriptor sortDescriptorWithKey:key ascending:ascending] : fallback;
+}
+
+/*
+ * persist_sort — remember a table's sort under its ini key (see
+ * saved_sort); no sort clears the key.
+ *
+ * Inputs:
+ *   table   — the table
+ *   cfg_key — its ini key
+ */
+static void
+persist_sort(NSTableView *table, const char *cfg_key)
+{
+    NSSortDescriptor *sd = table.sortDescriptors.firstObject;
+    on_app_config_set(cfg_key, sd ? [NSString stringWithFormat:@"%@%@", sd.ascending ? @"" : @"-", sd.key].UTF8String
+                                  : NULL);
 }
 
 /*
@@ -732,7 +785,7 @@ init_with_lib:(NotesLibrary *)lib
     _list = [[SharedTable alloc] initWithFrame:NSZeroRect];
     add_columns(_list, note_columns, sizeof note_columns / sizeof *note_columns);
     apply_layout(_list, "list_columns", "title:1,tags:1,modified:1,created:0");
-    _list.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES]];
+    _list.sortDescriptors = @[saved_sort(_list, "list_sort", newest_first())];
     _list.allowsMultipleSelection = YES;
     _list.usesAlternatingRowBackgroundColors = YES;
     _list.target       = self;
@@ -774,6 +827,8 @@ init_with_lib:(NotesLibrary *)lib
     add_columns(_actions, action_columns, sizeof action_columns / sizeof *action_columns);
     apply_layout(_actions, "action_columns", "done:1,tags:1,action:1,due:1");
     _actions.rowHeight    = on_look_row_h;
+    _actions.sortDescriptors = saved_sort(_actions, "action_sort", nil)
+                             ? @[saved_sort(_actions, "action_sort", nil)] : @[];
     _actions.usesAlternatingRowBackgroundColors = YES;
     _actions.target       = self;
     _actions.doubleAction = @selector(actions_activated:);
@@ -813,8 +868,7 @@ show_view:(NSScrollView *)scroll
 - (void)
 sort_records
 {
-    NSSortDescriptor *sd = self.list.sortDescriptors.firstObject
-                        ?: [NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES];
+    NSSortDescriptor *sd = self.list.sortDescriptors.firstObject ?: newest_first();
     self.records = sorted_by(self.records, sd, note_order);
 }
 
@@ -1624,7 +1678,8 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 
 /*
  * tableView:sortDescriptorsDidChange: — a header was clicked: re-sort
- * (the grid shares the list's order), keeping the selection.
+ * (the grid shares the list's order), keeping the selection, and remember
+ * the sort for the next launch.
  *
  * Inputs:
  *   table — the table
@@ -1634,9 +1689,11 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 tableView:(NSTableView *)table sortDescriptorsDidChange:(NSArray<NSSortDescriptor *> *)old
 {
     if (table == self.list) {
+        persist_sort(table, "list_sort");
         [self sort_records];
         [self reload_notes];
     } else {
+        persist_sort(table, "action_sort");
         [self sort_actions];
         [self.actions reloadData];
     }

@@ -2023,7 +2023,7 @@ test_notes_pane(NotesLibrary *lib)
     table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:NO]];
     check([column_texts(table, @"title") isEqualToArray:@[@"Charlie", @"Bravo", @"alpha"]],
           "a second click reverses it");
-    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES]];
+    table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:NO]];
     pump(1.1);
     OnDocument *doc = on_document_from_text("Bravo renamed\nbravo body");
     on_note_document_save(app.db, bravo, doc, TRUE, NULL);

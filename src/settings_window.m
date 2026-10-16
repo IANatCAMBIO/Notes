@@ -1062,7 +1062,7 @@ run_preferences(id target, id sender)
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t settings_handlers[] = {
+static const shared_command_handler_t settings_handlers[] = {
     { @"preferences", run_preferences, NULL },
 };
 

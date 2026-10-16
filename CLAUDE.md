@@ -64,7 +64,7 @@ make seed && make run   # the app on dev/data
 - `../shared_data/src/shared_db.h` — the shared database's frozen API
   (compiled into the core from `SHARED_DATA_DIR`).
 - `../shared_ui/src/` — the interface elements shared with Tasks
-  (`shared_look.h`, `shared_ui.h`, `shared_tool_panel.h`; compiled in
+  (`shared_look.h`, `shared_ui.h`, `shared_commands.h`, `shared_tool_panel.h`; compiled in
   from `SHARED_UI_DIR`): change them there, for both apps.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.

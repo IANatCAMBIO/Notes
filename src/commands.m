@@ -1,5 +1,4 @@
 #import "commands.h"
-#import "ui_util.h"
 
 #include "identity.h"
 
@@ -9,8 +8,8 @@ enum {
     cmd_shift = NSEventModifierFlagCommand | NSEventModifierFlagShift,
     cmd_ctrl  = NSEventModifierFlagCommand | NSEventModifierFlagControl,
     cmd_opt   = NSEventModifierFlagCommand | NSEventModifierFlagOption,
-    app       = NotesCommandScopeApp,
-    win       = NotesCommandScopeWindow,
+    app       = SharedCommandScopeApp,
+    win       = SharedCommandScopeWindow,
 };
 
 /* Backspace as a key equivalent: ⌘⌫ shows as the delete key in the menu. */
@@ -23,7 +22,7 @@ enum {
  * system meaning won and the command moved; porting/INTERFACES.md lists
  * every change and the reason.
  */
-static const on_command_t commands[] = {
+static const shared_command_t commands[] = {
     /* ── App scope: works from any window, acts on the library ── */
     { @"about",            @"About " ON_APP_NAME,      @"",  0,         app, nil, nil },
     { @"preferences",      @"Settings…",               @",", cmd,       app, @"gearshape",
@@ -93,180 +92,10 @@ static const on_command_t commands[] = {
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 
 /*
- * command_find — a command's row.
- *
- * Inputs:
- *   ident — the command's identifier
- *
- * Output: the row, or NULL for an unknown identifier.
- */
-static const on_command_t *
-command_find(NSString *ident)
-{
-    for (size_t i = 0; i < COMMAND_COUNT; i++) {
-        if ([commands[i].ident isEqualToString:ident]) return &commands[i];
-    }
-    return NULL;
-}
-
-/*
- * command_action — the selector a command's items send: run_app_command:
- * to the app delegate for app scope, run_command: up the responder chain
- * for window scope.
- *
- * Inputs:
- *   command — the command
- *   target  — receives the items' target (nil for the responder chain)
- *
- * Output: the selector.
- */
-static SEL
-command_action(const on_command_t *command, id *target)
-{
-    if (command->scope == NotesCommandScopeApp) {
-        *target = NSApp.delegate;
-        return @selector(run_app_command:);
-    }
-    *target = nil;
-    return @selector(run_command:);
-}
-
-/*
- * on_command_menu_item — menu item from the table.
- * Inputs/output are documented in commands.h.
- */
-NSMenuItem *
-on_command_menu_item(NSString *ident)
-{
-    const on_command_t *command = command_find(ident);
-    NSCAssert(command != NULL, @"unknown command %@", ident);
-    id  target = nil;
-    SEL action = command_action(command, &target);
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:command->title
-                                                  action:action
-                                           keyEquivalent:command->key];
-    item.keyEquivalentModifierMask = command->mods;
-    item.target     = target;
-    item.identifier = command->ident;
-    return item;
-}
-
-/*
- * on_command_tooltip — see commands.h.
- */
-NSString *
-on_command_tooltip(NSString *ident)
-{
-    const on_command_t *command = command_find(ident);
-    NSCAssert(command != NULL, @"unknown command %@", ident);
-    return command->tooltip ?: command->title;
-}
-
-/*
- * on_command_toolbar_item — toolbar item from the table.
- * Inputs/output are documented in commands.h.
- */
-NSToolbarItem *
-on_command_toolbar_item(NSString *ident)
-{
-    const on_command_t *command = command_find(ident);
-    NSCAssert(command != NULL && command->icon != nil, @"no toolbar command %@", ident);
-    id  target = nil;
-    SEL action = command_action(command, &target);
-    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
-    item.label    = command->title;
-    item.toolTip  = on_command_tooltip(ident);
-    item.image    = shared_ui_symbol(command->icon, 0.0);
-    item.target   = target;
-    item.action   = action;
-    item.bordered = YES;
-    return item;
-}
-
-/*
- * on_command_ident — the command behind an item.
- * Inputs/output are documented in commands.h.
- */
-NSString *
-on_command_ident(id item)
-{
-    if ([item isKindOfClass:NSToolbarItem.class]) return ((NSToolbarItem *)item).itemIdentifier;
-    if ([item isKindOfClass:NSMenuItem.class] || [item isKindOfClass:NSControl.class])
-        return ((id<NSUserInterfaceItemIdentification>)item).identifier;
-    return nil;
-}
-
-/*
- * on_command_item_update — a command's current state shown on its item.
- * Inputs/output are documented in commands.h.
+ * on_commands_install — see commands.h.
  */
 void
-on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
+on_commands_install(void)
 {
-    const on_command_t *command = command_find(on_command_ident(item));
-    if (command == NULL) return;
-    NSString *shown = title ?: command->title;
-    if ([item isKindOfClass:NSMenuItem.class]) {
-        NSMenuItem *menu_item = item;
-        menu_item.title = shown;
-        menu_item.state = checked ? NSControlStateValueOn : NSControlStateValueOff;
-    } else if ([item isKindOfClass:NSToolbarItem.class]) {
-        NSToolbarItem *toolbar_item = item;
-        NSString *tip  = title ?: command->tooltip ?: command->title;
-        NSImage *image = shared_ui_symbol(icon ?: command->icon, 0.0);
-        /* Only what differs is set: AppKit validates after every event, and
-         * an item given an image (even the same one) is redrawn.  Glyphs
-         * are cached, so an unchanged one is the same object. */
-        if (![toolbar_item.label isEqualToString:shown]) toolbar_item.label = shown;
-        if (![toolbar_item.toolTip isEqualToString:tip]) toolbar_item.toolTip = tip;
-        if (toolbar_item.image != image) toolbar_item.image = image;
-    }
-}
-
-/*
- * handler_for — the handler of an item's command in a table.
- *
- * Inputs:
- *   table — a module's handlers
- *   n     — how many
- *   item  — the item
- *
- * Output: the handler, or NULL when the table does not have the command.
- */
-static const on_command_handler_t *
-handler_for(const on_command_handler_t *table, size_t n, id item)
-{
-    NSString *ident = on_command_ident(item);
-    if (!ident) return NULL;
-    for (size_t i = 0; i < n; i++) {
-        if ([table[i].ident isEqualToString:ident]) return &table[i];
-    }
-    return NULL;
-}
-
-/*
- * on_command_run — dispatch through a handler table.
- * Inputs/output are documented in commands.h.
- */
-BOOL
-on_command_run(const on_command_handler_t *table, size_t n, id target, id sender)
-{
-    const on_command_handler_t *handler = handler_for(table, n, sender);
-    if (handler == NULL) return NO;
-    handler->run(target, sender);
-    return YES;
-}
-
-/*
- * on_command_validate — validation through a handler table.
- * Inputs/output are documented in commands.h.
- */
-BOOL
-on_command_validate(const on_command_handler_t *table, size_t n, id target, id item,
-                    BOOL *handled)
-{
-    const on_command_handler_t *handler = handler_for(table, n, item);
-    if (handled) *handled = handler != NULL;
-    if (handler == NULL) return NO;
-    return handler->validate == NULL || handler->validate(target, item);
+    shared_commands_install(commands, COMMAND_COUNT);
 }

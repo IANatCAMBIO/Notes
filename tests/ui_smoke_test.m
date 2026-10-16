@@ -3272,6 +3272,7 @@ main(void)
         new_note("First note\n! Something to do due 2026-12-01");
 
         NotesLibrary *lib = on_library_create(&app);
+        on_commands_install();
         on_editor_install(&app);
         on_library_window_install(lib);
         on_library_commands_install(lib);

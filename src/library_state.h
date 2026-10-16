@@ -189,7 +189,7 @@ void on_library_refresh_all(NotesLibrary *lib);
  *   table — a STATIC handler table (kept by reference)
  *   n     — how many handlers
  */
-void on_library_add_commands(const on_command_handler_t *table, size_t n);
+void on_library_add_commands(const shared_command_handler_t *table, size_t n);
 
 /*
  * on_library_run_command — run a library command.  Called by the app

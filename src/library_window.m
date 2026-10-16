@@ -386,7 +386,7 @@ toolbar:(NSToolbar *)toolbar
 itemForItemIdentifier:(NSToolbarItemIdentifier)ident
 willBeInsertedIntoToolbar:(BOOL)flag
 {
-    if (![ident isEqualToString:search_item_ident]) return on_command_toolbar_item(ident);
+    if (![ident isEqualToString:search_item_ident]) return shared_command_toolbar_item(ident);
 
     /* The system's search item, not a field in a plain item: a view item
      * makes the toolbar 3 pt taller than Tasks' (measured, macOS 26). */
@@ -492,14 +492,15 @@ run_toggle_sidebar(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary (unused)
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES while the window is open.
  */
 static BOOL
-validate_toggle_sidebar(id target, id item)
+validate_toggle_sidebar(id target, id item, SharedCommandState *state)
 {
     BOOL collapsed = library_window.sidebar_item.collapsed;
-    on_command_item_update(item, collapsed ? @"Show Sidebar" : @"Hide Sidebar", nil, NO);
+    shared_command_state_set(state, collapsed ? @"Show Sidebar" : @"Hide Sidebar", nil, NO);
     return library_window != nil;
 }
 
@@ -523,19 +524,20 @@ run_toggle_favorites(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES while the window is open.
  */
 static BOOL
-validate_toggle_favorites(id target, id item)
+validate_toggle_favorites(id target, id item, SharedCommandState *state)
 {
     BOOL shown = ((NotesLibrary *)target).app->favorites_bar_visible;
-    on_command_item_update(item, shown ? @"Hide Favorites Bar" : @"Show Favorites Bar", nil, NO);
+    shared_command_state_set(state, shown ? @"Hide Favorites Bar" : @"Show Favorites Bar", nil, NO);
     return library_window != nil;
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t handlers[] = {
+static const shared_command_handler_t handlers[] = {
     { @"toggle-sidebar",   run_toggle_sidebar,   validate_toggle_sidebar   },
     { @"toggle-favorites", run_toggle_favorites, validate_toggle_favorites },
 };

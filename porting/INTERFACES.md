@@ -187,7 +187,7 @@ one package.
 | `app_core.h`, `app_lifecycle.h`, `config.h`, `main_service.h`, `image_io.h`, `action_edit.h`, `search_job.h`, `utf_index.h` | real, tested | A | everyone |
 | `look.h` | real (constants) | A; add entries for your package | everyone |
 | `ui_util.h` | real | A | everyone |
-| `commands.h` | real (table + dispatch) | E owns the table | everyone |
+| `commands.h` | real (the table; dispatch is `shared_commands.h`) | E owns the table | everyone |
 | `paint.h` | real | B (*owner may extend*) | B |
 | `text_layout.h` | **stub** | B (*owner may extend*; byte-offset rule frozen) | B |
 | `doc_layout.h` | **stub** | B | C |
@@ -279,10 +279,12 @@ module's install call is the one line another package may ask E to add.
 
 ## 6. Commands and the keyboard map
 
-`commands.h` is the one table of commands.  Menu items, toolbar items and
-context-menu items are made from it (`on_command_menu_item`,
-`on_command_toolbar_item`); nobody hand-builds an item for a command or
-writes a second dispatch scheme.
+`commands.m` is the one table of commands, installed at launch
+(`on_commands_install`) into the shared command module
+(`shared_ui/src/shared_commands.h`, the same one Tasks uses).  Menu items,
+toolbar items and context-menu items are made from it
+(`shared_command_menu_item`, `shared_command_toolbar_item`); nobody
+hand-builds an item for a command or writes a second dispatch scheme.
 
 - **App scope** — works from any window, acts on the library.  Items target
   the app delegate (`run_app_command:`), which calls
@@ -290,22 +292,24 @@ writes a second dispatch scheme.
 - **Window scope** — items have no target; AppKit sends `run_command:` up
   the responder chain to the key window's controller.  The library
   controller calls `on_library_run_command`; an editor controller calls
-  `on_command_run` on its own table.  Controllers implement
+  `shared_command_run` on its own table.  Controllers implement
   `validateUserInterfaceItem:` with `on_library_validate_command` /
-  `on_command_validate`.
+  `shared_command_validate`.
 - **To implement a command**: write `static void run_x(id target, id
-  sender)` (and optionally `static BOOL validate_x(id target, id item)`),
-  add `{ @"ident", run_x, validate_x }` to your module's static
-  `on_command_handler_t` table, and register the table in your install
-  function with `on_library_add_commands` (library-target commands: the
-  target is the `NotesLibrary`).  Editor commands (D) go in a table private
-  to `editor_window.m`; their target is the editor's window controller.
+  sender)` (and optionally `static BOOL validate_x(id target, id item,
+  SharedCommandState *state)`), add `{ @"ident", run_x, validate_x }` to
+  your module's static `shared_command_handler_t` table, and register the
+  table in your install function with `on_library_add_commands`
+  (library-target commands: the target is the `NotesLibrary`).  Editor
+  commands (D) go in a table private to `editor_window.m`; their target is
+  the editor's window controller.
 - **A command with no registered handler is disabled.**  That is why most of
   the skeleton's menu is grey; your items light up when you register.
 - **State on an item** (checkmark, "Hide"/"Show" wording, the list/grid
-  glyph): call `on_command_item_update(item, title, icon, checked)` from your
-  validate function — never when toggling, or state changed elsewhere does
-  not show.
+  glyph): validation builds a `SharedCommandState` from the table and
+  applies it to the item after your validate function; adjust it there
+  with `shared_command_state_set(state, title, icon, checked)` — never
+  when toggling, or state changed elsewhere does not show.
 - **Context menus**: build the `NSMenu` from the same identifiers; in
   `menuNeedsUpdate:` first select the clicked row (AppKit does not), so the
   command acts on the selection.

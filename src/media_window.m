@@ -534,7 +534,7 @@ run_media(id target, id sender)
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t media_handlers[] = {
+static const shared_command_handler_t media_handlers[] = {
     { @"media", run_media, NULL },
 };
 

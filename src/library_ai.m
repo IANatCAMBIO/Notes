@@ -404,11 +404,12 @@ run_ai_summary(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_ai_summary(id target, id item)
+validate_ai_summary(id target, id item, SharedCommandState *state)
 {
     return ((NotesLibrary *)target).app->ai_enabled;
 }
@@ -429,7 +430,7 @@ ai_changed(OnApp *app)
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t ai_handlers[] = {
+static const shared_command_handler_t ai_handlers[] = {
     { @"ai-summary", run_ai_summary, validate_ai_summary },
 };
 

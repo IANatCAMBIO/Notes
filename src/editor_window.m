@@ -135,7 +135,7 @@ update_path:(NSString *)path note_id:(NSString *)note_id dirty:(BOOL)dirty
 static NSButton *
 format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
 {
-    NSString *tooltip = on_command_tooltip(ident);
+    NSString *tooltip = shared_command_tooltip(ident);
     NSButton *b = [NSButton buttonWithTitle:face target:nil action:@selector(run_command:)];
     b.identifier = ident;
     b.bezelStyle = NSBezelStyleRecessed;
@@ -175,7 +175,7 @@ format_menu(NSString *face, NSString *tooltip, NSArray<NSString *> *idents)
     menu.toolTip    = tooltip;
     menu.refusesFirstResponder = YES;
     [menu addItemWithTitle:face];                  /* the pull-down's own title */
-    for (NSString *ident in idents) [menu.menu addItem:on_command_menu_item(ident)];
+    for (NSString *ident in idents) [menu.menu addItem:shared_command_menu_item(ident, nil)];
     menu.translatesAutoresizingMaskIntoConstraints = NO;
     [menu.heightAnchor constraintEqualToConstant:on_look_format_btn_h].active = YES;
     return menu;
@@ -325,7 +325,7 @@ static void
 run_style(id target, id sender)
 {
     NotesEditorWindow *ed = target;
-    NSString *ident = on_command_ident(sender);
+    NSString *ident = shared_command_ident(sender);
     BOOL found;
     guint32 flag = style_flag(ident, &found);
     if (!found) return;
@@ -344,11 +344,12 @@ run_style(id target, id sender)
  * Inputs:
  *   target — the editor
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_editing(id target, id item)
+validate_editing(id target, id item, SharedCommandState *state)
 {
     return !find_has_focus(target);
 }
@@ -455,7 +456,7 @@ static void
 run_find_step(id target, id sender)
 {
     NotesEditorWindow *ed = target;
-    BOOL forward = ![on_command_ident(sender) isEqualToString:@"find-previous"];
+    BOOL forward = ![shared_command_ident(sender) isEqualToString:@"find-previous"];
     on_note_view_find_step(ed.note_view, ed.search_field.stringValue, forward);
 }
 
@@ -465,11 +466,12 @@ run_find_step(id target, id sender)
  * Inputs:
  *   target — the editor
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES when the field has text.
  */
 static BOOL
-validate_find_step(id target, id item)
+validate_find_step(id target, id item, SharedCommandState *state)
 {
     return ((NotesEditorWindow *)target).search_field.stringValue.length > 0;
 }
@@ -498,18 +500,19 @@ run_find_selection(id target, id sender)
  * Inputs:
  *   target — the editor
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES when text is selected.
  */
 static BOOL
-validate_find_selection(id target, id item)
+validate_find_selection(id target, id item, SharedCommandState *state)
 {
     NotesEditorWindow *ed = target;
     return !find_has_focus(ed) && on_note_view_selected_text(ed.note_view).length > 0;
 }
 
 /* Every command an editor runs. */
-static const on_command_handler_t editor_commands[] = {
+static const shared_command_handler_t editor_commands[] = {
     { @"find",             run_find,           NULL                    },
     { @"find-next",        run_find_step,      validate_find_step      },
     { @"find-previous",    run_find_step,      validate_find_step      },
@@ -973,7 +976,7 @@ show_outside_notice
 run_command:(id)sender
 {
     if (on_image_viewer_is_open(self.image_viewer)) return;
-    on_command_run(editor_commands, EDITOR_COMMAND_COUNT, self, sender);
+    shared_command_run(editor_commands, EDITOR_COMMAND_COUNT, self, sender);
 }
 
 /*
@@ -991,7 +994,7 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
     if (item.action != @selector(run_command:)) return YES;
     if (on_image_viewer_is_open(self.image_viewer)) return NO;
     BOOL handled;
-    BOOL ok = on_command_validate(editor_commands, EDITOR_COMMAND_COUNT, self, item, &handled);
+    BOOL ok = shared_command_validate(editor_commands, EDITOR_COMMAND_COUNT, self, item, &handled);
     return handled && ok;
 }
 

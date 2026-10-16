@@ -1350,17 +1350,17 @@ fill_note_menu:(NSMenu *)menu note:(gint64)note_id
     open.representedObject = @(note_id);
     [menu addItem:open];
     if (on_library_in_trash_view(self.lib)) {
-        [menu addItem:on_command_menu_item(@"note-restore")];
+        [menu addItem:shared_command_menu_item(@"note-restore", nil)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:on_command_menu_item(@"delete-note")];
+        [menu addItem:shared_command_menu_item(@"delete-note", nil)];
         return;
     }
-    [menu addItem:on_command_menu_item(@"note-pin")];
+    [menu addItem:shared_command_menu_item(@"note-pin", nil)];
     [menu addItem:NSMenuItem.separatorItem];
-    [menu addItem:on_command_menu_item(@"note-export-html")];
-    [menu addItem:on_command_menu_item(@"note-export-md")];
+    [menu addItem:shared_command_menu_item(@"note-export-html", nil)];
+    [menu addItem:shared_command_menu_item(@"note-export-md", nil)];
     [menu addItem:NSMenuItem.separatorItem];
-    [menu addItem:on_command_menu_item(@"delete-note")];
+    [menu addItem:shared_command_menu_item(@"delete-note", nil)];
 }
 
 /*
@@ -1948,14 +1948,15 @@ run_toggle_view(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES.
  */
 static BOOL
-validate_toggle_view(id target, id item)
+validate_toggle_view(id target, id item, SharedCommandState *state)
 {
     BOOL grid = ((NotesLibrary *)target).grid_pref;
-    on_command_item_update(item, grid ? @"Show as List" : @"Show as Grid",
+    shared_command_state_set(state, grid ? @"Show as List" : @"Show as Grid",
                            grid ? @"list.bullet" : @"square.grid.2x2", NO);
     return YES;
 }
@@ -1983,14 +1984,15 @@ run_toggle_done(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES.
  */
 static BOOL
-validate_toggle_done(id target, id item)
+validate_toggle_done(id target, id item, SharedCommandState *state)
 {
     BOOL shown = ((NotesLibrary *)target).app->show_done_actions;
-    on_command_item_update(item, shown ? @"Hide Completed" : @"Show Completed",
+    shared_command_state_set(state, shown ? @"Hide Completed" : @"Show Completed",
                            shown ? @"eye.slash" : @"eye", NO);
     return YES;
 }
@@ -2028,14 +2030,15 @@ run_delete_note(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the menu or toolbar item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_delete_note(id target, id item)
+validate_delete_note(id target, id item, SharedCommandState *state)
 {
     NotesLibrary *lib = target;
-    on_command_item_update(item, on_library_in_trash_view(lib) ? @"Delete Permanently" : nil, nil, NO);
+    shared_command_state_set(state, on_library_in_trash_view(lib) ? @"Delete Permanently" : nil, nil, NO);
     if ([lib.window.firstResponder isKindOfClass:NSText.class]) return NO;
     return on_library_notes_selected_ids(lib).count > 0;
 }
@@ -2065,11 +2068,12 @@ run_note_restore(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_note_restore(id target, id item)
+validate_note_restore(id target, id item, SharedCommandState *state)
 {
     return on_library_in_trash_view(target) && on_library_notes_selected_ids(target).count > 0;
 }
@@ -2118,19 +2122,20 @@ run_note_pin(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_note_pin(id target, id item)
+validate_note_pin(id target, id item, SharedCommandState *state)
 {
     NotesLibrary *lib = target;
-    on_command_item_update(item, first_selected_pinned(lib) ? @"Unpin" : @"Pin", nil, NO);
+    shared_command_state_set(state, first_selected_pinned(lib) ? @"Unpin" : @"Pin", nil, NO);
     return !on_library_in_trash_view(lib) && on_library_notes_selected_ids(lib).count > 0;
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t notes_handlers[] = {
+static const shared_command_handler_t notes_handlers[] = {
     { @"view-list",    run_view_list,    NULL                   },
     { @"view-grid",    run_view_grid,    NULL                   },
     { @"toggle-view",  run_toggle_view,  validate_toggle_view   },

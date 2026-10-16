@@ -105,7 +105,7 @@ raise_running_copy(void)
 }
 
 /* The app delegate's own commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t handlers[] = {
+static const shared_command_handler_t handlers[] = {
     { @"about",        run_about,        NULL },
     { @"show-library", run_show_library, NULL },
 };
@@ -142,6 +142,7 @@ applicationWillFinishLaunching:(NSNotification *)n
 - (void)
 applicationDidFinishLaunching:(NSNotification *)n
 {
+    on_commands_install();
     [self build_menu_bar];
     [self watch_signals];
 
@@ -468,7 +469,7 @@ add_commands(NSMenu *menu, NSArray<NSString *> *idents)
 {
     for (NSString *ident in idents) {
         [menu addItem:[ident isEqualToString:menu_rule] ? NSMenuItem.separatorItem
-                                                        : on_command_menu_item(ident)];
+                                                        : shared_command_menu_item(ident, nil)];
     }
 }
 

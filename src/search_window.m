@@ -433,7 +433,7 @@ run_search_here(id target, id sender)
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t search_handlers[] = {
+static const shared_command_handler_t search_handlers[] = {
     { @"search",      run_search,      NULL },
     { @"find",        run_search,      NULL },
     { @"search-here", run_search_here, NULL },

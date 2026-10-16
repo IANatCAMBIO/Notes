@@ -178,11 +178,12 @@ run_edit_tag(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_tag_selected(id target, id item)
+validate_tag_selected(id target, id item, SharedCommandState *state)
 {
     NotesLibrary *lib = target;
     on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
@@ -407,17 +408,18 @@ run_note_export_md(id target, id sender)
  * Inputs:
  *   target — the NotesLibrary
  *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
  *
  * Output: YES to enable it.
  */
 static BOOL
-validate_notes_selected(id target, id item)
+validate_notes_selected(id target, id item, SharedCommandState *state)
 {
     return !on_library_in_trash_view(target) && on_library_notes_selected_ids(target).count > 0;
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
-static const on_command_handler_t handlers[] = {
+static const shared_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
     { @"quicknote",   run_quicknote,   NULL },
     { @"edit-tag",    run_edit_tag,    validate_tag_selected },

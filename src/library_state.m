@@ -15,7 +15,7 @@ static NSString * const drag_key_ids  = @"ids";
 
 /* The registered handler tables.  Static tables, kept by reference. */
 static struct {
-    const on_command_handler_t *table;
+    const shared_command_handler_t *table;
     size_t                      n;
 } command_tables[MAX_COMMAND_TABLES];
 static size_t command_table_count;
@@ -148,7 +148,7 @@ on_library_refresh_all(NotesLibrary *lib)
  * on_library_add_commands — see library_state.h.
  */
 void
-on_library_add_commands(const on_command_handler_t *table, size_t n)
+on_library_add_commands(const shared_command_handler_t *table, size_t n)
 {
     NSCAssert(command_table_count < MAX_COMMAND_TABLES, @"raise MAX_COMMAND_TABLES");
     command_tables[command_table_count].table = table;
@@ -175,7 +175,7 @@ acts_on_library(id sender)
         idents = [NSSet setWithArray:@[@"view-list", @"view-grid", @"toggle-view",
                                        @"toggle-sidebar", @"toggle-favorites", @"toggle-done", @"media",
                                        @"ai-summary"]];
-    NSString *ident = on_command_ident(sender);
+    NSString *ident = shared_command_ident(sender);
     return ident != nil && [idents containsObject:ident];
 }
 
@@ -189,7 +189,7 @@ on_library_run_command(NotesLibrary *lib, id sender)
 {
     if (!lib.window.visible && acts_on_library(sender)) on_library_window_show(lib);
     for (size_t i = 0; i < command_table_count; i++) {
-        if (on_command_run(command_tables[i].table, command_tables[i].n, lib, sender)) return YES;
+        if (shared_command_run(command_tables[i].table, command_tables[i].n, lib, sender)) return YES;
     }
     return NO;
 }
@@ -202,7 +202,7 @@ on_library_validate_command(NotesLibrary *lib, id item)
 {
     for (size_t i = 0; i < command_table_count; i++) {
         BOOL handled = NO;
-        BOOL enabled = on_command_validate(command_tables[i].table, command_tables[i].n,
+        BOOL enabled = shared_command_validate(command_tables[i].table, command_tables[i].n,
                                            lib, item, &handled);
         if (handled) return enabled;
     }

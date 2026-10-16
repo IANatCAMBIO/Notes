@@ -444,7 +444,7 @@ fit:(BOOL)force
 static NSMenuItem *
 command_item(NSString *ident, NSString *title)
 {
-    NSMenuItem *item = on_command_menu_item(ident);
+    NSMenuItem *item = shared_command_menu_item(ident, nil);
     if (title) item.title = title;
     return item;
 }

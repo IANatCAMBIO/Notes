@@ -94,18 +94,20 @@ item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint
 }
 
 /*
- * is_section — is this one of the bold section rows (GTK:
- * sb_kind_is_section)?
+ * row_font — a row's font, as Tasks' sidebar sets it: the Tags header in
+ * the small bold system font, every other row (the views and the tags) in
+ * the regular system font.
  *
  * Inputs:
  *   kind — the row's kind
  *
- * Output: YES for every row but a tag.
+ * Output: the font.
  */
-static BOOL
-is_section(on_sb_kind_t kind)
+static NSFont *
+row_font(on_sb_kind_t kind)
 {
-    return kind != on_sb_tag;
+    return kind == on_sb_tags_header ? [NSFont boldSystemFontOfSize:NSFont.smallSystemFontSize]
+                                     : [NSFont systemFontOfSize:NSFont.systemFontSize];
 }
 
 /*
@@ -313,7 +315,7 @@ build_roots
 
     GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
-        SidebarItem *header = item_new(on_sb_tags_header, 0, section_label(@"🏷️", @"Tags"), @"Tags", -1, YES);
+        SidebarItem *header = item_new(on_sb_tags_header, 0, @"Tags", @"Tags", -1, YES);
         for (GList *l = tags; l != NULL; l = l->next)
             [header.children addObject:tag_item(l->data, tag_counts)];
         [roots addObject:header];
@@ -424,13 +426,11 @@ fit:(BOOL)force
     for (NSInteger row = 0; row < self.outline.numberOfRows; row++) {
         SidebarItem *it   = [self.outline itemAtRow:row];
         NSRect       cell = [self.outline frameOfCellAtColumn:0 row:row];
-        NSFont      *font = [NSFont systemFontOfSize:on_look_sidebar_font
-                                              weight:is_section(it.kind) ? NSFontWeightBold : NSFontWeightRegular];
-        CGFloat text = [it.display sizeWithAttributes:@{ NSFontAttributeName: font }].width;
+        CGFloat text = [it.display sizeWithAttributes:@{ NSFontAttributeName: row_font(it.kind) }].width;
         if (it.count >= 0)
             text += count_gap + [[NSString stringWithFormat:@"%d", it.count]
                                     sizeWithAttributes:@{ NSFontAttributeName: count_font() }].width;
-        want = MAX(want, NSMinX(cell) + 2 * on_look_sidebar_cell_pad + ceil(text));
+        want = MAX(want, NSMinX(cell) + on_look_sidebar_text_pad + on_look_sidebar_count_pad + ceil(text));
     }
     NSScrollView *scroll = self.outline.enclosingScrollView;
     if (scroll.scrollerStyle == NSScrollerStyleLegacy && !scroll.verticalScroller.hidden)
@@ -542,7 +542,8 @@ outlineView:(NSOutlineView *)outline child:(NSInteger)index ofItem:(id)item
 /* ── Delegate ──────────────────────────────────────────────────────────── */
 
 /*
- * outlineView:viewForTableColumn:item: — a row's cell: section rows bold;
+ * outlineView:viewForTableColumn:item: — a row's cell, formatted as Tasks'
+ * sidebar formats its rows (row_font; the Tags header grey);
  * while counts are shown, the count at the row's right in a small grey
  * label with even-width digits, as Tasks shows its tags' counts.
  *
@@ -576,10 +577,10 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
         [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
-            [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_sidebar_cell_pad],
+            [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_sidebar_text_pad],
             [label.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor constant:-count_gap],
             [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
-            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_sidebar_cell_pad],
+            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_sidebar_count_pad],
             [count.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -588,8 +589,9 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
             ((NSTextField *)v).stringValue = it.count >= 0 ? [NSString stringWithFormat:@"%d", it.count] : @"";
     }
     cell.textField.stringValue = it.display;
-    cell.textField.font = [NSFont systemFontOfSize:on_look_sidebar_font
-                                            weight:is_section(it.kind) ? NSFontWeightBold : NSFontWeightRegular];
+    cell.textField.font      = row_font(it.kind);
+    cell.textField.textColor = it.kind == on_sb_tags_header ? NSColor.secondaryLabelColor
+                                                            : NSColor.labelColor;
     return cell;
 }
 
@@ -762,7 +764,7 @@ on_library_sidebar_new(NotesLibrary *lib)
     outline.headerView            = nil;
     outline.allowsMultipleSelection = NO;
     outline.style                 = NSTableViewStyleSourceList;
-    outline.rowHeight             = on_look_row_h;
+    outline.rowHeight             = on_look_sidebar_row_h;
     outline.autosaveExpandedItems = NO;
     outline.focusRingType         = NSFocusRingTypeNone;
     outline.delegate              = ctrl;

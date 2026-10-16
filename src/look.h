@@ -56,7 +56,7 @@ on_look_pick(on_look_color_t color, bool dark)
 /* THE size of the app's own text: every label, button, field, table cell
  * and tool panel (on_ui_use_ui_font applies it to a window).  Three things
  * keep their own: the status bars (on_look_status_font), the sidebar
- * (on_look_sidebar_font) and a note's text in the editor (on_look_font_size
+ * (the system font, as Tasks' sidebar has it) and a note's text in the editor (on_look_font_size
  * and its headings).                                                      */
 static const double on_look_ui_font          = 11.0;
 static const double on_look_status_font      = 9.0;    /* the status bars, Settings' health plate */
@@ -163,12 +163,13 @@ static const double on_look_favorite_gap     = 4.0;    /* between buttons       
 static const double on_look_status_inset     = 8.0;
 static const double on_look_sidebar_w        = 180.0;  /* initial                                */
 static const double on_look_sidebar_min_w    = 160.0;  /* also the fit-to-content floor          */
-static const double on_look_sidebar_cell_pad = 4.0;    /* a sidebar row's text inset, each side  */
+static const double on_look_sidebar_row_h    = 24.0;   /* a sidebar row, as in Tasks             */
+static const double on_look_sidebar_text_pad = 4.0;    /* a sidebar row's text, from the left    */
+static const double on_look_sidebar_count_pad = 6.0;   /* its count, from the right              */
 static const double on_look_sidebar_max_fraction = 0.5; /* fit-to-content ceiling, of the split  */
 static const double on_look_main_pane_min_w  = 400.0;
 static const double on_look_row_h            = 20.0;   /* compact list row                       */
 static const double on_look_row_comfortable_h = 40.0;  /* title + preview                        */
-static const double on_look_sidebar_font     = 12.0;   /* the sidebar's rows (not on_look_ui_font) */
 static const double on_look_preview_alpha    = 0.65;   /* the dimmed preview line                */
 static const double on_look_thumb_size       = 140.0;  /* grid card thumbnail, square            */
 static const double on_look_thumb_image_w    = 128.0;  /* a note's first image inside the card   */

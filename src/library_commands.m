@@ -79,26 +79,12 @@ run_quicknote(id target, id sender)
 @end
 
 @implementation NotesTagFields
-
-/*
- * pick_emoji: — the emoji field's button: the character palette, typing
- * into the emoji field.
- *
- * Inputs:
- *   sender — the button
- */
-- (void)
-pick_emoji:(id)sender
-{
-    [self.emoji.window makeFirstResponder:self.emoji];
-    [NSApp orderFrontCharacterPalette:sender];
-}
-
 @end
 
 /*
  * tag_fields — the Edit Tag panel's controls: the tag's name (fixed), an
- * optional emoji with a picker, and Favorite, filled in from the tag.
+ * optional emoji (a one-character slot that opens the emoji picker when
+ * clicked, as Tasks' Edit Tag has), and Favorite, filled in from the tag.
  *
  * Inputs:
  *   tag — the tag
@@ -111,15 +97,8 @@ tag_fields(const OnTag *tag)
     NotesTagFields *f    = [[NotesTagFields alloc] init];
     NSFont         *font = [NSFont systemFontOfSize:on_look_ui_font];
 
-    f.emoji = [NSTextField textFieldWithString:@(tag->emoji)];
-    f.emoji.font       = [NSFont systemFontOfSize:on_look_ui_font + 3];
-    f.emoji.alignment  = NSTextAlignmentCenter;
-    f.emoji.toolTip    = @"Optional emoji";
+    f.emoji = on_ui_emoji_field(@(tag->emoji));
     f.emoji.identifier = @"tag-emoji";
-    [f.emoji.widthAnchor constraintEqualToConstant:on_look_tool_emoji_w].active = YES;
-    NSButton *picker = [NSButton buttonWithTitle:@"Pick…" target:f action:@selector(pick_emoji:)];
-    picker.font = font;
-    NSStackView *emoji_row = [NSStackView stackViewWithViews:@[f.emoji, picker]];
 
     f.favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar" target:nil action:nil];
     f.favorite.font       = font;
@@ -135,7 +114,7 @@ tag_fields(const OnTag *tag)
     name.font = [NSFont boldSystemFontOfSize:on_look_ui_font];
     NSGridView *grid = [NSGridView gridViewWithViews:@[
         @[label(@"Tag:"),               name],
-        @[label(@"Emoji (optional):"),  emoji_row],
+        @[label(@"Emoji (optional):"),  f.emoji],
         @[label(@"Favorite:"),          f.favorite],
     ]];
     grid.rowSpacing    = on_look_tool_btn_gap;
@@ -160,7 +139,7 @@ on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
     NotesToolPanel *panel = [NotesToolPanel
         panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
                 subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
-                  symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"]
+                  symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
         if (index != 0) return nil;                  /* Cancel */
         /* The panel is not modal: the database may have been switched. */
@@ -226,7 +205,7 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
                                                     path.lastPathComponent];
     NSArray<NSString *> *buttons = @[@"Set as Default", @"Session Only", @"Cancel"];
     [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
-                         buttons:buttons
+                         buttons:buttons destructive:-1
                             over:win
                          handler:^(NSInteger index) {
         if (index < 0 || [buttons[(NSUInteger)index] isEqualToString:@"Cancel"]) return;

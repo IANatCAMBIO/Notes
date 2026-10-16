@@ -158,7 +158,7 @@ on_ui_show_notice(NSString *title, NSString *message, NSWindow *window, void (^d
 {
     [NotesToolPanel show_message:title message:message
                           symbol:@"exclamationmark.triangle.fill"
-                         buttons:@[@"OK"] over:window
+                         buttons:@[@"OK"] destructive:-1 over:window
                          handler:^(NSInteger index) { (void)index; if (done) done(); }];
 }
 
@@ -173,7 +173,7 @@ on_ui_confirm(NSString *question, NSString *detail, NSString *action, NSWindow *
     [NotesToolPanel show_message:question message:detail ?: @"This cannot be undone."
                           symbol:@"exclamationmark.triangle.fill"
                          buttons:@[@"Cancel", action]   /* [0] = default (Return) */
-                            over:window
+                     destructive:1 over:window
                          handler:^(NSInteger index) { handler(index == 1); }];
 }
 
@@ -661,4 +661,87 @@ on_ui_tag_label(const char *emoji, const char *name)
     /* %@ and @(...), never %s: an NSString format reads %s in the system
      * encoding, not UTF-8, and an emoji came out as "üß™". */
     return *emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(emoji), @(name)] : @(name);
+}
+
+/*
+ * NotesEmojiField — the emoji slot behind on_ui_emoji_field: a text field
+ * that keeps one character and opens the emoji picker when clicked.
+ *
+ * In its compact form (the one Ctrl+Cmd+Space shows) the picker closes
+ * itself once an emoji is chosen; the slot then ends its edit, so the
+ * expanded Character Viewer window, which has no API to close it, types
+ * nowhere until the slot is clicked again.
+ */
+@interface NotesEmojiField : NSTextField
+@end
+
+@implementation NotesEmojiField
+
+/*
+ * mouseDown: — a click starts editing as usual, selects what is there so
+ * that the chosen emoji replaces it, and opens the system's emoji picker
+ * over the slot.
+ *
+ * Inputs:
+ *   event — the mouse-down
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    [super mouseDown:event];
+    [self.currentEditor selectAll:nil];
+    [NSApp orderFrontCharacterPalette:nil];
+}
+
+/*
+ * textDidChange: — keep only the last character entered, then give up the
+ * keyboard.
+ *
+ * "Character" is a composed sequence: an emoji with a skin tone or a flag
+ * is several code points and must stay whole.  Editing ends once there is
+ * a character because a field that is still being edited does not see the
+ * next click (its editor does), and so could not open the picker again.
+ * That happens on the next run-loop pass: ending an edit from inside the
+ * editor's own change notification re-enters it.
+ *
+ * Inputs:
+ *   note — NSTextDidChangeNotification; its object is the field editor
+ */
+- (void)
+textDidChange:(NSNotification *)note
+{
+    NSText   *editor = note.object;
+    NSString *text   = editor.string;
+
+    if (text.length > 0) {
+        NSRange last = [text rangeOfComposedCharacterSequenceAtIndex:text.length - 1];
+        if (last.location > 0) editor.string = [text substringWithRange:last];
+
+        __weak NotesEmojiField *ws = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NotesEmojiField *s = ws;
+            if (s.currentEditor) [s.window makeFirstResponder:nil];
+        });
+    }
+    [super textDidChange:note];
+}
+
+@end
+
+/*
+ * on_ui_emoji_field — the emoji slot, filled in.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSTextField *
+on_ui_emoji_field(NSString *emoji)
+{
+    NotesEmojiField *field = [[NotesEmojiField alloc] initWithFrame:NSZeroRect];
+    field.stringValue       = emoji ?: @"";
+    field.placeholderString = @"…";
+    field.toolTip           = @"Optional emoji — click to pick";
+    field.alignment         = NSTextAlignmentCenter;
+    field.font              = [NSFont systemFontOfSize:on_look_ui_font + 3];
+    field.translatesAutoresizingMaskIntoConstraints = NO;
+    [field.widthAnchor constraintEqualToConstant:on_look_tool_emoji_w].active = YES;
+    return field;
 }

@@ -1262,7 +1262,7 @@ ask_due:(NotesActionRecord *)r
     __weak NotesNotesPane *ws = self;
     NotesToolPanel *panel = [NotesToolPanel
         panel_with_title:@"Due Date" hero_title:@"Due Date" subtitle:r.text symbol:@"calendar"
-                 content:picker buttons:@[@"Set", @"Clear", @"Cancel"]
+                 content:picker buttons:@[@"Set", @"Clear", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
         NotesNotesPane *s = ws;
         if (s == nil || index == 2) return nil;

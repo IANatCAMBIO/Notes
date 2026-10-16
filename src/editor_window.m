@@ -953,7 +953,7 @@ show_outside_notice
                                  @"changes here. Keep Mine saves your version over it; Reload discards yours."
                           symbol:@"exclamationmark.triangle"
                          buttons:@[@"Keep Mine", @"Reload"]
-                            over:self.window
+                     destructive:1 over:self.window     /* Reload discards the edit */
                          handler:^(NSInteger index) {
         NotesEditorWindow *s = ws;
         if (!s) return;

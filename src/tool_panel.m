@@ -1,8 +1,8 @@
 /*
  * tool_panel.m — see tool_panel.h.  Ported from the Files app's
- * tool_panel.m; the one difference is Escape, which dismisses the panel
- * (handler index -1) instead of clicking a button, so Escape never answers
- * a destructive choice.
+ * tool_panel.m; Escape dismisses the panel (handler index -1) instead of
+ * clicking a button, so Escape never answers a destructive choice.  The
+ * same code as Tasks' tool_panel.m apart from the prefix: keep them alike.
  */
 #import "tool_panel.h"
 #import "ui_util.h"
@@ -10,19 +10,114 @@
 #include "identity.h"
 #include "look.h"
 
-/* Panels on screen: each keeps itself alive until its window closes. */
-static NSMutableSet<NotesToolPanel *> *live_panels;
+/* ── The hero strip ─────────────────────────────────────────────────── */
 
-/*
- * NotesToolHeroView — the solid blue background behind the hero labels.
- */
-@interface NotesToolHeroView : NSView
+@interface NotesHero ()
+@property (nonatomic, strong, readwrite) NSTextField *title_label;
+@property (nonatomic, strong, readwrite) NSTextField *subtitle_label;
 @end
 
-@implementation NotesToolHeroView
+/*
+ * hero_label — one line of white-on-blue hero text that truncates rather
+ * than widen the strip.
+ *
+ * Inputs:
+ *   font  — its font
+ *   color — its colour
+ *
+ * Output: new, empty label.
+ */
+static NSTextField *
+hero_label(NSFont *font, NSColor *color)
+{
+    NSTextField *label = [NSTextField labelWithString:@""];
+
+    label.font                 = font;
+    label.textColor            = color;
+    label.lineBreakMode        = NSLineBreakByTruncatingTail;
+    label.maximumNumberOfLines = 1;
+    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return label;
+}
+
+@implementation NotesHero
 
 /*
- * isOpaque — the hero fills its whole frame.
+ * init_with_symbol: — the strip: the symbol, then the title over the
+ * subtitle, centred on the strip's height.
+ * Inputs/output are documented in tool_panel.h.
+ */
+- (instancetype)
+init_with_symbol:(NSString *)symbol
+{
+    self = [super initWithFrame:NSZeroRect];
+    if (!self) return nil;
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSImage *sym = symbol ? [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil]
+                          : nil;
+    sym = [sym imageWithSymbolConfiguration:
+           [NSImageSymbolConfiguration configurationWithPointSize:on_look_hero_icon
+                                                           weight:NSFontWeightMedium]];
+    NSImageView *icon     = on_ui_image_view(sym, on_look_hero_icon, on_look_hero_icon);
+    icon.contentTintColor = NSColor.whiteColor;
+    icon.hidden           = sym == nil;
+
+    _title_label    = hero_label([NSFont boldSystemFontOfSize:on_look_ui_font], NSColor.whiteColor);
+    _subtitle_label = hero_label([NSFont systemFontOfSize:on_look_ui_font], on_ui_color(on_look_hero_sub));
+    _subtitle_label.hidden = YES;
+
+    /* A hidden subtitle leaves the stack, so a lone title is centred. */
+    NSStackView *text = [NSStackView stackViewWithViews:@[_title_label, _subtitle_label]];
+    text.orientation  = NSUserInterfaceLayoutOrientationVertical;
+    text.alignment    = NSLayoutAttributeLeading;
+    text.spacing      = on_look_hero_gap;
+
+    NSStackView *row = [NSStackView stackViewWithViews:@[icon, text]];
+    row.orientation  = NSUserInterfaceLayoutOrientationHorizontal;
+    row.alignment    = NSLayoutAttributeCenterY;
+    row.spacing      = on_look_hero_icon_gap;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.heightAnchor constraintEqualToConstant:on_look_hero_h],
+        [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:on_look_hero_pad],
+        [row.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
+                                                     constant:-on_look_hero_pad],
+        [row.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+    ]];
+    return self;
+}
+
+/*
+ * set_title:subtitle: — what the strip says.
+ * Inputs are documented in tool_panel.h.
+ */
+- (void)
+set_title:(NSString *)title subtitle:(NSString *)subtitle
+{
+    self.title_label.stringValue    = title ?: @"";
+    self.subtitle_label.stringValue = subtitle ?: @"";
+    self.subtitle_label.textColor   = on_ui_color(on_look_hero_sub);
+    self.subtitle_label.hidden      = subtitle.length == 0;
+}
+
+/*
+ * show_problem: — a highlighted line in the subtitle's place.
+ * Inputs are documented in tool_panel.h.
+ */
+- (void)
+show_problem:(NSString *)problem
+{
+    self.subtitle_label.stringValue = problem ?: @"";
+    self.subtitle_label.textColor   = on_ui_color(on_look_hero_problem);
+    self.subtitle_label.hidden      = problem.length == 0;
+}
+
+/*
+ * isOpaque — the strip fills its whole frame.
  *
  * Output: YES.
  */
@@ -33,24 +128,26 @@ isOpaque
 }
 
 /*
- * drawRect: — fill the hero with the tool panels' blue.
+ * drawRect: — fill the strip with the hero blue.
  *
  * Inputs:
- *   dirtyRect — area to redraw (unused: the whole view is filled)
+ *   dirtyRect — the area to redraw (unused: the whole strip is filled)
  */
 - (void)
 drawRect:(NSRect)dirtyRect
 {
     (void)dirtyRect;
-    [on_ui_color(on_look_tool_hero) setFill];
+    [on_ui_color(on_look_hero) setFill];
     NSRectFill(self.bounds);
 }
 
 @end
 
+/* ── The panel ──────────────────────────────────────────────────────── */
+
 /*
- * NotesToolWindow — the panel itself: Escape closes it, which reports a
- * dismissal to the owning NotesToolPanel.
+ * NotesToolWindow — the panel's window: Escape closes it, which reports a
+ * dismissal to its NotesToolPanel.
  */
 @interface NotesToolWindow : NSPanel
 @end
@@ -74,238 +171,28 @@ cancelOperation:(id)sender
 
 @interface NotesToolPanel () <NSWindowDelegate>
 @property (nonatomic, strong) NotesToolWindow *panel;
-@property (nonatomic, strong) NSTextField     *subtitle_label;
+@property (nonatomic, strong) NotesHero       *hero;
+@property (nonatomic, copy)   NSString        *hero_title;
 @property (nonatomic, copy)   NSString        *subtitle;
 @property (nonatomic, copy)   NSString *(^button_handler)(NSInteger index);
 @property (nonatomic, copy)   void (^dismissed_handler)(void);
-@property (nonatomic)         BOOL             chosen;
+@property (nonatomic, assign) BOOL             chosen;     /* a button answered */
 @end
 
-@implementation NotesToolPanel
+/* Panels on screen: each keeps itself alive until its window closes. */
+static NSMutableSet<NotesToolPanel *> *live_panels;
 
 /*
- * build_with_title:… — the panel behind every public constructor: lay out
- * the hero strip, the content and one button per entry of button_titles.
+ * message_view — the wrapped, selectable message in a fixed-size view;
+ * text taller than on_look_tool_msg_max_h scrolls.
  *
  * Inputs:
- *   window_title   — title bar text
- *   hero_title     — bold line in the hero strip
- *   subtitle       — second line in the hero strip; empty = title only
- *   symbol         — SF Symbols name for the hero icon; may be nil
- *   content        — the controls, sized by their own fittingSize
- *   button_titles  — button labels, at least one: [0] is the default button
- *                    at the far right, the rest follow to its left
- *   button_handler — called with the index of the clicked button; returns
- *                    nil to close the panel or a one-line problem to show in
- *                    the hero strip (the panel stays open)
- *
- * Output: the panel, not yet shown.
- */
-+ (instancetype)
-build_with_title:(NSString *)window_title
-      hero_title:(NSString *)hero_title
-        subtitle:(NSString *)subtitle
-          symbol:(NSString *)symbol
-         content:(NSView *)content
-   button_titles:(NSArray<NSString *> *)button_titles
-  button_handler:(NSString *(^)(NSInteger index))button_handler
-{
-    NotesToolPanel *p = [[NotesToolPanel alloc] init];
-    p.subtitle        = subtitle;
-    p.button_handler  = button_handler;
-
-    NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
-    CGFloat buttons_w = 2 * on_look_tool_btn_margin - on_look_tool_btn_gap;
-    for (NSUInteger i = 0; i < button_titles.count; i++) {
-        NSButton *b = [NSButton buttonWithTitle:button_titles[i] target:p
-                                         action:@selector(button_clicked:)];
-        b.tag  = (NSInteger)i;
-        b.font = [NSFont systemFontOfSize:on_look_ui_font];
-        b.translatesAutoresizingMaskIntoConstraints = NO;
-        [buttons addObject:b];
-        buttons_w += on_look_tool_btn_gap +
-                     MAX(on_look_tool_btn_w, b.fittingSize.width + on_look_tool_btn_pad);
-    }
-
-    [content layoutSubtreeIfNeeded];
-    NSSize  cs = content.fittingSize;
-    CGFloat w  = MAX(MAX(on_look_tool_min_w, cs.width + 2 * on_look_tool_pad), buttons_w);
-    CGFloat h  = on_look_hero_h + on_look_tool_pad + cs.height + on_look_tool_pad +
-                 1.0 + on_look_tool_bar_h;
-
-    NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                             NSWindowStyleMaskUtilityWindow;
-    NotesToolWindow *panel = [[NotesToolWindow alloc] initWithContentRect:NSMakeRect(0, 0, w, h)
-                                                                styleMask:mask
-                                                                  backing:NSBackingStoreBuffered
-                                                                    defer:NO];
-    panel.title                  = window_title;
-    panel.floatingPanel          = YES;
-    panel.hidesOnDeactivate      = NO;
-    panel.becomesKeyOnlyIfNeeded = NO;
-    panel.releasedWhenClosed     = NO;
-    panel.delegate               = p;
-    p.panel                      = panel;
-    NSView *cv = panel.contentView;
-
-    /* Hero strip */
-    NotesToolHeroView *hero = [[NotesToolHeroView alloc] init];
-    hero.translatesAutoresizingMaskIntoConstraints = NO;
-    [cv addSubview:hero];
-
-    NSImage *sym = symbol ? [NSImage imageWithSystemSymbolName:symbol
-                                      accessibilityDescription:nil] : nil;
-    NSImageView *icon = on_ui_image_view(
-        [sym imageWithSymbolConfiguration:
-            [NSImageSymbolConfiguration configurationWithPointSize:on_look_hero_icon
-                                                            weight:NSFontWeightMedium]],
-        on_look_hero_icon, on_look_hero_icon);
-    icon.contentTintColor = NSColor.whiteColor;
-    [hero addSubview:icon];
-
-    NSTextField *title = [NSTextField labelWithString:hero_title];
-    title.font          = [NSFont boldSystemFontOfSize:on_look_ui_font];
-    title.textColor     = NSColor.whiteColor;
-    title.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [hero addSubview:title];
-
-    NSTextField *sub = [NSTextField labelWithString:subtitle];
-    sub.font          = [NSFont systemFontOfSize:on_look_ui_font];
-    sub.lineBreakMode = NSLineBreakByTruncatingTail;
-    sub.translatesAutoresizingMaskIntoConstraints = NO;
-    [hero addSubview:sub];
-    p.subtitle_label = sub;
-    sub.hidden = subtitle.length == 0;
-    [p show_subtitle:subtitle problem:NO];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [hero.topAnchor      constraintEqualToAnchor:cv.topAnchor],
-        [hero.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
-        [hero.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-        [hero.heightAnchor   constraintEqualToConstant:on_look_hero_h],
-
-        [icon.leadingAnchor  constraintEqualToAnchor:hero.leadingAnchor constant:on_look_hero_pad],
-        [icon.centerYAnchor  constraintEqualToAnchor:hero.centerYAnchor],
-
-        [title.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
-        [title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-on_look_hero_pad],
-        [title.bottomAnchor   constraintEqualToAnchor:hero.centerYAnchor
-                                             constant:subtitle.length ? -on_look_hero_gap / 2.0
-                                                                      : on_look_ui_font / 2.0],
-
-        [sub.leadingAnchor  constraintEqualToAnchor:title.leadingAnchor],
-        [sub.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
-        [sub.topAnchor      constraintEqualToAnchor:hero.centerYAnchor
-                                           constant:on_look_hero_gap / 2.0],
-    ]];
-
-    /* Button bar: right-aligned, the default button rightmost.  No button
-     * takes Escape: it dismisses the panel (NotesToolWindow). */
-    buttons.firstObject.keyEquivalent = @"\r";
-    for (NSButton *b in buttons) [cv addSubview:b];
-
-    NSBox *sep = [[NSBox alloc] init];
-    sep.boxType = NSBoxSeparator;
-    sep.translatesAutoresizingMaskIntoConstraints = NO;
-    [cv addSubview:sep];
-
-    content.translatesAutoresizingMaskIntoConstraints = NO;
-    [cv addSubview:content];
-
-    NSButton *right = nil;
-    for (NSButton *b in buttons) {
-        [NSLayoutConstraint activateConstraints:@[
-            [b.trailingAnchor constraintEqualToAnchor:right ? right.leadingAnchor
-                                                            : cv.trailingAnchor
-                                             constant:right ? -on_look_tool_btn_gap
-                                                            : -on_look_tool_btn_margin],
-            [b.bottomAnchor   constraintEqualToAnchor:cv.bottomAnchor
-                                             constant:-(on_look_tool_bar_h - on_look_tool_btn_h) / 2.0],
-            [b.widthAnchor    constraintEqualToConstant:MAX(on_look_tool_btn_w,
-                                                            b.fittingSize.width + on_look_tool_btn_pad)],
-            [b.heightAnchor   constraintEqualToConstant:on_look_tool_btn_h],
-        ]];
-        right = b;
-    }
-
-    [NSLayoutConstraint activateConstraints:@[
-        [sep.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
-        [sep.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-        [sep.bottomAnchor   constraintEqualToAnchor:cv.bottomAnchor constant:-on_look_tool_bar_h],
-        [sep.heightAnchor   constraintEqualToConstant:1.0],
-
-        [content.topAnchor     constraintEqualToAnchor:hero.bottomAnchor constant:on_look_tool_pad],
-        [content.centerXAnchor constraintEqualToAnchor:cv.centerXAnchor],
-    ]];
-    return p;
-}
-
-/*
- * show_subtitle:problem: — set the hero's second line.
- *
- * Inputs:
- *   text    — line to show
- *   problem — YES: highlighted as a problem; NO: the normal subtitle style
- */
-- (void)
-show_subtitle:(NSString *)text problem:(BOOL)problem
-{
-    self.subtitle_label.stringValue = text;
-    self.subtitle_label.hidden      = text.length == 0;
-    self.subtitle_label.textColor   = on_ui_color(problem ? on_look_tool_hero_problem
-                                                          : on_look_tool_hero_sub);
-}
-
-/*
- * button_clicked: — run the button handler: nil closes the panel, a
- * problem is shown in the hero strip and the panel stays.
- *
- * Inputs:
- *   sender — the clicked button; its tag is the index in button_titles
- */
-- (void)
-button_clicked:(NSButton *)sender
-{
-    [self show_subtitle:self.subtitle problem:NO];
-    NSString *problem = self.button_handler ? self.button_handler(sender.tag) : nil;
-    if (problem) {
-        [self show_subtitle:problem problem:YES];
-        NSBeep();
-        return;
-    }
-    self.chosen = YES;
-    [self.panel close];
-}
-
-/*
- * panel_with_title:…:buttons:handler: — see tool_panel.h.
- */
-+ (instancetype)
-panel_with_title:(NSString *)window_title
-      hero_title:(NSString *)hero_title
-        subtitle:(NSString *)subtitle
-          symbol:(NSString *)symbol
-         content:(NSView *)content
-         buttons:(NSArray<NSString *> *)buttons
-         handler:(NSString *(^)(NSInteger index))handler
-{
-    return [self build_with_title:window_title hero_title:hero_title subtitle:subtitle
-                           symbol:symbol content:content button_titles:buttons
-                   button_handler:handler];
-}
-
-/*
- * message_content — the wrapped, selectable message text in a fixed-size
- * view; messages taller than on_look_tool_msg_max_h scroll.
- *
- * Inputs:
- *   message — text to show
+ *   message — the text
  *
  * Output: a view on_look_tool_msg_w wide.
  */
 static NSView *
-message_content(NSString *message)
+message_view(NSString *message)
 {
     NSTextField *label = [NSTextField wrappingLabelWithString:message];
     label.font         = [NSFont systemFontOfSize:on_look_ui_font];
@@ -335,6 +222,175 @@ message_content(NSString *message)
 }
 
 /*
+ * button_w — the width a tool-panel button is given: its title's, padded,
+ * never narrower than on_look_tool_btn_w.
+ *
+ * Inputs:
+ *   button — the button
+ *
+ * Output: the width in points.
+ */
+static CGFloat
+button_w(NSButton *button)
+{
+    return MAX(on_look_tool_btn_w, button.fittingSize.width + on_look_tool_btn_pad);
+}
+
+@implementation NotesToolPanel
+
+/*
+ * build_with_title:… — the panel behind both public constructors: lay out
+ * the hero strip, the content and one button per entry of buttons.
+ *
+ * Inputs:
+ *   window_title — title bar text
+ *   hero_title   — bold line in the hero strip
+ *   subtitle     — second line in the hero strip; empty = title only
+ *   symbol       — SF Symbols name for the hero icon; may be nil
+ *   content      — the controls, sized by their own fittingSize
+ *   buttons      — button labels, at least one: [0] is the default button
+ *                  at the far right, the rest follow to its left
+ *   destructive  — index of the button with the destructive look; -1 none
+ *   handler      — called with the index of the clicked button; returns
+ *                  nil to close the panel or a one-line problem to show in
+ *                  the hero strip (the panel stays open)
+ *
+ * Output: the panel, not yet shown.
+ */
++ (instancetype)
+build_with_title:(NSString *)window_title
+      hero_title:(NSString *)hero_title
+        subtitle:(NSString *)subtitle
+          symbol:(NSString *)symbol
+         content:(NSView *)content
+         buttons:(NSArray<NSString *> *)buttons
+     destructive:(NSInteger)destructive
+         handler:(NSString *(^)(NSInteger index))handler
+{
+    NotesToolPanel *p = [[NotesToolPanel alloc] init];
+    p.hero_title     = hero_title;
+    p.subtitle       = subtitle;
+    p.button_handler = handler;
+
+    NSMutableArray<NSButton *> *controls = [NSMutableArray array];
+    CGFloat bar_w = 2 * on_look_tool_btn_margin - on_look_tool_btn_gap;
+    for (NSUInteger i = 0; i < buttons.count; i++) {
+        NSButton *b = [NSButton buttonWithTitle:buttons[i] target:p
+                                         action:@selector(button_clicked:)];
+        b.tag                  = (NSInteger)i;
+        b.font                 = [NSFont systemFontOfSize:on_look_ui_font];
+        b.hasDestructiveAction = (NSInteger)i == destructive;
+        b.translatesAutoresizingMaskIntoConstraints = NO;
+        [controls addObject:b];
+        bar_w += on_look_tool_btn_gap + button_w(b);
+    }
+    /* No button takes Escape: it dismisses the panel (NotesToolWindow). */
+    controls.firstObject.keyEquivalent = @"\r";
+
+    [content layoutSubtreeIfNeeded];
+    NSSize  cs = content.fittingSize;
+    CGFloat w  = MAX(MAX(on_look_tool_min_w, cs.width + 2 * on_look_tool_pad), bar_w);
+    CGFloat h  = on_look_hero_h + on_look_tool_pad + cs.height + on_look_tool_pad +
+                 1.0 + on_look_tool_bar_h;
+
+    NotesToolWindow *window = [[NotesToolWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, w, h)
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskUtilityWindow
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    window.title                  = window_title;
+    window.floatingPanel          = YES;
+    window.hidesOnDeactivate      = NO;
+    window.becomesKeyOnlyIfNeeded = NO;
+    window.releasedWhenClosed     = NO;
+    window.delegate               = p;
+    p.panel                       = window;
+    NSView *cv = window.contentView;
+
+    NotesHero *hero = [[NotesHero alloc] init_with_symbol:symbol];
+    [hero set_title:hero_title subtitle:subtitle];
+    p.hero = hero;
+    [cv addSubview:hero];
+
+    NSBox *rule = [[NSBox alloc] init];
+    rule.boxType = NSBoxSeparator;
+    rule.translatesAutoresizingMaskIntoConstraints = NO;
+    [cv addSubview:rule];
+
+    content.translatesAutoresizingMaskIntoConstraints = NO;
+    [cv addSubview:content];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [hero.topAnchor        constraintEqualToAnchor:cv.topAnchor],
+        [hero.leadingAnchor    constraintEqualToAnchor:cv.leadingAnchor],
+        [hero.trailingAnchor   constraintEqualToAnchor:cv.trailingAnchor],
+        [content.topAnchor     constraintEqualToAnchor:hero.bottomAnchor constant:on_look_tool_pad],
+        [content.centerXAnchor constraintEqualToAnchor:cv.centerXAnchor],
+        [rule.leadingAnchor    constraintEqualToAnchor:cv.leadingAnchor],
+        [rule.trailingAnchor   constraintEqualToAnchor:cv.trailingAnchor],
+        [rule.bottomAnchor     constraintEqualToAnchor:cv.bottomAnchor constant:-on_look_tool_bar_h],
+        [rule.heightAnchor     constraintEqualToConstant:1.0],
+    ]];
+
+    /* The buttons, right-aligned: [0] rightmost, the rest to its left. */
+    NSButton *right = nil;
+    for (NSButton *b in controls) {
+        [cv addSubview:b];
+        [NSLayoutConstraint activateConstraints:@[
+            [b.trailingAnchor constraintEqualToAnchor:right ? right.leadingAnchor : cv.trailingAnchor
+                                             constant:right ? -on_look_tool_btn_gap
+                                                            : -on_look_tool_btn_margin],
+            [b.bottomAnchor   constraintEqualToAnchor:cv.bottomAnchor
+                                             constant:-(on_look_tool_bar_h - on_look_tool_btn_h) / 2.0],
+            [b.widthAnchor    constraintEqualToConstant:button_w(b)],
+            [b.heightAnchor   constraintEqualToConstant:on_look_tool_btn_h],
+        ]];
+        right = b;
+    }
+    return p;
+}
+
+/*
+ * button_clicked: — run the button handler: nil closes the panel, a
+ * problem is shown in the hero strip and the panel stays.
+ *
+ * Inputs:
+ *   sender — the clicked button; its tag is the index in buttons
+ */
+- (void)
+button_clicked:(NSButton *)sender
+{
+    [self.hero set_title:self.hero_title subtitle:self.subtitle];
+    NSString *problem = self.button_handler ? self.button_handler(sender.tag) : nil;
+    if (problem) {
+        [self.hero show_problem:problem];
+        NSBeep();
+        return;
+    }
+    self.chosen = YES;
+    [self.panel close];
+}
+
+/*
+ * panel_with_title:…:handler: — see tool_panel.h.
+ */
++ (instancetype)
+panel_with_title:(NSString *)window_title
+      hero_title:(NSString *)hero_title
+        subtitle:(NSString *)subtitle
+          symbol:(NSString *)symbol
+         content:(NSView *)content
+         buttons:(NSArray<NSString *> *)buttons
+     destructive:(NSInteger)destructive
+         handler:(NSString *(^)(NSInteger index))handler
+{
+    return [self build_with_title:window_title hero_title:hero_title subtitle:subtitle
+                           symbol:symbol content:content buttons:buttons
+                      destructive:destructive handler:handler];
+}
+
+/*
  * show_message:… — see tool_panel.h.
  */
 + (void)
@@ -342,13 +398,14 @@ show_message:(NSString *)title
      message:(NSString *)message
       symbol:(NSString *)symbol
      buttons:(NSArray<NSString *> *)buttons
+ destructive:(NSInteger)destructive
         over:(NSWindow *)parent
      handler:(void (^)(NSInteger index))handler
 {
     NotesToolPanel *p = [self build_with_title:@ON_APP_NAME hero_title:title subtitle:@""
-                                        symbol:symbol content:message_content(message ?: @"")
-                                 button_titles:buttons
-                                button_handler:^NSString *(NSInteger index) {
+                                        symbol:symbol content:message_view(message ?: @"")
+                                       buttons:buttons destructive:destructive
+                                       handler:^NSString *(NSInteger index) {
         if (handler) handler(index);
         return nil;
     }];

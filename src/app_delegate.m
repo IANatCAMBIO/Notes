@@ -238,7 +238,7 @@ ask_first_run
     [NotesToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
                           symbol:@"note.text"
                          buttons:@[@"Create a New Database", @"Open a Database File…", @"Quit"]
-                            over:nil
+                     destructive:-1 over:nil
                          handler:^(NSInteger index) {
         if (index == 0) {
             [self open_database_and_start];

@@ -124,15 +124,16 @@ static const double on_look_settings_max_h   = 600.0;
 
 /* ── Tool panels (tool_panel.m) — the Files and Tasks apps' dialog ─────────── */
 
-static const on_look_color_t on_look_tool_hero         = { { 0.000, 0.447, 0.776, 1 }, { 0.000, 0.447, 0.776, 1 } };  /* hero strip */
-static const on_look_color_t on_look_tool_hero_sub     = { { 0.880, 0.880, 0.880, 1 }, { 0.880, 0.880, 0.880, 1 } };  /* subtitle   */
-static const on_look_color_t on_look_tool_hero_problem = { { 1.000, 0.920, 0.550, 1 }, { 1.000, 0.920, 0.550, 1 } };  /* a problem  */
+static const on_look_color_t on_look_hero         = { { 0.000, 0.447, 0.776, 1 }, { 0.000, 0.447, 0.776, 1 } };  /* hero strip's fill (white text) */
+static const on_look_color_t on_look_hero_sub     = { { 0.880, 0.880, 0.880, 1 }, { 0.880, 0.880, 0.880, 1 } };  /* its second line                */
+static const on_look_color_t on_look_hero_problem = { { 1.000, 0.920, 0.550, 1 }, { 1.000, 0.920, 0.550, 1 } };  /* ... when it reports a problem  */
 
 static const double on_look_tool_min_w      = 340.0;
 static const double on_look_hero_h          = 43.0;   /* the blue hero strip                   */
 static const double on_look_hero_pad        = 16.0;   /* horizontal inset in the hero          */
 static const double on_look_hero_gap        = 3.0;    /* hero title to subtitle                */
 static const double on_look_hero_icon       = 22.0;   /* hero symbol                           */
+static const double on_look_hero_icon_gap   = 10.0;   /* symbol to the text                    */
 static const double on_look_tool_pad        = 16.0;   /* around the caller's controls          */
 static const double on_look_tool_bar_h      = 40.0;   /* the button bar                        */
 static const double on_look_tool_btn_h      = 25.0;

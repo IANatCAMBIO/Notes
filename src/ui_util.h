@@ -407,3 +407,17 @@ void on_ui_pin_edges(NSView *view, NSView *to);
  * Output: the label.
  */
 NSString *on_ui_tag_label(const char *emoji, const char *name);
+
+/*
+ * on_ui_emoji_field — Edit Tag's emoji slot: a small text field that holds
+ * at most one character and opens the system's emoji picker when clicked
+ * (the same slot as Tasks').  The picker is the system's Character Viewer,
+ * which types into whatever text is being edited, so the slot has to be a
+ * real text field.
+ *
+ * Inputs:
+ *   emoji — the current emoji; empty for none
+ *
+ * Output: the field, on_look_tool_emoji_w wide, in the app's text size.
+ */
+NSTextField *on_ui_emoji_field(NSString *emoji);

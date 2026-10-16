@@ -2670,16 +2670,20 @@ on_document_tag_word(const gchar *name)
 }
 
 /* ---------------------------------------------------------------------------
- * tags_only() — does a text hold nothing but #tag runs and whitespace?
- * An empty text does.
+ * tags_only() — is a text a line of #tags: at least one #tag run, and
+ * nothing else but whitespace?  An empty or blank text is not (it is a
+ * line left for the body).
  * ------------------------------------------------------------------------- */
 static gboolean
 tags_only(const OnText *t)
 {
-    gsize at = 0;                    /* start of run k                      */
+    gsize    at  = 0;                /* start of run k                      */
+    gboolean tag = FALSE;            /* a #tag run seen                     */
     for (guint k = 0; k < t->runs->len; k++) {
         const OnRun *r = &g_array_index(t->runs, OnRun, k);
-        if ((r->flags & ON_FMT_TAG) == 0) {
+        if ((r->flags & ON_FMT_TAG) != 0) {
+            tag = TRUE;
+        } else {
             for (const gchar *c = t->text->str + at; c < t->text->str + at + r->len;
                  c = g_utf8_next_char(c))
                 if (!g_unichar_isspace(g_utf8_get_char(c)))
@@ -2687,7 +2691,7 @@ tags_only(const OnText *t)
         }
         at += r->len;
     }
-    return TRUE;
+    return tag;
 }
 
 gboolean

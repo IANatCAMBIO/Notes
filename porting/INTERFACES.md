@@ -17,7 +17,8 @@ Where the GTK specification has folders, this build has tags shared with
 Tasks: no folder API in `db.h` (notes live in one store; a note's tags
 are the #tags of its text; tags given from outside it — a drop, New Note
 in a tag's view, the move's Tags field — are appended as #words,
-`on_note_append_tags` in `action_sync.h`), no folder commands, no AI modes,
+`on_note_append_tags` in `action_sync.h`; a new note is
+`on_note_new_from_text(db, tag, "\n")`: title line, empty body line, tag), no folder commands, no AI modes,
 a flat export.  The sidebar (F) lists the views, the tags the notes carry
 and the Trash, as Tasks' does; `library_favorites.[hm]` (the Favorites
 bar) is new, and the editor's status bar lists the note's #tags where the

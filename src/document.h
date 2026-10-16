@@ -535,8 +535,9 @@ gchar *on_document_tag_word(const gchar *name);
  * on_document_append_tag() — put "#word" (a word as on_document_tag_word
  * makes it) on the note's bottom line, unless a #tag of the note already
  * has that word in any case.  The bottom line takes it when it is a body
- * line other than the first (the title) holding only #tags, or nothing;
- * otherwise a new body line is added for it.  One undo step.
+ * line other than the first (the title) holding #tags and nothing else;
+ * otherwise (an empty line too: it is left for the body) a new line is
+ * added for it.  One undo step.
  * Returns TRUE when the tag was added.
  * ------------------------------------------------------------------------- */
 gboolean on_document_append_tag(OnDocument *d, const gchar *word);

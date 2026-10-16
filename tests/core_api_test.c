@@ -675,6 +675,10 @@ test_given_tags(OnApp *app)
     check(on_note_append_tags(app, b, client, 1) && body_is(db, b, "Given two\n#BigClient") &&
           note_title_is(db, b, "Given two"),
           "append: never on the title line");
+    gint64 fresh = on_note_new_from_text(db, "Big Client", "\n");
+    check(body_is(db, fresh, "\n\n#BigClient"),
+          "append: an empty line is left for the body (a new note: title, body, tag)");
+    on_db_notes_delete(db, &fresh, 1);       /* the counts below are a's and b's */
     gchar *tags = note_tags_are(db, a);
     check(strcmp(tags, "BigClient:-T,Salt:-T") == 0, "append: text tags");
     g_free(tags);

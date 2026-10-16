@@ -2727,9 +2727,12 @@ load_document(NotesNoteView *view, OnDocument *doc, BOOL keep_place)
 
     /* The caret starts on the first line of TEXT: under the first-line-
      * title setting block 0 is the title, so an existing note opens ready
-     * to be read or added to, not renamed (GTK: load_document). */
-    OnPos start = { 0, -1, 0 };
-    if (view.app->first_line_title && on_document_n_blocks(doc) > 1) start.block = 1;
+     * to be read or added to, not renamed (GTK: load_document).  An empty
+     * title (a new note) is where the caret starts instead. */
+    OnPos          start = { 0, -1, 0 };
+    const OnBlock *title = on_document_block(doc, 0);
+    BOOL           named = title->text == NULL || title->text->text->len > 0;
+    if (view.app->first_line_title && named && on_document_n_blocks(doc) > 1) start.block = 1;
     view.caret  = clamp_pos(doc, keep_place ? caret : start);
     view.anchor = clamp_pos(doc, keep_place ? anchor : start);
     on_document_take_tags_modified(doc);

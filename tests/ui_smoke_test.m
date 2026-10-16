@@ -1274,7 +1274,8 @@ note_has_tag(gint64 note_id, const char *name)
  * #tags, which the status bar lists.  A tag given in the library (a drop
  * on a tag's row) while the note is open goes on its bottom line in the
  * open editor, as a #word ("Added one" is #AddedOne), and is saved.  New
- * Note in a tag's view gives the note that tag, on its second line.
+ * Note in a tag's view gives the note an empty title line (the caret on
+ * it), an empty body line, then the tag.
  *
  * Inputs:
  *   lib — the library (its window on screen)
@@ -1320,9 +1321,18 @@ test_editor_tags(NotesLibrary *lib)
     for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
     on_db_note_list_free(notes);
     gchar *body = on_note_text_cached(app.db, newest);
-    check(newest > note && note_has_tag(newest, "FieldTag") && g_strcmp0(body, "\n#FieldTag") == 0,
-          "New Note in a tag's view gives the new note that tag, under its empty title line");
+    check(newest > note && note_has_tag(newest, "FieldTag") && g_strcmp0(body, "\n\n#FieldTag") == 0,
+          "New Note in a tag's view: an empty title line, an empty body line, then the tag");
     g_free(body);
+    NotesNoteView *fresh = nil;
+    for (NSWindow *window in NSApp.windows) {
+        NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+        NotesNoteView *view   = [scroll.documentView isKindOfClass:NotesNoteView.class] ? scroll.documentView : nil;
+        if (window.visible && view != nil && on_document_n_blocks(on_note_view_document(view)) == 3) fresh = view;
+    }
+    OnPos caret = fresh != nil ? on_note_view_caret(fresh) : (OnPos){ 1, -1, 0 };
+    check(fresh != nil && caret.block == 0 && caret.offset == 0,
+          "the new note's editor has the caret on its title line");
     on_editor_close_all();
     pump(0.2);
     on_library_sidebar_select(lib, on_sb_all, 0);

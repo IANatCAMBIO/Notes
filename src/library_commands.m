@@ -6,6 +6,7 @@
 #import "ui_util.h"
 
 #include "action_sync.h"
+#include "serialize.h"
 #include "app_lifecycle.h"
 #include "db.h"
 #include "export.h"
@@ -17,9 +18,10 @@
  */
 
 /*
- * open_new_note — create an empty note, with a #tag on its second line when
- * a tag is given (on_note_append_tags), show it in the library and open its
- * editor in front.
+ * open_new_note — create a new note: an empty title line and an empty body
+ * line, then the #tag on a line of its own when a tag is given
+ * (on_note_new_from_text); show it in the library and open its editor in
+ * front, the caret on the title line.
  *
  * Inputs:
  *   lib — the library
@@ -30,14 +32,7 @@
 static void
 open_new_note(NotesLibrary *lib, NSString *tag)
 {
-    gboolean own;
-    gint64   note_id = 0;
-    if (on_db_txn_begin(lib.app->db, &own)) {
-        note_id = on_db_note_create(lib.app->db);
-        const gchar *name = tag.UTF8String;
-        BOOL ok = note_id != 0 && (tag == nil || on_note_append_tags(lib.app, note_id, &name, 1));
-        if (!on_db_txn_end(lib.app->db, own, ok)) note_id = 0;
-    }
+    gint64 note_id = on_note_new_from_text(lib.app->db, tag.UTF8String, "\n");
     if (note_id == 0) return;
     /* The full refresh: a new note changes the counts as well as the
      * notes pane. */

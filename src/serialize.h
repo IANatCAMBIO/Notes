@@ -105,9 +105,9 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
  * per line (on_document_from_text), the first line its title, every '!'
  * line an action item, `tag` a #tag after it — created and written
  * through THE save, in ONE write transaction (the caller's, when one is
- * open): a failed save leaves no note behind.  What the development
- * seeder and the tests build their notes with (it was the command-line
- * tool's `note new`).
+ * open): a failed save leaves no note behind.  What New Note, the
+ * development seeder and the tests build their notes with (it was the
+ * command-line tool's `note new`).
  *   db   — open database.
  *   tag  — a tag (any name) put on a line of its own after the text as a
  *          #tag (on_document_tag_word, on_document_append_tag), or NULL.

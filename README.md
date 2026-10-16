@@ -105,8 +105,10 @@ tags Tasks uses (one set in the shared file).
   closes the list and leaves a plain #.
 - A tag given from outside the text goes on the note's **bottom line** as a
   #tag (on a line of its own under the text, joining a line that holds
-  only #tags): drop notes on a tag in the sidebar, or New Note in a tag's
-  view.  A name of several words is joined, each word capitalized, and
+  only #tags; an empty line is left for the body): drop notes on a tag in
+  the sidebar, or New Note in a tag's view.  A new note starts with an
+  empty title line, where the caret is, and an empty body line, then its
+  tag's line.  A name of several words is joined, each word capitalized, and
   punctuation dropped: Tasks' "Old Projects" becomes #OldProjects — a tag
   of its own.  The tags the move from folders gave (an older Tags field)
   are written into the notes' text the same way at launch, once, keeping

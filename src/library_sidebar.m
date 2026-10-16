@@ -1,12 +1,12 @@
 /*
  * library_sidebar.m — the library's sidebar.
  *
- * An NSOutlineView over an in-memory list of SidebarItem objects: Pinned
- * Notes and All Notes, Action Items, the Tags header with one row per tag
- * the notes carry (its emoji, its name, and its count at the right when
- * counts are shown, as in Tasks),
- * and the Trash.  Only the Tags header cannot be selected; it starts open
- * and stays the way the user leaves it.
+ * An NSOutlineView over a flat list of SidebarItem objects, laid out and
+ * formatted as Tasks' sidebar: Pinned Notes and All Notes, Action Items,
+ * the Tags header (a group row) followed by one row per tag the notes
+ * carry (its emoji, its name, and its count at the right when counts are
+ * shown), and the Trash.  Nothing nests or collapses; only the Tags header
+ * cannot be selected.
  *
  * Selecting a row writes lib's selection and refreshes the notes pane
  * (which also updates the status bar).  A right click selects the row and
@@ -36,8 +36,8 @@
 /* ── SidebarItem ─────────────────────────────────────────────────────────── */
 
 /*
- * SidebarItem — one row of the outline: its kind and id (the identity that
- * survives a rebuild), the text it shows, its bare name, and its children.
+ * SidebarItem — one row of the sidebar: its kind and id (the identity that
+ * survives a rebuild), the text it shows, its bare name and its count.
  */
 @interface SidebarItem : NSObject
 @property (nonatomic, assign) on_sb_kind_t kind;
@@ -45,7 +45,6 @@
 @property (nonatomic, copy)   NSString    *display;   /* shown in the outline */
 @property (nonatomic, copy)   NSString    *raw_name;  /* bare name            */
 @property (nonatomic, assign) gint         count;     /* shown at the right; -1 = none */
-@property (nonatomic, strong) NSMutableArray<SidebarItem *> *children;   /* nil = a leaf */
 @end
 
 @implementation SidebarItem
@@ -75,13 +74,11 @@ count_font(void)
  *   display    — what it shows
  *   raw        — its bare name (the selection's name, status messages)
  *   count      — the count shown at the row's right, or -1 for none
- *   expandable — YES for a row with children
  *
  * Output: the item.
  */
 static SidebarItem *
-item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint count,
-         BOOL expandable)
+item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint count)
 {
     SidebarItem *it = [[SidebarItem alloc] init];
     it.kind     = kind;
@@ -89,7 +86,6 @@ item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint
     it.display  = display;
     it.raw_name = raw;
     it.count    = count;
-    it.children = expandable ? [NSMutableArray array] : nil;
     return it;
 }
 
@@ -144,7 +140,7 @@ tag_item(const OnTag *t, GHashTable *tag_counts)
     NSString *name  = @(t->name);
     NSString *label = *t->emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(t->emoji), name] : name;
     gint      count = tag_counts ? GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id)) : -1;
-    return item_new(on_sb_tag, t->id, label, name, count, NO);
+    return item_new(on_sb_tag, t->id, label, name, count);
 }
 
 /* ── The outline ─────────────────────────────────────────────────────────── */
@@ -168,7 +164,6 @@ tag_item(const OnTag *t, GHashTable *tag_counts)
 @property (nonatomic, strong) NSMutableArray<SidebarItem *> *roots;
 @property (nonatomic, assign) BOOL                 fit_queued;
 @property (nonatomic, assign) BOOL                 fit_force;
-@property (nonatomic, assign) BOOL                 tags_collapsed;   /* the user closed Tags */
 - (NSMenu *)menu_for_row:(NSInteger)row;
 - (void)queue_fit:(BOOL)force;
 @end
@@ -224,33 +219,7 @@ viewDidMoveToWindow
 /* ── Finding rows ──────────────────────────────────────────────────────── */
 
 /*
- * chain_in:kind:ident:into: — the items from this level down to the row
- * (kind, ident), the row last.
- *
- * Inputs:
- *   items — the items at this level
- *   kind  — the row's kind
- *   ident — its id
- *   chain — receives the chain
- *
- * Output: YES when found.
- */
-- (BOOL)
-chain_in:(NSArray<SidebarItem *> *)items kind:(on_sb_kind_t)kind ident:(gint64)ident
-    into:(NSMutableArray<SidebarItem *> *)chain
-{
-    for (SidebarItem *it in items) {
-        [chain addObject:it];
-        if (it.kind == kind && it.ident == ident) return YES;
-        if (it.children && [self chain_in:it.children kind:kind ident:ident into:chain]) return YES;
-        [chain removeLastObject];
-    }
-    return NO;
-}
-
-/*
- * reveal_kind:ident: — make the row (kind, ident) visible by expanding its
- * ancestors, outermost first, never the row itself (GTK: sb_reveal).
+ * row_of_kind:ident: — the row (kind, ident).
  *
  * Inputs:
  *   kind  — the row's kind
@@ -259,12 +228,11 @@ chain_in:(NSArray<SidebarItem *> *)items kind:(on_sb_kind_t)kind ident:(gint64)i
  * Output: its row index, or -1 when there is no such row.
  */
 - (NSInteger)
-reveal_kind:(on_sb_kind_t)kind ident:(gint64)ident
+row_of_kind:(on_sb_kind_t)kind ident:(gint64)ident
 {
-    NSMutableArray<SidebarItem *> *chain = [NSMutableArray array];
-    if (![self chain_in:self.roots kind:kind ident:ident into:chain]) return -1;
-    for (NSUInteger i = 0; i + 1 < chain.count; i++) [self.outline expandItem:chain[i]];
-    return [self.outline rowForItem:chain.lastObject];
+    for (NSUInteger i = 0; i < self.roots.count; i++)
+        if (self.roots[i].kind == kind && self.roots[i].ident == ident) return (NSInteger)i;
+    return -1;
 }
 
 /*
@@ -304,36 +272,35 @@ build_roots
     gint n_pinned = on_db_note_count_pinned(db);
     if (n_pinned > 0)
         [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes"),
-                                  @"Pinned Notes", counts ? n_pinned : -1, NO)];
+                                  @"Pinned Notes", counts ? n_pinned : -1)];
     [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes",
-                              counts ? on_db_note_count_visible(db) : -1, NO)];
+                              counts ? on_db_note_count_visible(db) : -1)];
     gint n_actions = 0, n_open = 0;
     on_db_action_counts(db, &n_actions, &n_open);
     if (n_actions > 0)
         [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items"),
-                                  @"Action Items", counts ? n_open : -1, NO)];
+                                  @"Action Items", counts ? n_open : -1)];
 
     GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
-        SidebarItem *header = item_new(on_sb_tags_header, 0, @"Tags", @"Tags", -1, YES);
+        [roots addObject:item_new(on_sb_tags_header, 0, @"Tags", @"Tags", -1)];
         for (GList *l = tags; l != NULL; l = l->next)
-            [header.children addObject:tag_item(l->data, tag_counts)];
-        [roots addObject:header];
+            [roots addObject:tag_item(l->data, tag_counts)];
     }
     on_db_tag_list_free(tags);
 
     gint n_trash = on_db_trash_count(db);
     if (n_trash > 0)
         [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash"), @"Trash",
-                                  counts ? n_trash : -1, NO)];
+                                  counts ? n_trash : -1)];
 
     if (tag_counts) g_hash_table_destroy(tag_counts);
     self.roots = roots;
 }
 
 /*
- * refresh — rebuild the rows, keeping the Tags header open or closed as
- * the user left it, the scroll position and the selection.  A selection
+ * refresh — rebuild the rows, keeping the scroll position and the
+ * selection.  A selection
  * that no longer exists (a tag no note carries any more) falls back to
  * All Notes, and then the notes pane is refreshed for it.
  *
@@ -348,11 +315,9 @@ refresh
     self.lib.populating++;
     [self build_roots];
     [self.outline reloadData];
-    for (SidebarItem *it in self.roots)
-        if (it.kind == on_sb_tags_header && !self.tags_collapsed) [self.outline expandItem:it];
-    NSInteger row      = [self reveal_kind:self.lib.sel_kind ident:self.lib.sel_id];
+    NSInteger row      = [self row_of_kind:self.lib.sel_kind ident:self.lib.sel_id];
     BOOL      restored = row >= 0;
-    [self select_row:restored ? row : [self reveal_kind:on_sb_all ident:0]];
+    [self select_row:restored ? row : [self row_of_kind:on_sb_all ident:0]];
     self.lib.populating--;
 
     if (clip) [clip scrollToPoint:scroll];
@@ -372,7 +337,7 @@ refresh
 - (void)
 select_kind:(on_sb_kind_t)kind ident:(gint64)ident
 {
-    NSInteger row = [self reveal_kind:kind ident:ident];
+    NSInteger row = [self row_of_kind:kind ident:ident];
     if (row < 0) return;
     [self select_row:row];
     [self.outline scrollRowToVisible:row];
@@ -383,7 +348,7 @@ select_kind:(on_sb_kind_t)kind ident:(gint64)ident
 
 /*
  * queue_fit: — fit the divider to the rows once they are laid out (after
- * an expand, a collapse, a rebuild); with `force`, whatever the setting.
+ * a rebuild); with `force`, whatever the setting.
  *
  * Inputs:
  *   force — YES for the one-shot startup fit
@@ -505,22 +470,39 @@ menu_for_row:(NSInteger)row
 - (NSInteger)
 outlineView:(NSOutlineView *)outline numberOfChildrenOfItem:(id)item
 {
-    return (NSInteger)(item ? ((SidebarItem *)item).children.count : self.roots.count);
+    return item ? 0 : (NSInteger)self.roots.count;
 }
 
 /*
- * outlineView:isItemExpandable: — does a row have children?
+ * outlineView:isItemExpandable: — no row has children: the sidebar is a
+ * flat list, as Tasks' is.
+ *
+ * Inputs:
+ *   outline — the outline (unused)
+ *   item    — the item (unused)
+ *
+ * Output: NO.
+ */
+- (BOOL)
+outlineView:(NSOutlineView *)outline isItemExpandable:(id)item
+{
+    return NO;
+}
+
+/*
+ * outlineView:isGroupItem: — the Tags header is a group row, drawn as a
+ * section heading, as in Tasks' sidebar.
  *
  * Inputs:
  *   outline — the outline (unused)
  *   item    — the item
  *
- * Output: YES for a row with a children list.
+ * Output: YES for the header.
  */
 - (BOOL)
-outlineView:(NSOutlineView *)outline isItemExpandable:(id)item
+outlineView:(NSOutlineView *)outline isGroupItem:(id)item
 {
-    return ((SidebarItem *)item).children != nil;
+    return ((SidebarItem *)item).kind == on_sb_tags_header;
 }
 
 /*
@@ -536,7 +518,7 @@ outlineView:(NSOutlineView *)outline isItemExpandable:(id)item
 - (id)
 outlineView:(NSOutlineView *)outline child:(NSInteger)index ofItem:(id)item
 {
-    return (item ? ((SidebarItem *)item).children : self.roots)[(NSUInteger)index];
+    return self.roots[(NSUInteger)index];
 }
 
 /* ── Delegate ──────────────────────────────────────────────────────────── */
@@ -627,28 +609,6 @@ outlineViewSelectionDidChange:(NSNotification *)note
     self.lib.sel_id   = it.ident;
     self.lib.sel_name = it.raw_name;
     on_library_notes_refresh(self.lib);
-}
-
-/*
- * outlineViewItemDidExpand: / outlineViewItemDidCollapse: — the user
- * opened or closed the Tags: remembered for the next rebuild (not while
- * the rows are rebuilt in code), and the fit follows.
- *
- * Inputs:
- *   note — the notification
- */
-- (void)
-outlineViewItemDidExpand:(NSNotification *)note
-{
-    if (self.lib.populating == 0) self.tags_collapsed = NO;
-    [self queue_fit:NO];
-}
-
-- (void)
-outlineViewItemDidCollapse:(NSNotification *)note
-{
-    if (self.lib.populating == 0) self.tags_collapsed = YES;
-    [self queue_fit:NO];
 }
 
 /* ── Drag and drop ─────────────────────────────────────────────────────── */

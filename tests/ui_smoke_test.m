@@ -1576,7 +1576,7 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 
 /*
  * test_sidebar — the sidebar's rows (the views, the tags with their
- * emoji, the Tags open or closed as left), menus and drops (onto a tag or
+ * emoji, all one flat list as in Tasks), menus and drops (onto a tag or
  * the Trash); the status bar follows the selection; the sidebar fits its
  * widest row.
  *
@@ -1617,15 +1617,22 @@ test_sidebar(NotesLibrary *lib)
     press(outline, tags, 0);
     check(tags >= 0 && lib.sel_kind == on_sb_all, "a press on the Tags header leaves it unselected");
 
-    /* The Tags open and close as the user leaves them, across a rebuild.  */
-    [outline collapseItem:[outline itemAtRow:tags]];
-    on_library_refresh_all(lib);
-    pump(0.1);
-    check(sidebar_row(outline, @"Crate") < 0, "closed Tags stay closed when the sidebar is rebuilt");
-    [outline expandItem:[outline itemAtRow:sidebar_row(outline, @"Tags")]];
-    on_library_refresh_all(lib);
-    pump(0.1);
-    check(sidebar_row(outline, @"Crate") >= 0, "and open ones stay open");
+    /* A flat list, as in Tasks: the tags are top-level rows after the Tags
+     * group row, nothing collapses, and a tag's text starts where a view's
+     * does, where a table's would be (16 pt: no room for disclosure
+     * triangles, as nothing is expandable).                               */
+    tags = sidebar_row(outline, @"Tags");
+    NSInteger first_tag = tags + 1;
+    NSTableCellView *view_cell = [outline viewAtColumn:0 row:all makeIfNecessary:YES];
+    NSTableCellView *tag_cell  = [outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES];
+    check([outline levelForRow:sidebar_row(outline, @"Crate")] == 0 &&
+          ![outline isExpandable:[outline itemAtRow:tags]] &&
+          [outline.delegate outlineView:outline isGroupItem:[outline itemAtRow:tags]] &&
+          first_tag < outline.numberOfRows &&
+          fabs(NSMinX([view_cell convertRect:view_cell.bounds toView:outline]) -
+               NSMinX([tag_cell convertRect:tag_cell.bounds toView:outline])) < 0.5 &&
+          NSMinX([view_cell convertRect:view_cell.bounds toView:outline]) <= 16.5,
+          "the sidebar is flat: tags are top-level rows under a Tags group row, flush with the views");
 
     /* An emoji (from either app) shows before the tag's name.               */
     on_db_tag_set_emoji(app.db, crate_tag, "📦");

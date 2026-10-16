@@ -9,7 +9,6 @@
 #import "media_window.h"
 #import "search_window.h"
 #import "settings_window.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "action_sync.h"
@@ -41,7 +40,7 @@ static NSString * const menu_rule = @"-";
 static void
 hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
 {
-    on_ui_show_notice(@(title), @(message), on_library().window, nil);
+    shared_ui_notice(on_library().window, @(title), @(message), nil);
 }
 
 /* Links in the About panel's credits: the author's site and the license
@@ -70,7 +69,7 @@ run_about(id target, id sender)
                                                                     error:nil][NSFileSize];
     NSString *credits = [NSString stringWithFormat:
         @"%@\n%d notes, %d tags — %@",
-        @(db->path), notes, tags, on_ui_format_bytes(size.longLongValue)];
+        @(db->path), notes, tags, shared_ui_format_bytes(size.longLongValue)];
 
     NSMutableParagraphStyle *centred = [[NSMutableParagraphStyle alloc] init];
     centred.alignment = NSTextAlignmentCenter;
@@ -97,7 +96,7 @@ run_about(id target, id sender)
     NSDate   *built = stamp ? [[[NSISO8601DateFormatter alloc] init] dateFromString:stamp] : nil;
     if (built) {
         options[NSAboutPanelOptionApplicationVersion] = [@"built " stringByAppendingString:
-            on_ui_format_date((int64_t)built.timeIntervalSince1970, on_ui_date_list)];
+            shared_ui_format_date((int64_t)built.timeIntervalSince1970, shared_ui_date_list)];
     }
     [NSApp orderFrontStandardAboutPanelWithOptions:options];
 }
@@ -184,9 +183,7 @@ applicationDidFinishLaunching:(NSNotification *)n
             [NSApp terminate:nil];       /* the running copy is in front now */
         } else {
             [NSApp activate];
-            on_ui_show_notice(@ON_APP_NAME @" is already running",
-                              @"Another copy is using this data folder. This one will quit.", nil,
-                              ^{ [NSApp terminate:nil]; });
+            shared_ui_notice(nil, @ON_APP_NAME @" is already running", @"Another copy is using this data folder. This one will quit.", ^{ [NSApp terminate:nil]; });
         }
         return;
     }
@@ -204,8 +201,7 @@ applicationDidFinishLaunching:(NSNotification *)n
 
     [NSApp activate];
     if (why != NULL) {
-        on_ui_show_notice(@"Could not find the shared database", @(why), nil,
-                          ^{ [NSApp terminate:nil]; });
+        shared_ui_notice(nil, @"Could not find the shared database", @(why), ^{ [NSApp terminate:nil]; });
         g_free(why);
     } else if (db_exists) {
         [self open_database_and_start];
@@ -213,7 +209,7 @@ applicationDidFinishLaunching:(NSNotification *)n
         [self ask_first_run];
     }
     if (on_app_config_problem() != NULL) {
-        on_ui_show_notice(@"Settings could not be read", @(on_app_config_problem()), nil, nil);
+        shared_ui_notice(nil, @"Settings could not be read", @(on_app_config_problem()), nil);
     }
 }
 
@@ -235,7 +231,7 @@ ask_first_run
         @"file, which then becomes the default for both apps.", expected ? @(expected) : @"?"];
     g_free(expected);
 
-    [NotesToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
+    [SharedToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
                           symbol:@"note.text"
                          buttons:@[@"Create a New Database", @"Open a Database File…", @"Quit"]
                      destructive:-1 over:nil
@@ -243,7 +239,7 @@ ask_first_run
         if (index == 0) {
             [self open_database_and_start];
         } else if (index == 1) {
-            on_ui_pick_path(NotesPickOpenFile, @"Choose the shared database file to open", @"Open",
+            shared_ui_pick_path(SharedPickOpenFile, @"Choose the shared database file to open", @"Open",
                             @[[UTType typeWithFilenameExtension:@"db"]], nil,
                             ^(NSString *path) { [self first_run_picked:path]; });
         } else {
@@ -282,7 +278,7 @@ first_run_picked:(NSString *)path
     g_free(why);
     free(set_err);
     /* The welcome panel comes back once this one is answered. */
-    on_ui_show_notice(@"That file cannot be opened", reason, nil, ^{ [self ask_first_run]; });
+    shared_ui_notice(nil, @"That file cannot be opened", reason, ^{ [self ask_first_run]; });
 }
 
 /*
@@ -299,8 +295,7 @@ open_database_and_start
 {
     gchar *why = NULL;
     if (!on_app_open_db(&_app, &why)) {
-        on_ui_show_notice(@"Could not open the database", why ? @(why) : @"Unknown error.",
-                          nil, ^{ [NSApp terminate:nil]; });
+        shared_ui_notice(nil, @"Could not open the database", why ? @(why) : @"Unknown error.", ^{ [NSApp terminate:nil]; });
         g_free(why);
         return NO;
     }

@@ -367,10 +367,10 @@ test_library(NotesLibrary *lib)
             if (ti.view == nil && ti.image != nil) glyphs = glyphs && ti.image.template;
         }
         check(glyphs, "toolbar buttons are SF Symbol glyphs, template images tinted by the toolbar");
-        NSImage *icon = on_ui_symbol(@"plus", 0.0);
-        check(icon != nil && icon.template && on_ui_symbol(@"plus", 0.0) == icon,
-              "on_ui_symbol makes a template glyph, once per name and size");
-        check(on_ui_symbol(@"no.such.symbol.notes", 0.0) == nil, "and nil for an unknown name");
+        NSImage *icon = shared_ui_symbol(@"plus", 0.0);
+        check(icon != nil && icon.template && shared_ui_symbol(@"plus", 0.0) == icon,
+              "shared_ui_symbol makes a template glyph, once per name and size");
+        check(shared_ui_symbol(@"no.such.symbol.notes", 0.0) == nil, "and nil for an unknown name");
         NSImage *app_icon = on_ui_app_icon();
         NSBitmapImageRep *rep = (NSBitmapImageRep *)app_icon.representations.firstObject;
         check(app_icon != nil && app_icon.size.width == on_look_about_icon &&
@@ -378,9 +378,9 @@ test_library(NotesLibrary *lib)
               "the app icon is decoded once, at its display size, not at the file's full size");
         check(save_snapshots(window, @"library"), "library snapshots written, light and dark");
 
-        NSImageView *image_view = on_ui_image_view(icon, 24, 24);
+        NSImageView *image_view = shared_ui_image_view(icon, 24, 24);
         check(NSEqualSizes(image_view.frame.size, NSMakeSize(24, 24)),
-              "on_ui_image_view makes its view at the final size");
+              "shared_ui_image_view makes its view at the final size");
 
         weak_window     = window;
         weak_controller = window.windowController;
@@ -659,7 +659,7 @@ status_text_centred(NSTextField *label)
     NSRect  frame    = [label convertRect:label.bounds toView:content];
     CGFloat baseline = NSMaxY(frame) - label.firstBaselineOffsetFromTop;
     CGFloat caps_mid = baseline + label.font.capHeight / 2.0;
-    return label.font.pointSize == on_look_status_font && top > 0 && fabs(caps_mid - top / 2.0) <= 0.5;
+    return label.font.pointSize == shared_look_status_font && top > 0 && fabs(caps_mid - top / 2.0) <= 0.5;
 }
 
 /*
@@ -776,7 +776,7 @@ test_editor_commands(void)
         on_image_viewer_close(viewer);
 
         NSRect area = window.screen.visibleFrame;
-        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_screen_margin)) < 1.0,
+        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - shared_look_screen_margin)) < 1.0,
               "a new editor opens at the bottom-right of the screen");
         on_editor_close_notes(&note_id, 1);
     }
@@ -1587,7 +1587,7 @@ static NSMenu *open_menu(NSMenu *menu);
 
 /*
  * press — the selection step of a left mouse-down on a table row
- * (on_ui_select_on_mouse_down), without NSTableView's tracking loop,
+ * (shared_ui_select_on_mouse_down), without NSTableView's tracking loop,
  * which a synthetic event cannot drive.
  *
  * Inputs:
@@ -1603,7 +1603,7 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
                                         location:[table convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil]
                                    modifierFlags:mods timestamp:0 windowNumber:table.window.windowNumber
                                          context:nil eventNumber:0 clickCount:1 pressure:1];
-    on_ui_select_on_mouse_down(table, event);
+    shared_ui_select_on_mouse_down(table, event);
 }
 
 /*
@@ -1734,7 +1734,7 @@ test_sidebar(NotesLibrary *lib)
     new_note_tagged("ATagWithAReallyQuiteRemarkablyLongNameIndeed", "Long tag\nbody");
     on_library_refresh_all(lib);
     pump(0.3);
-    check(sidebar_table.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,
+    check(sidebar_table.enclosingScrollView.frame.size.width > shared_look_sidebar_min_w + 40,
           "with fit-to-content on, the sidebar widens to a long tag name");
     app.sidebar_fit_content = FALSE;
 
@@ -2090,7 +2090,7 @@ test_notes_pane(NotesLibrary *lib)
         if ([ti.itemIdentifier isEqualToString:@"toggle-view"]) view_toggle = ti;
     }
     on_library_validate_command(lib, view_toggle);
-    check(view_toggle.image == on_ui_symbol(@"list.bullet", 0.0) &&
+    check(view_toggle.image == shared_ui_symbol(@"list.bullet", 0.0) &&
           [view_toggle.label isEqualToString:@"Show as List"],
           "in the grid, the view toggle's glyph and label offer the list");
     check(save_snapshots(lib.window, @"library-grid"), "grid snapshots written");
@@ -2300,9 +2300,9 @@ test_notes_pane(NotesLibrary *lib)
         shown = [tint colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
     }];
     check(action_due("Zeta task") == midnight && shown != nil &&
-          fabs(shown.redComponent - on_look_due_today.light.r) < 0.01 &&
-          fabs(shown.greenComponent - on_look_due_today.light.g) < 0.01 &&
-          fabs(shown.blueComponent - on_look_due_today.light.b) < 0.01,
+          fabs(shown.redComponent - shared_look_due_today.light.r) < 0.01 &&
+          fabs(shown.greenComponent - shared_look_due_today.light.g) < 0.01 &&
+          fabs(shown.blueComponent - shared_look_due_today.light.b) < 0.01,
           "Set gives it today's date, shown in the due-today colour");
 
     double_click(table, z_row, @"action");
@@ -2482,9 +2482,9 @@ test_secondary_windows(NotesLibrary *lib)
         check(plate != nil && path != nil && NSContainsRect(plate.bounds, path_in_plate),
               "the database plate holds its lines");
         NSStackView *column = (NSStackView *)find_view(root, NSStackView.class, Nil);
-        check(((NSTextField *)path).font.pointSize == on_look_status_font &&
-              label_with_text(plate, @"Health:").font.pointSize == on_look_status_font &&
-              button_titled(root, @"Update").font.pointSize == on_look_ui_font,
+        check(((NSTextField *)path).font.pointSize == shared_look_status_font &&
+              label_with_text(plate, @"Health:").font.pointSize == shared_look_status_font &&
+              button_titled(root, @"Update").font.pointSize == shared_look_ui_font,
               "the database plate's text is 11 pt, like the status bars; its Update button is not");
         check(fabs(NSWidth(root.frame) - column.fittingSize.width - 20) < 1 ||
               NSWidth(root.frame) - column.fittingSize.width > 20,

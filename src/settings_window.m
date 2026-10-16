@@ -128,7 +128,7 @@ static NSTextField *
 heading(NSString *text)
 {
     NSTextField *label = [NSTextField labelWithString:text];
-    label.font = [NSFont boldSystemFontOfSize:on_look_ui_font];
+    label.font = [NSFont boldSystemFontOfSize:shared_look_ui_font];
     return label;
 }
 
@@ -151,8 +151,8 @@ note_text(NSString *text)
 
 /*
  * plate_type — the health plate's text at the status bars' size
- * (on_look_status_font), the SHA-256 in monospace.  Applied after the
- * window's on_ui_use_ui_font, which would make it 11 pt.
+ * (shared_look_status_font), the SHA-256 in monospace.  Applied after the
+ * window's shared_ui_use_ui_font, which would make it 11 pt.
  *
  * Inputs:
  *   root — the plate's grid, or a view inside it
@@ -161,9 +161,9 @@ static void
 plate_type(NSView *root)
 {
     if ([root isKindOfClass:NSButton.class])
-        ((NSButton *)root).font = [NSFont monospacedSystemFontOfSize:on_look_status_font weight:NSFontWeightRegular];
+        ((NSButton *)root).font = [NSFont monospacedSystemFontOfSize:shared_look_status_font weight:NSFontWeightRegular];
     else if ([root isKindOfClass:NSTextField.class])
-        ((NSTextField *)root).font = [NSFont systemFontOfSize:on_look_status_font];
+        ((NSTextField *)root).font = [NSFont systemFontOfSize:shared_look_status_font];
     for (NSView *v in root.subviews) plate_type(v);
 }
 
@@ -233,7 +233,7 @@ static NSString *
 when_stamp(gint64 when)
 {
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:(double)when];
-    return on_ui_format_date(when, [NSCalendar.currentCalendar isDateInToday:date]
+    return shared_ui_format_date(when, [NSCalendar.currentCalendar isDateInToday:date]
                                    ? @"HH:mm 'today'" : @"MMM d 'at' HH:mm");
 }
 
@@ -391,10 +391,10 @@ init_with_lib:(NotesLibrary *)lib
     for (NSView *v in @[self.plate_box, self.backup_buttons])
         [v.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-stack.edgeInsets.right].active = YES;
 
-    on_ui_use_ui_font(stack);
+    shared_ui_use_ui_font(stack);
     plate_type(self.plate_grid);
     NSSize fit = stack.fittingSize;
-    NotesFlippedView *doc = [[NotesFlippedView alloc] initWithFrame:NSZeroRect];
+    SharedFlippedView *doc = [[SharedFlippedView alloc] initWithFrame:NSZeroRect];
     doc.translatesAutoresizingMaskIntoConstraints   = NO;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [doc addSubview:stack];
@@ -403,7 +403,7 @@ init_with_lib:(NotesLibrary *)lib
     scroll.hasVerticalScroller = YES;
     scroll.autohidesScrollers  = YES;
     scroll.drawsBackground     = NO;
-    on_ui_pin_edges(stack, doc);
+    shared_ui_pin_edges(stack, doc);
     [NSLayoutConstraint activateConstraints:@[
         [doc.topAnchor        constraintEqualToAnchor:scroll.contentView.topAnchor],
         [doc.leadingAnchor    constraintEqualToAnchor:scroll.contentView.leadingAnchor],
@@ -725,7 +725,7 @@ refresh_db
     self.db_data.stringValue = [NSString stringWithFormat:@"%d note%s, %d tag%s",
                                 notes, notes == 1 ? "" : "s", tags, tags == 1 ? "" : "s"];
     struct stat st;
-    self.db_size.stringValue = stat(db->path, &st) == 0 ? on_ui_format_bytes((int64_t)st.st_size) : @"unknown";
+    self.db_size.stringValue = stat(db->path, &st) == 0 ? shared_ui_format_bytes((int64_t)st.st_size) : @"unknown";
 
     /* The whole file is read for the digest: on a worker, so a large or
      * iCloud-held database never stalls the window.  A newer refresh
@@ -900,7 +900,7 @@ controlTextDidChange:(NSNotification *)note
 browse_viewer:(id)sender
 {
     __weak NotesSettingsWindow *ws = self;
-    on_ui_pick_path(NotesPickOpenFile, @"Choose Image Viewer", @"Select", @[UTTypeApplicationBundle],
+    shared_ui_pick_path(SharedPickOpenFile, @"Choose Image Viewer", @"Select", @[UTTypeApplicationBundle],
                     @"/Applications", ^(NSString *path) {
         if (path == nil || ws == nil) return;
         ws.viewer.stringValue = path;
@@ -987,13 +987,13 @@ choose_backup_folder:(id)sender
     NSString *dir   = dir_c ? @(dir_c) : nil;
     g_free(dir_c);
     __weak NotesSettingsWindow *ws = self;
-    on_ui_pick_path(NotesPickFolder, @"Choose Backup Folder", @"Select", nil, dir,
+    shared_ui_pick_path(SharedPickFolder, @"Choose Backup Folder", @"Select", nil, dir,
                     ^(NSString *path) {
         NotesSettingsWindow *s = ws;
         if (path == nil || s == nil) return;
         char *why = NULL;            /* the module's reason for refusing it */
         if (shared_db_set_backup_dir(s.lib.app->db->shared, path.fileSystemRepresentation, &why) != 0) {
-            on_ui_show_notice(@"That folder cannot be used", why ? @(why) : @"Unknown error.", s.window, nil);
+            shared_ui_notice(s.window, @"That folder cannot be used", why ? @(why) : @"Unknown error.", nil);
             free(why);
         }
         [s refresh_backup];

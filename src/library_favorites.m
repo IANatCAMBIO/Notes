@@ -195,18 +195,18 @@ reload
     if (lib == nil || lib.app->db == NULL) return;
     for (NSView *v in self.strip.subviews.copy) [v removeFromSuperview];
 
-    NSFont       *font  = [NSFont systemFontOfSize:on_look_ui_font];
+    NSFont       *font  = [NSFont systemFontOfSize:shared_look_ui_font];
     NSDictionary *attrs = @{ NSFontAttributeName: font };
     CGFloat       x     = strip_pad;
-    CGFloat       y     = (on_look_favorites_bar_h - on_look_favorite_btn_h) / 2.0;
+    CGFloat       y     = (shared_look_favorites_bar_h - shared_look_favorite_btn_h) / 2.0;
     GList        *tags  = on_db_tag_list(lib.app->db, ON_TAGS_ALL);
     for (GList *l = tags; l != NULL; l = l->next) {
         const OnTag *t = l->data;
         if (!t->favorite) continue;
-        NSString *title = on_ui_tag_label(t->emoji, t->name);
-        CGFloat w = MAX(on_look_favorite_btn_min_w, ceil([title sizeWithAttributes:attrs].width) + btn_text_pad);
+        NSString *title = shared_ui_tag_label(@(t->emoji), @(t->name));
+        CGFloat w = MAX(shared_look_favorite_btn_min_w, ceil([title sizeWithAttributes:attrs].width) + btn_text_pad);
         NotesFavoriteButton *btn = [[NotesFavoriteButton alloc]
-                                      initWithFrame:NSMakeRect(x, y, w, on_look_favorite_btn_h)];
+                                      initWithFrame:NSMakeRect(x, y, w, shared_look_favorite_btn_h)];
         btn.title         = title;
         btn.bezelStyle    = NSBezelStyleAccessoryBar;
         btn.buttonType    = NSButtonTypeToggle;
@@ -219,14 +219,14 @@ reload
         btn.state         = lib.sel_kind == on_sb_tag && lib.sel_id == t->id ? NSControlStateValueOn
                                                                              : NSControlStateValueOff;
         [self.strip addSubview:btn];
-        x += w + on_look_favorite_gap;
+        x += w + shared_look_favorite_gap;
     }
     on_db_tag_list_free(tags);
 
     self.hint.hidden = self.strip.subviews.count > 0;
     self.content_w   = x + strip_pad;
     self.strip.frame = NSMakeRect(0, 0, MAX(self.content_w, NSWidth(self.scroll.bounds)),
-                                  on_look_favorites_bar_h);
+                                  shared_look_favorites_bar_h);
 }
 
 @end
@@ -253,7 +253,7 @@ on_library_favorites_new(NotesLibrary *lib)
     bar.scroll.documentView = bar.strip;
 
     bar.hint = [NSTextField labelWithString:empty_hint];
-    bar.hint.font      = [NSFont systemFontOfSize:on_look_ui_font];
+    bar.hint.font      = [NSFont systemFontOfSize:shared_look_ui_font];
     bar.hint.textColor = NSColor.secondaryLabelColor;
     bar.hint.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -267,7 +267,7 @@ on_library_favorites_new(NotesLibrary *lib)
     bar.clipsToBounds = YES;
     for (NSView *v in @[bar.scroll, bar.hint, rule]) [bar addSubview:v];
     [NSLayoutConstraint activateConstraints:@[
-        [bar.scroll.heightAnchor constraintEqualToConstant:on_look_favorites_bar_h],
+        [bar.scroll.heightAnchor constraintEqualToConstant:shared_look_favorites_bar_h],
         [bar.scroll.topAnchor constraintEqualToAnchor:bar.topAnchor],
         [bar.scroll.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
         [bar.scroll.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],

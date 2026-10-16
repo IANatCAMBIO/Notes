@@ -43,7 +43,7 @@ data, code style, verification.
 - Branch `main` (the GTK build is on `gtk4`); remote `origin` is `IANatCAMBIO/Notes` — push only when asked.
 - No header bars, no native dialogs: ordinary title bars (only the library
   has an `NSToolbar`, expanded style); every message or question is a tool
-  panel (`src/tool_panel.h`), never `NSAlert` or a sheet.  Details:
+  panel (`shared_tool_panel.h`, in `../shared_ui`), never `NSAlert` or a sheet.  Details:
   `porting/INTERFACES.md` §11.
 
 ## Build and verify
@@ -63,6 +63,9 @@ make seed && make run   # the app on dev/data
 - `src/identity.h` — every name of this build, defined once.
 - `../shared_data/src/shared_db.h` — the shared database's frozen API
   (compiled into the core from `SHARED_DATA_DIR`).
+- `../shared_ui/src/` — the interface elements shared with Tasks
+  (`shared_look.h`, `shared_ui.h`, `shared_tool_panel.h`; compiled in
+  from `SHARED_UI_DIR`): change them there, for both apps.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written

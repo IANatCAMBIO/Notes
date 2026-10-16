@@ -96,7 +96,7 @@ loadView
 {
     CGFloat      s    = on_look_media_thumb;
     NSView      *cell = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, s + 2 * cell_pad, s + caption_h + 2 * cell_pad)];
-    NSImageView *iv   = on_ui_image_view(nil, s, s);
+    NSImageView *iv   = shared_ui_image_view(nil, s, s);
     iv.imageScaling = NSImageScaleProportionallyDown;
     iv.frame        = NSMakeRect(cell_pad, caption_h + cell_pad, s, s);
     self.caption = [NSTextField labelWithString:@""];
@@ -186,7 +186,7 @@ init_with_lib:(NotesLibrary *)lib
         on_image_viewer_key_down(s.viewer, event);
         return YES;                  /* modal: the grid behind sees no key */
     };
-    on_ui_use_ui_font(win.contentView);
+    shared_ui_use_ui_font(win.contentView);
     [win center];
     return self;
 }
@@ -232,14 +232,14 @@ build
     }
     NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
     [content addLayoutGuide:band];
-    self.status = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
+    self.status = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
     self.status.identifier = @"media-status";
     self.spinner = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
     self.spinner.style       = NSProgressIndicatorStyleSpinning;
     self.spinner.controlSize = NSControlSizeMini;
     self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:self.spinner];
-    CGFloat inset = on_look_status_inset;
+    CGFloat inset = shared_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
         [scroll.topAnchor constraintEqualToAnchor:content.topAnchor],
         [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
@@ -247,7 +247,7 @@ build
         [scroll.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-on_look_status_h],
+        [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-shared_look_status_h],
         [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
         [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
         [self.status.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],

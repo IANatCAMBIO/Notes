@@ -315,7 +315,7 @@ current_style(NotesNoteView *v)
         .title_line   = v.app->first_line_title,
         .code_numbers = v.app->code_line_numbers,
         .code_copy    = v.app->code_copy_buttons,
-        .dark         = on_ui_is_dark(v),
+        .dark         = shared_ui_is_dark(v),
     };
     return s;
 }
@@ -2096,7 +2096,7 @@ drawRect:(NSRect)dirty
     CGContextRef ctx = [NSGraphicsContext currentContext].CGContext;
 
     /* Page background. */
-    NSColor *page = on_ui_color(on_look_page);
+    NSColor *page = shared_ui_color(on_look_page);
     [page setFill];
     NSRectFill(dirty);
 
@@ -2929,7 +2929,7 @@ on_note_view_insert_table(NotesNoteView *view)
 void
 on_note_view_insert_date(NotesNoteView *view)
 {
-    const char *day = on_ui_format_date(time(NULL), on_ui_date_iso).UTF8String;
+    const char *day = shared_ui_format_date(time(NULL), shared_ui_date_iso).UTF8String;
     insert_typed(view, day, strlen(day));
 }
 

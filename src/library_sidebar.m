@@ -141,7 +141,7 @@ section_label(NSString *emoji, NSString *name)
 static SidebarItem *
 tag_item(const OnTag *t)
 {
-    return item_new(on_sb_tag, t->id, on_ui_tag_label(t->emoji, t->name), @(t->name));
+    return item_new(on_sb_tag, t->id, shared_ui_tag_label(@(t->emoji), @(t->name)), @(t->name));
 }
 
 /* ── The table ───────────────────────────────────────────────────────────── */
@@ -149,11 +149,12 @@ tag_item(const OnTag *t)
 @class NotesSidebarController;
 
 /*
- * NotesSidebarTable — the table view; a click selects its row on the
- * mouse-down.  (A right click opens the table's menu, filled per row by
- * the controller, NSMenuDelegate.)
+ * NotesSidebarTable — the table view (a SharedTable: a click selects its
+ * row on the mouse-down), which fits the sidebar once it is on screen.
+ * (A right click opens the table's menu, filled per row by the
+ * controller, NSMenuDelegate.)
  */
-@interface NotesSidebarTable : NSTableView
+@interface NotesSidebarTable : SharedTable
 @property (nonatomic, weak) NotesSidebarController *controller;
 @end
 
@@ -170,21 +171,6 @@ tag_item(const OnTag *t)
 @end
 
 @implementation NotesSidebarTable
-
-/*
- * mouseDown: — a plain click selects its row at once
- * (on_ui_select_on_mouse_down); NSTableView then tracks the click as
- * usual.
- *
- * Inputs:
- *   event — the mouse event
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    on_ui_select_on_mouse_down(self, event);
-    [super mouseDown:event];
-}
 
 /*
  * viewDidMoveToWindow — on screen for the first time: the one-shot fit,
@@ -411,7 +397,7 @@ queue_fit:(BOOL)force
 
 /*
  * fit: — size the sidebar to its widest visible row plus a shown
- * scrollbar, at least on_look_sidebar_min_w and at most
+ * scrollbar, at least shared_look_sidebar_min_w and at most
  * on_look_sidebar_max_fraction of the split (GTK: sidebar_fit_apply).
  *
  * Inputs:
@@ -434,12 +420,12 @@ fit:(BOOL)force
         if (it.count >= 0)
             text += count_gap + [[NSString stringWithFormat:@"%d", it.count]
                                     sizeWithAttributes:@{ NSFontAttributeName: count_font() }].width;
-        want = MAX(want, NSMinX(cell) + on_look_sidebar_text_pad + on_look_sidebar_count_pad + ceil(text));
+        want = MAX(want, NSMinX(cell) + shared_look_sidebar_text_pad + shared_look_sidebar_count_pad + ceil(text));
     }
     NSScrollView *scroll = self.table.enclosingScrollView;
     if (scroll.scrollerStyle == NSScrollerStyleLegacy && !scroll.verticalScroller.hidden)
         want += [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:NSScrollerStyleLegacy];
-    want = MAX(want, on_look_sidebar_min_w);
+    want = MAX(want, shared_look_sidebar_min_w);
     want = MIN(want, split.bounds.size.width * on_look_sidebar_max_fraction);
     [split setPosition:round(want) ofDividerAtIndex:0];
 }
@@ -569,10 +555,10 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
         [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
-            [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_sidebar_text_pad],
+            [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:shared_look_sidebar_text_pad],
             [label.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor constant:-count_gap],
             [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
-            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_sidebar_count_pad],
+            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-shared_look_sidebar_count_pad],
             [count.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -755,7 +741,7 @@ on_library_sidebar_new(NotesLibrary *lib)
     table.allowsMultipleSelection = NO;
     table.allowsEmptySelection  = NO;     /* a ⌘-click cannot deselect: the library always lists something */
     table.style                 = NSTableViewStyleSourceList;
-    table.rowHeight             = on_look_sidebar_row_h;
+    table.rowHeight             = shared_look_sidebar_row_h;
     table.focusRingType         = NSFocusRingTypeNone;
     table.delegate              = ctrl;
     table.dataSource            = ctrl;

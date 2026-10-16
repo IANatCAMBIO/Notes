@@ -1397,7 +1397,7 @@ on_doc_layout_line_at(OnDocLayout *L, OnPos pos, OnPos *a, OnPos *b)
 static void
 draw_selection_in_layout(CGContextRef ctx, on_text_layout_t *layout,
                          double ox, double oy, size_t s, size_t e,
-                         on_color_t c)
+                         shared_rgba_t c)
 {
     on_text_span_t span  = { s, e > s ? e - s : 0 };
     size_t         n     = on_text_layout_range_rects(layout, span, NULL, 0);
@@ -1447,10 +1447,10 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
     validate(L);
     size_t n = L->n_bl;
     if (!n) return;
-    on_color_t selc = on_look_pick(p->focused ? on_look_selection
+    shared_rgba_t selc = shared_look_pick(p->focused ? on_look_selection
                                               : on_look_selection_dim,
                                    L->style.dark);
-    on_color_t text_c = on_look_pick(on_look_text, L->style.dark);
+    shared_rgba_t text_c = shared_look_pick(on_look_text, L->style.dark);
     int number_run = 0;
     int code_run   = 0;
 
@@ -1478,7 +1478,7 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
                 on_paint_image(ctx, img, r);
             else
                 on_paint_fill_rect(ctx, r,
-                    on_look_pick(on_look_code_fill, L->style.dark));
+                    shared_look_pick(on_look_code_fill, L->style.dark));
             if (sel_span(L, p, i, -1, 1, &s, &e, &whole) &&
                 (whole || (s == 0 && e == 1)))
                 on_paint_fill_rect(ctx, r, selc);
@@ -1487,8 +1487,8 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
 
         if (blk->kind == ON_BLOCK_TABLE) {
             double cx, cy, cw, ch;
-            on_color_t bd = on_look_pick(on_look_table_border, L->style.dark);
-            on_color_t hdr = on_look_pick(on_look_table_header, L->style.dark);
+            shared_rgba_t bd = shared_look_pick(on_look_table_border, L->style.dark);
+            shared_rgba_t hdr = shared_look_pick(on_look_table_header, L->style.dark);
             for (int r = 0; r < blk->rows; r++) {
                 for (int c = 0; c < blk->cols; c++) {
                     cell_origin(L, i, r, c, &cx, &cy, &cw, &ch);
@@ -1526,7 +1526,7 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             double bg_h = b->h - (code_run_last(L, i) == i ? BLOCK_GAP : 0.0);
             on_paint_fill_rect(ctx,
                 (on_rect_t){ LEFT_MARGIN, b->y, content_width(L), bg_h },
-                on_look_pick(on_look_code_fill, L->style.dark));
+                shared_look_pick(on_look_code_fill, L->style.dark));
             if (L->style.code_numbers) {
                 char num[16];
                 snprintf(num, sizeof num, "%d", code_run);
@@ -1576,18 +1576,18 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_rect_t box;
             checkbox_rect(L, i, &box);
             double bx = box.x, by_c = box.y;
-            on_color_t check_c = on_look_pick(on_look_checkbox, L->style.dark);
-            on_color_t white   = { 1, 1, 1, 1 };
-            on_color_t bd2     = on_look_pick(on_look_table_border, L->style.dark);
+            shared_rgba_t check_c = shared_look_pick(on_look_checkbox, L->style.dark);
+            shared_rgba_t white   = { 1, 1, 1, 1 };
+            shared_rgba_t bd2     = shared_look_pick(on_look_table_border, L->style.dark);
             if (blk->checked) {
                 on_paint_rounded_rect(ctx, box, 3.0, check_c,
-                                      (on_color_t){0,0,0,0}, 0.0);
+                                      (shared_rgba_t){0,0,0,0}, 0.0);
                 /* Tick: two line segments. */
                 on_paint_line(ctx, bx + 3, by_c + 7, bx + 6, by_c + 10, white, 1.5);
                 on_paint_line(ctx, bx + 5, by_c + 10, bx + 11, by_c + 4, white, 1.5);
             } else {
                 on_paint_rounded_rect(ctx, box, 3.0,
-                                      on_look_pick(on_look_page, L->style.dark),
+                                      shared_look_pick(on_look_page, L->style.dark),
                                       bd2, 1.0);
             }
         }

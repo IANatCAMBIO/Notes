@@ -24,7 +24,6 @@
 #import "image_viewer.h"
 #import "library_state.h"
 #import "note_view.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "action_sync.h"
@@ -80,20 +79,20 @@ initWithFrame:(NSRect)frame
     if (!(self = [super initWithFrame:frame])) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
 
-    NSTextField *path    = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentLeft);
-    NSTextField *note_id = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
-    NSTextField *dot     = on_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
+    NSTextField *path    = shared_ui_status_label(self, self.centerYAnchor, NSTextAlignmentLeft);
+    NSTextField *note_id = shared_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
+    NSTextField *dot     = shared_ui_status_label(self, self.centerYAnchor, NSTextAlignmentRight);
     self.path_label = path;
     self.id_label   = note_id;
     self.dot_label  = dot;
 
     [NSLayoutConstraint activateConstraints:@[
-        [path.leadingAnchor     constraintEqualToAnchor:self.leadingAnchor constant:on_look_status_inset],
-        [dot.trailingAnchor     constraintEqualToAnchor:self.trailingAnchor constant:-on_look_status_inset],
-        [note_id.trailingAnchor constraintEqualToAnchor:dot.leadingAnchor constant:-on_look_status_inset],
+        [path.leadingAnchor     constraintEqualToAnchor:self.leadingAnchor constant:shared_look_status_inset],
+        [dot.trailingAnchor     constraintEqualToAnchor:self.trailingAnchor constant:-shared_look_status_inset],
+        [note_id.trailingAnchor constraintEqualToAnchor:dot.leadingAnchor constant:-shared_look_status_inset],
         [path.trailingAnchor    constraintLessThanOrEqualToAnchor:note_id.leadingAnchor
-                                                         constant:-on_look_status_inset],
-        [self.heightAnchor      constraintEqualToConstant:on_look_status_h],
+                                                         constant:-shared_look_status_inset],
+        [self.heightAnchor      constraintEqualToConstant:shared_look_status_h],
     ]];
     return self;
 }
@@ -145,7 +144,7 @@ format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
     b.toolTip    = tooltip;
     b.refusesFirstResponder = YES;
     if (toggle) [b setButtonType:NSButtonTypePushOnPushOff];
-    NSImage *img = symbol ? on_ui_symbol(symbol, on_look_format_icon - 3) : nil;
+    NSImage *img = symbol ? shared_ui_symbol(symbol, on_look_format_icon - 3) : nil;
     if (img) {
         b.image              = img;
         b.imagePosition      = NSImageOnly;
@@ -173,7 +172,7 @@ format_menu(NSString *face, NSString *tooltip, NSArray<NSString *> *idents)
     NSPopUpButton *menu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
     menu.bezelStyle = NSBezelStyleRecessed;
     menu.showsBorderOnlyWhileMouseInside = YES;
-    menu.font       = [NSFont systemFontOfSize:on_look_ui_font];
+    menu.font       = [NSFont systemFontOfSize:shared_look_ui_font];
     menu.toolTip    = tooltip;
     menu.refusesFirstResponder = YES;
     [menu addItemWithTitle:face];                  /* the pull-down's own title */
@@ -367,7 +366,7 @@ static void
 run_insert_image(id target, id sender)
 {
     __weak NotesEditorWindow *ws = target;
-    on_ui_pick_path(NotesPickOpenFile, @"Insert Image", @"Insert",
+    shared_ui_pick_path(SharedPickOpenFile, @"Insert Image", @"Insert",
                     @[UTTypeImage], nil, ^(NSString *path) {
         NotesEditorWindow *ed = ws;
         if (!ed || !path) return;
@@ -377,7 +376,7 @@ run_insert_image(id target, id sender)
             on_note_view_insert_image(ed.note_view, png, n);
             free(png);
         } else {
-            on_ui_show_notice(@"That file is not an image", path.lastPathComponent, ed.window, nil);
+            shared_ui_notice(ed.window, @"That file is not an image", path.lastPathComponent, nil);
         }
         [ed.window makeFirstResponder:ed.note_view];
     });
@@ -588,7 +587,7 @@ init_with_app:(OnApp *)app
     [self build_note_view];
     [self build_layout];
     [self build_image_viewer];
-    on_ui_use_ui_font(window.contentView);   /* the note's own text is drawn by the note view */
+    shared_ui_use_ui_font(window.contentView);   /* the note's own text is drawn by the note view */
     [self load_content:doc];
 
     __weak NotesEditorWindow *ws = self;
@@ -619,21 +618,14 @@ init_with_app:(OnApp *)app
 
 /*
  * place_window — put a new editor at the bottom-right of the library's
- * screen (its own when there is no library), on_look_screen_margin
- * clear of the work area's edges, its title bar always on screen.
+ * screen (its own when there is no library), shared_look_screen_margin
+ * clear of the work area's edges, its title bar always on screen
+ * (shared_ui_place_lower_right, where Tasks puts a Quick Task too).
  */
 - (void)
 place_window
 {
-    NSScreen *screen = on_library().window.screen ?: NSScreen.mainScreen;
-    if (!screen) return;
-    NSRect area  = screen.visibleFrame;
-    NSRect frame = self.window.frame;
-    NSPoint origin = {
-        MAX(NSMaxX(area) - on_look_screen_margin - frame.size.width, area.origin.x),
-        MIN(area.origin.y + on_look_screen_margin, NSMaxY(area) - frame.size.height),
-    };
-    [self.window setFrameOrigin:origin];
+    shared_ui_place_lower_right(self.window, on_library().window.screen ?: NSScreen.mainScreen);
 }
 
 /*
@@ -748,7 +740,7 @@ build_format_bar
     [bar addSubview:find];
     self.format_bar = bar;
     [NSLayoutConstraint activateConstraints:@[
-        [find.trailingAnchor  constraintEqualToAnchor:bar.trailingAnchor constant:-on_look_status_inset],
+        [find.trailingAnchor  constraintEqualToAnchor:bar.trailingAnchor constant:-shared_look_status_inset],
         [find.centerYAnchor   constraintEqualToAnchor:bar.centerYAnchor],
         [field.widthAnchor    constraintEqualToConstant:on_look_find_w],
     ]];
@@ -801,12 +793,12 @@ rebuild_format_groups
     groups.translatesAutoresizingMaskIntoConstraints = NO;
     [self.format_bar addSubview:groups];
     self.format_groups = groups;
-    on_ui_use_ui_font(groups);
+    shared_ui_use_ui_font(groups);
 
     NSView *find = self.search_field.superview;
     [NSLayoutConstraint activateConstraints:@[
         [groups.leadingAnchor constraintEqualToAnchor:self.format_bar.leadingAnchor
-                                             constant:on_look_status_inset],
+                                             constant:shared_look_status_inset],
         [groups.centerYAnchor constraintEqualToAnchor:self.format_bar.centerYAnchor],
         [find.leadingAnchor   constraintGreaterThanOrEqualToAnchor:groups.trailingAnchor
                                                           constant:on_look_format_group_gap],
@@ -948,7 +940,7 @@ show_outside_notice
     if (self.outside_notice) return;
     self.outside_notice = YES;
     __weak NotesEditorWindow *ws = self;
-    [NotesToolPanel show_message:@"Changed outside " ON_APP_NAME
+    [SharedToolPanel show_message:@"Changed outside " ON_APP_NAME
                          message:@"This note was changed outside " ON_APP_NAME @" while it has unsaved "
                                  @"changes here. Keep Mine saves your version over it; Reload discards yours."
                           symbol:@"exclamationmark.triangle"
@@ -1285,9 +1277,7 @@ windowShouldClose:(NSWindow *)sender
     if (!self.dirty || self.discard || [self save]) return YES;
     if (self.outside_notice) return NO;     /* its panel asks first */
     __weak NotesEditorWindow *ws = self;
-    on_ui_confirm([NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title],
-                  @"Your changes are still in the window. Closing it now loses them.",
-                  @"Close Without Saving", self.window, ^(BOOL confirmed) {
+    shared_ui_confirm(self.window, [NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title], @"Your changes are still in the window. Closing it now loses them.", @"Close Without Saving", YES, ^(BOOL confirmed) {
         NotesEditorWindow *s = ws;
         if (!s || !confirmed) return;
         s.discard = YES;
@@ -1411,8 +1401,7 @@ on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
      * editor would delete it on close, and a save would overwrite it.     */
     OnDocument *doc = on_note_document_load(app->db, note_id);
     if (doc == NULL) {
-        on_ui_show_notice([NSString stringWithFormat:@"Could not open \u201C%@\u201D", title],
-                          @"The note could not be read. It has not been changed.", nil, nil);
+        shared_ui_notice(nil, [NSString stringWithFormat:@"Could not open \u201C%@\u201D", title], @"The note could not be read. It has not been changed.", nil);
         return NO;
     }
 
@@ -1445,8 +1434,7 @@ on_editor_close_notes(const gint64 *ids, size_t n)
 void
 on_editor_report_unsaved(NSString *title, NSWindow *window)
 {
-    on_ui_show_notice(title, @"A note could not be saved. Its window is still open with your changes.",
-                      window, nil);
+    shared_ui_notice(window, title, @"A note could not be saved. Its window is still open with your changes.", nil);
 }
 
 /*

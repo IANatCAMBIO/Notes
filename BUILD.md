@@ -9,6 +9,7 @@
 | GLib | 2.88 | MacPorts: `sudo port install glib2 pkgconf` | the core still uses it (containers, strings, GKeyFile, GRegex); to be removed in a later phase |
 | SQLite | 3.53 | MacPorts: `sudo port install sqlite3` | the SAME build Tasks links — see below |
 | shared_data | its `main` | the repository beside this one (`../shared_data`) | `src/shared_db.c` is compiled into the core — see below |
+| shared_ui | its `main` | the repository beside this one (`../shared_ui`) | `src/*.m` are compiled into the app — see below |
 | Cocoa, CoreText, CoreGraphics, ImageIO, UniformTypeIdentifiers | system | macOS SDK | |
 
 ```sh
@@ -32,6 +33,15 @@ flags into `build/shared_db.o` (part of the core) and puts
 every connection, resolves the file's location and makes the backups
 (`shared_data/README.md`).  The build stops with a message when the file
 is not there; point `SHARED_DATA_DIR` elsewhere to use another checkout.
+
+**The shared interface module.**  `SHARED_UI_DIR ?= $(CURDIR)/../shared_ui`;
+the Makefile compiles every `$(SHARED_UI_DIR)/src/*.m` with the app's
+Objective-C flags into `build/` beside the app's own objects and puts
+`$(SHARED_UI_DIR)/src` on the include path.  It holds what Notes and Tasks
+show the same way — `shared_look.h`, the tool panel, the sidebar's split
+view controller, the table, status labels, the emoji slot
+(`shared_ui/README.md`).  The build stops with a message when the sources
+are not there; point `SHARED_UI_DIR` elsewhere to use another checkout.
 
 **Deployment target.**  Sources are compiled with
 `-mmacosx-version-min=14.0`, so using an API newer than macOS 14 without an
@@ -136,7 +146,7 @@ model and reports what the loader repaired (`make bnbf-scan`).
 
 **Icons.**  The one bundled image is the app icon, `icons/composition.png`.
 Toolbar and format-bar glyphs are SF Symbols drawn by the system
-(`on_ui_symbol`, `src/ui_util.h`), so they need no files and no artwork
+(`shared_ui_symbol`, `src/ui_util.h`), so they need no files and no artwork
 tools; the retired toolbar PNGs are kept in `icons/unused/` (see
 `icons/README.md`).
 

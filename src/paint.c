@@ -22,7 +22,7 @@ cg_rect(on_rect_t rect)
  * on_paint_fill_rect — see paint.h.
  */
 void
-on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color)
+on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, shared_rgba_t color)
 {
     CGContextSetRGBFillColor(ctx, color.r, color.g, color.b, color.a);
     CGContextFillRect(ctx, cg_rect(rect));
@@ -33,7 +33,7 @@ on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color)
  */
 void
 on_paint_rounded_rect(CGContextRef ctx, on_rect_t rect, double radius,
-                      on_color_t fill, on_color_t stroke, double width)
+                      shared_rgba_t fill, shared_rgba_t stroke, double width)
 {
     if (fill.a > 0.0) {
         CGPathRef path = CGPathCreateWithRoundedRect(cg_rect(rect), radius,
@@ -61,7 +61,7 @@ on_paint_rounded_rect(CGContextRef ctx, on_rect_t rect, double radius,
  */
 void
 on_paint_line(CGContextRef ctx, double x1, double y1, double x2, double y2,
-              on_color_t color, double width)
+              shared_rgba_t color, double width)
 {
     CGContextSetRGBStrokeColor(ctx, color.r, color.g, color.b, color.a);
     CGContextSetLineWidth(ctx, width);

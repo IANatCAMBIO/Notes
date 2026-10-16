@@ -76,8 +76,8 @@ static NSTextField *
 viewer_label(NSString *text)
 {
     NSTextField *label = [NSTextField labelWithString:text];
-    label.font      = [NSFont systemFontOfSize:on_look_ui_font];
-    label.textColor = on_ui_color(on_look_viewer_text);
+    label.font      = [NSFont systemFontOfSize:shared_look_ui_font];
+    label.textColor = shared_ui_color(on_look_viewer_text);
     return label;
 }
 
@@ -94,10 +94,10 @@ link_look(NSTextField *label, BOOL live)
 {
     NSDictionary *attrs = live
         ? @{ NSFontAttributeName: label.font,
-             NSForegroundColorAttributeName: on_ui_color(on_look_viewer_link),
+             NSForegroundColorAttributeName: shared_ui_color(on_look_viewer_link),
              NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) }
         : @{ NSFontAttributeName: label.font,
-             NSForegroundColorAttributeName: [on_ui_color(on_look_viewer_text)
+             NSForegroundColorAttributeName: [shared_ui_color(on_look_viewer_text)
                                               colorWithAlphaComponent:on_look_viewer_dim_alpha] };
     label.attributedStringValue = [[NSAttributedString alloc] initWithString:label.stringValue
                                                                    attributes:attrs];
@@ -127,7 +127,7 @@ acceptsFirstResponder
 - (void)
 drawRect:(NSRect)dirty
 {
-    [on_ui_color(on_look_viewer_backdrop) setFill];
+    [shared_ui_color(on_look_viewer_backdrop) setFill];
     NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
 }
 
@@ -438,7 +438,7 @@ on_image_viewer_open(NotesImageViewer *viewer, NSInteger index)
         what = [[what substringToIndex:caption_max_chars] stringByAppendingString:@"…"];
     viewer.caption.stringValue = [NSString stringWithFormat:@"%@      %@ESC to close", what ?: @"",
                                   count > 1 ? @"← → to move, " : @""];
-    viewer.caption.textColor = on_ui_color(on_look_viewer_text);
+    viewer.caption.textColor = shared_ui_color(on_look_viewer_text);
     viewer.link.hidden = viewer.action_handler == nil;
     if (viewer.link) link_look(viewer.link, YES);
     link_look(viewer.nav_bar, NO);

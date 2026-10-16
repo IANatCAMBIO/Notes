@@ -65,7 +65,7 @@ build_prompt(OnDatabase *db, NSArray<NSNumber *> *ids)
         OnNoteMeta *m = on_db_note_get(db, n.longLongValue);
         if (m == NULL) continue;
         found++;
-        [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", on_ui_format_date(m->updated_at, on_ui_date_iso)];
+        [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", shared_ui_format_date(m->updated_at, shared_ui_date_iso)];
         on_db_note_meta_free(m);
         gchar *body = on_note_text_cached(db, n.longLongValue);   /* fills an empty cache */
         [p appendString:body && *body ? [@(body) stringByAppendingString:@"\n"] : @"(empty note)\n"];
@@ -75,7 +75,7 @@ build_prompt(OnDatabase *db, NSArray<NSNumber *> *ids)
         for (GList *l = items; l != NULL; l = l->next) {
             const OnActionItem *it = l->data;
             [p appendFormat:@"  %@ %@", it->done ? @"[done]" : @"[    ]", @(it->text ? it->text : "")];
-            if (it->due) [p appendFormat:@" (due %@)", on_ui_format_date(it->due, on_ui_date_iso)];
+            if (it->due) [p appendFormat:@" (due %@)", shared_ui_format_date(it->due, shared_ui_date_iso)];
             [p appendString:@"\n"];
         }
         on_db_action_list_free(items);
@@ -172,7 +172,7 @@ init_with_lib:(NotesLibrary *)lib
     self.text.identifier         = @"ai-text";
     self.text.editable           = NO;
     self.text.richText           = NO;
-    self.text.font               = [NSFont systemFontOfSize:on_look_ui_font];
+    self.text.font               = [NSFont systemFontOfSize:shared_look_ui_font];
     self.text.textContainerInset = NSMakeSize(8, 4);
 
     NSBox *rule = [[NSBox alloc] initWithFrame:NSZeroRect];

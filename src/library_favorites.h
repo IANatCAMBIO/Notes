@@ -25,7 +25,7 @@
  *   lib — the library
  *
  * Output: the bar's view (the caller places it and sets its height:
- *         on_look_favorites_bar_h plus a 1 pt rule shown, 0 hidden).
+ *         shared_look_favorites_bar_h plus a 1 pt rule shown, 0 hidden).
  */
 NSView *on_library_favorites_new(NotesLibrary *lib);
 

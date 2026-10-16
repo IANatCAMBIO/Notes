@@ -176,7 +176,7 @@ on_command_toolbar_item(NSString *ident)
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
     item.label    = command->title;
     item.toolTip  = on_command_tooltip(ident);
-    item.image    = on_ui_symbol(command->icon, 0.0);
+    item.image    = shared_ui_symbol(command->icon, 0.0);
     item.target   = target;
     item.action   = action;
     item.bordered = YES;
@@ -213,7 +213,7 @@ on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
     } else if ([item isKindOfClass:NSToolbarItem.class]) {
         NSToolbarItem *toolbar_item = item;
         NSString *tip  = title ?: command->tooltip ?: command->title;
-        NSImage *image = on_ui_symbol(icon ?: command->icon, 0.0);
+        NSImage *image = shared_ui_symbol(icon ?: command->icon, 0.0);
         /* Only what differs is set: AppKit validates after every event, and
          * an item given an image (even the same one) is redrawn.  Glyphs
          * are cached, so an unchanged one is the same object. */

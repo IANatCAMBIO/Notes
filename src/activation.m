@@ -24,55 +24,6 @@ activation_is_key(NSEvent *event)
     return c == '\r' || c == NSEnterCharacter;
 }
 
-@implementation NotesActivatingTable
-
-/*
- * mouseDown: — a plain click selects its row at once
- * (on_ui_select_on_mouse_down); NSTableView then tracks the click as
- * usual (drags, double-clicks).
- *
- * Inputs:
- *   event — the mouse event
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    on_ui_select_on_mouse_down(self, event);
-    [super mouseDown:event];
-}
-
-/*
- * keyDown: — Return or Enter with a selection sends the doubleAction;
- * every other key goes to NSTableView.
- *
- * Inputs:
- *   event — the key event
- */
-- (void)
-keyDown:(NSEvent *)event
-{
-    if (activation_is_key(event) && self.selectedRowIndexes.count > 0 && self.doubleAction) {
-        _by_key = YES;
-        [self sendAction:self.doubleAction to:self.target];
-        _by_key = NO;
-        return;
-    }
-    [super keyDown:event];
-}
-
-@end
-
-/*
- * on_activated_rows — see activation.h.
- */
-NSIndexSet *
-on_activated_rows(NotesActivatingTable *table)
-{
-    if (table.by_key) return table.selectedRowIndexes;
-    if (table.clickedRow >= 0) return [NSIndexSet indexSetWithIndex:(NSUInteger)table.clickedRow];
-    return [NSIndexSet indexSet];         /* a double-click on empty space */
-}
-
 @implementation NotesActivatingGrid
 
 /*

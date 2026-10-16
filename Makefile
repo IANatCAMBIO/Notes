@@ -70,6 +70,15 @@ ifeq ($(wildcard $(SHARED_SRC)),)
 $(error $(SHARED_SRC) not found: check out shared_data beside this repository or set SHARED_DATA_DIR)
 endif
 
+# The interface elements Notes and Tasks share (the tool panel, the
+# sidebar's split view, the table, the status labels, ...) live in the
+# shared_ui repository beside this one and are compiled in from source.
+SHARED_UI_DIR ?= $(CURDIR)/../shared_ui
+SHARED_UI_SRCS = $(wildcard $(SHARED_UI_DIR)/src/*.m)
+ifeq ($(SHARED_UI_SRCS),)
+$(error $(SHARED_UI_DIR)/src has no sources: check out shared_ui beside this repository or set SHARED_UI_DIR)
+endif
+
 # Deployment target. The sources are COMPILED for MIN_MACOS, so using an API
 # newer than that without an @available check is a build error today. The
 # product is LINKED for the macOS version MacPorts built GLib for, because
@@ -116,7 +125,7 @@ sign = codesign --force --sign "$(CODESIGN_IDENTITY)" $(1) 2>build/codesign.log 
 # ones AppKit's delegate and action signatures require. The C core keeps the
 # warning.
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
-           -mmacosx-version-min=$(MIN_MACOS) -I src -I $(SHARED_DATA_DIR)/src \
+           -mmacosx-version-min=$(MIN_MACOS) -I src -I $(SHARED_DATA_DIR)/src -I $(SHARED_UI_DIR)/src \
            -MMD -MP -DON_VERSION='"$(VERSION)"' $(PKG_CFLAGS)
 CFLAGS   = -std=c11 $(COMMON)
 MFLAGS   = -fobjc-arc $(COMMON) -Wno-unused-parameter
@@ -141,7 +150,8 @@ UI_M_SRCS = $(wildcard src/*.m)
 
 CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o
 UI_OBJS   = $(patsubst src/%.c,build/%.o,$(UI_C_SRCS)) \
-            $(patsubst src/%.m,build/%.o,$(UI_M_SRCS))
+            $(patsubst src/%.m,build/%.o,$(UI_M_SRCS)) \
+            $(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS))
 DEPS      = $(CORE_OBJS:.o=.d) $(UI_OBJS:.o=.d)
 
 .PHONY: all run seed test ui-check bnbf-scan install clean clean-dev
@@ -183,6 +193,10 @@ build/%.o: src/%.c Makefile VERSION | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/%.o: src/%.m Makefile VERSION | build
+	$(CC) $(MFLAGS) -c -o $@ $<
+
+# The shared interface module, compiled with the app's Objective-C flags.
+build/%.o: $(SHARED_UI_DIR)/src/%.m Makefile VERSION | build
 	$(CC) $(MFLAGS) -c -o $@ $<
 
 # The shared module, compiled with the core's flags.

@@ -51,7 +51,7 @@ typedef struct {
     NSEventModifierFlags           mods;    /* the shortcut's modifiers               */
     NotesCommandScope              scope;
     NSString * __unsafe_unretained icon;    /* SF Symbol of its toolbar item
-                                               (ui_util.h: on_ui_symbol);
+                                               (ui_util.h: shared_ui_symbol);
                                                nil = not a toolbar command            */
     NSString * __unsafe_unretained tooltip; /* the tooltip of its toolbar item or
                                                format-bar button, saying what it does

@@ -427,7 +427,7 @@ Therefore:
   views with **`on_ui_image_view(image, w, h)`** (created at the final
   frame, image set last);
 - command glyphs (toolbar items, a window's own bar buttons) are SF
-  Symbols from **`on_ui_symbol(name, points)`** — template images the
+  Symbols from **`shared_ui_symbol(name, points)`** — template images the
   control tints for light, dark and disabled; cached.  No bundled bitmap
   icons; the app icon comes from **`on_ui_app_icon()`** (decoded at the
   About size via ImageIO; cached);
@@ -598,23 +598,22 @@ its inputs as locals, and never reads `self.…` off the main thread.
   puts its controls in the window body (the editor's format bar and status
   bar), never in an `NSToolbar` or an `NSTitlebarAccessoryViewController`.
 - **Glyphs, not pictures, on controls.**  Toolbar items and a window's own
-  bar buttons show SF Symbols (`on_ui_symbol`), icon-only, as Tasks does:
+  bar buttons show SF Symbols (`shared_ui_symbol`), icon-only, as Tasks does:
   template images, so they follow light/dark and the disabled look.  The
   symbol names live in the command table (`commands.m`, `icon` column).
 - **No native dialogs.**  Never `NSAlert`, an alert sheet or a custom
-  sheet: every message and question is a tool panel (`tool_panel.h`,
-  ported from the Files app) — `on_ui_show_notice` and `on_ui_confirm` for
-  the common cases, `NotesToolPanel` directly for anything with controls
+  sheet: every message and question is a tool panel (`shared_tool_panel.h`,  ported from the Files app) — `shared_ui_notice` and `shared_ui_confirm` for
+  the common cases, `SharedToolPanel` directly for anything with controls
   (Edit Tag) or several answers.  Tool panels are not modal: whatever
   must wait for the answer goes in the handler.  The one system panel kept
-  is the file picker (`on_ui_pick_path`), as in Files.
-- **Type size**: the app's own text is 11 pt (`on_look_ui_font`) —
+  is the file picker (`shared_ui_pick_path`), as in Files.
+- **Type size**: the app's own text is 11 pt (`shared_look_ui_font`) —
   labels, buttons, fields, table cells, status bars, tool panels — with
   the small control size for buttons, check boxes, pop-ups and fields.
-  Build a window, then call `on_ui_use_ui_font` on its content; table cells
-  use `on_ui_label_cell`.  The status bars are `on_look_status_font`
+  Build a window, then call `shared_ui_use_ui_font` on its content; table cells
+  use `on_ui_label_cell`.  The status bars are `shared_look_status_font`
   (11 pt, the Files and Tasks apps' status size, labels from
-  `on_ui_status_label`, centred on their capitals; Settings' database
+  `shared_ui_status_label`, centred on their capitals; Settings' database
   plate shares that size); only the sidebar (the system font) and a
   note's own text in the editor keep other sizes.  The status bar's
   location text is centred and an event message fades after

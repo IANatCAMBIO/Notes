@@ -41,36 +41,6 @@ toolbar_idents(BOOL ai)
 static const char *const sidebar_width_key   = "sidebar_width";
 static const char *const sidebar_visible_key = "sidebar_visible";
 
-/*
- * NotesSplitController — the split view controller for sidebar | notes,
- * which also remembers the sidebar's width: every time the divider moves
- * while the sidebar shows (a drag, a fit to content), the width is saved
- * for the next launch.
- */
-@interface NotesSplitController : NSSplitViewController
-@end
-
-@implementation NotesSplitController
-
-/*
- * splitViewDidResizeSubviews: — the divider moved: save the sidebar's
- * width, unless the sidebar is collapsed (its width is then no width).
- *
- * Inputs:
- *   note — the notification
- */
-- (void)
-splitViewDidResizeSubviews:(NSNotification *)note
-{
-    [super splitViewDidResizeSubviews:note];
-    NSSplitViewItem *sidebar = self.splitViewItems.firstObject;
-    if (sidebar.collapsed) return;
-    gint width = (gint)round(NSWidth(sidebar.viewController.view.frame));
-    if (width >= on_look_sidebar_min_w) on_app_config_set_int(sidebar_width_key, width);
-}
-
-@end
-
 @interface NotesLibraryWindow : NSWindowController <NSWindowDelegate, NSToolbarDelegate,
                                                     NSUserInterfaceValidations>
 @property (nonatomic, strong) NotesLibrary *lib;
@@ -88,27 +58,8 @@ splitViewDidResizeSubviews:(NSNotification *)note
 static NotesLibraryWindow *library_window;
 
 /*
- * pane_item — a split-view item around a pane's view.
- *
- * Inputs:
- *   view      — the pane
- *   min_width — the narrowest it may be dragged
- *
- * Output: the item.
- */
-static NSSplitViewItem *
-pane_item(NSView *view, CGFloat min_width)
-{
-    NSViewController *controller = [[NSViewController alloc] init];
-    controller.view = view;
-    NSSplitViewItem *item = [NSSplitViewItem splitViewItemWithViewController:controller];
-    item.minimumThickness = min_width;
-    return item;
-}
-
-/*
  * status_clear — the status timer's callback: the event message has been up
- * for on_look_status_hold: fade it out over on_look_status_fade, then clear
+ * for shared_look_status_hold: fade it out over shared_look_status_fade, then clear
  * it (as Tasks' status bar does).  A newer message meanwhile is shown at
  * full strength by show_status:, which this must not then clear.
  *
@@ -124,7 +75,7 @@ status_clear(void *data)
     NSString           *shown      = label.stringValue;
     controller.status_timer = 0;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = on_look_status_fade;
+        ctx.duration = shared_look_status_fade;
         label.animator.alphaValue = 0.0;
     } completionHandler:^{
         if (![label.stringValue isEqualToString:shown]) return;   /* replaced meanwhile */
@@ -173,7 +124,7 @@ init_with_library:(NotesLibrary *)lib
     win.toolbar         = toolbar;
 
     [self build_content];
-    on_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
+    shared_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_location];
     return self;
 }
@@ -194,13 +145,15 @@ build_content
     [main_pane addArrangedSubview:on_library_ai_pane_new(self.lib)];
     [main_pane setHoldingPriority:NSLayoutPriorityDefaultLow - 1 forSubviewAtIndex:0];
 
-    self.split        = [[NotesSplitController alloc] init];
-    self.sidebar_item = pane_item(on_library_sidebar_new(self.lib), on_look_sidebar_min_w);
+    SharedSplitController *split = [[SharedSplitController alloc] init];
+    split.width_changed = ^(NSInteger width) { on_app_config_set_int(sidebar_width_key, (gint)width); };
+    self.split        = split;
+    self.sidebar_item = shared_ui_pane_item(on_library_sidebar_new(self.lib), shared_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;
     self.sidebar_item.collapsed       = !self.lib.app->sidebar_visible;  /* as it was left */
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
     [self.split addSplitViewItem:self.sidebar_item];
-    [self.split addSplitViewItem:pane_item(main_pane, on_look_pane_min_w)];
+    [self.split addSplitViewItem:shared_ui_pane_item(main_pane, on_look_pane_min_w)];
     self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
 
     NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
@@ -211,7 +164,7 @@ build_content
     BOOL    shown     = self.lib.app->favorites_bar_visible;
     self.favorites_bar    = favorites;
     self.favorites_height = [favorites.heightAnchor
-        constraintEqualToConstant:shown ? on_look_favorites_bar_h + 1 : 0];
+        constraintEqualToConstant:shown ? shared_look_favorites_bar_h + 1 : 0];
     favorites.hidden      = !shown;
     for (NSView *view in @[favorites, panes, rule]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
@@ -220,9 +173,9 @@ build_content
     /* The status band: from under the rule to the window's bottom edge. */
     NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
     [content addLayoutGuide:band];
-    self.status_path  = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentCenter);
-    self.status_event = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
-    CGFloat inset = on_look_status_inset;
+    self.status_path  = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentCenter);
+    self.status_event = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
+    CGFloat inset = shared_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
         [favorites.topAnchor constraintEqualToAnchor:content.topAnchor],
         [favorites.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
@@ -234,7 +187,7 @@ build_content
         [panes.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-on_look_status_h],
+        [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-shared_look_status_h],
         [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
         [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
         /* The location is centred in the bar, as in Files and Tasks; it
@@ -250,7 +203,7 @@ build_content
     /* The width it was last dragged to, at least the narrowest drag; the
      * initial width until the first drag. */
     gint saved = on_app_config_get_int(sidebar_width_key, 0);
-    [self.split.splitView setPosition:saved > 0 ? MAX(saved, on_look_sidebar_min_w) : on_look_sidebar_w
+    [self.split.splitView setPosition:saved > 0 ? MAX(saved, shared_look_sidebar_min_w) : shared_look_sidebar_w
                    ofDividerAtIndex:0];
 }
 
@@ -267,7 +220,7 @@ update_location
     if (lib.sel_kind == on_sb_tag) {
         OnTag *tag = on_db_tag_get(lib.app->db, lib.sel_id);
         if (tag) {
-            name = on_ui_tag_label(tag->emoji, tag->name);
+            name = shared_ui_tag_label(@(tag->emoji), @(tag->name));
             on_db_tag_free(tag);
         }
     }
@@ -278,7 +231,7 @@ update_location
 
 /*
  * show_status: — the status bar's right side: an event message at full
- * strength (a fade under way is cut short), held for on_look_status_hold
+ * strength (a fade under way is cut short), held for shared_look_status_hold
  * and then faded out (status_clear).
  *
  * Inputs:
@@ -290,7 +243,7 @@ show_status:(NSString *)message
     self.status_event.stringValue = message;
     self.status_event.alphaValue  = 1.0;
     on_timer_remove(self.status_timer);
-    self.status_timer = on_timer_add(on_look_status_hold, false, status_clear,
+    self.status_timer = on_timer_add(shared_look_status_hold, false, status_clear,
                                      (__bridge void *)self, NULL);
 }
 
@@ -323,7 +276,7 @@ toggle_favorites_bar
     if (show) bar.hidden = NO;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
         ctx.allowsImplicitAnimation = YES;
-        self.favorites_height.animator.constant = show ? on_look_favorites_bar_h + 1 : 0;
+        self.favorites_height.animator.constant = show ? shared_look_favorites_bar_h + 1 : 0;
         [self.window.contentView layoutSubtreeIfNeeded];
     } completionHandler:^{
         bar.hidden = self.favorites_height.constant == 0;
@@ -429,8 +382,8 @@ willBeInsertedIntoToolbar:(BOOL)flag
     field.action                 = @selector(search_entered:);
     field.sendsWholeSearchString = YES;      /* act on Return, not per key */
     item.label                        = @"Search";
-    item.preferredWidthForSearchField = on_look_toolbar_search_w;
-    [field.widthAnchor constraintLessThanOrEqualToConstant:on_look_toolbar_search_w].active = YES;
+    item.preferredWidthForSearchField = shared_look_toolbar_search_w;
+    [field.widthAnchor constraintLessThanOrEqualToConstant:shared_look_toolbar_search_w].active = YES;
     return item;
 }
 

@@ -5,24 +5,19 @@
 
 #include "look.h"
 
+#import "shared_tool_panel.h"
+#import "shared_ui.h"
+
 /*
- * ui_util — small AppKit helpers shared across the app, so each exists
- * exactly once: colours from look.h, glyphs, images at their display
- * size, alerts, the file pickers, formatting, the pasteboard types.  Most
- * are Files' util.m helpers under this app's prefix.
+ * ui_util — the small AppKit helpers that are this app's own; what both
+ * apps share (colours, glyphs, dialogs, the file picker, status labels,
+ * tables, formatting) is in shared_ui.h, compiled in from ../shared_ui.
  *
- * IMAGES: THE RULE.  An image shown in a view is decoded at the size it is
- * shown, and the view that shows it is created at that size.  An
- * NSImageView created with a zero frame and given a large image before
- * layout makes AppKit render and cache the image's LARGEST representation
- * (4 MB for a 1024 px icon), and its layer keeps a second copy — tens of
- * megabytes for a screenful of icons.  So nothing in the app calls
- * [[NSImageView alloc] init] or +imageViewWithImage:, or hands a
- * full-size NSImage to a small view.  Use:
- *   on_ui_app_icon      the bundled app icon, decoded at the size it is shown
- *   on_ui_thumbnail     a note's image, decoded capped at its display size
- *   on_ui_image_view    an image view created at its final frame
- * See porting/INTERFACES.md, "Memory and ownership".
+ * IMAGES: THE RULE (shared_ui.h).  An image shown in a view is decoded at
+ * the size it is shown, and the view that shows it is created at that
+ * size (shared_ui_image_view).  Here: on_ui_app_icon, the bundled icon at
+ * the About size, and on_ui_thumbnail, a note's image decoded capped at
+ * its display size.  See porting/INTERFACES.md, "Memory and ownership".
  *
  * Everything here is main-thread only unless it says otherwise.
  */
@@ -36,56 +31,12 @@ extern NSPasteboardType const on_pasteboard_type_fragment;
 /* A drag of library rows: notes (library_state.h). */
 extern NSPasteboardType const on_pasteboard_type_rows;
 
-/* ── Appearance ─────────────────────────────────────────────────────────── */
-
-/*
- * on_ui_is_dark — whether a view is drawn under a dark appearance: the
- * `dark` that on_look_pick, OnDocLayoutStyle and on_text_style_t take.
- *
- * Inputs:
- *   view — the view being drawn
- *
- * Output: YES for a dark appearance.
- */
-BOOL on_ui_is_dark(NSView *view);
-
-/*
- * on_ui_color — a look.h colour as an NSColor that follows the appearance
- * it is drawn under.
- *
- * Inputs:
- *   color — the look colour
- *
- * Output: a dynamic NSColor.
- */
-NSColor *on_ui_color(on_look_color_t color);
-
 /* ── Images ─────────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_symbol — a command's glyph: an SF Symbol, as a TEMPLATE image.
- * A template image is a shape, not a picture: the control showing it draws
- * the shape in its own text colour, so the glyph follows light and dark,
- * the disabled look and a pressed button with no code here.  For toolbar
- * items and the buttons of a window's own bars.  Cached per name and size.
- *
- * Inputs:
- *   name   — SF Symbol name: @"plus", @"trash", @"sidebar.left", …
- *   points — the symbol's point size, as a font's (it is drawn about as
- *            tall as text of that size); 0 = no size of its own, for a
- *            toolbar item, which sizes its image itself
- *
- * Output: the image; nil when the system has no symbol of that name.  Do
- *         not modify it (it is shared).
- */
-NSImage *on_ui_symbol(NSString *name, CGFloat points);
-
-/*
  * on_ui_app_icon — the app's icon as drawn (composition.png, the one bundled
- * image), decoded at the About panel's size — never at the file's full
- * size — and cached.  macOS 26 puts a bundle icon that is not its rounded-square
- * shape on a grey backdrop in alerts and the About panel; handing them this
- * image explicitly shows just the artwork.
+ * image) at the About panel's size (shared_ui_app_icon): the place that
+ * knows the artwork's name.
  *
  * Output: the image, or nil if the resource is missing.
  */
@@ -110,88 +61,6 @@ NSImage *on_ui_app_icon(void);
  */
 NSImage *on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w,
                          CGFloat box_h, CGFloat scale);
-
-/*
- * on_ui_image_view — an image view created AT ITS FINAL SIZE (see THE RULE
- * above), scaling its image down proportionally.  The only way the app
- * makes an NSImageView.
- *
- * Inputs:
- *   image  — what to show (from on_ui_app_icon / on_ui_thumbnail); may be nil
- *            and set later, once the view has this frame
- *   width  — the view's size in points
- *   height
- *
- * Output: the view, with fixed width and height constraints so Auto Layout
- *         keeps the size.
- */
-NSImageView *on_ui_image_view(NSImage *image, CGFloat width, CGFloat height);
-
-/* ── Messages ───────────────────────────────────────────────────────────── */
-
-/*
- * The app never shows a native dialog (NSAlert, an alert sheet): every
- * message and question is a tool panel (tool_panel.h).  These two cover
- * the common cases; anything else builds a NotesToolPanel directly.
- */
-
-/*
- * on_ui_show_notice — a message with one OK button, in a tool panel.  The
- * only way a failure is shown: the title states what failed, the message
- * why.
- *
- * Inputs:
- *   title   — the headline, e.g. @"Could not open the database"
- *   message — the detail; may be nil
- *   window  — the window to centre over; nil = the screen
- *   done    — called once on the main thread when the panel goes (OK,
- *             Escape or the close box); may be nil.  The panel is not
- *             modal: whatever must wait for the user goes here.
- */
-void on_ui_show_notice(NSString *title, NSString *message, NSWindow *window,
-                       void (^done)(void));
-
-/*
- * on_ui_confirm — ask, in a tool panel, before something that cannot be
- * undone.  The default button is Cancel and Escape dismisses, so neither
- * Return nor Escape ever destroys anything.
- *
- * Inputs:
- *   question — the headline, e.g. @"Delete 3 notes permanently?"
- *   detail   — the consequence; nil for "This cannot be undone."
- *   action   — the confirming button's title, e.g. @"Delete"
- *   window   — the window to centre over; nil = the screen
- *   handler  — called on the main thread with YES only if confirmed
- */
-void on_ui_confirm(NSString *question, NSString *detail, NSString *action,
-                   NSWindow *window, void (^handler)(BOOL confirmed));
-
-/* ── File pickers ───────────────────────────────────────────────────────── */
-
-/* What on_ui_pick_path asks for. */
-typedef NS_ENUM(NSInteger, NotesPickKind) {
-    NotesPickOpenFile,               /* an existing file                    */
-    NotesPickSaveFile,               /* a file name to write                */
-    NotesPickFolder,                 /* an existing folder (may create one) */
-};
-
-/*
- * on_ui_pick_path — run an open or save panel and hand over the choice.
- * The panel is always a window of its own, app-modal, as in the Files app:
- * never a sheet on another window (the app's rule: no sheets).
- *
- * Inputs:
- *   kind      — what to pick
- *   title     — the panel's message
- *   prompt    — the accept button's title, e.g. @"Open"
- *   types     — content types to allow (e.g. @[UTTypeImage]); nil = any
- *   start_dir — the folder to open in; nil = where the user last was
- *   handler   — called on the main thread, once, when the panel closes,
- *               with the chosen path, or nil when it was cancelled
- */
-void on_ui_pick_path(NotesPickKind kind, NSString *title, NSString *prompt,
-                     NSArray<UTType *> *types, NSString *start_dir,
-                     void (^handler)(NSString *path));
 
 /*
  * on_ui_open_image_external — show a note's image in an outside viewer: the
@@ -246,38 +115,6 @@ void on_ui_keep_until_closed(NSWindowController *controller);
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_status_label — one label of a status bar (the library's, an
- * editor's): small (on_look_status_font), secondary colour, truncated in
- * the middle, added to `bar` and centred VISUALLY on `middle` — the middle
- * of its capital letters, not of its frame, which carries room for
- * descenders and would sit the text low.  The caller places it
- * horizontally.  on_ui_use_ui_font leaves it at its size.
- *
- * Inputs:
- *   bar       — the view it goes in
- *   middle    — the y the text is centred on (the bar's middle)
- *   alignment — its text alignment
- *
- * Output: the label.
- */
-NSTextField *on_ui_status_label(NSView *bar, NSLayoutYAxisAnchor *middle, NSTextAlignment alignment);
-
-/*
- * on_ui_use_ui_font — give everything under a view the app's text size
- * (look.h: on_look_ui_font), keeping each font's weight and slant; labelled
- * buttons, check boxes, radios, pop-ups, steppers and editable fields also
- * take the small control size, which is drawn for that size of text.  An
- * outline view (the sidebar) and what is under it, and status labels
- * (on_ui_status_label), keep their own.  Called
- * once a window's content is built; cells made later (table rows) set the
- * font themselves (on_ui_label_cell).
- *
- * Inputs:
- *   root — the view to start at (itself included)
- */
-void on_ui_use_ui_font(NSView *root);
-
-/*
  * on_ui_strike_key — an attribute for the text of an on_ui_label_cell:
  * the characters carrying it (any value) are struck through, at the
  * middle of the lowercase letters (half the x-height above the baseline),
@@ -302,64 +139,7 @@ extern NSAttributedStringKey const on_ui_strike_key;
  */
 NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
 
-/*
- * on_ui_select_on_mouse_down — select the row under a plain click on the
- * mouse-DOWN, as Finder does (a stock table selects only on mouse-up,
- * once it knows the click is not a drag).  Every table's mouseDown:
- * calls this, then super, whose tracking loop still tells clicks from
- * drags and sends double-clicks.  An already-selected row is left alone,
- * so a multi-row selection can still be dragged, as are ⌘-, ⇧- and
- * ^-clicks, and a press on a button in a cell (ticking an unselected
- * action item must not drop the selection).  The delegate is asked
- * first, as a click would ask it (selectionShouldChangeInTableView:,
- * then tableView:selectionIndexesForProposedSelection: or else
- * tableView:shouldSelectRow:), so a row it refuses — the sidebar's Tags
- * header — stays unselectable.
- *
- * Inputs:
- *   table — the table receiving the click
- *   event — its mouse-down event
- */
-void on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event);
-
-/*
- * NotesFlippedView — a plain container whose y grows downward: the
- * document view of a scroll view whose content should start at the top
- * (a scroll view shows a non-flipped document's BOTTOM first).
- */
-@interface NotesFlippedView : NSView
-@end
-
 /* ── Formatting ─────────────────────────────────────────────────────────── */
-
-/*
- * on_ui_format_bytes — a byte count as Finder shows it ("12.3 MB").
- * Thread-safe.
- *
- * Inputs:
- *   bytes — the count
- *
- * Output: the text.
- */
-NSString *on_ui_format_bytes(int64_t bytes);
-
-/* The dates the app shows, as NSDateFormatter patterns.                     */
-extern NSString *const on_ui_date_list;   /* "Jun 3, 2026 14:05": notes, hits  */
-extern NSString *const on_ui_date_day;    /* "Jun 3, 2026": due dates          */
-extern NSString *const on_ui_date_iso;    /* "2026-06-03": typed, AI prompt    */
-
-/*
- * on_ui_format_date — a UNIX time in local time, in a date pattern (one of
- * the above, or another).  One shared formatter per pattern: never one per
- * table cell.  Thread-safe.
- *
- * Inputs:
- *   unix_time — seconds since the epoch
- *   format    — the NSDateFormatter pattern
- *
- * Output: the text.
- */
-NSString *on_ui_format_date(int64_t unix_time, NSString *format);
 
 /*
  * on_ui_ids — note ids held as NSNumbers (a selection, a drag),
@@ -373,51 +153,3 @@ NSString *on_ui_format_date(int64_t unix_time, NSString *format);
  */
 gint64 *on_ui_ids(NSArray<NSNumber *> *ids);
 
-/*
- * on_ui_select_radio — make radio buttons act as one group: the chosen one
- * on, the others off.
- *
- * Inputs:
- *   group  — the group's buttons
- *   chosen — the one clicked
- */
-void on_ui_select_radio(NSArray<NSButton *> *group, NSButton *chosen);
-
-/*
- * on_ui_pin_edges — lay a view over another: its four edges on that view's
- * (constraints activated).
- *
- * Inputs:
- *   view — the view to place, already in `to`'s view hierarchy and with
- *          translatesAutoresizingMaskIntoConstraints NO
- *   to   — the view whose edges it takes
- */
-void on_ui_pin_edges(NSView *view, NSView *to);
-
-/*
- * on_ui_tag_label — a tag as the sidebar, the Favorites bar and the window
- * title show it: its
- * emoji, two spaces and its name (as Tasks shows it), or the name alone
- * when it has no emoji.
- *
- * Inputs:
- *   emoji — the tag's emoji, UTF-8; "" for none
- *   name  — its name, UTF-8
- *
- * Output: the label.
- */
-NSString *on_ui_tag_label(const char *emoji, const char *name);
-
-/*
- * on_ui_emoji_field — Edit Tag's emoji slot: a small text field that holds
- * at most one character and opens the system's emoji picker when clicked
- * (the same slot as Tasks').  The picker is the system's Character Viewer,
- * which types into whatever text is being edited, so the slot has to be a
- * real text field.
- *
- * Inputs:
- *   emoji — the current emoji; empty for none
- *
- * Output: the field, on_look_tool_emoji_w wide, in the app's text size.
- */
-NSTextField *on_ui_emoji_field(NSString *emoji);

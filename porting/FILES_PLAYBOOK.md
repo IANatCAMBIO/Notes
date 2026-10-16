@@ -1209,9 +1209,9 @@ saves an outdated copy over it" (`bookmarks_bar.m:194-206, 267-276`).
 ### 3.13 Panels, sheets, alerts, popovers
 
 > **SUPERSEDED (2026-10-10).**  Files has since replaced every alert with its
-> own tool panel (`src/tool_panel.{h,m}`: "Wherever a native dialog would appear,
+> own tool panel (`../shared_ui/src/shared_tool_panel.{h,m}`: "Wherever a native dialog would appear,
 > Files uses this").  Notes follows the current Files, not this snapshot: no
-> `NSAlert`, no alert sheets — see `src/tool_panel.h` and INTERFACES.md §11.  The
+> `NSAlert`, no alert sheets — see `shared_tool_panel.h`, in `../shared_ui` and INTERFACES.md §11.  The
 > alert bullets below (and the alert rows in §4) describe the old Files only.
 
 - **Alerts**: built with `files_new_alert()`, presented with

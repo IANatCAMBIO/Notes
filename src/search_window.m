@@ -55,7 +55,7 @@
 @property (nonatomic, strong) NSButton             *case_sensitive;
 @property (nonatomic, strong) NSButton             *regex;
 @property (nonatomic, strong) NSProgressIndicator  *spinner;
-@property (nonatomic, strong) NotesActivatingTable *results;
+@property (nonatomic, strong) SharedTable *results;
 @property (nonatomic, strong) NSTextField          *status;
 @property (nonatomic, strong) NSArray<NotesSearchHit *> *hits;
 @property (nonatomic, copy)   NSString             *hits_db;      /* the database they are ids in */
@@ -92,7 +92,7 @@ search_done(const gchar *error, const on_search_hit_t *const *hits, size_t n, gp
         h.note_id = hits[i]->id;
         h.title   = @(hits[i]->title ?: "");
         h.tags    = @(hits[i]->tags ?: "");
-        h.when    = on_ui_format_date(hits[i]->updated_at, on_ui_date_list);
+        h.when    = shared_ui_format_date(hits[i]->updated_at, shared_ui_date_list);
         [rows addObject:h];
     }
     s.hits = rows;
@@ -163,7 +163,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     self.regex.toolTip  = @"Match the whole query as one pattern; quoting and -exclusions keep their "
                            "regular-expression meaning instead";
 
-    self.results = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
+    self.results = [[SharedTable alloc] initWithFrame:NSZeroRect];
     NSTableColumn *title = [[NSTableColumn alloc] initWithIdentifier:@"title"];
     title.title        = @"Title";
     title.width        = 250;
@@ -210,14 +210,14 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     [column setHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     NSView *content = win.contentView;
     [content addSubview:column];
-    on_ui_pin_edges(column, content);
+    shared_ui_pin_edges(column, content);
     [NSLayoutConstraint activateConstraints:@[
         [query_row.widthAnchor   constraintEqualToAnchor:column.widthAnchor constant:-20],
         [scroll.widthAnchor      constraintEqualToAnchor:column.widthAnchor constant:-20],
         [self.status.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-20],
     ]];
     [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
-    on_ui_use_ui_font(content);
+    shared_ui_use_ui_font(content);
     [win center];
     win.initialFirstResponder = self.query;
     return self;
@@ -303,7 +303,7 @@ search_clicked:(id)sender
 - (void)
 scope_clicked:(NSButton *)sender
 {
-    on_ui_select_radio(@[self.scope_all, self.scope_selection], sender);
+    shared_ui_select_radio(@[self.scope_all, self.scope_selection], sender);
 }
 
 /*
@@ -324,7 +324,7 @@ open_results:(id)sender
         self.status.stringValue = @"Another database is open now. Search again.";
         return;
     }
-    [on_activated_rows(self.results) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
+    [shared_ui_activated_rows(self.results) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
         if (i < self.hits.count)
             on_editor_window_open(self.lib.app, self.hits[i].note_id, NotesEditorRevealNone, 0, self.highlight);
     }];

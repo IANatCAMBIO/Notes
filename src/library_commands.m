@@ -2,7 +2,6 @@
 #import "editor_window.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "action_sync.h"
@@ -95,9 +94,9 @@ static NotesTagFields *
 tag_fields(const OnTag *tag)
 {
     NotesTagFields *f    = [[NotesTagFields alloc] init];
-    NSFont         *font = [NSFont systemFontOfSize:on_look_ui_font];
+    NSFont         *font = [NSFont systemFontOfSize:shared_look_ui_font];
 
-    f.emoji = on_ui_emoji_field(@(tag->emoji));
+    f.emoji = shared_ui_emoji_field(@(tag->emoji));
     f.emoji.identifier = @"tag-emoji";
 
     f.favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar" target:nil action:nil];
@@ -111,14 +110,14 @@ tag_fields(const OnTag *tag)
         return l;
     };
     NSTextField *name = label(@(tag->name));
-    name.font = [NSFont boldSystemFontOfSize:on_look_ui_font];
+    name.font = [NSFont boldSystemFontOfSize:shared_look_ui_font];
     NSGridView *grid = [NSGridView gridViewWithViews:@[
         @[label(@"Tag:"),               name],
         @[label(@"Emoji (optional):"),  f.emoji],
         @[label(@"Favorite:"),          f.favorite],
     ]];
-    grid.rowSpacing    = on_look_tool_btn_gap;
-    grid.columnSpacing = on_look_tool_btn_gap;
+    grid.rowSpacing    = shared_look_tool_btn_gap;
+    grid.columnSpacing = shared_look_tool_btn_gap;
     [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
     for (NSInteger r = 0; r < grid.numberOfRows; r++) [grid rowAtIndex:r].yPlacement = NSGridCellPlacementCenter;
     f.view = grid;
@@ -136,7 +135,7 @@ on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
     NotesTagFields *f     = tag_fields(tag);
     NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
     NSString       *path  = @(lib.app->db->path);
-    NotesToolPanel *panel = [NotesToolPanel
+    SharedToolPanel *panel = [SharedToolPanel
         panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
                 subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
                   symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"] destructive:-1
@@ -204,7 +203,7 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
                                                     @"and Tasks, or for this session only?",
                                                     path.lastPathComponent];
     NSArray<NSString *> *buttons = @[@"Set as Default", @"Session Only", @"Cancel"];
-    [NotesToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
+    [SharedToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
                          buttons:buttons destructive:-1
                             over:win
                          handler:^(NSInteger index) {
@@ -223,9 +222,7 @@ on_library_open_db(NotesLibrary *lib, NSString *path)
             [NSApp terminate:nil];
             return;
         }
-        on_ui_show_notice(@"Database Error",
-                          [NSString stringWithFormat:@"Could not open:\n%@\n\n%@", path, reason],
-                          win, nil);
+        shared_ui_notice(win, @"Database Error", [NSString stringWithFormat:@"Could not open:\n%@\n\n%@", path, reason], nil);
     }];
 }
 
@@ -242,7 +239,7 @@ run_open_db(id target, id sender)
 {
     NotesLibrary *lib = target;
     UTType       *db  = [UTType typeWithFilenameExtension:@"db"];
-    on_ui_pick_path(NotesPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil,
+    shared_ui_pick_path(SharedPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil,
                     ^(NSString *path) {
         if (path != nil) on_library_open_db(lib, path);
     });
@@ -263,10 +260,9 @@ on_library_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> 
             if (on_export_note(lib.app, nid.longLongValue, dir.UTF8String, format)) n++;
     }
     if (n >= 0)
-        on_ui_show_notice([NSString stringWithFormat:@"Exported %d note%@.", n, n == 1 ? @"" : @"s"],
-                          [NSString stringWithFormat:@"Files written to:\n%@", dir], lib.window, nil);
+        shared_ui_notice(lib.window, [NSString stringWithFormat:@"Exported %d note%@.", n, n == 1 ? @"" : @"s"], [NSString stringWithFormat:@"Files written to:\n%@", dir], nil);
     else
-        on_ui_show_notice(@"Export failed", err ? @(err) : @"An unknown error occurred.", lib.window, nil);
+        shared_ui_notice(lib.window, @"Export failed", err ? @(err) : @"An unknown error occurred.", nil);
     g_free(err);
     return n;
 }
@@ -283,7 +279,7 @@ on_library_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> 
 static void
 run_export(NotesLibrary *lib, OnExportFormat format, NSArray<NSNumber *> *ids)
 {
-    on_ui_pick_path(NotesPickFolder,
+    shared_ui_pick_path(SharedPickFolder,
                     format == ON_EXPORT_HTML ? @"Choose Export Folder for HTML"
                                              : @"Choose Export Folder for Markdown",
                     @"Export", nil, nil, ^(NSString *path) {
@@ -357,7 +353,7 @@ static void
 confirm_permanent(NotesLibrary *lib, NSString *question, NSString *action, void (^handler)(void))
 {
     NSString *path = @(lib.app->db->path);
-    on_ui_confirm(question, nil, action, lib.window, ^(BOOL confirmed) {
+    shared_ui_confirm(lib.window, question, nil, action, YES, ^(BOOL confirmed) {
         if (!confirmed || lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return;
         handler();
     });

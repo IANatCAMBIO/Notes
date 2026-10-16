@@ -32,7 +32,7 @@ typedef struct {
  *
  * Output: none.
  * ------------------------------------------------------------------------- */
-void on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color);
+void on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, shared_rgba_t color);
 
 /* ---------------------------------------------------------------------------
  * on_paint_rounded_rect() — a rounded rectangle, filled and outlined (the
@@ -49,7 +49,7 @@ void on_paint_fill_rect(CGContextRef ctx, on_rect_t rect, on_color_t color);
  * Output: none.
  * ------------------------------------------------------------------------- */
 void on_paint_rounded_rect(CGContextRef ctx, on_rect_t rect, double radius,
-                           on_color_t fill, on_color_t stroke, double width);
+                           shared_rgba_t fill, shared_rgba_t stroke, double width);
 
 /* ---------------------------------------------------------------------------
  * on_paint_line() — a straight line (a strikethrough, a checkbox tick).
@@ -63,7 +63,7 @@ void on_paint_rounded_rect(CGContextRef ctx, on_rect_t rect, double radius,
  * Output: none.
  * ------------------------------------------------------------------------- */
 void on_paint_line(CGContextRef ctx, double x1, double y1, double x2,
-                   double y2, on_color_t color, double width);
+                   double y2, shared_rgba_t color, double width);
 
 /* ---------------------------------------------------------------------------
  * on_paint_image() — draw an image scaled into a rectangle, the right way

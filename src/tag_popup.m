@@ -51,7 +51,7 @@ style_row(NSButton *row, BOOL selected)
     NSDictionary *attrs = @{
         NSForegroundColorAttributeName: selected ? NSColor.selectedMenuItemTextColor
                                                  : NSColor.labelColor,
-        NSFontAttributeName: [NSFont systemFontOfSize:on_look_ui_font],
+        NSFontAttributeName: [NSFont systemFontOfSize:shared_look_ui_font],
     };
     row.attributedTitle = [[NSAttributedString alloc] initWithString:row.title attributes:attrs];
 }

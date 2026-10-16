@@ -147,7 +147,7 @@ make_box_delegate(double width, double height)
 
 typedef struct {
     CFIndex cf_start, cf_end;
-    on_color_t color;
+    shared_rgba_t color;
 } strike_span_t;
 
 /* ── The layout struct ──────────────────────────────────────────────────── */
@@ -214,7 +214,7 @@ set_attr(CFMutableAttributedStringRef ms, CFStringRef key, CFTypeRef value,
  * Output: none.
  */
 static void
-set_color_attr(CFMutableAttributedStringRef ms, on_color_t c,
+set_color_attr(CFMutableAttributedStringRef ms, shared_rgba_t c,
                CFIndex s, CFIndex e)
 {
     CGColorSpaceRef sp = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -271,14 +271,14 @@ on_text_layout_new(const on_text_content_t *content,
     CFRelease(base_font);
 
     /* Text color. */
-    on_color_t text_color = on_look_pick(style->muted ? on_look_code_number : on_look_text,
+    shared_rgba_t text_color = shared_look_pick(style->muted ? on_look_code_number : on_look_text,
                                          style->dark);
     if (cf_len > 0)
         set_color_attr(ms, text_color, 0, cf_len);
 
     /* Action colour + semibold over entire string. */
     if (style->action && cf_len > 0) {
-        on_color_t ac = on_look_pick(on_look_action, style->dark);
+        shared_rgba_t ac = shared_look_pick(on_look_action, style->dark);
         set_color_attr(ms, ac, 0, cf_len);
         CTFontRef sf = get_font(style->font_size, style->scale, false, true);
         CFAttributedStringSetAttribute(ms, CFRangeMake(0, cf_len),
@@ -322,7 +322,7 @@ on_text_layout_new(const on_text_content_t *content,
             }
             /* Tag colour. */
             if (r->flags & ON_FMT_TAG) {
-                on_color_t tc = on_look_pick(on_look_tag, style->dark);
+                shared_rgba_t tc = shared_look_pick(on_look_tag, style->dark);
                 set_color_attr(ms, tc, cs, ce);
                 /* Semibold. */
                 CTFontRef tf = get_font(style->font_size, style->scale,
@@ -350,7 +350,7 @@ on_text_layout_new(const on_text_content_t *content,
 
     /* Find highlight: background colour. */
     if (content->n_hits > 0) {
-        on_color_t hc = on_look_pick(on_look_find_hit, style->dark);
+        shared_rgba_t hc = shared_look_pick(on_look_find_hit, style->dark);
         CGColorSpaceRef sp = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGFloat comp[] = { hc.r, hc.g, hc.b, hc.a };
         CGColorRef cgc = CGColorCreate(sp, comp);
@@ -390,8 +390,8 @@ on_text_layout_new(const on_text_content_t *content,
         }
         L->strikes = malloc((cap + 1) * sizeof *L->strikes);
         at = 0;
-        on_color_t tc = on_look_pick(on_look_text, style->dark);
-        if (style->action) tc = on_look_pick(on_look_action, style->dark);
+        shared_rgba_t tc = shared_look_pick(on_look_text, style->dark);
+        if (style->action) tc = shared_look_pick(on_look_action, style->dark);
         for (size_t k = 0; k < content->n_runs; k++) {
             const OnRun *r = &content->runs[k];
             if ((r->flags & ON_FMT_STRIKE) && r->len > 0) {
@@ -399,8 +399,8 @@ on_text_layout_new(const on_text_content_t *content,
                     content->text, at);
                 L->strikes[cnt].cf_end   = (CFIndex)on_utf16_from_utf8(
                     content->text, at + r->len);
-                on_color_t sc = (r->flags & ON_FMT_TAG)
-                    ? on_look_pick(on_look_tag, style->dark) : tc;
+                shared_rgba_t sc = (r->flags & ON_FMT_TAG)
+                    ? shared_look_pick(on_look_tag, style->dark) : tc;
                 L->strikes[cnt].color = sc;
                 cnt++;
             }

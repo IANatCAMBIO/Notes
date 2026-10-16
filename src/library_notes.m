@@ -40,7 +40,6 @@
 #import "library_sidebar.h"
 #import "library_window.h"
 #import "look.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "action_edit.h"
@@ -133,7 +132,7 @@ static const CGFloat card_title_h = 34.0;
 static NSString *
 due_text(gint64 due)
 {
-    return due ? on_ui_format_date(due, on_ui_date_day) : @"";
+    return due ? shared_ui_format_date(due, shared_ui_date_day) : @"";
 }
 
 /*
@@ -152,8 +151,8 @@ due_colour(gint64 due)
     NSDate     *today = [cal startOfDayForDate:NSDate.date];
     NSDate     *day   = [cal startOfDayForDate:[NSDate dateWithTimeIntervalSince1970:(double)due]];
     NSComparisonResult order = [day compare:today];
-    return on_ui_color(order == NSOrderedAscending ? on_look_due_overdue
-                     : order == NSOrderedSame      ? on_look_due_today : on_look_due_ahead);
+    return shared_ui_color(order == NSOrderedAscending ? shared_look_due_overdue
+                     : order == NSOrderedSame      ? shared_look_due_today : shared_look_due_ahead);
 }
 
 /*
@@ -455,7 +454,7 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
     }
     CGContextScaleCTM(ctx, scale, scale);
 
-    on_color_t bg = on_look_pick(on_look_card, dark), bd = on_look_pick(on_look_card_border, dark);
+    shared_rgba_t bg = shared_look_pick(on_look_card, dark), bd = shared_look_pick(on_look_card_border, dark);
     CGContextSetRGBFillColor(ctx, bg.r, bg.g, bg.b, bg.a);
     CGContextFillRect(ctx, CGRectMake(0, 0, sz, sz));
     CGContextSetRGBStrokeColor(ctx, bd.r, bd.g, bd.b, bd.a);
@@ -475,7 +474,7 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
 
     CGFloat text_h = sz - top - card_pad;
     if (text_h > 0 && body.length > 0) {
-        on_color_t tc    = on_look_pick(on_look_card_text, dark);
+        shared_rgba_t tc    = shared_look_pick(on_look_card_text, dark);
         CTFontRef  font  = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, on_look_thumb_text_font, NULL);
         CGColorRef color = CGColorCreateSRGB(tc.r, tc.g, tc.b, tc.a);
         NSAttributedString *text = [[NSAttributedString alloc] initWithString:body attributes:@{
@@ -532,10 +531,10 @@ initWithFrame:(NSRect)frame
 {
     if (!(self = [super initWithFrame:frame])) return nil;
     CGFloat sz = on_look_thumb_size;
-    _thumb = on_ui_image_view(nil, sz, sz);
+    _thumb = shared_ui_image_view(nil, sz, sz);
     _thumb.translatesAutoresizingMaskIntoConstraints = NO;
     _title = [NSTextField wrappingLabelWithString:@""];
-    _title.font                 = [NSFont boldSystemFontOfSize:on_look_ui_font];
+    _title.font                 = [NSFont boldSystemFontOfSize:shared_look_ui_font];
     _title.alignment            = NSTextAlignmentCenter;
     _title.maximumNumberOfLines = 2;
     _title.lineBreakMode        = NSLineBreakByTruncatingTail;
@@ -634,9 +633,9 @@ setSelected:(BOOL)selected
                                       NSMenuDelegate>
 @property (nonatomic, weak)   NotesLibrary         *lib;
 @property (nonatomic, strong) NSView               *view;          /* the pane */
-@property (nonatomic, strong) NotesActivatingTable *list;
+@property (nonatomic, strong) SharedTable *list;
 @property (nonatomic, strong) NotesActivatingGrid  *grid;
-@property (nonatomic, strong) NotesActivatingTable *actions;
+@property (nonatomic, strong) SharedTable *actions;
 @property (nonatomic, strong) NSScrollView         *list_scroll;
 @property (nonatomic, strong) NSScrollView         *grid_scroll;
 @property (nonatomic, strong) NSScrollView         *actions_scroll;
@@ -699,7 +698,7 @@ struck(NSString *text, BOOL done, NSColor *colour)
         one_line = p;
     });
     NSMutableDictionary *attrs = [NSMutableDictionary dictionaryWithDictionary:@{
-        NSFontAttributeName:            [NSFont systemFontOfSize:on_look_ui_font],
+        NSFontAttributeName:            [NSFont systemFontOfSize:shared_look_ui_font],
         NSForegroundColorAttributeName: colour ?: NSColor.labelColor,
         NSParagraphStyleAttributeName:  one_line,
     }];
@@ -730,7 +729,7 @@ init_with_lib:(NotesLibrary *)lib
     _cards          = [NSMutableDictionary dictionary];
     _card_queue     = [NSMutableOrderedSet orderedSet];
 
-    _list = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
+    _list = [[SharedTable alloc] initWithFrame:NSZeroRect];
     add_columns(_list, note_columns, sizeof note_columns / sizeof *note_columns);
     apply_layout(_list, "list_columns", "title:1,tags:1,modified:1,created:0");
     _list.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:YES]];
@@ -771,7 +770,7 @@ init_with_lib:(NotesLibrary *)lib
     _grid.delegate   = self;
     _grid_scroll = scroll_for(_grid);
 
-    _actions = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
+    _actions = [[SharedTable alloc] initWithFrame:NSZeroRect];
     add_columns(_actions, action_columns, sizeof action_columns / sizeof *action_columns);
     apply_layout(_actions, "action_columns", "done:1,tags:1,action:1,due:1");
     _actions.rowHeight    = on_look_row_h;
@@ -802,7 +801,7 @@ show_view:(NSScrollView *)scroll
     if (old == scroll) return;
     [old removeFromSuperview];
     [self.view addSubview:scroll];
-    on_ui_pin_edges(scroll, self.view);
+    shared_ui_pin_edges(scroll, self.view);
 }
 
 /* ── Populating ────────────────────────────────────────────────────────── */
@@ -854,8 +853,8 @@ load_records:(BOOL)previews
         r.title      = @(m->title ?: "");
         r.updated_at = m->updated_at;
         r.created_at = m->created_at;
-        r.modified   = on_ui_format_date(m->updated_at, on_ui_date_list);
-        r.created    = on_ui_format_date(m->created_at, on_ui_date_list);
+        r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
+        r.created    = shared_ui_format_date(m->created_at, shared_ui_date_list);
         const gchar *names = g_hash_table_lookup(tags, &m->id);
         r.tags    = names != NULL ? @(names) : @"";
         r.preview = texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil;
@@ -1032,7 +1031,7 @@ refresh_note:(gint64)note_id
     NotesNoteRecord *r = self.records[i];
     r.title      = @(m->title ?: "");
     r.updated_at = m->updated_at;
-    r.modified   = on_ui_format_date(m->updated_at, on_ui_date_list);
+    r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
     on_db_note_meta_free(m);
     if (mode == on_library_view_list && self.lib.app->comfortable_list) {
         gchar *body = on_db_note_body_text(self.lib.app->db, note_id);
@@ -1063,7 +1062,7 @@ refresh_note:(gint64)note_id
 - (void)
 queue_cards
 {
-    BOOL dark = on_ui_is_dark(self.grid);
+    BOOL dark = shared_ui_is_dark(self.grid);
     for (NotesNoteRecord *r in self.records) {
         NotesCardEntry *e = self.cards[@(r.note_id)];
         if (e == nil || e.updated_at != r.updated_at || e.dark != dark) [self.card_queue addObject:@(r.note_id)];
@@ -1090,7 +1089,7 @@ schedule_cards
     NSArray<NSNumber *> *batch = [self.card_queue.array copy];   /* .array is a live view */
     [self.card_queue removeAllObjects];
     self.card_busy = YES;
-    BOOL        dark  = on_ui_is_dark(self.grid);
+    BOOL        dark  = shared_ui_is_dark(self.grid);
     CGFloat     scale = self.grid.window.backingScaleFactor ?: 2.0;
     NSUInteger  gen   = self.card_gen;
     NSString   *path  = @(self.lib.app->db->path);
@@ -1161,7 +1160,7 @@ open_record:(NSUInteger)i
 - (void)
 list_activated:(id)sender
 {
-    [on_activated_rows(self.list) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
+    [shared_ui_activated_rows(self.list) enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
         [self open_record:i];
     }];
 }
@@ -1177,7 +1176,7 @@ list_activated:(id)sender
 actions_activated:(id)sender
 {
     NSInteger col = self.actions.by_key ? -1 : self.actions.clickedColumn;
-    [self activate_actions:on_activated_rows(self.actions)
+    [self activate_actions:shared_ui_activated_rows(self.actions)
                     column:col >= 0 ? self.actions.tableColumns[(NSUInteger)col].identifier : nil];
 }
 
@@ -1260,7 +1259,7 @@ ask_due:(NotesActionRecord *)r
     [picker.heightAnchor constraintEqualToConstant:size.height].active = YES;
 
     __weak NotesNotesPane *ws = self;
-    NotesToolPanel *panel = [NotesToolPanel
+    SharedToolPanel *panel = [SharedToolPanel
         panel_with_title:@"Due Date" hero_title:@"Due Date" subtitle:r.text symbol:@"calendar"
                  content:picker buttons:@[@"Set", @"Clear", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
@@ -1450,7 +1449,7 @@ title_cell:(NotesNoteRecord *)r
         NSTextField *title   = [NSTextField labelWithString:@""];
         NSTextField *preview = [NSTextField labelWithString:@""];
         preview.identifier = @"preview";
-        preview.font       = [NSFont systemFontOfSize:on_look_ui_font];
+        preview.font       = [NSFont systemFontOfSize:shared_look_ui_font];
         preview.alphaValue = on_look_preview_alpha;
         for (NSTextField *l in @[title, preview]) {
             l.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -1474,8 +1473,8 @@ title_cell:(NotesNoteRecord *)r
     BOOL comfy = self.lib.app->comfortable_list;
     cell.textField.stringValue = r.title.length ? r.title : comfy ? @"Untitled" : @"";
     cell.textField.font = comfy && self.lib.app->bold_list_titles
-                        ? [NSFont boldSystemFontOfSize:on_look_ui_font]
-                        : [NSFont systemFontOfSize:on_look_ui_font];
+                        ? [NSFont boldSystemFontOfSize:shared_look_ui_font]
+                        : [NSFont systemFontOfSize:shared_look_ui_font];
     preview.stringValue = r.preview ?: @"";
     preview.hidden      = !(comfy && r.preview.length);
     return cell;
@@ -1522,7 +1521,7 @@ text_of:(NSTableView *)table key:(NSString *)key row:(NSUInteger)row
 fitted_width:(NSTableView *)table column:(NSTableColumn *)column
 {
     NSDictionary<NSAttributedStringKey, id> *attrs = @{ NSFontAttributeName:
-                                                        [NSFont systemFontOfSize:on_look_ui_font] };
+                                                        [NSFont systemFontOfSize:shared_look_ui_font] };
     NSUInteger rows   = MIN((NSUInteger)[self numberOfRowsInTableView:table], fit_row_limit);
     CGFloat    widest = 0.0;
     for (NSUInteger i = 0; i < rows; i++) {

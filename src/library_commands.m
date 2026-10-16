@@ -178,32 +178,38 @@ on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
 }
 
 /*
- * run_edit_tag — "edit-tag": the Edit Tag panel for the selected tag.
+ * run_edit_tag — "edit-tag": the Edit Tag panel for the tag the item
+ * names (the sidebar's menu), else the selected tag.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — the menu item (unused)
+ *   sender — the menu item
  */
 static void
 run_edit_tag(id target, id sender)
 {
     NotesLibrary *lib = target;
-    if (lib.sel_kind == on_sb_tag) on_library_edit_tag(lib, lib.sel_id);
+    on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
+    on_library_sb_ref(sender, &ref);
+    if (ref.kind == on_sb_tag) on_library_edit_tag(lib, ref.ident);
 }
 
 /*
- * validate_tag_selected — a tag is selected.
+ * validate_tag_selected — the item names a tag, or a tag is selected.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   item   — the item (unused)
+ *   item   — the item
  *
  * Output: YES to enable it.
  */
 static BOOL
 validate_tag_selected(id target, id item)
 {
-    return ((NotesLibrary *)target).sel_kind == on_sb_tag;
+    NotesLibrary *lib = target;
+    on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
+    on_library_sb_ref(item, &ref);
+    return ref.kind == on_sb_tag;
 }
 
 /*

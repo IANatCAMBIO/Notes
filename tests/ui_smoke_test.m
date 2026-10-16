@@ -1573,6 +1573,9 @@ right_click(NSTableView *outline, NSInteger row)
     return [outline menuForEvent:event];
 }
 
+/* Defined with the notes pane's tests; the sidebar's menus use it too. */
+static NSMenu *open_menu(NSMenu *menu);
+
 /*
  * press — the selection step of a left mouse-down on a table row
  * (on_ui_select_on_mouse_down), without NSTableView's tracking loop,
@@ -1616,15 +1619,22 @@ test_sidebar(NotesLibrary *lib)
     on_library_sidebar_select(lib, on_sb_all, 0);
     pump(0.2);
 
-    /* Menus, per kind of row. */
+    /* Menus, per kind of row: a right click leaves the selection alone and
+     * its items carry the row. */
     NSInteger all = sidebar_row(outline, @"All Notes");
-    check([menu_titles(right_click(outline, all)) isEqualToArray:@[@"Search Here…"]],
+    check([menu_titles(open_menu(right_click(outline, all))) isEqualToArray:@[@"Search Here…"]],
           "All Notes offers Search Here");
     NSInteger crate_row = sidebar_row(outline, @"Crate");
-    NSArray<NSString *> *tag_menu = menu_titles(right_click(outline, crate_row));
-    check(lib.sel_kind == on_sb_tag && lib.sel_id == crate_tag &&
-          [tag_menu isEqualToArray:@[@"Edit Tag…", @"Search Here…"]],
-          "a right click on a tag selects it and offers Edit Tag and Search Here");
+    NSMenu   *tag_menu  = open_menu(right_click(outline, crate_row));
+    on_sb_ref_t ref;
+    check(lib.sel_kind == on_sb_all &&
+          [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Search Here…"]] &&
+          on_library_sb_ref(tag_menu.itemArray.firstObject, &ref) &&
+          ref.kind == on_sb_tag && ref.ident == crate_tag &&
+          on_library_validate_command(lib, tag_menu.itemArray.firstObject),
+          "a right click on a tag keeps the selection; Edit Tag and Search Here name the tag");
+    on_library_sidebar_select(lib, on_sb_tag, crate_tag);
+    pump(0.1);
     check(label_with_text(lib.window.contentView, @"#Crate") != nil,
           "the status bar shows the selected tag");
 

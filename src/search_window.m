@@ -25,6 +25,7 @@
 
 #import "activation.h"
 #import "editor_window.h"
+#import "library_sidebar.h"
 #import "look.h"
 #import "ui_util.h"
 
@@ -413,17 +414,22 @@ run_search(id target, id sender)
 }
 
 /*
- * run_search_here — "search-here": a search window scoped to the row just
- * selected.
+ * run_search_here — "search-here": a search window scoped to the sidebar
+ * row the item names, which is selected first (a search scope is the
+ * library's selection), else to the selected row.
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — the item (unused)
+ *   sender — the item
  */
 static void
 run_search_here(id target, id sender)
 {
-    on_search_window_open(target, YES, nil);
+    NotesLibrary *lib = target;
+    on_sb_ref_t   ref;
+    if (on_library_sb_ref(sender, &ref) && (ref.kind != lib.sel_kind || ref.ident != lib.sel_id))
+        on_library_sidebar_select(lib, ref.kind, ref.ident);
+    on_search_window_open(lib, YES, nil);
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */

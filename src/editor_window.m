@@ -577,7 +577,7 @@ init_with_app:(OnApp *)app
                       defer:NO];
     window.title              = title;
     window.releasedWhenClosed = NO;
-    window.minSize            = NSMakeSize(480, 360);
+    window.minSize            = NSMakeSize(on_look_editor_min_w, on_look_editor_min_h);
 
     self = [super initWithWindow:window];
     if (!self) return nil;

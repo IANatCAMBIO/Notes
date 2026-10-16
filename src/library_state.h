@@ -33,15 +33,23 @@
  *     selection-change handlers must do nothing.
  */
 
-/* What a sidebar row is; also what kind of selection the library has. */
+/* What a sidebar row is; also what kind of selection the library has.
+ * In the sidebar's order. */
 typedef enum {
-    on_sb_pinned,                    /* "Pinned Notes"                      */
     on_sb_all,                       /* "All Notes"                         */
+    on_sb_pinned,                    /* "Pinned Notes"                      */
     on_sb_actions,                   /* "Action Items"                      */
     on_sb_tags_header,               /* the "Tags" header (not selectable)  */
     on_sb_tag,                       /* one tag                             */
     on_sb_trash,                     /* "Trash"                             */
 } on_sb_kind_t;
+
+/* A sidebar row named by a menu item: the row a context menu was opened
+ * on, which need not be the selected one (a right click does not select). */
+typedef struct {
+    on_sb_kind_t kind;
+    gint64       ident;              /* the tag id; 0 for the fixed rows    */
+} on_sb_ref_t;
 
 /* What the notes pane shows. */
 typedef enum {
@@ -206,6 +214,32 @@ BOOL on_library_run_command(NotesLibrary *lib, id sender);
  * Output: YES to enable it.
  */
 BOOL on_library_validate_command(NotesLibrary *lib, id item);
+
+/*
+ * on_library_sb_ref_value — a sidebar row as a menu item's
+ * representedObject, so a context menu's commands act on the row they
+ * were opened on.
+ *
+ * Inputs:
+ *   kind  — the row's kind
+ *   ident — its tag id, 0 for the fixed rows
+ *
+ * Output: the value to set on the item.
+ */
+NSValue *on_library_sb_ref_value(on_sb_kind_t kind, gint64 ident);
+
+/*
+ * on_library_sb_ref — the sidebar row an item names, if any.  Handlers of
+ * the sidebar's menu commands ask this first and fall back to the
+ * library's selection (the menu bar's items carry no row).
+ *
+ * Inputs:
+ *   sender — the menu item, or any other sender
+ *   ref    — receives the row when the item carries one
+ *
+ * Output: YES when the item carries a row.
+ */
+BOOL on_library_sb_ref(id sender, on_sb_ref_t *ref);
 
 /* ── Drags of rows (library_state.m) ────────────────────────────────────── */
 

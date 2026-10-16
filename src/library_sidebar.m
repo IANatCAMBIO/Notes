@@ -9,9 +9,11 @@
  * cannot be selected.
  *
  * Selecting a row writes lib's selection and refreshes the notes pane
- * (which also updates the status bar).  A right click selects the row and
- * shows its menu, built from commands (commands.h) so the menu bar, the
- * toolbar and the menu run the same handlers.
+ * (which also updates the status bar).  A right click shows the row's
+ * menu without selecting it, as Tasks' sidebar does: the items are
+ * commands (commands.h), so the menu bar, the toolbar and the menu run
+ * the same handlers, and each carries the row (on_sb_ref_t) it was
+ * opened on.
  *
  * Drag and drop (on_pasteboard_type_rows, library_state.h): notes onto a
  * tag (a #tag on their bottom lines) or onto the Trash.
@@ -54,6 +56,14 @@
 static NSString * const count_id  = @"sidebar.count";
 static const CGFloat    count_gap = 4.0;
 
+/* What VoiceOver reads for a row: its bare name and, when shown, its count
+ * — one item, not the emoji, the name and the count apart. */
+static NSString *
+row_speech(SidebarItem *it)
+{
+    return it.count >= 0 ? [NSString stringWithFormat:@"%@, %d", it.raw_name, it.count] : it.raw_name;
+}
+
 /*
  * count_font — the count's font: small, even-width digits (Tasks' count).
  *
@@ -66,26 +76,25 @@ count_font(void)
 }
 
 /*
- * item_new — a sidebar row.
+ * item_new — a sidebar row, its count not yet read (read_counts).
  *
  * Inputs:
  *   kind       — the row's kind
  *   ident      — its tag id; 0 for the fixed rows
  *   display    — what it shows
  *   raw        — its bare name (the selection's name, status messages)
- *   count      — the count shown at the row's right, or -1 for none
  *
  * Output: the item.
  */
 static SidebarItem *
-item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint count)
+item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw)
 {
     SidebarItem *it = [[SidebarItem alloc] init];
     it.kind     = kind;
     it.ident    = ident;
     it.display  = display;
     it.raw_name = raw;
-    it.count    = count;
+    it.count    = -1;
     return it;
 }
 
@@ -123,20 +132,17 @@ section_label(NSString *emoji, NSString *name)
 
 /*
  * tag_item — a tag's row: its emoji before its name (two spaces apart, as
- * Tasks shows it) and, when counts are shown, the count of notes carrying
- * it at the row's right.
+ * Tasks shows it).
  *
  * Inputs:
- *   t          — the tag
- *   tag_counts — tag id → count, or NULL while counts are hidden
+ *   t — the tag
  *
  * Output: the item.
  */
 static SidebarItem *
-tag_item(const OnTag *t, GHashTable *tag_counts)
+tag_item(const OnTag *t)
 {
-    gint count = tag_counts ? GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id)) : -1;
-    return item_new(on_sb_tag, t->id, on_ui_tag_label(t->emoji, t->name), @(t->name), count);
+    return item_new(on_sb_tag, t->id, on_ui_tag_label(t->emoji, t->name), @(t->name));
 }
 
 /* ── The outline ─────────────────────────────────────────────────────────── */
@@ -145,8 +151,8 @@ tag_item(const OnTag *t, GHashTable *tag_counts)
 
 /*
  * NotesSidebarOutline — the outline view; a click selects its row on the
- * mouse-down, and a right click (or Control-click) selects the row under it
- * and shows that row's menu.
+ * mouse-down.  (A right click opens the outline's menu, filled per row by
+ * the controller, NSMenuDelegate.)
  */
 @interface NotesSidebarOutline : NSOutlineView
 @property (nonatomic, weak) NotesSidebarController *controller;
@@ -154,13 +160,13 @@ tag_item(const OnTag *t, GHashTable *tag_counts)
 
 /* ── The controller ─────────────────────────────────────────────────────── */
 
-@interface NotesSidebarController : NSObject <NSOutlineViewDelegate, NSOutlineViewDataSource>
+@interface NotesSidebarController : NSObject <NSOutlineViewDelegate, NSOutlineViewDataSource,
+                                              NSMenuDelegate>
 @property (nonatomic, weak)   NotesLibrary        *lib;
 @property (nonatomic, weak)   NotesSidebarOutline *outline;
 @property (nonatomic, strong) NSMutableArray<SidebarItem *> *roots;
 @property (nonatomic, assign) BOOL                 fit_queued;
 @property (nonatomic, assign) BOOL                 fit_force;
-- (NSMenu *)menu_for_row:(NSInteger)row;
 - (void)queue_fit:(BOOL)force;
 @end
 
@@ -179,22 +185,6 @@ mouseDown:(NSEvent *)event
 {
     on_ui_select_on_mouse_down(self, event);
     [super mouseDown:event];
-}
-
-/*
- * menuForEvent: — select the row clicked and show its menu (none for the
- * Tags header or empty space).
- *
- * Inputs:
- *   event — the right click or Control-click
- *
- * Output: the menu, or nil.
- */
-- (NSMenu *)
-menuForEvent:(NSEvent *)event
-{
-    NSInteger row = [self rowAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
-    return [self.controller menu_for_row:row];
 }
 
 /*
@@ -255,43 +245,83 @@ select_row:(NSInteger)row
 
 /*
  * build_roots — the rows from the database: the views, the tags the notes
- * carry, the Trash when it holds anything.
+ * carry, the Trash when it holds anything; then their counts.
  */
 - (void)
 build_roots
 {
-    OnDatabase *db     = self.lib.app->db;
-    BOOL        counts = self.lib.app->sidebar_counts;
-    GHashTable *tag_counts = counts ? on_db_tag_count_map(db) : NULL;
+    OnDatabase *db = self.lib.app->db;
     NSMutableArray<SidebarItem *> *roots = [NSMutableArray array];
 
-    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes",
-                              counts ? on_db_note_count_visible(db) : -1)];
-    gint n_pinned = on_db_note_count_pinned(db);
-    if (n_pinned > 0)
+    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes")];
+    if (on_db_note_count_pinned(db) > 0)
         [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes"),
-                                  @"Pinned Notes", counts ? n_pinned : -1)];
+                                  @"Pinned Notes")];
     gint n_actions = 0, n_open = 0;
     on_db_action_counts(db, &n_actions, &n_open);
     if (n_actions > 0)
         [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items"),
-                                  @"Action Items", counts ? n_open : -1)];
+                                  @"Action Items")];
 
     GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
-        [roots addObject:item_new(on_sb_tags_header, 0, @"Tags", @"Tags", -1)];
+        [roots addObject:item_new(on_sb_tags_header, 0, @"Tags", @"Tags")];
         for (GList *l = tags; l != NULL; l = l->next)
-            [roots addObject:tag_item(l->data, tag_counts)];
+            [roots addObject:tag_item(l->data)];
     }
     on_db_tag_list_free(tags);
 
-    gint n_trash = on_db_trash_count(db);
-    if (n_trash > 0)
-        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash"), @"Trash",
-                                  counts ? n_trash : -1)];
+    if (on_db_trash_count(db) > 0)
+        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑️", @"Trash"), @"Trash")];
 
-    if (tag_counts) g_hash_table_destroy(tag_counts);
     self.roots = roots;
+    [self read_counts];
+}
+
+/*
+ * read_counts — the rows' counts from the database (All Notes: the notes
+ * on show; Action Items: the open items; a tag: the notes carrying it),
+ * or none while the sidebar_counts setting hides them.
+ */
+- (void)
+read_counts
+{
+    OnDatabase *db     = self.lib.app->db;
+    BOOL        counts = self.lib.app->sidebar_counts;
+    GHashTable *tag_counts = counts ? on_db_tag_count_map(db) : NULL;
+    gint        n_actions = 0, n_open = 0;
+    if (counts) on_db_action_counts(db, &n_actions, &n_open);
+
+    for (SidebarItem *it in self.roots) {
+        gint   n     = -1;
+        gint64 ident = it.ident;
+        if (counts) {
+            switch (it.kind) {
+            case on_sb_all:     n = on_db_note_count_visible(db); break;
+            case on_sb_pinned:  n = on_db_note_count_pinned(db);  break;
+            case on_sb_actions: n = n_open;                       break;
+            case on_sb_tag:     n = GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &ident)); break;
+            case on_sb_trash:   n = on_db_trash_count(db);        break;
+            case on_sb_tags_header: break;
+            }
+        }
+        it.count = n;
+    }
+    if (tag_counts) g_hash_table_destroy(tag_counts);
+}
+
+/*
+ * refresh_counts — re-read the counts and redraw the rows in place: no
+ * rebuild, so the selection, the scroll position and the divider stay.
+ */
+- (void)
+refresh_counts
+{
+    if (!self.lib.app->sidebar_counts) return;
+    [self read_counts];
+    [self.outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:
+                                           NSMakeRange(0, (NSUInteger)self.outline.numberOfRows)]
+                            columnIndexes:[NSIndexSet indexSetWithIndex:0]];
 }
 
 /*
@@ -421,35 +451,35 @@ command_item(NSString *ident, NSString *title)
 }
 
 /*
- * menu_for_row: — select a row and build its menu: the Trash empties; a
- * tag is edited (its emoji and Notes' favorite flag); every row but the
- * Trash searches within itself.  The items are commands, run by the
- * library through the responder chain.
+ * menuNeedsUpdate: — the outline's menu is about to open on the row under
+ * the pointer (clickedRow; the selection is left alone): the Trash
+ * empties; a tag is edited (its emoji and Notes' favorite flag); every
+ * row but the Trash searches within itself.  The items are commands, run
+ * by the library through the responder chain, each carrying its row.
+ * Nothing for empty space or the Tags header.
  *
  * Inputs:
- *   row — the row clicked, or -1
- *
- * Output: the menu, or nil (empty space, the Tags header).
+ *   menu — the outline's menu
  */
-- (NSMenu *)
-menu_for_row:(NSInteger)row
+- (void)
+menuNeedsUpdate:(NSMenu *)menu
 {
-    SidebarItem *it = row >= 0 ? [self.outline itemAtRow:row] : nil;
-    if (it == nil || it.kind == on_sb_tags_header) return nil;
-    if (self.outline.selectedRow != row) {
-        [self.outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-    }
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    [menu removeAllItems];
+    NSInteger    row = self.outline.clickedRow;
+    SidebarItem *it  = row >= 0 ? [self.outline itemAtRow:row] : nil;
+    if (it == nil || it.kind == on_sb_tags_header) return;
+    NSValue *ref = on_library_sb_ref_value(it.kind, it.ident);
+
     if (it.kind == on_sb_trash) {
         [menu addItem:command_item(@"empty-trash", nil)];
-        return menu;
+        return;
     }
     if (it.kind == on_sb_tag) {
         [menu addItem:command_item(@"edit-tag", nil)];
         [menu addItem:NSMenuItem.separatorItem];
     }
     [menu addItem:command_item(@"search-here", nil)];
-    return menu;
+    for (NSMenuItem *item in menu.itemArray) item.representedObject = ref;
 }
 
 /* ── Data source ───────────────────────────────────────────────────────── */
@@ -523,7 +553,8 @@ outlineView:(NSOutlineView *)outline child:(NSInteger)index ofItem:(id)item
  * outlineView:viewForTableColumn:item: — a row's cell, formatted as Tasks'
  * sidebar formats its rows (row_font; the Tags header grey);
  * while counts are shown, the count at the row's right in a small grey
- * label with even-width digits, as Tasks shows its tags' counts.
+ * label with even-width digits, as Tasks shows its tags' counts.  To
+ * VoiceOver the cell is one static text, row_speech, not two labels.
  *
  * Inputs:
  *   outline — the outline
@@ -540,8 +571,11 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
     if (cell == nil) {
         cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"sidebar";
+        cell.accessibilityElement = YES;
+        cell.accessibilityRole    = NSAccessibilityStaticTextRole;
         NSTextField *label = [NSTextField labelWithString:@""];
         label.lineBreakMode = NSLineBreakByTruncatingTail;
+        label.accessibilityElement = NO;
         label.translatesAutoresizingMaskIntoConstraints = NO;
         [cell addSubview:label];
         cell.textField = label;
@@ -550,6 +584,7 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
         count.font       = count_font();
         count.textColor  = NSColor.secondaryLabelColor;
         count.alignment  = NSTextAlignmentRight;
+        count.accessibilityElement = NO;
         count.translatesAutoresizingMaskIntoConstraints = NO;
         [count setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -570,7 +605,26 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
     cell.textField.font      = row_font(it.kind);
     cell.textField.textColor = it.kind == on_sb_tags_header ? NSColor.secondaryLabelColor
                                                             : NSColor.labelColor;
+    cell.accessibilityValue  = row_speech(it);
     return cell;
+}
+
+/*
+ * outlineView:typeSelectStringForTableColumn:item: — type-select finds a
+ * row by its bare name, so typing a letter reaches a row whose text
+ * starts with an emoji.
+ *
+ * Inputs:
+ *   outline — the outline (unused)
+ *   column  — the column (unused)
+ *   item    — the item
+ *
+ * Output: the row's name.
+ */
+- (NSString *)
+outlineView:(NSOutlineView *)outline typeSelectStringForTableColumn:(NSTableColumn *)column item:(id)item
+{
+    return ((SidebarItem *)item).raw_name;
 }
 
 /*
@@ -719,12 +773,15 @@ on_library_sidebar_new(NotesLibrary *lib)
     outline.controller            = ctrl;
     outline.headerView            = nil;
     outline.allowsMultipleSelection = NO;
+    outline.allowsEmptySelection  = NO;     /* a ⌘-click cannot deselect: the library always lists something */
     outline.style                 = NSTableViewStyleSourceList;
     outline.rowHeight             = on_look_sidebar_row_h;
     outline.autosaveExpandedItems = NO;
     outline.focusRingType         = NSFocusRingTypeNone;
     outline.delegate              = ctrl;
     outline.dataSource            = ctrl;
+    outline.menu                  = [[NSMenu alloc] initWithTitle:@""];
+    outline.menu.delegate         = ctrl;
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"main"];
     column.resizingMask = NSTableColumnAutoresizingMask;
     [outline addTableColumn:column];
@@ -775,6 +832,15 @@ BOOL
 on_library_sidebar_refresh(NotesLibrary *lib)
 {
     return [sidebar refresh];
+}
+
+/*
+ * on_library_sidebar_refresh_counts — see library_sidebar.h.
+ */
+void
+on_library_sidebar_refresh_counts(NotesLibrary *lib)
+{
+    [sidebar refresh_counts];
 }
 
 /*

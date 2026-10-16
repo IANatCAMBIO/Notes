@@ -3,11 +3,12 @@
 #import "library_state.h"
 
 /*
- * library_sidebar — the library's sidebar: the views (Pinned Notes, All
+ * library_sidebar — the library's sidebar: the views (All Notes, Pinned
  * Notes, Action Items), then the tags the notes carry, and the Trash —
  * the design of the Tasks app's sidebar.  A right-click on a tag offers
  * Edit Tag… (its emoji and Notes' favorite flag; a tag's name never
- * changes).
+ * changes); a right click leaves the selection alone, the menu's items
+ * carry the row (on_sb_ref_t).
  *
  * It owns the selection: when the user selects a row it writes
  * lib.sel_kind / sel_id / sel_name and calls on_library_notes_refresh and
@@ -40,9 +41,15 @@ NSView *on_library_sidebar_new(NotesLibrary *lib);
 BOOL on_library_sidebar_refresh(NotesLibrary *lib);
 
 /*
+ * on_library_sidebar_refresh_counts — re-read and redraw the counts only
+ * (an action item was ticked): the rows, the selection and the scroll
+ * position stay.  A no-op while counts are hidden.
+ */
+void on_library_sidebar_refresh_counts(NotesLibrary *lib);
+
+/*
  * on_library_sidebar_select — select a row from code (a Favorites bar
- * button, leaving an emptied Trash), opening the Tags when it is a tag,
- * and update lib's selection to match.
+ * button, leaving an emptied Trash) and update lib's selection to match.
  *
  * Inputs:
  *   lib   — the library

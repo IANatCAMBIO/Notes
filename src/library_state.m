@@ -4,6 +4,8 @@
 #import "library_window.h"
 #import "ui_util.h"
 
+#include <string.h>
+
 /* How many modules may register library commands (window frame, commands,
  * sidebar, notes, settings, search, media, AI — with room to spare). */
 #define MAX_COMMAND_TABLES 12
@@ -205,6 +207,30 @@ on_library_validate_command(NotesLibrary *lib, id item)
         if (handled) return enabled;
     }
     return NO;
+}
+
+/*
+ * on_library_sb_ref_value — see library_state.h.
+ */
+NSValue *
+on_library_sb_ref_value(on_sb_kind_t kind, gint64 ident)
+{
+    on_sb_ref_t ref = { kind, ident };
+    return [NSValue valueWithBytes:&ref objCType:@encode(on_sb_ref_t)];
+}
+
+/*
+ * on_library_sb_ref — see library_state.h.
+ */
+BOOL
+on_library_sb_ref(id sender, on_sb_ref_t *ref)
+{
+    if (![sender isKindOfClass:NSMenuItem.class]) return NO;
+    id value = ((NSMenuItem *)sender).representedObject;
+    if (![value isKindOfClass:NSValue.class] ||
+        strcmp([value objCType], @encode(on_sb_ref_t)) != 0) return NO;
+    [value getValue:ref size:sizeof *ref];
+    return YES;
 }
 
 /*

@@ -382,12 +382,62 @@ NSAttributedStringKey const on_ui_strike_key = @"notes.strike";
 
 /*
  * NotesCellLabel — the label of an on_ui_label_cell: an ordinary label
- * that also strikes through its text carrying on_ui_strike_key.
+ * that also strikes through its text carrying on_ui_strike_key, and that
+ * shows attributed text carrying its own colour in the selection's text
+ * colour while its row is selected (AppKit swaps the colour of a plain
+ * label, not of a colour an attributed string brought along).
  */
 @interface NotesCellLabel : NSTextField
+@property (nonatomic, copy) NSAttributedString *tinted;   /* the attributed text as given */
 @end
 
 @implementation NotesCellLabel
+
+/*
+ * setAttributedStringValue: — keep the text as given and show it for the
+ * current emphasis.
+ *
+ * Inputs:
+ *   value — the attributed text
+ */
+- (void)
+setAttributedStringValue:(NSAttributedString *)value
+{
+    self.tinted = value;
+    [self apply_emphasis];
+}
+
+/*
+ * setStringValue: — plain text: AppKit handles its emphasis; nothing kept.
+ *
+ * Inputs:
+ *   value — the text
+ */
+- (void)
+setStringValue:(NSString *)value
+{
+    [super setStringValue:value];
+    self.tinted = nil;
+}
+
+/*
+ * apply_emphasis — show the kept attributed text, every colour in it
+ * replaced by the selection's text colour while the row is emphasized.
+ */
+- (void)
+apply_emphasis
+{
+    NSAttributedString *shown = self.tinted;
+    if (shown == nil) return;
+    if (self.cell.backgroundStyle == NSBackgroundStyleEmphasized) {
+        NSMutableAttributedString *white = [shown mutableCopy];
+        [white addAttribute:NSForegroundColorAttributeName
+                      value:NSColor.alternateSelectedControlTextColor
+                      range:NSMakeRange(0, white.length)];
+        shown = white;
+    }
+    [super setAttributedStringValue:shown];
+}
 
 /*
  * drawRect: — the text, then a 1 pt line through each struck range, half
@@ -427,6 +477,32 @@ drawRect:(NSRect)dirty
 @end
 
 /*
+ * NotesLabelCell — an on_ui_label_cell: tells its label when the row's
+ * emphasis changes (NSTableCellView passes the style to the label's cell,
+ * which recolours plain text only).
+ */
+@interface NotesLabelCell : NSTableCellView
+@end
+
+@implementation NotesLabelCell
+
+/*
+ * setBackgroundStyle: — the row became, or stopped being, a selected row
+ * of the focused table: the label shows its tinted text for it.
+ *
+ * Inputs:
+ *   style — the new style
+ */
+- (void)
+setBackgroundStyle:(NSBackgroundStyle)style
+{
+    [super setBackgroundStyle:style];
+    [(NotesCellLabel *)self.textField apply_emphasis];
+}
+
+@end
+
+/*
  * on_ui_label_cell — a vertically centred text cell.
  * Inputs/output are documented in ui_util.h.
  */
@@ -435,7 +511,7 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
 {
     NSTableCellView *cell = [table makeViewWithIdentifier:ident owner:nil];
     if (cell) return cell;
-    cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
+    cell = [[NotesLabelCell alloc] initWithFrame:NSZeroRect];
     cell.identifier = ident;
     NSTextField *label = [NotesCellLabel labelWithString:@""];
     label.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -499,6 +575,8 @@ on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event)
                                                        NSEventModifierFlagControl);
     NSInteger row = [table rowAtPoint:[table convertPoint:event.locationInWindow fromView:nil]];
     if (mods != 0 || event.clickCount != 1 || row < 0 || [table isRowSelected:row]) return;
+    NSView *hit = [table hitTest:[table.superview convertPoint:event.locationInWindow fromView:nil]];
+    if ([hit isKindOfClass:NSButton.class]) return;
     NSIndexSet *rows = vetted_selection(table, row);
     if (rows.count > 0) [table selectRowIndexes:rows byExtendingSelection:NO];
 }

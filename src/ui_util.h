@@ -296,7 +296,9 @@ extern NSAttributedStringKey const on_ui_strike_key;
  *   ident — the cell's reuse identifier (the column's, usually)
  *
  * Output: the cell; its textField is the label, which strikes through
- *         text carrying on_ui_strike_key.
+ *         text carrying on_ui_strike_key, and shows attributed text that
+ *         carries its own colour (a due date's tint) in the selection's
+ *         text colour while the row is selected, as a plain label is.
  */
 NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
 
@@ -307,10 +309,12 @@ NSTableCellView *on_ui_label_cell(NSTableView *table, NSString *ident);
  * outline's mouseDown: calls this, then super, whose tracking loop still
  * tells clicks from drags and sends double-clicks.  An already-selected
  * row is left alone, so a multi-row selection can still be dragged, as
- * are ⌘-, ⇧- and ^-clicks.  The delegate is asked first, as a click
- * would ask it (selectionShouldChange…, then …selectionIndexesFor-
- * ProposedSelection: or else shouldSelectRow: / shouldSelectItem:), so a
- * row it refuses — the sidebar's Tags header — stays unselectable.
+ * are ⌘-, ⇧- and ^-clicks, and a press on a button in a cell (ticking
+ * an unselected action item must not drop the selection).  The delegate
+ * is asked first, as a click would ask it (selectionShouldChange…, then
+ * …selectionIndexesForProposedSelection: or else shouldSelectRow: /
+ * shouldSelectItem:), so a row it refuses — the sidebar's Tags header —
+ * stays unselectable.
  *
  * Inputs:
  *   table — the table or outline receiving the click

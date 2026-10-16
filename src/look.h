@@ -107,6 +107,8 @@ static const double on_look_library_min_w    = 700.0;
 static const double on_look_library_min_h    = 450.0;
 static const double on_look_editor_w         = 544.0;  /* unless editor_win_w/h say otherwise    */
 static const double on_look_editor_h         = 433.0;
+static const double on_look_editor_min_w     = 480.0;  /* an editor window's least size          */
+static const double on_look_editor_min_h     = 360.0;
 static const double on_look_editor_screen_margin = 12.0; /* new editors: bottom-right, this clear */
 static const double on_look_search_w         = 400.0;  /* the search window: its minimum, and */
 static const double on_look_search_h         = 260.0;  /* the size it always opens at          */
@@ -134,7 +136,6 @@ static const double on_look_tool_btn_margin = 12.0;
 static const double on_look_tool_btn_pad    = 24.0;   /* label to button edge, long titles     */
 static const double on_look_tool_msg_w      = 388.0;  /* wrapped message text                  */
 static const double on_look_tool_msg_max_h  = 240.0;  /* taller messages scroll                */
-static const double on_look_tool_field_w    = 260.0;  /* a single text field asking for a name */
 static const double on_look_tool_emoji_w    = 44.0;   /* the Edit Tag panel's emoji field      */
 
 /* ── Library ──────────────────────────────────────────────────────────────── */

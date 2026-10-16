@@ -774,6 +774,7 @@ init_with_lib:(NotesLibrary *)lib
     _actions = [[NotesActivatingTable alloc] initWithFrame:NSZeroRect];
     add_columns(_actions, action_columns, sizeof action_columns / sizeof *action_columns);
     apply_layout(_actions, "action_columns", "done:1,tags:1,action:1,due:1");
+    _actions.rowHeight    = on_look_row_h;
     _actions.usesAlternatingRowBackgroundColors = YES;
     _actions.target       = self;
     _actions.doubleAction = @selector(actions_activated:);
@@ -1235,7 +1236,7 @@ toggle_action:(NSButton *)sender
                                 columnIndexes:[NSIndexSet indexSetWithIndexesInRange:
                                                NSMakeRange(0, (NSUInteger)self.actions.numberOfColumns)]];
     }
-    if (self.lib.app->sidebar_counts) on_library_sidebar_refresh(self.lib);
+    on_library_sidebar_refresh_counts(self.lib);
 }
 
 /*

@@ -59,7 +59,10 @@ on_look_pick(on_look_color_t color, bool dark)
  * (the system font, as Tasks' sidebar has it) and a note's text in the editor (on_look_font_size
  * and its headings).                                                      */
 static const double on_look_ui_font          = 11.0;
-static const double on_look_status_font      = 9.0;    /* the status bars, Settings' health plate */
+static const double on_look_status_font      = 11.0;   /* the status bars, Settings' health plate:
+                                                        * the Files and Tasks apps' status size  */
+static const double on_look_status_hold      = 3.0;    /* a status message stays this long ...   */
+static const double on_look_status_fade      = 1.0;    /* ... then fades out over this, as Tasks' */
 
 /* ── The note editor ──────────────────────────────────────────────────────── */
 
@@ -109,9 +112,12 @@ static const double on_look_editor_w         = 544.0;  /* unless editor_win_w/h 
 static const double on_look_editor_h         = 433.0;
 static const double on_look_editor_min_w     = 480.0;  /* an editor window's least size          */
 static const double on_look_editor_min_h     = 360.0;
-static const double on_look_editor_screen_margin = 12.0; /* new editors: bottom-right, this clear */
-static const double on_look_search_w         = 400.0;  /* the search window: its minimum, and */
-static const double on_look_search_h         = 260.0;  /* the size it always opens at          */
+static const double on_look_screen_margin    = 12.0;   /* a window placed in the screen's
+                                                        * lower-right corner (new editors),
+                                                        * this clear of the work area's edges;
+                                                        * Tasks places Quick Task the same    */
+static const double on_look_search_win_w     = 400.0;  /* the search window: its minimum, and */
+static const double on_look_search_win_h     = 260.0;  /* the size it always opens at          */
 static const double on_look_media_w          = 780.0;
 static const double on_look_media_h          = 560.0;
 static const double on_look_settings_max_h   = 600.0;
@@ -123,10 +129,10 @@ static const on_look_color_t on_look_tool_hero_sub     = { { 0.880, 0.880, 0.880
 static const on_look_color_t on_look_tool_hero_problem = { { 1.000, 0.920, 0.550, 1 }, { 1.000, 0.920, 0.550, 1 } };  /* a problem  */
 
 static const double on_look_tool_min_w      = 340.0;
-static const double on_look_tool_hero_h     = 43.0;
-static const double on_look_tool_hero_pad   = 16.0;   /* horizontal inset in the hero          */
-static const double on_look_tool_hero_gap   = 3.0;    /* hero title to subtitle                */
-static const double on_look_tool_icon       = 22.0;   /* hero symbol                           */
+static const double on_look_hero_h          = 43.0;   /* the blue hero strip                   */
+static const double on_look_hero_pad        = 16.0;   /* horizontal inset in the hero          */
+static const double on_look_hero_gap        = 3.0;    /* hero title to subtitle                */
+static const double on_look_hero_icon       = 22.0;   /* hero symbol                           */
 static const double on_look_tool_pad        = 16.0;   /* around the caller's controls          */
 static const double on_look_tool_bar_h      = 40.0;   /* the button bar                        */
 static const double on_look_tool_btn_h      = 25.0;
@@ -140,9 +146,10 @@ static const double on_look_tool_emoji_w    = 44.0;   /* the Edit Tag panel's em
 
 /* ── Library ──────────────────────────────────────────────────────────────── */
 
-static const on_look_color_t on_look_due_overdue = { { 0.753, 0.110, 0.157, 1 }, { 1.000, 0.482, 0.447, 1 } };
-static const on_look_color_t on_look_due_today   = { { 0.820, 0.604, 0.000, 1 }, { 0.898, 0.753, 0.482, 1 } };
-static const on_look_color_t on_look_due_ahead   = { { 0.149, 0.635, 0.412, 1 }, { 0.341, 0.808, 0.561, 1 } };
+/* The due tints are Tasks' (look.m there), light and dark alike. */
+static const on_look_color_t on_look_due_overdue = { { 0.753, 0.110, 0.157, 1 }, { 0.965, 0.380, 0.318, 1 } };
+static const on_look_color_t on_look_due_today   = { { 0.820, 0.604, 0.000, 1 }, { 0.973, 0.894, 0.361, 1 } };
+static const on_look_color_t on_look_due_ahead   = { { 0.149, 0.635, 0.412, 1 }, { 0.341, 0.890, 0.537, 1 } };
 static const on_look_color_t on_look_card        = { { 1.000, 1.000, 1.000, 1 }, { 0.165, 0.165, 0.165, 1 } };  /* grid thumbnail    */
 static const on_look_color_t on_look_card_border = { { 0.800, 0.800, 0.800, 1 }, { 0.333, 0.333, 0.333, 1 } };
 static const on_look_color_t on_look_card_text   = { { 0.267, 0.267, 0.267, 1 }, { 0.733, 0.733, 0.733, 1 } };
@@ -167,7 +174,7 @@ static const double on_look_sidebar_row_h    = 26.0;   /* a sidebar row, as in T
 static const double on_look_sidebar_text_pad = 4.0;    /* a sidebar row's text, from the left    */
 static const double on_look_sidebar_count_pad = 6.0;   /* its count, from the right              */
 static const double on_look_sidebar_max_fraction = 0.5; /* fit-to-content ceiling, of the split  */
-static const double on_look_main_pane_min_w  = 400.0;
+static const double on_look_pane_min_w       = 400.0;  /* the notes pane                         */
 static const double on_look_row_h            = 20.0;   /* compact list row                       */
 static const double on_look_row_comfortable_h = 40.0;  /* title + preview                        */
 static const double on_look_cell_pad_h       = 4.0;    /* a list cell's text, from either edge   */

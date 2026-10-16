@@ -130,7 +130,7 @@ build_with_title:(NSString *)window_title
     [content layoutSubtreeIfNeeded];
     NSSize  cs = content.fittingSize;
     CGFloat w  = MAX(MAX(on_look_tool_min_w, cs.width + 2 * on_look_tool_pad), buttons_w);
-    CGFloat h  = on_look_tool_hero_h + on_look_tool_pad + cs.height + on_look_tool_pad +
+    CGFloat h  = on_look_hero_h + on_look_tool_pad + cs.height + on_look_tool_pad +
                  1.0 + on_look_tool_bar_h;
 
     NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -157,9 +157,9 @@ build_with_title:(NSString *)window_title
                                       accessibilityDescription:nil] : nil;
     NSImageView *icon = on_ui_image_view(
         [sym imageWithSymbolConfiguration:
-            [NSImageSymbolConfiguration configurationWithPointSize:on_look_tool_icon
+            [NSImageSymbolConfiguration configurationWithPointSize:on_look_hero_icon
                                                             weight:NSFontWeightMedium]],
-        on_look_tool_icon, on_look_tool_icon);
+        on_look_hero_icon, on_look_hero_icon);
     icon.contentTintColor = NSColor.whiteColor;
     [hero addSubview:icon];
 
@@ -183,21 +183,21 @@ build_with_title:(NSString *)window_title
         [hero.topAnchor      constraintEqualToAnchor:cv.topAnchor],
         [hero.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
         [hero.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-        [hero.heightAnchor   constraintEqualToConstant:on_look_tool_hero_h],
+        [hero.heightAnchor   constraintEqualToConstant:on_look_hero_h],
 
-        [icon.leadingAnchor  constraintEqualToAnchor:hero.leadingAnchor constant:on_look_tool_hero_pad],
+        [icon.leadingAnchor  constraintEqualToAnchor:hero.leadingAnchor constant:on_look_hero_pad],
         [icon.centerYAnchor  constraintEqualToAnchor:hero.centerYAnchor],
 
         [title.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
-        [title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-on_look_tool_hero_pad],
+        [title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-on_look_hero_pad],
         [title.bottomAnchor   constraintEqualToAnchor:hero.centerYAnchor
-                                             constant:subtitle.length ? -on_look_tool_hero_gap / 2.0
+                                             constant:subtitle.length ? -on_look_hero_gap / 2.0
                                                                       : on_look_ui_font / 2.0],
 
         [sub.leadingAnchor  constraintEqualToAnchor:title.leadingAnchor],
         [sub.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
         [sub.topAnchor      constraintEqualToAnchor:hero.centerYAnchor
-                                           constant:on_look_tool_hero_gap / 2.0],
+                                           constant:on_look_hero_gap / 2.0],
     ]];
 
     /* Button bar: right-aligned, the default button rightmost.  No button

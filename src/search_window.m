@@ -119,7 +119,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     /* A tool window: the small utility title bar, as Settings and the
      * tool panels have it.  It does not float, so an editor opened from a
      * result comes in front of it; it stays up when the app is inactive. */
-    NSSize   min = NSMakeSize(on_look_search_w, on_look_search_h);
+    NSSize   min = NSMakeSize(on_look_search_win_w, on_look_search_win_h);
     NSPanel *win = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, min.width, min.height)
                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                         NSWindowStyleMaskResizable | NSWindowStyleMaskUtilityWindow

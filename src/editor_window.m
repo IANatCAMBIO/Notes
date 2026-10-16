@@ -619,7 +619,7 @@ init_with_app:(OnApp *)app
 
 /*
  * place_window — put a new editor at the bottom-right of the library's
- * screen (its own when there is no library), on_look_editor_screen_margin
+ * screen (its own when there is no library), on_look_screen_margin
  * clear of the work area's edges, its title bar always on screen.
  */
 - (void)
@@ -630,8 +630,8 @@ place_window
     NSRect area  = screen.visibleFrame;
     NSRect frame = self.window.frame;
     NSPoint origin = {
-        MAX(NSMaxX(area) - on_look_editor_screen_margin - frame.size.width, area.origin.x),
-        MIN(area.origin.y + on_look_editor_screen_margin, NSMaxY(area) - frame.size.height),
+        MAX(NSMaxX(area) - on_look_screen_margin - frame.size.width, area.origin.x),
+        MIN(area.origin.y + on_look_screen_margin, NSMaxY(area) - frame.size.height),
     };
     [self.window setFrameOrigin:origin];
 }

@@ -624,7 +624,7 @@ label_with_text(NSView *root, NSString *text)
 }
 
 /*
- * status_text_centred — is a status label 9 pt, with its capitals centred
+ * status_text_centred — is a status label 11 pt, with its capitals centred
  * in the status band: from the window's bottom edge up to the separator
  * above the bar?
  *
@@ -704,7 +704,7 @@ test_editor_commands(void)
         check(label_with_text(window.contentView, @"#commands #found") != nil,
               "the status bar shows the note's #tags, in order");
         check(status_text_centred(label_with_text(window.contentView, @"#commands #found")),
-              "the editor's status text is 9 pt and centred in its bar");
+              "the editor's status text is 11 pt and centred in its bar");
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
 
@@ -765,7 +765,7 @@ test_editor_commands(void)
         on_image_viewer_close(viewer);
 
         NSRect area = window.screen.visibleFrame;
-        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_editor_screen_margin)) < 1.0,
+        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_screen_margin)) < 1.0,
               "a new editor opens at the bottom-right of the screen");
         on_editor_close_notes(&note_id, 1);
     }
@@ -2311,7 +2311,7 @@ test_shell(NotesLibrary *lib)
         if ([v isKindOfClass:NSTextField.class] && [((NSTextField *)v).stringValue isEqualToString:@"All Notes"])
             path_label = (NSTextField *)v;
     check(path_label != nil && status_text_centred(path_label),
-          "the library's status text is 9 pt and centred in its bar");
+          "the library's status text is 11 pt and centred in its bar");
     check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"],
           "toolbar buttons have GTK's tooltips");
 
@@ -2465,7 +2465,7 @@ test_secondary_windows(NotesLibrary *lib)
         check(((NSTextField *)path).font.pointSize == on_look_status_font &&
               label_with_text(plate, @"Health:").font.pointSize == on_look_status_font &&
               button_titled(root, @"Update").font.pointSize == on_look_ui_font,
-              "the database plate's text is 9 pt, like the status bars; its Update button is not");
+              "the database plate's text is 11 pt, like the status bars; its Update button is not");
         check(fabs(NSWidth(root.frame) - column.fittingSize.width - 20) < 1 ||
               NSWidth(root.frame) - column.fittingSize.width > 20,
               "Settings opens 20 pt wider than its content");
@@ -2633,8 +2633,8 @@ test_secondary_windows(NotesLibrary *lib)
         for (NSWindow *w in NSApp.windows)
             if (w.visible && [w.title isEqualToString:@"Search Notes"]) scoped_win = w;
         check(NSEqualSizes(scoped_win.contentView.frame.size,
-                           NSMakeSize(on_look_search_w, on_look_search_h)) &&
-              NSEqualSizes(scoped_win.contentMinSize, NSMakeSize(on_look_search_w, on_look_search_h)),
+                           NSMakeSize(on_look_search_win_w, on_look_search_win_h)) &&
+              NSEqualSizes(scoped_win.contentMinSize, NSMakeSize(on_look_search_win_w, on_look_search_win_h)),
               "a search window opens at its minimum size, whatever size the last one was");
         NSView      *root   = scoped_win.contentView;
         NSTextField *query  = (NSTextField *)view_with_identifier(root, @"search-query");

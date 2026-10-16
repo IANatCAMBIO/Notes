@@ -7,9 +7,7 @@
 #import "ui_util.h"
 
 #include "identity.h"
-
-/* How long an event message stays in the status bar, in seconds. */
-static const double status_message_seconds = 4.0;
+#include "look.h"
 
 /* The toolbar's own items, beside the commands'. */
 static NSToolbarItemIdentifier const search_item_ident = @"notes.search-field";
@@ -75,7 +73,9 @@ pane_item(NSView *view, CGFloat min_width)
 
 /*
  * status_clear — the status timer's callback: the event message has been up
- * long enough.
+ * for on_look_status_hold: fade it out over on_look_status_fade, then clear
+ * it (as Tasks' status bar does).  A newer message meanwhile is shown at
+ * full strength by show_status:, which this must not then clear.
  *
  * Inputs:
  *   data — the NotesLibraryWindow, unretained: the controller removes the
@@ -85,8 +85,17 @@ static void
 status_clear(void *data)
 {
     NotesLibraryWindow *controller = (__bridge NotesLibraryWindow *)data;
+    NSTextField        *label      = controller.status_event;
+    NSString           *shown      = label.stringValue;
     controller.status_timer = 0;
-    controller.status_event.stringValue = @"";
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = on_look_status_fade;
+        label.animator.alphaValue = 0.0;
+    } completionHandler:^{
+        if (![label.stringValue isEqualToString:shown]) return;   /* replaced meanwhile */
+        label.stringValue = @"";
+        label.alphaValue  = 1.0;
+    }];
 }
 
 @implementation NotesLibraryWindow
@@ -154,7 +163,7 @@ build_content
     self.sidebar_item.canCollapse     = YES;
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
     [self.split addSplitViewItem:self.sidebar_item];
-    [self.split addSplitViewItem:pane_item(main_pane, on_look_main_pane_min_w)];
+    [self.split addSplitViewItem:pane_item(main_pane, on_look_pane_min_w)];
     self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
 
     NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
@@ -174,7 +183,7 @@ build_content
     /* The status band: from under the rule to the window's bottom edge. */
     NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
     [content addLayoutGuide:band];
-    self.status_path  = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
+    self.status_path  = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentCenter);
     self.status_event = on_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
     CGFloat inset = on_look_status_inset;
     [NSLayoutConstraint activateConstraints:@[
@@ -191,7 +200,11 @@ build_content
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-on_look_status_h],
         [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
         [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-        [self.status_path.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],
+        /* The location is centred in the bar, as in Files and Tasks; it
+         * gives way (truncating) before it would run into the event. */
+        [self.status_path.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [self.status_path.leadingAnchor constraintGreaterThanOrEqualToAnchor:content.leadingAnchor
+                                                                   constant:inset],
         [self.status_event.trailingAnchor constraintEqualToAnchor:content.trailingAnchor
                                                          constant:-inset],
         [self.status_event.leadingAnchor
@@ -223,8 +236,9 @@ update_location
 }
 
 /*
- * show_status: — the status bar's right side: an event message, cleared
- * again after status_message_seconds.
+ * show_status: — the status bar's right side: an event message at full
+ * strength (a fade under way is cut short), held for on_look_status_hold
+ * and then faded out (status_clear).
  *
  * Inputs:
  *   message — the message
@@ -233,8 +247,9 @@ update_location
 show_status:(NSString *)message
 {
     self.status_event.stringValue = message;
+    self.status_event.alphaValue  = 1.0;
     on_timer_remove(self.status_timer);
-    self.status_timer = on_timer_add(status_message_seconds, false, status_clear,
+    self.status_timer = on_timer_add(on_look_status_hold, false, status_clear,
                                      (__bridge void *)self, NULL);
 }
 

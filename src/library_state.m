@@ -171,7 +171,8 @@ acts_on_library(id sender)
     static NSSet<NSString *> *idents;
     if (idents == nil)
         idents = [NSSet setWithArray:@[@"view-list", @"view-grid", @"toggle-view",
-                                       @"toggle-sidebar", @"toggle-done", @"media", @"ai-summary"]];
+                                       @"toggle-sidebar", @"toggle-favorites", @"toggle-done", @"media",
+                                       @"ai-summary"]];
     NSString *ident = on_command_ident(sender);
     return ident != nil && [idents containsObject:ident];
 }

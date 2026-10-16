@@ -41,6 +41,7 @@ static const on_command_t commands[] = {
       @"Switch between the list and the grid" },
     { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar.left",
       @"Show or hide the sidebar" },
+    { @"toggle-favorites", @"Hide Favorites Bar",      @"",  0,         app, nil, nil },
     { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"eye.slash",
       @"Show or hide completed action items" },
     { @"media",            @"Media…",                  @"i", cmd_shift, app, @"photo.on.rectangle",

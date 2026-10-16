@@ -1387,6 +1387,26 @@ test_edit_tag(NotesLibrary *lib)
     pump(0.2);
     check(button_titled(lib.window.contentView, @"🧪  Smoke tag") == nil,
           "a tag no longer a favorite leaves the bar");
+
+    /* View ▸ Hide Favorites Bar: the bar slides away, the setting is kept,
+     * and Show brings it back; the menu item says what a click will do.  */
+    NSMenuItem *toggle = command_item(@"toggle-favorites");
+    on_library_validate_command(lib, toggle);
+    check([toggle.title isEqualToString:@"Hide Favorites Bar"], "the View menu offers Hide Favorites Bar");
+    on_library_run_command(lib, toggle);
+    pump(0.6);
+    NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
+    NSRect side = [outline.enclosingScrollView convertRect:outline.enclosingScrollView.bounds toView:nil];
+    gchar *kept = on_app_config_get("favorites_bar_visible");
+    check(!app.favorites_bar_visible && g_strcmp0(kept, "0") == 0 &&
+          fabs(NSMaxY(side) - NSHeight(lib.window.contentView.bounds)) < 1.5,
+          "Hide slides the bar away (the sidebar takes its room) and the choice is saved");
+    g_free(kept);
+    on_library_validate_command(lib, toggle);
+    check([toggle.title isEqualToString:@"Show Favorites Bar"], "and the item then says Show Favorites Bar");
+    on_library_run_command(lib, toggle);
+    pump(0.6);
+    check(app.favorites_bar_visible, "Show brings it back");
 }
 
 /*

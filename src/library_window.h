@@ -21,7 +21,7 @@
 /*
  * on_library_window_install — set the OnApp hooks the library answers
  * (notify_notes_changed, notify_note_saved, notify_status) and register the
- * window's own command (toggle-sidebar).  Called once at startup by the app
+ * window's own commands (toggle-sidebar, toggle-favorites).  Called once at startup by the app
  * delegate.
  *
  * Inputs:

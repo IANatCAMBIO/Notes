@@ -262,16 +262,18 @@ on_library_favorites_new(NotesLibrary *lib)
     rule.boxType = NSBoxSeparator;
     rule.translatesAutoresizingMaskIntoConstraints = NO;
 
+    /* The window sets the bar's height (0 while hidden): the strip keeps
+     * its own, and the bar clips it while it slides.                     */
+    bar.clipsToBounds = YES;
     for (NSView *v in @[bar.scroll, bar.hint, rule]) [bar addSubview:v];
     [NSLayoutConstraint activateConstraints:@[
-        [bar.heightAnchor constraintEqualToConstant:on_look_favorites_bar_h + 1],
+        [bar.scroll.heightAnchor constraintEqualToConstant:on_look_favorites_bar_h],
         [bar.scroll.topAnchor constraintEqualToAnchor:bar.topAnchor],
         [bar.scroll.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
         [bar.scroll.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
-        [bar.scroll.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [rule.topAnchor constraintEqualToAnchor:bar.scroll.bottomAnchor],
         [rule.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
-        [rule.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor],
         [rule.heightAnchor constraintEqualToConstant:1.0],
         [bar.hint.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:2 * strip_pad],
         [bar.hint.centerYAnchor constraintEqualToAnchor:bar.scroll.centerYAnchor],

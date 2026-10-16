@@ -51,6 +51,7 @@
  *   code_line_numbers      "code_line_numbers"        1  gutter numbers
  *   sidebar_counts         "sidebar_counts"           0  counts in the sidebar
  *   sidebar_fit_content    "sidebar_fit_content"      1  sidebar fits its rows
+ *   favorites_bar_visible  "favorites_bar_visible"    1  the Favorites bar shows
  *   first_line_title       "first_line_title"         1  line 0 drawn as title
  *   compact_editor_toolbar "compact_editor_toolbar"   1  style/list menus
  *   comfortable_list       "list_density_comfortable" 1  title + preview rows
@@ -140,6 +141,7 @@ typedef struct OnApp {
     gboolean    code_line_numbers;
     gboolean    sidebar_counts;
     gboolean    sidebar_fit_content;
+    gboolean    favorites_bar_visible;
     gboolean    first_line_title;
     gboolean    compact_editor_toolbar;
     gboolean    comfortable_list;

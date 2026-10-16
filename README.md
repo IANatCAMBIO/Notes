@@ -109,7 +109,8 @@ tags Tasks uses (one set in the shared file).
   tag.
 - Right-click a tag, **Edit Tag…**: an emoji (Tasks shows it too) and
   whether it is a **favorite** — a button in the **Favorites bar** across
-  the top of the window.  Favorites are each app's own.  A tag's name
+  the top of the window (View ▸ Hide Favorites Bar slides it away, as in
+  Tasks).  Favorites are each app's own.  A tag's name
   never changes.
 - A tag lives while a note (trashed too) or a task carries it.  A trashed
   note keeps its tags; Restore brings it back with them.

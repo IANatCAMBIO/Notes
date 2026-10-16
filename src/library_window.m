@@ -43,6 +43,8 @@ toolbar_idents(BOOL ai)
 @property (nonatomic, strong) NotesLibrary *lib;
 @property (nonatomic, strong) NSSplitViewController *split;   /* sidebar | notes */
 @property (nonatomic, strong) NSSplitViewItem *sidebar_item;
+@property (nonatomic, strong) NSView *favorites_bar;
+@property (nonatomic, strong) NSLayoutConstraint *favorites_height;   /* 0 while hidden */
 @property (nonatomic, strong) NSTextField *status_path;       /* left: the selection */
 @property (nonatomic, strong) NSTextField *status_event;      /* right: the last event */
 @property (nonatomic, assign) on_timer_id_t status_timer;     /* clears status_event; 0 = none */
@@ -160,6 +162,11 @@ build_content
     NSView *content   = self.window.contentView;
     NSView *panes     = self.split.view;
     NSView *favorites = on_library_favorites_new(self.lib);
+    BOOL    shown     = self.lib.app->favorites_bar_visible;
+    self.favorites_bar    = favorites;
+    self.favorites_height = [favorites.heightAnchor
+        constraintEqualToConstant:shown ? on_look_favorites_bar_h + 1 : 0];
+    favorites.hidden      = !shown;
     for (NSView *view in @[favorites, panes, rule]) {
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:view];
@@ -174,6 +181,7 @@ build_content
         [favorites.topAnchor constraintEqualToAnchor:content.topAnchor],
         [favorites.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [favorites.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        self.favorites_height,
         [panes.topAnchor constraintEqualToAnchor:favorites.bottomAnchor],
         [panes.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [panes.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
@@ -224,6 +232,29 @@ show_status:(NSString *)message
 toggle_sidebar
 {
     self.sidebar_item.animator.collapsed = !self.sidebar_item.collapsed;
+}
+
+/*
+ * toggle_favorites_bar — slide the Favorites bar away, or back, and
+ * remember which (the favorites_bar_visible setting).  Hidden at the end
+ * of the slide, so a bar of no height takes no clicks.
+ */
+- (void)
+toggle_favorites_bar
+{
+    OnApp *app  = self.lib.app;
+    BOOL   show = !app->favorites_bar_visible;
+    on_app_config_set("favorites_bar_visible", show ? "1" : "0");
+    on_app_prefs_load(app);
+    NSView *bar = self.favorites_bar;
+    if (show) bar.hidden = NO;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.allowsImplicitAnimation = YES;
+        self.favorites_height.animator.constant = show ? on_look_favorites_bar_h + 1 : 0;
+        [self.window.contentView layoutSubtreeIfNeeded];
+    } completionHandler:^{
+        bar.hidden = self.favorites_height.constant == 0;
+    }];
 }
 
 /*
@@ -417,9 +448,41 @@ validate_toggle_sidebar(id target, id item)
     return library_window != nil;
 }
 
+/*
+ * run_toggle_favorites — "toggle-favorites".
+ *
+ * Inputs:
+ *   target — the NotesLibrary (unused: there is one window)
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_favorites(id target, id sender)
+{
+    [library_window toggle_favorites_bar];
+}
+
+/*
+ * validate_toggle_favorites — the item names what a click will do, and is
+ * disabled while the library window is closed.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item
+ *
+ * Output: YES while the window is open.
+ */
+static BOOL
+validate_toggle_favorites(id target, id item)
+{
+    BOOL shown = ((NotesLibrary *)target).app->favorites_bar_visible;
+    on_command_item_update(item, shown ? @"Hide Favorites Bar" : @"Show Favorites Bar", nil, NO);
+    return library_window != nil;
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const on_command_handler_t handlers[] = {
-    { @"toggle-sidebar", run_toggle_sidebar, validate_toggle_sidebar },
+    { @"toggle-sidebar",   run_toggle_sidebar,   validate_toggle_sidebar   },
+    { @"toggle-favorites", run_toggle_favorites, validate_toggle_favorites },
 };
 
 /*

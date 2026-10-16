@@ -26,6 +26,7 @@ static const bool_pref_t bool_prefs[] = {
     { "code_line_numbers",        TRUE,  offsetof(OnApp, code_line_numbers)      },
     { "sidebar_counts",           FALSE, offsetof(OnApp, sidebar_counts)         },
     { "sidebar_fit_content",      TRUE,  offsetof(OnApp, sidebar_fit_content)    },
+    { "favorites_bar_visible",    TRUE,  offsetof(OnApp, favorites_bar_visible)  },
     { "first_line_title",         TRUE,  offsetof(OnApp, first_line_title)       },
     { "compact_editor_toolbar",   TRUE,  offsetof(OnApp, compact_editor_toolbar) },
     { "list_density_comfortable", TRUE,  offsetof(OnApp, comfortable_list)       },

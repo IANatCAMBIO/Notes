@@ -582,7 +582,10 @@ its inputs as locals, and never reads `self.…` off the main thread.
   Designated initialisers are snake_case (`init_with_app:`), the inherited
   ones `NS_UNAVAILABLE`.
 - **Focus ring**: off (`NSFocusRingTypeNone`) on toolbar text fields only —
-  use `on_ui_toolbar_search_field`; everywhere else the system ring stays.
+  the library's `NSSearchToolbarItem` field (a focused toolbar field's ring
+  is clipped and changes its measured width); everywhere else the system
+  ring stays.  A toolbar search is an `NSSearchToolbarItem`, never a field
+  in a plain item, which makes the toolbar taller than Tasks'.
 - **Mac conventions win over GTK parity**: standard menus and shortcuts,
   system colours for chrome, dark mode supported (every colour in look.h
   has a dark value).  GTK workarounds listed as "drops out" in the map are

@@ -880,12 +880,10 @@ test_trash(NotesLibrary *lib)
     on_library_notes_refresh(lib);
     pump(0.2);
     NSInteger row = select_note_row(lib, @"Loose note");
-    NSSearchField *library_search = (NSSearchField *)find_view(lib.window.contentView.superview,
-                                                               NSSearchField.class, Nil);
-    if (!library_search) {
-        for (NSToolbarItem *ti in lib.window.toolbar.items) {
-            if ([ti.view isKindOfClass:NSSearchField.class]) library_search = (NSSearchField *)ti.view;
-        }
+    NSSearchField *library_search = nil;
+    for (NSToolbarItem *ti in lib.window.toolbar.items) {
+        if ([ti isKindOfClass:NSSearchToolbarItem.class])
+            library_search = ((NSSearchToolbarItem *)ti).searchField;
     }
     [lib.window makeFirstResponder:library_search];
     check(library_search != nil && !on_library_validate_command(lib, command_item(@"delete-note")),

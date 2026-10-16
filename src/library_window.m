@@ -346,14 +346,18 @@ willBeInsertedIntoToolbar:(BOOL)flag
 {
     if (![ident isEqualToString:search_item_ident]) return on_command_toolbar_item(ident);
 
-    NSSearchField *field = on_ui_toolbar_search_field(@"Search all notes",
-                                                      on_look_toolbar_search_w);
-    field.target = self;
-    field.action = @selector(search_entered:);
+    /* The system's search item, not a field in a plain item: a view item
+     * makes the toolbar 3 pt taller than Tasks' (measured, macOS 26). */
+    NSSearchToolbarItem *item = [[NSSearchToolbarItem alloc] initWithItemIdentifier:ident];
+    NSSearchField       *field = item.searchField;
+    field.placeholderString      = @"Search all notes";
+    field.focusRingType          = NSFocusRingTypeNone;   /* INTERFACES.md: toolbar fields only */
+    field.target                 = self;
+    field.action                 = @selector(search_entered:);
     field.sendsWholeSearchString = YES;      /* act on Return, not per key */
-    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
-    item.label = @"Search";
-    item.view  = field;
+    item.label                        = @"Search";
+    item.preferredWidthForSearchField = on_look_toolbar_search_w;
+    [field.widthAnchor constraintLessThanOrEqualToConstant:on_look_toolbar_search_w].active = YES;
     return item;
 }
 

@@ -504,22 +504,6 @@ on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event)
 }
 
 /*
- * on_ui_toolbar_search_field — toolbar search field without a focus ring.
- * Inputs/output are documented in ui_util.h.
- */
-NSSearchField *
-on_ui_toolbar_search_field(NSString *placeholder, CGFloat width)
-{
-    NSSearchField *field = [[NSSearchField alloc]
-        initWithFrame:NSMakeRect(0, 0, width, on_look_toolbar_field_h)];
-    field.placeholderString = placeholder;
-    field.focusRingType     = NSFocusRingTypeNone;
-    field.translatesAutoresizingMaskIntoConstraints = NO;
-    [field.widthAnchor constraintEqualToConstant:width].active = YES;
-    return field;
-}
-
-/*
  * on_ui_format_bytes — Finder-style byte count via one shared formatter.
  * Inputs/output are documented in ui_util.h.
  */

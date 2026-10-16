@@ -326,20 +326,6 @@ void on_ui_select_on_mouse_down(NSTableView *table, NSEvent *event);
 @interface NotesFlippedView : NSView
 @end
 
-/*
- * on_ui_toolbar_search_field — a search field for a toolbar: fixed width,
- * and NO focus ring.  A focused toolbar field's ring is clipped by the
- * toolbar and changes the field's measured width; this is the one place
- * the app turns a focus ring off — every other field keeps the system's.
- *
- * Inputs:
- *   placeholder — the grey prompt, e.g. @"Search all notes"
- *   width       — the field's width in points
- *
- * Output: the field.
- */
-NSSearchField *on_ui_toolbar_search_field(NSString *placeholder, CGFloat width);
-
 /* ── Formatting ─────────────────────────────────────────────────────────── */
 
 /*

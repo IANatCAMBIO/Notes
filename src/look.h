@@ -146,7 +146,6 @@ static const on_look_color_t on_look_card        = { { 1.000, 1.000, 1.000, 1 },
 static const on_look_color_t on_look_card_border = { { 0.800, 0.800, 0.800, 1 }, { 0.333, 0.333, 0.333, 1 } };
 static const on_look_color_t on_look_card_text   = { { 0.267, 0.267, 0.267, 1 }, { 0.733, 0.733, 0.733, 1 } };
 
-static const double on_look_toolbar_field_h  = 22.0;   /* a toolbar text field                   */
 static const double on_look_toolbar_search_w = 220.0;  /* the library's "Search all notes" field */
 static const double on_look_about_icon       = 128.0;
 static const double on_look_format_bar_h     = 30.0;   /* editor's format bar, above a separator */
@@ -163,7 +162,7 @@ static const double on_look_favorite_gap     = 4.0;    /* between buttons       
 static const double on_look_status_inset     = 8.0;
 static const double on_look_sidebar_w        = 180.0;  /* initial                                */
 static const double on_look_sidebar_min_w    = 160.0;  /* also the fit-to-content floor          */
-static const double on_look_sidebar_row_h    = 28.0;   /* a sidebar row, as in Tasks             */
+static const double on_look_sidebar_row_h    = 26.0;   /* a sidebar row, as in Tasks             */
 static const double on_look_sidebar_text_pad = 4.0;    /* a sidebar row's text, from the left    */
 static const double on_look_sidebar_count_pad = 6.0;   /* its count, from the right              */
 static const double on_look_sidebar_max_fraction = 0.5; /* fit-to-content ceiling, of the split  */

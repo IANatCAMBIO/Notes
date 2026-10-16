@@ -137,7 +137,7 @@ update_path:(NSString *)path note_id:(NSString *)note_id dirty:(BOOL)dirty
 static NSButton *
 format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
 {
-    NSString *tooltip = on_command_tip(ident);
+    NSString *tooltip = on_command_tooltip(ident);
     NSButton *b = [NSButton buttonWithTitle:face target:nil action:@selector(run_command:)];
     b.identifier = ident;
     b.bezelStyle = NSBezelStyleRecessed;

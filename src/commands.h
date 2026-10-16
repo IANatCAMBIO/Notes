@@ -53,7 +53,7 @@ typedef struct {
     NSString * __unsafe_unretained icon;    /* SF Symbol of its toolbar item
                                                (ui_util.h: on_ui_symbol);
                                                nil = not a toolbar command            */
-    NSString * __unsafe_unretained tip;     /* the tooltip of its toolbar item or
+    NSString * __unsafe_unretained tooltip; /* the tooltip of its toolbar item or
                                                format-bar button, saying what it does
                                                (GTK's); nil = the title               */
 } on_command_t;
@@ -85,7 +85,7 @@ typedef struct {
 NSMenuItem *on_command_menu_item(NSString *ident);
 
 /*
- * on_command_tip — the hover help of a control that runs a command (a
+ * on_command_tooltip — the hover help of a control that runs a command (a
  * toolbar item, a format-bar button): its tip, else its title.
  *
  * Inputs:
@@ -93,7 +93,7 @@ NSMenuItem *on_command_menu_item(NSString *ident);
  *
  * Output: the text.
  */
-NSString *on_command_tip(NSString *ident);
+NSString *on_command_tooltip(NSString *ident);
 
 /*
  * on_command_toolbar_item — a toolbar item for a command: its glyph (an SF

@@ -169,6 +169,7 @@ init_with_library:(NotesLibrary *)lib
     NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"notes.library"];
     toolbar.delegate    = self;
     toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+    toolbar.allowsUserCustomization = NO;    /* as Tasks': the items are the commands' */
     win.toolbar         = toolbar;
 
     [self build_content];

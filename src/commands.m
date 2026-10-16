@@ -32,7 +32,7 @@ static const on_command_t commands[] = {
       @"Create a note with the selected tag" },
     { @"quicknote",        @"Quick Note",              @"",  0,         app, @"square.and.pencil",
       @"Create a note with no tag" },
-    { @"open-db",          @"Open Database File…",     @"",  0,         app, nil, nil },
+    { @"open-db",          @"Open Database File…",     @"o", cmd,       app, nil, nil },
     { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },
     { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil, nil },
     { @"view-list",        @"as List",                 @"1", cmd,       app, nil, nil },
@@ -152,14 +152,14 @@ on_command_menu_item(NSString *ident)
 }
 
 /*
- * on_command_tip — see commands.h.
+ * on_command_tooltip — see commands.h.
  */
 NSString *
-on_command_tip(NSString *ident)
+on_command_tooltip(NSString *ident)
 {
     const on_command_t *command = command_find(ident);
     NSCAssert(command != NULL, @"unknown command %@", ident);
-    return command->tip ?: command->title;
+    return command->tooltip ?: command->title;
 }
 
 /*
@@ -175,7 +175,7 @@ on_command_toolbar_item(NSString *ident)
     SEL action = command_action(command, &target);
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:command->ident];
     item.label    = command->title;
-    item.toolTip  = on_command_tip(ident);
+    item.toolTip  = on_command_tooltip(ident);
     item.image    = on_ui_symbol(command->icon, 0.0);
     item.target   = target;
     item.action   = action;
@@ -212,7 +212,7 @@ on_command_item_update(id item, NSString *title, NSString *icon, BOOL checked)
         menu_item.state = checked ? NSControlStateValueOn : NSControlStateValueOff;
     } else if ([item isKindOfClass:NSToolbarItem.class]) {
         NSToolbarItem *toolbar_item = item;
-        NSString *tip  = title ?: command->tip ?: command->title;
+        NSString *tip  = title ?: command->tooltip ?: command->title;
         NSImage *image = on_ui_symbol(icon ?: command->icon, 0.0);
         /* Only what differs is set: AppKit validates after every event, and
          * an item given an image (even the same one) is redrawn.  Glyphs

@@ -746,23 +746,30 @@ on_library_sidebar_new(NotesLibrary *lib)
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
     outline.backgroundColor      = NSColor.clearColor;
 
-    /* The sidebar material behind it, as Tasks' sidebar has: the system
-     * then draws the rows' text with vibrancy, blended with the material
-     * (on an opaque background the same colours come out brighter).      */
+    /* The sidebar material BEHIND the list, a sibling under it, as Tasks'
+     * sidebar has it: the rows then draw in the window's own appearance,
+     * labelColor as Tasks' rows.  (With the material as an ancestor — or
+     * the source list's own background, which the clear colour above turns
+     * off — the text is drawn vibrant, brighter than Tasks'.)            */
+    NSView             *host = [[NSView alloc] initWithFrame:NSZeroRect];
     NSVisualEffectView *back = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
     back.material     = NSVisualEffectMaterialSidebar;
     back.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    host.translatesAutoresizingMaskIntoConstraints = NO;
     back.translatesAutoresizingMaskIntoConstraints = NO;
-    [back addSubview:scroll];
-    [NSLayoutConstraint activateConstraints:@[
-        [scroll.topAnchor constraintEqualToAnchor:back.topAnchor],
-        [scroll.leadingAnchor constraintEqualToAnchor:back.leadingAnchor],
-        [scroll.trailingAnchor constraintEqualToAnchor:back.trailingAnchor],
-        [scroll.bottomAnchor constraintEqualToAnchor:back.bottomAnchor],
-    ]];
+    [host addSubview:back];
+    [host addSubview:scroll];
+    for (NSView *v in @[back, scroll]) {
+        [NSLayoutConstraint activateConstraints:@[
+            [v.topAnchor constraintEqualToAnchor:host.topAnchor],
+            [v.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+            [v.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+            [v.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+        ]];
+    }
 
     [ctrl refresh];
-    return back;
+    return host;
 }
 
 /*

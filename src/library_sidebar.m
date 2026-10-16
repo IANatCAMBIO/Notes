@@ -742,10 +742,27 @@ on_library_sidebar_new(NotesLibrary *lib)
     scroll.hasVerticalScroller   = YES;
     scroll.hasHorizontalScroller = NO;
     scroll.autohidesScrollers    = YES;
+    scroll.drawsBackground       = NO;
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    outline.backgroundColor      = NSColor.clearColor;
+
+    /* The sidebar material behind it, as Tasks' sidebar has: the system
+     * then draws the rows' text with vibrancy, blended with the material
+     * (on an opaque background the same colours come out brighter).      */
+    NSVisualEffectView *back = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+    back.material     = NSVisualEffectMaterialSidebar;
+    back.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    back.translatesAutoresizingMaskIntoConstraints = NO;
+    [back addSubview:scroll];
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:back.topAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:back.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:back.trailingAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:back.bottomAnchor],
+    ]];
 
     [ctrl refresh];
-    return scroll;
+    return back;
 }
 
 /*

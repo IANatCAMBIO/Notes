@@ -446,8 +446,8 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
     [cell addSubview:label];
     cell.textField = label;
     [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:4],
-        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
+        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_cell_pad_h],
+        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_cell_pad_h],
         [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
     ]];
     return cell;

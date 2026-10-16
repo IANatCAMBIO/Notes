@@ -1790,6 +1790,43 @@ row_with_text(NSTableView *table, NSString *key, NSString *text)
 }
 
 /*
+ * fits_pane — the table's columns fill its scroll view's width exactly, as
+ * the fill column (Title, Action) is given what the fitted ones leave.
+ *
+ * Inputs:
+ *   table — the list or Action Items
+ *
+ * Output: YES when they do, within a point.
+ */
+static BOOL
+fits_pane(NSTableView *table)
+{
+    CGFloat used = 0.0;
+    for (NSTableColumn *c in table.tableColumns)
+        if (!c.hidden) used += c.width + table.intercellSpacing.width;
+    return fabs(used - table.enclosingScrollView.contentSize.width) <= 1.0;
+}
+
+/*
+ * shows_whole — a cell's text is not cut short: it fits inside its label.
+ *
+ * Inputs:
+ *   table — the table
+ *   key   — the column
+ *   row   — the row
+ *
+ * Output: YES when the whole text shows.
+ */
+static BOOL
+shows_whole(NSTableView *table, NSString *key, NSInteger row)
+{
+    NSTableCellView *cell = [table viewAtColumn:[table columnWithIdentifier:key] row:row makeIfNecessary:YES];
+    [cell layoutSubtreeIfNeeded];
+    NSTextField *label = cell.textField;
+    return label.attributedStringValue.size.width <= NSWidth([label.cell titleRectForBounds:label.bounds]);
+}
+
+/*
  * visible_columns — a table's shown column keys, in display order.
  *
  * Inputs:
@@ -1915,6 +1952,10 @@ test_notes_pane(NotesLibrary *lib)
           "a navigation starts at the top: the first row is below the column headers");
     check([visible_columns(table) isEqualToArray:@[@"title", @"tags", @"modified"]],
           "the list shows Title, Tags and Modified by default (Created hidden)");
+    NSTableColumn *tags_col = [table tableColumnWithIdentifier:@"tags"];
+    check(fits_pane(table) && tags_col.width < 140 && shows_whole(table, @"tags", 0) &&
+          shows_whole(table, @"modified", 0),
+          "Tags and Modified fit their content, whole, and Title takes the rest of the pane");
     check(table.doubleAction != NULL && table.target != nil && table.allowsColumnReordering,
           "the list opens notes on a double-click and its headers reorder");
     NSMenu *header = open_menu(table.headerView.menu);
@@ -2047,6 +2088,13 @@ test_notes_pane(NotesLibrary *lib)
     on_library_validate_command(lib, pin);
     check(m && m->pinned && [pin.title isEqualToString:@"Unpin"], "Pin pins it, and the item then says Unpin");
     on_db_note_meta_free(m);
+    {
+        NSOutlineView *outline = (NSOutlineView *)find_view(lib.window.contentView, NSOutlineView.class, Nil);
+        on_library_refresh_all(lib);
+        pump(0.1);
+        NSInteger all_row = sidebar_row(outline, @"All Notes"), pinned_row = sidebar_row(outline, @"Pinned Notes");
+        check(all_row == 0 && pinned_row == 1, "the sidebar lists All Notes, then Pinned Notes");
+    }
     on_library_run_command(lib, command_item(@"note-pin"));
 
     lib.grid_pref = NO;
@@ -2132,6 +2180,30 @@ test_notes_pane(NotesLibrary *lib)
     table = pane_table(lib);
     check([visible_columns(table) isEqualToArray:@[@"done", @"tags", @"action", @"due"]],
           "Action Items shows Done, Tags, Action and Due Date");
+    {
+        NSInteger dated = -1;
+        for (NSInteger r = 0; r < table.numberOfRows && dated < 0; r++)
+            if (cell_text(table, @"due", r).length) dated = r;
+        check(fits_pane(table) && dated >= 0 && shows_whole(table, @"due", dated) &&
+              shows_whole(table, @"tags", 0),
+              "Action Items' Tags and Due Date fit their content, whole, and Action takes the rest");
+        /* A long item in a narrow column: one line, cut short with "…". */
+        NSTableCellView *cell  = [table viewAtColumn:[table columnWithIdentifier:@"action"] row:0
+                                     makeIfNecessary:YES];
+        NSTextField     *label = cell.textField;
+        NSString        *kept  = label.stringValue;
+        label.stringValue = [@"" stringByPaddingToLength:400 withString:@"a long action item " startingAtIndex:0];
+        label.attributedStringValue = [[NSAttributedString alloc] initWithString:label.stringValue
+            attributes:[label.attributedStringValue attributesAtIndex:0 effectiveRange:NULL]];
+        NSParagraphStyle *style = [label.attributedStringValue attribute:NSParagraphStyleAttributeName
+                                                                 atIndex:0 effectiveRange:NULL];
+        CGFloat one = [label.cell cellSizeForBounds:NSMakeRect(0, 0, 1000, 1000)].height;
+        CGFloat cut = [label.cell cellSizeForBounds:NSMakeRect(0, 0, 80, 1000)].height;
+        check(style.lineBreakMode == NSLineBreakByTruncatingTail && cut == one,
+              "an action item too long for its column stays on one line, cut short with an ellipsis");
+        label.stringValue = kept;
+        [table reloadData];
+    }
     check(on_library_notes_selected_ids(lib).count == 0, "and has no note selection");
     table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"action" ascending:YES]];
     NSInteger a_row = row_with_text(table, @"action", @"Alpha task");

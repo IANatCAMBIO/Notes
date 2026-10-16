@@ -10,7 +10,9 @@
  *   List          Title, Tags, Modified, Created; sortable headers (the
  *                 sort drives the grid too, Modified newest first by
  *                 default); headers reorder; a header menu shows and hides
- *                 columns; the layout persists in "list_columns".  Compact
+ *                 columns; the layout persists in "list_columns"; Tags,
+ *                 Modified and Created fit their content and Title takes
+ *                 the rest (fit_columns:full:, as in Tasks).  Compact
  *                 or Comfortable density (bold title, a dimmed preview).
  *   Grid          square cards rendered as GTK renders them — a card, the
  *                 first image, the body text — on the main thread in short
@@ -19,7 +21,8 @@
  *   Selection     ONE selection by note id, shared by both views, kept
  *                 across content refreshes; a navigation starts empty.
  *   Action Items  Done, Tags (the note's), Action, Due Date; sortable, reorderable,
- *                 persisted in "action_columns"; done items struck through
+ *                 persisted in "action_columns", fitted as the list's;
+ *                 text cut short with "…", never wrapped; done items struck through
  *                 (or hidden: show_done_actions); due dates tinted by
  *                 local day; a double-click on a due date sets it in a tool
  *                 panel, anywhere else opens the note at the item.
@@ -53,6 +56,18 @@
 
 /* Body text the Comfortable preview line is cut from (GTK NL_PREVIEW_CHARS). */
 static const gint preview_chars = 200;
+
+/* Column fitting, as Tasks' list does it.  A fitted column's header must
+ * also fit the sort indicator, and the sorted column's title is drawn
+ * bold (macOS 26), so it is measured bold: title + 10 + 22 leaves a point
+ * to spare (Tasks measured it by rendering the header). */
+static const CGFloat fill_col_min_w   = 120.0;   /* Title, Action: the floor        */
+static const CGFloat fit_col_min_w    = 40.0;    /* Tags, Modified, Created, Due    */
+static const CGFloat header_fit_pad   = 10.0;    /* header title to column edges   */
+static const CGFloat sort_indicator_w = 22.0;    /* every column here sorts        */
+static const CGFloat label_inset      = 2.0;     /* an NSTextField draws its text
+                                                  * this far inside its frame      */
+static const NSUInteger fit_row_limit = 2000;    /* rows measured to fit a column  */
 
 /* Body text a grid card shows at most. */
 static const gint card_text_chars = 300;
@@ -252,31 +267,38 @@ sorted_by(NSArray *records, NSSortDescriptor *sd, NSComparisonResult (*order)(NS
 
 /* One column of a table: its stable key, header, header-menu label, the
  * width it starts at, and whether it takes the leftover width. */
+/* How a column is sized: by hand only (the checkbox), to its content
+ * (fit_columns:full:), or with what the others leave (Title, Action). */
+typedef enum { column_fixed, column_fit, column_fill } column_role_t;
+
 typedef struct {
     NSString * __unsafe_unretained key;
     NSString * __unsafe_unretained title;
     NSString * __unsafe_unretained menu_label;
     CGFloat                        width;
-    BOOL                           expands;
+    column_role_t                  role;
 } column_spec_t;
 
 static const column_spec_t note_columns[] = {
-    { @"title",    @"Title",    @"Title",    240, YES },
-    { @"tags",     @"Tags",     @"Tags",     140, NO  },
-    { @"modified", @"Modified", @"Modified", 140, NO  },
-    { @"created",  @"Created",  @"Created",  140, NO  },
+    { @"title",    @"Title",    @"Title",    240, column_fill },
+    { @"tags",     @"Tags",     @"Tags",     140, column_fit  },
+    { @"modified", @"Modified", @"Modified", 140, column_fit  },
+    { @"created",  @"Created",  @"Created",  140, column_fit  },
 };
 
 static const column_spec_t action_columns[] = {
-    { @"done",    @"",         @"Done",     24,  NO  },
-    { @"tags",    @"Tags",     @"Tags",     120, NO  },
-    { @"action",  @"Action",   @"Action",   260, YES },
-    { @"due",     @"Due Date", @"Due Date", 110, NO  },
+    { @"done",    @"",         @"Done",     24,  column_fixed },
+    { @"tags",    @"Tags",     @"Tags",     120, column_fit   },
+    { @"action",  @"Action",   @"Action",   260, column_fill  },
+    { @"due",     @"Due Date", @"Due Date", 110, column_fit   },
 };
 
 /*
  * add_columns — give a table its columns, each sortable by its key, the
  * headers reorderable, the rows flat and full width (as Files has them).
+ * A column's role is kept in its resizing mask: a fill column autoresizes,
+ * a fitted one is resized by the user only, a fixed one not at all
+ * (fit_columns:full: reads it back).
  *
  * Inputs:
  *   table — the table
@@ -289,10 +311,21 @@ add_columns(NSTableView *table, const column_spec_t *specs, size_t n)
     for (size_t i = 0; i < n; i++) {
         NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:specs[i].key];
         col.title        = specs[i].title;
-        col.width        = specs[i].width;
-        col.minWidth     = MIN(specs[i].width, 24);
-        col.resizingMask = specs[i].expands ? NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask
-                                            : NSTableColumnUserResizingMask;
+        col.width = specs[i].width;
+        switch (specs[i].role) {
+        case column_fixed:
+            col.minWidth     = specs[i].width;
+            col.resizingMask = NSTableColumnNoResizing;
+            break;
+        case column_fit:
+            col.minWidth     = fit_col_min_w;
+            col.resizingMask = NSTableColumnUserResizingMask;
+            break;
+        case column_fill:
+            col.minWidth     = fill_col_min_w;
+            col.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
+            break;
+        }
         col.sortDescriptorPrototype = [NSSortDescriptor sortDescriptorWithKey:specs[i].key ascending:YES];
         [table addTableColumn:col];
     }
@@ -643,7 +676,10 @@ scroll_for(NSView *doc)
 
 /*
  * struck — text in the cell font, struck through when an item is done
- * (on_ui_strike_key: the cell draws the line where the editor does).
+ * (on_ui_strike_key: the cell draws the line where the editor does), cut
+ * short with "…" when the column is too narrow.  (An attributed string's
+ * paragraph style replaces the label's line break mode, and the default
+ * one wraps.)
  *
  * Inputs:
  *   text   — the text
@@ -655,9 +691,17 @@ scroll_for(NSView *doc)
 static NSAttributedString *
 struck(NSString *text, BOOL done, NSColor *colour)
 {
+    static NSParagraphStyle *one_line;
+    static dispatch_once_t   once;
+    dispatch_once(&once, ^{
+        NSMutableParagraphStyle *p = [[NSMutableParagraphStyle alloc] init];
+        p.lineBreakMode = NSLineBreakByTruncatingTail;
+        one_line = p;
+    });
     NSMutableDictionary *attrs = [NSMutableDictionary dictionaryWithDictionary:@{
         NSFontAttributeName:            [NSFont systemFontOfSize:on_look_ui_font],
         NSForegroundColorAttributeName: colour ?: NSColor.labelColor,
+        NSParagraphStyleAttributeName:  one_line,
     }];
     if (done) attrs[on_ui_strike_key] = @YES;
     return [[NSAttributedString alloc] initWithString:text ?: @"" attributes:attrs];
@@ -919,7 +963,8 @@ reload_notes
  * refresh_notes): Action Items swaps in its own view; otherwise the list
  * or grid.  The same selection as last time is a content refresh — the
  * scroll position and the selected notes stay; a navigation starts at the
- * top with nothing selected.
+ * top with nothing selected.  A list's columns are fitted to the rows: a
+ * navigation fits them afresh, a content refresh only widens them.
  */
 - (void)
 refresh
@@ -946,10 +991,13 @@ refresh
         if (mode == on_library_view_grid) [self queue_cards];
     }
     [self show_view:scroll];
+    if (mode != on_library_view_grid) {
+        [scroll layoutSubtreeIfNeeded];
+        [self fit_columns:(NSTableView *)scroll.documentView full:!keep];
+    }
     if (!keep) {
         /* The top is above zero: the column headers float over the
          * content, and the clip view's top inset makes room for them. */
-        [scroll layoutSubtreeIfNeeded];
         NSEdgeInsets insets = scroll.contentView.contentInsets;
         origin = NSMakePoint(-insets.left, -insets.top);
     }
@@ -998,6 +1046,7 @@ refresh_note:(gint64)note_id
                              columnIndexes:[NSIndexSet indexSetWithIndexesInRange:
                                             NSMakeRange(0, (NSUInteger)self.list.numberOfColumns)]];
     }
+    if (mode == on_library_view_list) [self fit_columns:self.list full:NO];
     if (mode == on_library_view_grid) {
         [self.card_queue addObject:@(note_id)];
         [self schedule_cards];
@@ -1349,8 +1398,8 @@ menuNeedsUpdate:(NSMenu *)menu
 
 /*
  * toggle_column: — a header menu item: show or hide its column, fit the
- * columns to the table again (a column shown at the end would otherwise
- * sit past the edge), and keep the layout.
+ * columns to their content and the table again (a column shown at the
+ * end would otherwise sit past the edge), and keep the layout.
  *
  * Inputs:
  *   sender — the item (its object is the column)
@@ -1360,7 +1409,7 @@ toggle_column:(NSMenuItem *)sender
 {
     NSTableColumn *c = sender.representedObject;
     c.hidden = !c.hidden;
-    [c.tableView sizeToFit];
+    [self fit_columns:c.tableView full:YES];
     persist_layout(c.tableView, c.tableView == self.list ? "list_columns" : "action_columns");
 }
 
@@ -1415,8 +1464,8 @@ title_cell:(NotesNoteRecord *)r
         [cell addSubview:stack];
         cell.textField = title;
         [NSLayoutConstraint activateConstraints:@[
-            [stack.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:4],
-            [stack.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
+            [stack.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_cell_pad_h],
+            [stack.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_cell_pad_h],
             [stack.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -1429,6 +1478,109 @@ title_cell:(NotesNoteRecord *)r
     preview.stringValue = r.preview ?: @"";
     preview.hidden      = !(comfy && r.preview.length);
     return cell;
+}
+
+/*
+ * text_of:key:row: — what a text cell of either table says: one function
+ * for the cells and the column fit, so both measure the same text.
+ *
+ * Inputs:
+ *   table — the list or Action Items
+ *   key   — the column ("title", "tags", "modified", "created"; "action",
+ *           "due")
+ *   row   — the row
+ *
+ * Output: the text; "" for none.
+ */
+- (NSString *)
+text_of:(NSTableView *)table key:(NSString *)key row:(NSUInteger)row
+{
+    if (table == self.list) {
+        NotesNoteRecord *r = self.records[row];
+        return [key isEqualToString:@"tags"]     ? r.tags
+             : [key isEqualToString:@"modified"] ? r.modified
+             : [key isEqualToString:@"created"]  ? r.created : r.title;
+    }
+    NotesActionRecord *r = self.action_records[row];
+    return [key isEqualToString:@"tags"]   ? r.tags
+         : [key isEqualToString:@"action"] ? r.text : due_text(r.due);
+}
+
+/*
+ * fitted_width:column: — the width a fitted column needs to show its
+ * header and its widest cell (the first fit_row_limit rows).  Measured
+ * text is rounded up: a label a fraction of a point too narrow truncates.
+ *
+ * Inputs:
+ *   table  — the list or Action Items
+ *   column — a fitted column of it
+ *
+ * Output: the width in points.
+ */
+- (CGFloat)
+fitted_width:(NSTableView *)table column:(NSTableColumn *)column
+{
+    NSDictionary<NSAttributedStringKey, id> *attrs = @{ NSFontAttributeName:
+                                                        [NSFont systemFontOfSize:on_look_ui_font] };
+    NSUInteger rows   = MIN((NSUInteger)[self numberOfRowsInTableView:table], fit_row_limit);
+    CGFloat    widest = 0.0;
+    for (NSUInteger i = 0; i < rows; i++) {
+        NSString *text = [self text_of:table key:column.identifier row:i];
+        if (text.length) widest = MAX(widest, [text sizeWithAttributes:attrs].width);
+    }
+    CGFloat cell_w  = ceil(widest) + 2.0 * (label_inset + on_look_cell_pad_h);
+    NSFont *bold    = [NSFontManager.sharedFontManager convertFont:column.headerCell.font
+                                                       toHaveTrait:NSBoldFontMask];
+    CGFloat title_w = ceil([column.title sizeWithAttributes:@{ NSFontAttributeName: bold }].width);
+    return MAX(column.minWidth, MAX(cell_w, title_w + header_fit_pad + sort_indicator_w));
+}
+
+/*
+ * fit_columns:full: — size a table's fitted columns to their content and
+ * give its fill column (Title, Action) exactly what is left, so the table
+ * is as wide as its pane (as Tasks' list does).  Short of room, the fitted
+ * columns give back what the fill column's floor needs, the last first,
+ * each down to its own floor.
+ *
+ * Inputs:
+ *   table — the list or Action Items, laid out in its scroll view
+ *   full  — YES (a navigation, a column shown): every fitted column is
+ *           reset to its width, even narrower; NO (a content refresh):
+ *           one is only widened, so a column the user widened stays
+ */
+- (void)
+fit_columns:(NSTableView *)table full:(BOOL)full
+{
+    CGFloat room = table.enclosingScrollView.contentSize.width;
+    if (room <= 0.0) return;          /* not laid out: the next refresh fits */
+    CGFloat        gap    = table.intercellSpacing.width;
+    NSTableColumn *fill   = nil;
+    CGFloat        others = 0.0;
+    NSMutableArray<NSTableColumn *> *fitted = [NSMutableArray array];
+    for (NSTableColumn *c in table.tableColumns) {
+        if (c.hidden) continue;
+        if (c.resizingMask & NSTableColumnAutoresizingMask) {
+            fill = c;
+            continue;
+        }
+        if (c.resizingMask != NSTableColumnNoResizing) {
+            CGFloat w = [self fitted_width:table column:c];
+            if (full || w > c.width) c.width = w;
+            [fitted addObject:c];
+        }
+        others += c.width + gap;
+    }
+    if (fill == nil) return;
+    CGFloat deficit = others + gap + fill.minWidth - room;
+    for (NSTableColumn *c in fitted.reverseObjectEnumerator) {
+        if (deficit <= 0.0) break;
+        CGFloat give = MIN(deficit, c.width - c.minWidth);
+        if (give <= 0.0) continue;
+        c.width -= give;
+        others  -= give;
+        deficit -= give;
+    }
+    fill.width = MAX(fill.minWidth, room - others - gap);
 }
 
 /*
@@ -1449,8 +1601,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         NotesNoteRecord *r = self.records[(NSUInteger)row];
         if ([key isEqualToString:@"title"]) return [self title_cell:r];
         NSTableCellView *cell = on_ui_label_cell(table, key);
-        cell.textField.stringValue = [key isEqualToString:@"tags"]     ? r.tags
-                                   : [key isEqualToString:@"modified"] ? r.modified : r.created;
+        cell.textField.stringValue = [self text_of:table key:key row:(NSUInteger)row];
         return cell;
     }
     NotesActionRecord *r = self.action_records[(NSUInteger)row];
@@ -1465,8 +1616,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         return check;
     }
     NSTableCellView *cell = on_ui_label_cell(table, key);
-    NSString *text   = [key isEqualToString:@"tags"]    ? r.tags
-                     : [key isEqualToString:@"action"]  ? r.text : due_text(r.due);
+    NSString *text   = [self text_of:table key:key row:(NSUInteger)row];
     NSColor  *colour = [key isEqualToString:@"due"] && r.due ? due_colour(r.due) : nil;
     cell.textField.attributedStringValue = struck(text, r.done, colour);
     return cell;

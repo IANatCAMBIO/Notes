@@ -113,7 +113,7 @@ tags Tasks uses (one set in the shared file).
   of its own.  The tags the move from folders gave (an older Tags field)
   are written into the notes' text the same way at launch, once, keeping
   each note's modified time.
-- The sidebar lists **Pinned Notes**, **All Notes**, **Action Items**, then
+- The sidebar lists **All Notes**, **Pinned Notes**, **Action Items**, then
   every tag a note carries (with counts when Settings ▸ Appearance shows
   them), and the **Trash**.  Drop notes on a tag to give them the tag, on
   the Trash to trash them.

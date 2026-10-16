@@ -2,7 +2,7 @@
  * library_sidebar.m — the library's sidebar.
  *
  * An NSOutlineView over a flat list of SidebarItem objects, laid out and
- * formatted as Tasks' sidebar: Pinned Notes and All Notes, Action Items,
+ * formatted as Tasks' sidebar: All Notes and Pinned Notes, Action Items,
  * the Tags header (a group row) followed by one row per tag the notes
  * carry (its emoji, its name, and its count at the right when counts are
  * shown), and the Trash.  Nothing nests or collapses; only the Tags header
@@ -265,12 +265,12 @@ build_roots
     GHashTable *tag_counts = counts ? on_db_tag_count_map(db) : NULL;
     NSMutableArray<SidebarItem *> *roots = [NSMutableArray array];
 
+    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes",
+                              counts ? on_db_note_count_visible(db) : -1)];
     gint n_pinned = on_db_note_count_pinned(db);
     if (n_pinned > 0)
         [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes"),
                                   @"Pinned Notes", counts ? n_pinned : -1)];
-    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes",
-                              counts ? on_db_note_count_visible(db) : -1)];
     gint n_actions = 0, n_open = 0;
     on_db_action_counts(db, &n_actions, &n_open);
     if (n_actions > 0)

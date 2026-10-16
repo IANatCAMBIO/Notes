@@ -1446,7 +1446,7 @@ draggingLocation
 
 /*
  * sidebar_row — the sidebar row with a name: its text without the emoji in
- * front (up to two spaces) and the count behind.
+ * front (up to two spaces); the count is a label of its own.
  *
  * Inputs:
  *   outline — the sidebar
@@ -1462,8 +1462,6 @@ sidebar_row(NSOutlineView *outline, NSString *name)
         NSRange   gap  = [text rangeOfString:@"  "];
         if (gap.location == NSNotFound) gap = [text rangeOfString:@"\u00a0 "];
         if (gap.location != NSNotFound) text = [text substringFromIndex:NSMaxRange(gap)];
-        NSRange count = [text rangeOfString:@" (" options:NSBackwardsSearch];
-        if (count.location != NSNotFound && [text hasSuffix:@")"]) text = [text substringToIndex:count.location];
         if ([text isEqualToString:name]) return r;
     }
     return -1;
@@ -1638,6 +1636,26 @@ test_sidebar(NotesLibrary *lib)
           [((NSTableCellView *)[outline viewAtColumn:0 row:crate_row makeIfNecessary:YES]).textField.stringValue
               hasPrefix:@"📦  Crate"],
           "a tag's emoji shows before its name in the sidebar");
+
+    /* Counts, as Tasks shows them: a small grey number at the row's right,
+     * the name left alone.                                                 */
+    gboolean counts_were = app.sidebar_counts;
+    app.sidebar_counts = TRUE;
+    on_library_refresh_all(lib);
+    pump(0.1);
+    NSTableCellView *crate_cell = [outline viewAtColumn:0 row:sidebar_row(outline, @"Crate") makeIfNecessary:YES];
+    NSTextField     *crate_count = nil;
+    for (NSView *v in crate_cell.subviews)
+        if ([v.identifier isEqualToString:@"sidebar.count"]) crate_count = (NSTextField *)v;
+    [crate_cell layoutSubtreeIfNeeded];
+    check([crate_count.stringValue isEqualToString:@"1"] && crate_count.alignment == NSTextAlignmentRight &&
+          [crate_count.textColor isEqual:NSColor.secondaryLabelColor] &&
+          NSMaxX(crate_count.frame) > NSMaxX(crate_cell.textField.frame) &&
+          ![crate_cell.textField.stringValue containsString:@"("],
+          "with counts on, a tag's count is a grey number at the row's right, as in Tasks");
+    app.sidebar_counts = counts_were;
+    on_library_refresh_all(lib);
+    pump(0.1);
 
     /* Drops: notes onto a tag get it (their other tags kept); onto the Trash
      * they are trashed; nothing else takes a drop.                         */

@@ -3,7 +3,8 @@
  *
  * An NSOutlineView over an in-memory list of SidebarItem objects: Pinned
  * Notes and All Notes, Action Items, the Tags header with one row per tag
- * the notes carry (its emoji, its name, its count when counts are shown),
+ * the notes carry (its emoji, its name, and its count at the right when
+ * counts are shown, as in Tasks),
  * and the Trash.  Only the Tags header cannot be selected; it starts open
  * and stays the way the user leaves it.
  *
@@ -43,11 +44,27 @@
 @property (nonatomic, assign) gint64       ident;
 @property (nonatomic, copy)   NSString    *display;   /* shown in the outline */
 @property (nonatomic, copy)   NSString    *raw_name;  /* bare name            */
+@property (nonatomic, assign) gint         count;     /* shown at the right; -1 = none */
 @property (nonatomic, strong) NSMutableArray<SidebarItem *> *children;   /* nil = a leaf */
 @end
 
 @implementation SidebarItem
 @end
+
+/* The count label's identifier in a cell, and the gap before it. */
+static NSString * const count_id  = @"sidebar.count";
+static const CGFloat    count_gap = 4.0;
+
+/*
+ * count_font — the count's font: small, even-width digits (Tasks' count).
+ *
+ * Output: the font.
+ */
+static NSFont *
+count_font(void)
+{
+    return [NSFont monospacedDigitSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightRegular];
+}
 
 /*
  * item_new — a sidebar row.
@@ -57,18 +74,21 @@
  *   ident      — its tag id; 0 for the fixed rows
  *   display    — what it shows
  *   raw        — its bare name (the selection's name, status messages)
+ *   count      — the count shown at the row's right, or -1 for none
  *   expandable — YES for a row with children
  *
  * Output: the item.
  */
 static SidebarItem *
-item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, BOOL expandable)
+item_new(on_sb_kind_t kind, gint64 ident, NSString *display, NSString *raw, gint count,
+         BOOL expandable)
 {
     SidebarItem *it = [[SidebarItem alloc] init];
     it.kind     = kind;
     it.ident    = ident;
     it.display  = display;
     it.raw_name = raw;
+    it.count    = count;
     it.children = expandable ? [NSMutableArray array] : nil;
     return it;
 }
@@ -89,27 +109,24 @@ is_section(on_sb_kind_t kind)
 }
 
 /*
- * section_label — a section row's text: its emoji, two spaces, its name,
- * and the count when counts are shown.
+ * section_label — a section row's text: its emoji, two spaces, its name.
  *
  * Inputs:
  *   emoji — the emoji
  *   name  — the name
- *   count — the count, or -1 for none
  *
  * Output: the text.
  */
 static NSString *
-section_label(NSString *emoji, NSString *name, gint count)
+section_label(NSString *emoji, NSString *name)
 {
-    return count >= 0 ? [NSString stringWithFormat:@"%@  %@ (%d)", emoji, name, count]
-                      : [NSString stringWithFormat:@"%@  %@", emoji, name];
+    return [NSString stringWithFormat:@"%@  %@", emoji, name];
 }
 
 /*
  * tag_item — a tag's row: its emoji before its name (two spaces apart, as
- * Tasks shows it) and the count of notes carrying it when counts are
- * shown.
+ * Tasks shows it) and, when counts are shown, the count of notes carrying
+ * it at the row's right.
  *
  * Inputs:
  *   t          — the tag
@@ -124,10 +141,8 @@ tag_item(const OnTag *t, GHashTable *tag_counts)
      * encoding, not UTF-8, and an emoji came out as "üß™". */
     NSString *name  = @(t->name);
     NSString *label = *t->emoji != '\0' ? [NSString stringWithFormat:@"%@  %@", @(t->emoji), name] : name;
-    if (tag_counts)
-        label = [label stringByAppendingFormat:@" (%d)",
-                       GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id))];
-    return item_new(on_sb_tag, t->id, label, name, NO);
+    gint      count = tag_counts ? GPOINTER_TO_INT(g_hash_table_lookup(tag_counts, &t->id)) : -1;
+    return item_new(on_sb_tag, t->id, label, name, count, NO);
 }
 
 /* ── The outline ─────────────────────────────────────────────────────────── */
@@ -286,20 +301,19 @@ build_roots
 
     gint n_pinned = on_db_note_count_pinned(db);
     if (n_pinned > 0)
-        [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes", counts ? n_pinned : -1),
-                                  @"Pinned Notes", NO)];
-    [roots addObject:item_new(on_sb_all, 0,
-                              section_label(@"🔮", @"All Notes", counts ? on_db_note_count_visible(db) : -1),
-                              @"All Notes", NO)];
+        [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes"),
+                                  @"Pinned Notes", counts ? n_pinned : -1, NO)];
+    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes",
+                              counts ? on_db_note_count_visible(db) : -1, NO)];
     gint n_actions = 0, n_open = 0;
     on_db_action_counts(db, &n_actions, &n_open);
     if (n_actions > 0)
-        [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items", counts ? n_open : -1),
-                                  @"Action Items", NO)];
+        [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items"),
+                                  @"Action Items", counts ? n_open : -1, NO)];
 
     GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
-        SidebarItem *header = item_new(on_sb_tags_header, 0, section_label(@"🏷️", @"Tags", -1), @"Tags", YES);
+        SidebarItem *header = item_new(on_sb_tags_header, 0, section_label(@"🏷️", @"Tags"), @"Tags", -1, YES);
         for (GList *l = tags; l != NULL; l = l->next)
             [header.children addObject:tag_item(l->data, tag_counts)];
         [roots addObject:header];
@@ -308,8 +322,8 @@ build_roots
 
     gint n_trash = on_db_trash_count(db);
     if (n_trash > 0)
-        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash", counts ? n_trash : -1),
-                                  @"Trash", NO)];
+        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑", @"Trash"), @"Trash",
+                                  counts ? n_trash : -1, NO)];
 
     if (tag_counts) g_hash_table_destroy(tag_counts);
     self.roots = roots;
@@ -413,6 +427,9 @@ fit:(BOOL)force
         NSFont      *font = [NSFont systemFontOfSize:on_look_sidebar_font
                                               weight:is_section(it.kind) ? NSFontWeightBold : NSFontWeightRegular];
         CGFloat text = [it.display sizeWithAttributes:@{ NSFontAttributeName: font }].width;
+        if (it.count >= 0)
+            text += count_gap + [[NSString stringWithFormat:@"%d", it.count]
+                                    sizeWithAttributes:@{ NSFontAttributeName: count_font() }].width;
         want = MAX(want, NSMinX(cell) + 2 * on_look_sidebar_cell_pad + ceil(text));
     }
     NSScrollView *scroll = self.outline.enclosingScrollView;
@@ -525,7 +542,9 @@ outlineView:(NSOutlineView *)outline child:(NSInteger)index ofItem:(id)item
 /* ── Delegate ──────────────────────────────────────────────────────────── */
 
 /*
- * outlineView:viewForTableColumn:item: — a row's cell: section rows bold.
+ * outlineView:viewForTableColumn:item: — a row's cell: section rows bold;
+ * while counts are shown, the count at the row's right in a small grey
+ * label with even-width digits, as Tasks shows its tags' counts.
  *
  * Inputs:
  *   outline — the outline
@@ -547,11 +566,26 @@ outlineView:(NSOutlineView *)outline viewForTableColumn:(NSTableColumn *)column 
         label.translatesAutoresizingMaskIntoConstraints = NO;
         [cell addSubview:label];
         cell.textField = label;
+        NSTextField *count = [NSTextField labelWithString:@""];
+        count.identifier = count_id;
+        count.font       = count_font();
+        count.textColor  = NSColor.secondaryLabelColor;
+        count.alignment  = NSTextAlignmentRight;
+        count.translatesAutoresizingMaskIntoConstraints = NO;
+        [count setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                        forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
             [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_sidebar_cell_pad],
-            [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_sidebar_cell_pad],
+            [label.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor constant:-count_gap],
             [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
+            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_sidebar_cell_pad],
+            [count.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
+    }
+    for (NSView *v in cell.subviews) {
+        if ([v.identifier isEqualToString:count_id])
+            ((NSTextField *)v).stringValue = it.count >= 0 ? [NSString stringWithFormat:@"%d", it.count] : @"";
     }
     cell.textField.stringValue = it.display;
     cell.textField.font = [NSFont systemFontOfSize:on_look_sidebar_font

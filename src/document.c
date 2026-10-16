@@ -2637,6 +2637,97 @@ on_document_collect_tags(const OnDocument *d)
     return g_list_reverse(names);
 }
 
+gchar *
+on_document_tag_word(const gchar *name)
+{
+    gchar  **parts = g_strsplit_set(name != NULL ? name : "", " \t\n\r", -1);
+    GString *word  = g_string_new(NULL);
+    guint    n     = 0;              /* the words that keep a character     */
+    for (gchar **p = parts; *p != NULL; p++) {
+        for (const gchar *c = *p; *c != '\0'; c = g_utf8_next_char(c)) {
+            if (on_document_tag_char(g_utf8_get_char(c))) {
+                n++;
+                break;
+            }
+        }
+    }
+    for (gchar **p = parts; *p != NULL; p++) {
+        gboolean first = TRUE;       /* the word's first kept character     */
+        for (const gchar *c = *p; *c != '\0'; c = g_utf8_next_char(c)) {
+            gunichar u = g_utf8_get_char(c);
+            if (!on_document_tag_char(u))
+                continue;
+            g_string_append_unichar(word, first && n > 1 ? g_unichar_totitle(u) : u);
+            first = FALSE;
+        }
+    }
+    g_strfreev(parts);
+    if (word->len == 0) {
+        g_string_free(word, TRUE);
+        return NULL;
+    }
+    return g_string_free(word, FALSE);
+}
+
+/* ---------------------------------------------------------------------------
+ * tags_only() — does a text hold nothing but #tag runs and whitespace?
+ * An empty text does.
+ * ------------------------------------------------------------------------- */
+static gboolean
+tags_only(const OnText *t)
+{
+    gsize at = 0;                    /* start of run k                      */
+    for (guint k = 0; k < t->runs->len; k++) {
+        const OnRun *r = &g_array_index(t->runs, OnRun, k);
+        if ((r->flags & ON_FMT_TAG) == 0) {
+            for (const gchar *c = t->text->str + at; c < t->text->str + at + r->len;
+                 c = g_utf8_next_char(c))
+                if (!g_unichar_isspace(g_utf8_get_char(c)))
+                    return FALSE;
+        }
+        at += r->len;
+    }
+    return TRUE;
+}
+
+gboolean
+on_document_append_tag(OnDocument *d, const gchar *word)
+{
+    if (word == NULL || *word == '\0')
+        return FALSE;
+    gchar   *folded = g_utf8_casefold(word, -1);
+    GList   *have   = on_document_collect_tags(d);
+    gboolean found  = FALSE;         /* the note has the tag already        */
+    for (GList *l = have; !found && l != NULL; l = l->next) {
+        gchar *f = g_utf8_casefold(l->data, -1);
+        found = strcmp(f, folded) == 0;
+        g_free(f);
+    }
+    g_list_free_full(have, g_free);
+    g_free(folded);
+    if (found)
+        return FALSE;
+
+    on_document_begin_group(d);
+    guint          last = d->blocks->len - 1;
+    const OnBlock *b    = g_ptr_array_index(d->blocks, last);
+    if (last == 0 || b->kind != ON_BLOCK_PARA || !tags_only(b->text)) {
+        on_document_insert_block(d, ++last, on_block_new_text(ON_BLOCK_PARA));
+        b = g_ptr_array_index(d->blocks, last);
+    }
+    OnPos pos = { last, -1, b->text->text->len };
+    if (pos.offset > 0 && !g_unichar_isspace(g_utf8_get_char(
+            g_utf8_prev_char(b->text->text->str + pos.offset)))) {
+        on_document_insert_text(d, pos, " ", 1, 0);
+        pos.offset++;
+    }
+    gchar *token = g_strconcat("#", word, NULL);
+    on_document_insert_text(d, pos, token, strlen(token), ON_FMT_TAG);
+    g_free(token);
+    on_document_end_group(d);
+    return TRUE;
+}
+
 GArray *
 on_document_action_blocks(const OnDocument *d)
 {

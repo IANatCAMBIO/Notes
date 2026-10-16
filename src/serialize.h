@@ -88,8 +88,8 @@ gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
 /* ---------------------------------------------------------------------------
  * on_note_document_save_tags() — rewrite note `id`'s TEXT tags from the
  * document's #tag runs (on_document_collect_tags →
- * on_db_note_set_text_tags, which makes missing tags; the Tags field is
- * not touched).  The second half of a
+ * on_db_note_set_text_tags, which makes missing tags; the old Tags field
+ * is not touched).  The second half of a
  * save whose document's tags changed: the editor calls it when its tags
  * were touched, everything else after every save.
  *   db  — open database.
@@ -103,13 +103,14 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
 /* ---------------------------------------------------------------------------
  * on_note_new_from_text() — a new note holding plain text: one PARA block
  * per line (on_document_from_text), the first line its title, every '!'
- * line an action item, every #tag a text tag — created and written
+ * line an action item, `tag` a #tag after it — created and written
  * through THE save, in ONE write transaction (the caller's, when one is
  * open): a failed save leaves no note behind.  What the development
  * seeder and the tests build their notes with (it was the command-line
  * tool's `note new`).
  *   db   — open database.
- *   tag  — a tag for its Tags field, or NULL for none.
+ *   tag  — a tag (any name) put on a line of its own after the text as a
+ *          #tag (on_document_tag_word, on_document_append_tag), or NULL.
  *   text — the content, UTF-8 (invalid bytes become U+FFFD).
  * Returns the new note's id, or 0 on failure.
  * ------------------------------------------------------------------------- */

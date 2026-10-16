@@ -34,12 +34,13 @@
  * The action_items view is what every listing reads.
  *
  * TAGS, not folders, organise the notes: all notes live in one store.  A
- * note's tags come from two sources, kept apart (note_tags.in_field /
- * in_text): its Tags field (on_db_note_field_tag_add / _remove) and the
- * #word tags of its text (on_db_note_set_text_tags, from every save).  A
- * tag the text has cannot be taken off in the field.  The tags are the two
- * apps': a name compares case-insensitively and is never renamed, the
- * emoji is shared, the favorite flag is each app's (favorite_notes here).
+ * note's tags are the #word tags of its text (note_tags.in_text,
+ * on_db_note_set_text_tags, from every save).  The move from folders put
+ * them in a Tags field (in_field) instead; Notes writes those into the
+ * text once (on_note_field_tags_to_text) and empties the field.  The
+ * tags are the two apps': a name compares case-insensitively and is never
+ * renamed, the emoji is shared, the favorite flag is each app's
+ * (favorite_notes here).
  * The schema's triggers delete a tag once no note and no live task carries
  * it, so nothing here prunes.
  *
@@ -129,7 +130,7 @@ typedef struct {
  *              renamed, compared case-insensitively.
  *   emoji    — display prefix, "" for none (owned string; shared).
  *   favorite — favorite_notes: a button in Notes' Favorites bar.
- *   in_field — read by on_db_note_tags only: the note's Tags field has it.
+ *   in_field — read by on_db_note_tags only: the old Tags field has it.
  *   in_text  — read by on_db_note_tags only: a #word in its text has it.
  * ------------------------------------------------------------------------- */
 typedef struct {
@@ -387,24 +388,22 @@ GList *on_db_note_tags(OnDatabase *db, gint64 note_id);
 /* The note's TEXT tags become exactly `tag_names` (a GList of "const
  * gchar*" names, without '#'; an existing tag of a name in any case is
  * used, a missing one made): a tag the text no longer has keeps its row
- * while the Tags field has it and goes otherwise.  The Tags field is not
+ * while the old Tags field has it and goes otherwise.  The field is not
  * touched.  Runs in the caller's transaction when one is open.  Returns
  * TRUE on success.                                                          */
 gboolean on_db_note_set_text_tags(OnDatabase *db, gint64 note_id,
                                   GList *tag_names);
 
-/* Put the tag `name` (trimmed; the existing tag of that name in any case,
- * else a new one) in the note's Tags field.  The note's content and
- * updated_at are not touched.  Returns the tag's id, or 0 when the name
- * is blank, the note is missing or the write failed.                       */
-gint64 on_db_note_field_tag_add(OnDatabase *db, gint64 note_id,
-                                const gchar *name);
+/* The notes with a tag in the old Tags field (note_tags.in_field: the move
+ * from folders made them), by id.  Returns a GArray of gint64; free with
+ * g_array_unref().                                                          */
+GArray *on_db_field_tag_notes(OnDatabase *db);
 
-/* Take tag `tag_id` out of the note's Tags field.  Refused while the
- * note's text has it (it comes off in the text).  Returns 1 when written
- * (also when the field did not have it), 0 when refused, -1 when the
- * write failed (logged).                                                    */
-gint on_db_note_field_tag_remove(OnDatabase *db, gint64 note_id, gint64 tag_id);
+/* Empty note `note_id`'s old Tags field: a tag only the field gave goes, a
+ * tag its text has too stays as a text tag.  Once its text has them
+ * (on_note_field_tags_to_text).  Runs in the caller's transaction when one
+ * is open.  Returns TRUE on success.                                        */
+gboolean on_db_note_field_tags_clear(OnDatabase *db, gint64 note_id);
 
 /* List all notes labeled with tag `tag_id`, newest first.
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */

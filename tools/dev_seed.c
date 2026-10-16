@@ -3,9 +3,9 @@
  *
  * `make seed` (tools/seed-dev.sh) builds dev/data/shared_data.db (the file
  * $CAMBIO_SHARED_DB names) with this tool:
- * tags in notes' Tags fields (a deployment's notes carry Salt,
- * Deployments and its own; some tags with an emoji, two Notes
- * favorites), #tags in the text, pinned notes, three trashed notes (one
+ * #tags on notes' bottom lines (a deployment's notes carry Salt,
+ * Deployments and its own, as the move from folders gave them; some tags
+ * with an emoji, two Notes favorites), pinned notes, three trashed notes (one
  * with tags of its own), a note with every
  * block kind (note 1: headings, lists, task boxes, code, a table, block
  * and inline images, inline styles, a #tag, action lines), a picture
@@ -14,7 +14,7 @@
  * several tags.  Due dates are relative to today, so the Action Items view
  * always shows each case.  Everything goes through the same calls the app
  * makes: on_note_new_from_text / on_note_document_save, the tag links,
- * on_action_edit_set_done, the Tags field, tag, pin and trash calls.
+ * on_action_edit_set_done, the tag, pin and trash calls.
  *
  *   dev_seed check                 exit 0 when no app holds the data
  *                                  directory (so it may be wiped)
@@ -126,27 +126,6 @@ add_table(OnDocument *doc)
 }
 
 /*
- * append_tag — append a #tag token to a document's last line, one space
- * after the text, carrying ON_FMT_TAG (what the editor's tag capture
- * writes).
- *
- * Inputs:
- *   doc  — the document (its last block is a text block)
- *   name — the tag, without '#'
- */
-static void
-append_tag(OnDocument *doc, const char *name)
-{
-    guint  last  = on_document_n_blocks(doc) - 1;
-    OnPos  pos   = { last, -1, on_document_block(doc, last)->text->text->len };
-    on_document_insert_text(doc, pos, " ", 1, 0);
-    pos.offset++;
-    gchar *token = g_strdup_printf("#%s", name);
-    on_document_insert_text(doc, pos, token, strlen(token), ON_FMT_TAG);
-    g_free(token);
-}
-
-/*
  * seed_rich — append every block kind to a note and save it.
  *
  * Inputs:
@@ -227,36 +206,37 @@ day(int offset, char out[static 11])
 }
 
 /*
- * note — a new note from text with tags in its Tags field, optionally with
- * #tags and images appended, saved through THE save with its tag links.
+ * note — a new note from text, its folder tags and #tags written on its
+ * bottom line (as Notes writes a tag given from outside the text:
+ * on_document_tag_word, on_document_append_tag), optionally with images
+ * appended, saved through THE save with its tag links.
  *
  * Inputs:
- *   db     — the database
- *   field  — NULL-terminated names for its Tags field, or NULL for none
- *   text   — its content, one line per block
- *   tags   — NULL-terminated tag names to append to the last line, or NULL
- *   images — NULL-terminated PNGs to append as image blocks, or NULL
+ *   db      — the database
+ *   folders — NULL-terminated names the move from folders gave it, or NULL
+ *   text    — its content, one line per block
+ *   tags    — NULL-terminated #tag words to append, or NULL
+ *   images  — NULL-terminated PNGs to append as image blocks, or NULL
  *
  * Output: the note's id; 0 on failure (reported on stderr).
  */
 static gint64
-note(OnDatabase *db, const char *const *field, const char *text,
+note(OnDatabase *db, const char *const *folders, const char *text,
      const char *const *tags, GBytes *const *images)
 {
-    gint64 id = on_note_new_from_text(db, NULL, text);
-    for (const char *const *f = field; id != 0 && f != NULL && *f != NULL; f++) {
-        if (on_db_note_field_tag_add(db, id, *f) == 0) id = 0;
-    }
-    if (id == 0 || (tags == NULL && images == NULL)) {
-        if (id == 0) fprintf(stderr, "dev_seed: could not create a note\n");
-        return id;
-    }
-    OnDocument *doc = on_note_document_load(db, id);
+    gint64      id  = on_note_new_from_text(db, NULL, text);
+    OnDocument *doc = id != 0 ? on_note_document_load(db, id) : NULL;
     if (doc == NULL) {
+        fprintf(stderr, "dev_seed: could not create a note\n");
         return 0;
     }
+    for (const char *const *f = folders; f != NULL && *f != NULL; f++) {
+        gchar *word = on_document_tag_word(*f);
+        on_document_append_tag(doc, word);
+        g_free(word);
+    }
     for (const char *const *t = tags; t != NULL && *t != NULL; t++) {
-        append_tag(doc, *t);
+        on_document_append_tag(doc, *t);
     }
     for (GBytes *const *i = images; i != NULL && *i != NULL; i++) {
         on_document_insert_block(doc, on_document_n_blocks(doc),
@@ -330,8 +310,9 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     day(-3, d_3); day(0, d0); day(1, d1); day(2, d2);
     day(5, d5); day(9, d9); day(-10, d_10); day(14, d14);
 
-    /* The Tags fields, as the move from folders made them: every folder on
-     * a note's path became a tag of it.                                    */
+    /* The folder tags, as the move from folders made them (every folder on
+     * a note's path became a tag of it) and Notes then wrote them into the
+     * text.                                                                */
     const char *const stride_f[] = { "Salt", "Deployments", "Stride", NULL };
     const char *const apollo_f[] = { "Salt", "Deployments", "Apollo", NULL };
     const char *const meet_f[]   = { "Salt", "Meetings", NULL };

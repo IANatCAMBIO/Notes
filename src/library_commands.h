@@ -41,14 +41,15 @@ void on_library_commands_install(NotesLibrary *lib);
 BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
 
 /*
- * on_library_tag_notes — put a tag in the Tags field of several notes, in
- * ONE transaction (all or none), and post a status line.  Refresh-free,
- * like on_library_trash_notes.  Used by drops on a tag's row.
+ * on_library_tag_notes — put a #tag on the bottom line of several notes
+ * (on_note_append_tags), in ONE transaction (all or none), and post a
+ * status line.  Refresh-free, like on_library_trash_notes.  Used by drops
+ * on a tag's row.
  *
  * Inputs:
  *   lib  — the library
  *   ids  — the notes (NSNumber note ids)
- *   name — the tag's name (the existing tag of that name, in any case)
+ *   name — the tag's name, written as a #tag's word (on_document_tag_word)
  *
  * Output: YES when every note got it.
  */

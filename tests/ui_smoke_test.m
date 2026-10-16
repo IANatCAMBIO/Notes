@@ -281,11 +281,11 @@ return_key(NSWindow *window)
 }
 
 /*
- * new_note_tagged — a note with a tag in its Tags field and the given
- * text (on_note_new_from_text on the test's database).
+ * new_note_tagged — a note with the given text and a #tag on a line of its
+ * own after it (on_note_new_from_text on the test's database).
  *
  * Inputs:
- *   tag  — the tag, or NULL for none
+ *   tag  — the tag (a #tag's word), or NULL for none
  *   text — its content, one block per line
  *
  * Output: the note's id.
@@ -654,12 +654,18 @@ status_text_centred(NSTextField *label)
 /*
  * test_editor_commands — an editor runs its commands through the same
  * path the menu bar uses, gates them while the find field is typed in,
- * shows its title and save state, and opens at the bottom-right.
+ * shows its #tags and save state, and opens at the bottom-right.
  */
 static void
 test_editor_commands(void)
 {
     gint64 note_id = new_note("Commands note\nfind me here and find me there");
+    OnDocument *tagged = on_note_document_load(app.db, note_id);
+    on_document_append_tag(tagged, "commands");
+    on_document_append_tag(tagged, "found");
+    on_note_document_save(app.db, note_id, tagged, TRUE, NULL);
+    on_note_document_save_tags(app.db, note_id, tagged);
+    on_document_free(tagged);
     @autoreleasepool {
         on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
         pump(0.3);
@@ -695,9 +701,9 @@ test_editor_commands(void)
               back.offset == first.offset,
               "typing in the find field selects the first match; Next and Previous step from it");
 
-        check(label_with_text(window.contentView, window.title) != nil,
-              "the status bar shows the note's title");
-        check(status_text_centred(label_with_text(window.contentView, window.title)),
+        check(label_with_text(window.contentView, @"#commands #found") != nil,
+              "the status bar shows the note's #tags, in order");
+        check(status_text_centred(label_with_text(window.contentView, @"#commands #found")),
               "the editor's status text is 9 pt and centred in its bar");
         NSTextField *dot = label_with_text(window.contentView, @"●");
         check(dot != nil && [dot.toolTip isEqualToString:@"Saved"], "and a green Saved dot");
@@ -862,7 +868,7 @@ select_note_row(NotesLibrary *lib, NSString *title)
 static void
 test_trash(NotesLibrary *lib)
 {
-    gint64 inside = new_note_tagged("Trash tag", "Inside the tag\nbody");
+    gint64 inside = new_note_tagged("TrashTag", "Inside the tag\nbody");
     gint64 loose  = new_note("Loose note\nbody");
     on_library_refresh_all(lib);
 
@@ -896,7 +902,7 @@ test_trash(NotesLibrary *lib)
      * the selection falls back to All Notes; Restore brings both back.    */
     on_editor_window_open(&app, inside, NotesEditorRevealNone, 0, nil);
     pump(0.2);
-    OnTag *trash_tag = on_db_tag_find(app.db, "Trash tag");
+    OnTag *trash_tag = on_db_tag_find(app.db, "TrashTag");
     on_library_refresh_all(lib);
     on_library_sidebar_select(lib, on_sb_tag, trash_tag != NULL ? trash_tag->id : 0);
     pump(0.2);
@@ -906,7 +912,7 @@ test_trash(NotesLibrary *lib)
     on_library_refresh_all(lib);
     pump(0.2);
     check(on_db_note_is_trashed(app.db, inside) && editor_window_titled(@"Inside the tag") == nil &&
-          !tag_shown("Trash tag") && lib.sel_kind == on_sb_all,
+          !tag_shown("TrashTag") && lib.sel_kind == on_sb_all,
           "trashing a tag's last note closes its editor; the tag leaves the sidebar, All Notes is selected");
     on_library_sidebar_select(lib, on_sb_trash, 0);
     pump(0.2);
@@ -915,7 +921,7 @@ test_trash(NotesLibrary *lib)
     pump(0.2);
     on_library_refresh_all(lib);
     pump(0.2);
-    check(!on_db_note_is_trashed(app.db, inside) && tag_shown("Trash tag"),
+    check(!on_db_note_is_trashed(app.db, inside) && tag_shown("TrashTag"),
           "Restore brings the note back with its tag");
     on_db_tag_free(trash_tag);
 
@@ -1152,35 +1158,52 @@ test_pointer(void)
 }
 
 /*
- * test_tag_suggestions — typing "#al" lists the known tags that start so,
- * under the caret (a tag whose name cannot be a #word, from a Tags field,
- * is left out); Down and Return choose one, which becomes a tag.
+ * test_tag_suggestions — a typed '#' lists every known tag at once, each
+ * as its #word (Tasks' "al fresco" is AlFresco); a space straight after
+ * the '#' closes the list and leaves a plain '#'.  Typing "#al" lists the
+ * tags that start so, under the caret; Down and Return choose one, which
+ * becomes a tag.
  */
 static void
 test_tag_suggestions(void)
 {
     gint64 tagged = new_note("Tagged note\nbody");
-    GList *tags = g_list_append(g_list_append(NULL, g_strdup("alpha")), g_strdup("alpine"));
+    GList *tags = g_list_append(g_list_append(g_list_append(NULL, g_strdup("alpha")),
+                                              g_strdup("alpine")), g_strdup("al fresco"));
     on_db_note_set_text_tags(app.db, tagged, tags);
     g_list_free_full(tags, g_free);
-    on_db_note_field_tag_add(app.db, tagged, "al fresco");
     gint64 note_id = new_note("Tag typing\n");
     @autoreleasepool {
         on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
         pump(0.3);
         NSWindow      *window = editor_window_titled(@"Tag typing");
         NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        on_note_view_feed_text(view, "#");
+        NSWindow *list    = window.childWindows.firstObject;
+        BOOL      as_word = NO;      /* "al fresco" offered as AlFresco     */
+        for (NSView *v in list.contentView.subviews)
+            as_word = as_word || ([v isKindOfClass:NSButton.class] &&
+                                  [((NSButton *)v).title isEqualToString:@"#AlFresco"]);
+        check(list.visible && as_word,
+              "a typed # opens the list at once, a tag of several words as its #word");
+        on_note_view_feed_text(view, " ");
+        const OnBlock *b = on_document_block(on_note_view_document(view), 1);
+        check(!list.visible && strcmp(b->text->text->str, "# ") == 0 &&
+              !(on_text_flags_at(b->text, 0) & ON_FMT_TAG),
+              "a space straight after the # closes the list and leaves a plain #");
+        on_note_view_feed_key(view, on_key_backspace, 0, 0);
+        on_note_view_feed_key(view, on_key_backspace, 0, 0);
+
         on_note_view_feed_text(view, "#al");
-        NSWindow *list = window.childWindows.firstObject;
         NSUInteger rows = 0;
         for (NSView *v in list.contentView.subviews) rows += [v isKindOfClass:NSButton.class];
-        check(list.visible && rows == 2, "typing #al lists the two known tags starting with al");
+        check(list.visible && rows == 3, "typing #al lists the three known tags starting with al");
         on_note_view_feed_key(view, on_key_down, 0, 0);
         on_note_view_feed_key(view, on_key_return, 0, 0);
-        const OnBlock *b = on_document_block(on_note_view_document(view), 1);
-        check(!list.visible && strcmp(b->text->text->str, "#alpine ") == 0 &&
+        b = on_document_block(on_note_view_document(view), 1);
+        check(!list.visible && strcmp(b->text->text->str, "#alpha ") == 0 &&
               (on_text_flags_at(b->text, 1) & ON_FMT_TAG),
-              "Down and Return choose #alpine, styled as a tag, and close the list");
+              "Down and Return choose #alpha, styled as a tag, and close the list");
         on_editor_close_notes(&note_id, 1);
     }
     pump(0.2);
@@ -1228,7 +1251,7 @@ button_titled(NSView *root, NSString *title)
 }
 
 /*
- * note_has_field_tag — does a note's Tags field hold a tag of this name?
+ * note_has_tag — does a note carry a tag of this name?
  *
  * Inputs:
  *   note_id — the note
@@ -1237,24 +1260,23 @@ button_titled(NSView *root, NSString *title)
  * Output: YES when it does.
  */
 static BOOL
-note_has_field_tag(gint64 note_id, const char *name)
+note_has_tag(gint64 note_id, const char *name)
 {
     BOOL   found = NO;
     GList *tags  = on_db_note_tags(app.db, note_id);
     for (GList *l = tags; l != NULL; l = l->next) {
-        const OnTag *t = l->data;
-        found = found || (t->in_field && strcmp(t->name, name) == 0);
+        found = found || strcmp(((const OnTag *)l->data)->name, name) == 0;
     }
     on_db_tag_list_free(tags);
     return found;
 }
 
 /*
- * test_editor_tags — the editor's Tags strip: the Tags field's tags as
- * tokens and the text's #tags beside them; a token typed in becomes a tag
- * of the note (the existing spelling kept), a deleted one lets go of it,
- * and a tag the text has cannot be taken out of the field.  New Note in a
- * tag's view gives the note that tag.
+ * test_editor_tags — the editor has no Tags strip: a note's tags are its
+ * #tags, which the status bar lists.  A tag given in the library (a drop
+ * on a tag's row) while the note is open goes on its bottom line in the
+ * open editor, as a #word ("Added one" is #AddedOne), and is saved.  New
+ * Note in a tag's view gives the note that tag, on its second line.
  *
  * Inputs:
  *   lib — the library (its window on screen)
@@ -1262,45 +1284,33 @@ note_has_field_tag(gint64 note_id, const char *name)
 static void
 test_editor_tags(NotesLibrary *lib)
 {
-    gint64 note  = new_note_tagged("Field tag", "Editor tags\nbody");
-    GList *texty = g_list_append(NULL, g_strdup("texty"));
-    on_db_note_set_text_tags(app.db, note, texty);
-    g_list_free_full(texty, g_free);
+    gint64 note = new_note_tagged("FieldTag", "Editor tags\nbody");
     @autoreleasepool {
         on_editor_window_open(&app, note, NotesEditorRevealNone, 0, nil);
         pump(0.3);
-        NSWindow     *window = editor_window_titled(@"Editor tags");
-        NSTokenField *field  = (NSTokenField *)view_with_identifier(window.contentView, @"note-tags");
-        check(field != nil && [field.objectValue isEqual:@[@"Field tag"]] &&
-              label_with_text(window.contentView, @"In the text: #texty") != nil,
-              "the Tags strip shows the field's tags as tokens and the text's #tags beside them");
+        NSWindow *window = editor_window_titled(@"Editor tags");
+        check(view_with_identifier(window.contentView, @"note-tags") == nil &&
+              find_view(window.contentView, NSTokenField.class, Nil) == nil,
+              "the editor has no Tags strip");
+        check(label_with_text(window.contentView, @"#FieldTag") != nil,
+              "the status bar shows the note's #tags");
         check(save_snapshots(window, @"editor-tags"), "editor tags snapshots written, light and dark");
 
-        id<NSTokenFieldDelegate> ed = (id<NSTokenFieldDelegate>)field.delegate;
-        NSArray *made = [ed tokenField:field shouldAddObjects:@[@"  FIELD TAG ", @" Added one "] atIndex:1];
-        check([made isEqual:@[@"Added one"]] && note_has_field_tag(note, "Added one"),
-              "a typed token becomes a tag of the note, trimmed; one the field has is not doubled");
-
-        on_db_note_field_tag_add(app.db, note, "texty");
-        field.objectValue = @[@"Field tag", @"Added one"];
-        [(id<NSTextFieldDelegate>)ed controlTextDidChange:
-            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:field]];
-        pump(0.1);
-        check(note_has_field_tag(note, "texty"),
-              "a tag the text has cannot be taken out of the field");
-        field.objectValue = @[@"Field tag", @"texty"];
-        [(id<NSTextFieldDelegate>)ed controlTextDidChange:
-            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:field]];
-        pump(0.1);
-        OnTag *gone = on_db_tag_find(app.db, "Added one");
-        check(!note_has_field_tag(note, "Added one") && gone == NULL,
-              "a deleted token lets go of its tag, and a tag nothing carries is gone");
-        on_db_tag_free(gone);
+        check(on_library_tag_notes(lib, @[@(note)], @"Added one"), "a drop on a tag tags the open note");
+        pump(0.2);
+        NotesNoteView *view = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        OnDocument    *doc  = on_note_view_document(view);
+        check(on_document_n_blocks(doc) == 3 &&
+              strcmp(on_document_block(doc, 2)->text->text->str, "#FieldTag #AddedOne") == 0 &&
+              label_with_text(window.contentView, @"#FieldTag #AddedOne") != nil &&
+              note_has_tag(note, "AddedOne"),
+              "it goes on the open editor's tags line as a #word, the status bar shows it, "
+              "and it is saved");
         on_editor_close_notes(&note, 1);
     }
     pump(0.2);
 
-    OnTag *field_tag = on_db_tag_find(app.db, "Field tag");
+    OnTag *field_tag = on_db_tag_find(app.db, "FieldTag");
     on_library_refresh_all(lib);
     on_library_sidebar_select(lib, on_sb_tag, field_tag != NULL ? field_tag->id : 0);
     on_db_tag_free(field_tag);
@@ -1311,8 +1321,10 @@ test_editor_tags(NotesLibrary *lib)
     gint64 newest = 0;
     for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
     on_db_note_list_free(notes);
-    check(newest > note && note_has_field_tag(newest, "Field tag"),
-          "New Note in a tag's view gives the new note that tag");
+    gchar *body = on_note_text_cached(app.db, newest);
+    check(newest > note && note_has_tag(newest, "FieldTag") && g_strcmp0(body, "\n#FieldTag") == 0,
+          "New Note in a tag's view gives the new note that tag, under its empty title line");
+    g_free(body);
     on_editor_close_all();
     pump(0.2);
     on_library_sidebar_select(lib, on_sb_all, 0);
@@ -1330,8 +1342,8 @@ test_editor_tags(NotesLibrary *lib)
 static void
 test_edit_tag(NotesLibrary *lib)
 {
-    new_note_tagged("Smoke tag", "Edit tag note\nbody");
-    OnTag *tag = on_db_tag_find(app.db, "Smoke tag");
+    new_note_tagged("SmokeTag", "Edit tag note\nbody");
+    OnTag *tag = on_db_tag_find(app.db, "SmokeTag");
     gint64 tag_id = tag != NULL ? tag->id : 0;
     on_db_tag_free(tag);
     on_library_refresh_all(lib);
@@ -1353,7 +1365,7 @@ test_edit_tag(NotesLibrary *lib)
         NSTextField *emoji    = (NSTextField *)view_with_identifier(panel.contentView, @"tag-emoji");
         NSButton    *favorite = (NSButton *)view_with_identifier(panel.contentView, @"tag-favorite");
         NSButton    *ok       = default_button(panel);
-        check(emoji != nil && favorite != nil && label_with_text(panel.contentView, @"Smoke tag") &&
+        check(emoji != nil && favorite != nil && label_with_text(panel.contentView, @"SmokeTag") &&
               [ok.title isEqualToString:@"OK"],
               "it shows the tag's name and asks for an emoji and Favorite");
         emoji.stringValue = @" 🧪 ";
@@ -1373,19 +1385,19 @@ test_edit_tag(NotesLibrary *lib)
      * selection; a click on it selects the tag.                            */
     on_library_sidebar_select(lib, on_sb_all, 0);
     pump(0.2);
-    NSButton *button = button_titled(lib.window.contentView, @"🧪  Smoke tag");
+    NSButton *button = button_titled(lib.window.contentView, @"🧪  SmokeTag");
     check(button != nil && button.state == NSControlStateValueOff,
           "the Favorites bar has a button for the favorite tag, with its emoji");
     [button performClick:nil];
     pump(0.2);
-    button = button_titled(lib.window.contentView, @"🧪  Smoke tag");
+    button = button_titled(lib.window.contentView, @"🧪  SmokeTag");
     check(lib.sel_kind == on_sb_tag && lib.sel_id == tag_id && button.state == NSControlStateValueOn,
           "clicking it selects the tag, and the button is lit");
     check(save_snapshots(lib.window, @"favorites-bar"), "favorites bar snapshots written, light and dark");
     on_db_tag_set_favorite(app.db, tag_id, FALSE);
     on_library_refresh_all(lib);
     pump(0.2);
-    check(button_titled(lib.window.contentView, @"🧪  Smoke tag") == nil,
+    check(button_titled(lib.window.contentView, @"🧪  SmokeTag") == nil,
           "a tag no longer a favorite leaves the bar");
 
     /* View ▸ Hide Favorites Bar: the bar slides away, the setting is kept,
@@ -1670,9 +1682,12 @@ test_sidebar(NotesLibrary *lib)
     check(drop(outline, drag_of(outline, @[@(loose)], crate_row), crate_row, NSOutlineViewDropOnItemIndex),
           "notes dropped on a tag are accepted");
     GList *loose_tags = on_db_note_tags(app.db, loose);
-    check(g_list_length(loose_tags) == 1 && ((OnTag *)loose_tags->data)->in_field &&
-          strcmp(((OnTag *)loose_tags->data)->name, "Crate") == 0,
-          "and get it in their Tags fields");
+    gchar *loose_body = on_note_text_cached(app.db, loose);
+    check(g_list_length(loose_tags) == 1 && ((OnTag *)loose_tags->data)->in_text &&
+          strcmp(((OnTag *)loose_tags->data)->name, "Crate") == 0 &&
+          g_str_has_suffix(loose_body, "\n#Crate"),
+          "and get it as a #tag on their bottom lines");
+    g_free(loose_body);
     on_db_tag_list_free(loose_tags);
     all = sidebar_row(outline, @"All Notes");
     check(!drop(outline, drag_of(outline, @[@(loose)], all), all, NSOutlineViewDropOnItemIndex),
@@ -1693,7 +1708,7 @@ test_sidebar(NotesLibrary *lib)
 
     /* Fit to content: a long tag name widens the sidebar. */
     app.sidebar_fit_content = TRUE;
-    new_note_tagged("A tag with a really quite remarkably long name indeed", "Long tag\nbody");
+    new_note_tagged("ATagWithAReallyQuiteRemarkablyLongNameIndeed", "Long tag\nbody");
     on_library_refresh_all(lib);
     pump(0.3);
     check(outline.enclosingScrollView.frame.size.width > on_look_sidebar_min_w + 40,

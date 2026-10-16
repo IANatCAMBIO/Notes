@@ -14,7 +14,7 @@
  * toolbar and the menu run the same handlers.
  *
  * Drag and drop (on_pasteboard_type_rows, library_state.h): notes onto a
- * tag (it goes in their Tags fields) or onto the Trash.
+ * tag (a #tag on their bottom lines) or onto the Trash.
  *
  * Fit to content: the divider follows the widest row on show (the
  * sidebar_fit_content setting; once at startup whatever it says).
@@ -657,7 +657,7 @@ proposedItem:(id)item proposedChildIndex:(NSInteger)index
 
 /*
  * outlineView:acceptDrop:item:childIndex: — do the drop: the notes get the
- * tag in their Tags fields, or go to the Trash.  The rebuild waits until
+ * tag on their bottom lines (on_library_tag_notes), or go to the Trash.  The rebuild waits until
  * the drag has finished.
  *
  * Inputs:

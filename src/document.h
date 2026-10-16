@@ -523,6 +523,25 @@ gboolean on_document_tag_char(gunichar c);
 GList *on_document_collect_tags(const OnDocument *d);
 
 /* ---------------------------------------------------------------------------
+ * on_document_tag_word() — a tag name as a #tag's word: what is not a tag
+ * character (on_document_tag_char) is dropped, and a name of several
+ * words is joined with each word capitalized ("Old Projects" →
+ * "OldProjects", "Captain's Log" → "CaptainsLog"); one word is kept as it
+ * is.  Returns a new string, or NULL when nothing is left; g_free it.
+ * ------------------------------------------------------------------------- */
+gchar *on_document_tag_word(const gchar *name);
+
+/* ---------------------------------------------------------------------------
+ * on_document_append_tag() — put "#word" (a word as on_document_tag_word
+ * makes it) on the note's bottom line, unless a #tag of the note already
+ * has that word in any case.  The bottom line takes it when it is a body
+ * line other than the first (the title) holding only #tags, or nothing;
+ * otherwise a new body line is added for it.  One undo step.
+ * Returns TRUE when the tag was added.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_append_tag(OnDocument *d, const gchar *word);
+
+/* ---------------------------------------------------------------------------
  * ACTION ITEMS BY ORDINAL — the note's REAL action lines numbered in
  * document order: a non-CODE text block whose text starts with '!' and
  * whose rest is more than whitespace and a "due <date>" (bare "!" lines

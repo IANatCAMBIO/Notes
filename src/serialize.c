@@ -246,10 +246,13 @@ on_note_new_from_text(OnDatabase *db, const gchar *tag, const gchar *text)
     gboolean own;                    /* this call's transaction?            */
     if (!on_db_txn_begin(db, &own))
         return 0;
-    gint64      id  = on_db_note_create(db);
-    OnDocument *doc = on_document_from_text(text);
-    gboolean    ok  = id != 0 &&
-                      (tag == NULL || on_db_note_field_tag_add(db, id, tag) != 0) &&
+    gint64      id   = on_db_note_create(db);
+    OnDocument *doc  = on_document_from_text(text);
+    gchar      *word = on_document_tag_word(tag);
+    if (word != NULL)
+        on_document_append_tag(doc, word);
+    g_free(word);
+    gboolean    ok   = id != 0 &&
                       on_note_document_save(db, id, doc, TRUE, NULL) &&
                       on_note_document_save_tags(db, id, doc);
     on_note_document_release(db, doc);

@@ -98,15 +98,23 @@ open at once (SQLite WAL mode).  Edits flow both ways:
 Notes has no folders: **tags** organise the notes, and they are the same
 tags Tasks uses (one set in the shared file).
 
-- A note's tags come from its **Tags field** (the row under the editor's
-  format bar: type to pick a tag or make one, any name) and from the
-  **#tags in its text**.  A #tag in the text is shown beside the field and
-  comes off only in the text.
+- A note's tags are the **#tags in its text**, and the editor's status bar
+  lists them (`#Salt #Stride`).  Typing **#** opens the list of known
+  tags at once; keep typing to narrow it, Return or a click to choose.  A
+  tag's word follows the # with no space; a space straight after the #
+  closes the list and leaves a plain #.
+- A tag given from outside the text goes on the note's **bottom line** as a
+  #tag (on a line of its own under the text, joining a line that holds
+  only #tags): drop notes on a tag in the sidebar, or New Note in a tag's
+  view.  A name of several words is joined, each word capitalized, and
+  punctuation dropped: Tasks' "Old Projects" becomes #OldProjects — a tag
+  of its own.  The tags the move from folders gave (an older Tags field)
+  are written into the notes' text the same way at launch, once, keeping
+  each note's modified time.
 - The sidebar lists **Pinned Notes**, **All Notes**, **Action Items**, then
   every tag a note carries (with counts when Settings ▸ Appearance shows
   them), and the **Trash**.  Drop notes on a tag to give them the tag, on
-  the Trash to trash them.  New Note in a tag's view gives the note that
-  tag.
+  the Trash to trash them.
 - Right-click a tag, **Edit Tag…**: an emoji (Tasks shows it too) and
   whether it is a **favorite** — a button in the **Favorites bar** across
   the top of the window (View ▸ Hide Favorites Bar slides it away, as in

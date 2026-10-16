@@ -1,6 +1,6 @@
 /* ===========================================================================
- * action_sync.c — pulling outside changes to action items into the notes
- * (see action_sync.h)
+ * action_sync.c — pulling outside changes to action items into the notes,
+ * and tags written into them from outside the editor (see action_sync.h)
  * =========================================================================== */
 
 #include "action_sync.h"
@@ -101,6 +101,107 @@ on_action_sync_note(OnApp *app, gint64 note_id)
         on_note_document_release(db, doc);
     }
     return on_db_txn_end(db, own, ok);
+}
+
+/*
+ * on_note_append_tags — see action_sync.h.
+ */
+gboolean
+on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
+{
+    OnDatabase *db = app->db;
+    if (sync_held(app, note_id)) {
+        return FALSE;
+    }
+    gboolean own;                    /* this call's transaction?            */
+    if (!on_db_txn_begin(db, &own)) {
+        return FALSE;
+    }
+    OnDocument *live = app->live_document != NULL ? app->live_document(app, note_id) : NULL;
+    OnDocument *doc  = live != NULL ? live : on_note_document_load(db, note_id);
+    gboolean    ok   = doc != NULL;
+    gboolean    edited = FALSE;      /* a tag went on the bottom line       */
+    for (gsize i = 0; ok && i < n; i++) {
+        gchar *word = on_document_tag_word(names[i]);
+        if (word != NULL && on_document_append_tag(doc, word)) {
+            edited = TRUE;
+        }
+        g_free(word);
+    }
+    if (edited && live != NULL) {
+        LiveEdit *edit = g_new0(LiveEdit, 1);
+        edit->app     = app;
+        edit->note_id = note_id;
+        on_db_txn_on_end(db, live_edited_end, edit);
+    }
+    if (ok && edited) {
+        ok = live != NULL ? app->live_save(app, note_id)
+                          : on_note_document_save(db, note_id, doc, FALSE, NULL) &&
+                            on_note_document_save_tags(db, note_id, doc);
+    }
+    if (live == NULL && doc != NULL) {
+        on_note_document_release(db, doc);
+    }
+    return on_db_txn_end(db, own, ok);
+}
+
+/*
+ * field_tags_to_text — one note's old Tags field written into its text
+ * (on_note_append_tags) and emptied, keeping its updated_at, in one
+ * transaction.
+ *
+ * Inputs:
+ *   app     — the application context, no transaction open
+ *   note_id — a note with field tags (on_db_field_tag_notes)
+ *
+ * Output: TRUE on success; FALSE when nothing was written (logged).
+ */
+static gboolean
+field_tags_to_text(OnApp *app, gint64 note_id)
+{
+    OnDatabase *db = app->db;
+    gboolean    own;                 /* this call's transaction?            */
+    if (!on_db_txn_begin(db, &own)) {
+        return FALSE;
+    }
+    OnNoteStamp stamp;               /* updated_at before the rewrite       */
+    GList      *tags  = on_db_note_tags(db, note_id);
+    GPtrArray  *names = g_ptr_array_new();
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        if (t->in_field) {
+            g_ptr_array_add(names, t->name);
+        }
+    }
+    gboolean ok = on_db_note_stamp(db, note_id, &stamp) &&
+                  on_note_append_tags(app, note_id, (const gchar *const *)names->pdata,
+                                      names->len) &&
+                  on_db_note_field_tags_clear(db, note_id) &&
+                  on_db_note_set_updated_at(db, note_id, stamp.updated_at);
+    g_ptr_array_free(names, TRUE);
+    on_db_tag_list_free(tags);
+    if (!ok) {
+        g_warning("tags: note %" G_GINT64_FORMAT "'s Tags field could not go into its text",
+                  note_id);
+    }
+    return on_db_txn_end(db, own, ok);
+}
+
+/*
+ * on_note_field_tags_to_text — see action_sync.h.
+ */
+gint
+on_note_field_tags_to_text(OnApp *app)
+{
+    GArray *notes = on_db_field_tag_notes(app->db);
+    gint    done  = 0;
+    for (guint i = 0; i < notes->len; i++) {
+        if (field_tags_to_text(app, g_array_index(notes, gint64, i))) {
+            done++;
+        }
+    }
+    g_array_unref(notes);
+    return done;
 }
 
 /*
@@ -272,6 +373,7 @@ on_action_sync_start(OnApp *app, gboolean refresh)
 {
     int      changed;                /* unused: everything is new here      */
     int64_t  rev_tasks = 0, rev_notes = 0;
+    on_note_field_tags_to_text(app);
     shared_db_poll(app->db->shared, &changed, &rev_tasks, &rev_notes, NULL);
     app->rev_tasks = rev_tasks;
     app->rev_notes = rev_notes;

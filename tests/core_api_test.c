@@ -326,11 +326,14 @@ test_notes(OnDatabase *db)
     check(note != 0, "notes: a note is made from plain text");
     check(note_title_is(db, note, "Stride rollout"), "notes: its first line is its title");
     gchar *body = on_note_text_cached(db, note);
-    check(body != NULL && strcmp(body, text) == 0,
-          "notes: its plain text reads back byte for byte (tabs, quotes, backslash)");
+    gchar *want = g_strconcat(text, "\n#NotesTest", NULL);
+    check(body != NULL && strcmp(body, want) == 0,
+          "notes: its plain text reads back byte for byte (tabs, quotes, backslash), "
+          "the tag asked for on a line of its own");
+    g_free(want);
     g_free(body);
     gchar *tags = note_tags_are(db, note);
-    check(strcmp(tags, "Notes test:F-") == 0, "notes: it carries the tag asked for, in its Tags field");
+    check(strcmp(tags, "NotesTest:-T") == 0, "notes: it carries the tag asked for, as a #word");
     g_free(tags);
 
     gint64 blank = on_note_new_from_text(db, NULL, "");
@@ -599,80 +602,134 @@ test_action_edit(OnApp *app)
           "an unknown uid is refused");
 }
 
-/* ── The Tags field ─────────────────────────────────────────────────────── */
+/* ── Tags given from outside the text ──────────────────────────────────── */
 
 /*
- * test_field_tags — the Tags field beside the #tags of the text: a name
- * of any case uses the existing tag, the two sources are kept apart, the
- * field cannot take off what the text has, a tag lives while a note
- * carries it; emoji and Notes' favorite flag; the two scopes; the counts
- * and the per-note names.
+ * body_is — does a note's cached plain text read exactly so?
  *
  * Inputs:
- *   db — the database
+ *   db   — the database
+ *   note — the note
+ *   want — the text expected
+ *
+ * Output: TRUE when it does.
+ */
+static gboolean
+body_is(OnDatabase *db, gint64 note, const char *want)
+{
+    gchar   *body = on_note_text_cached(db, note);
+    gboolean same = body != NULL && strcmp(body, want) == 0;
+    if (!same) fprintf(stderr, "  body: \"%s\", want \"%s\"\n", body ? body : "(null)", want);
+    g_free(body);
+    return same;
+}
+
+/*
+ * word_is — does on_document_tag_word make this of a name?
+ *
+ * Inputs:
+ *   name — the tag name
+ *   want — the word expected, NULL for none
+ *
+ * Output: TRUE when it does.
+ */
+static gboolean
+word_is(const char *name, const char *want)
+{
+    gchar   *word = on_document_tag_word(name);
+    gboolean same = g_strcmp0(word, want) == 0;
+    g_free(word);
+    return same;
+}
+
+/*
+ * test_given_tags — tags given from outside the text go on the note's
+ * bottom line as #words (on_note_append_tags): CamelCase for a name of
+ * several words, once per tag in any case, on a line of their own; the
+ * old Tags field is written into the text once, its updated_at kept;
+ * emoji and Notes' favorite flag; the two scopes; the per-note names.
+ *
+ * Inputs:
+ *   app — the context, database open
  */
 static void
-test_field_tags(OnDatabase *db)
+test_given_tags(OnApp *app)
 {
-    gint64 a = on_note_new_from_text(db, "Big Client", "Field one\nbody");
-    gint64 b = on_note_new_from_text(db, NULL, "Field two\nbody");
-    check(on_db_note_field_tag_add(db, b, "  big client ") != 0 &&
-          on_db_note_field_tag_add(db, b, "") == 0 &&
-          on_db_note_field_tag_add(db, 999999, "x") == 0,
-          "field: a name in any case, trimmed; blank and a missing note refused");
-    gchar *tags = note_tags_are(db, b);
-    check(strcmp(tags, "Big Client:F-") == 0, "field: the existing spelling is kept");
+    OnDatabase *db = app->db;
+    check(word_is("Old Projects", "OldProjects") && word_is("Captain's Log", "CaptainsLog") &&
+          word_is("salt", "salt") && word_is("  big client ", "BigClient") &&
+          word_is("year-end review", "Year-endReview") && word_is("!!!", NULL) &&
+          word_is("", NULL) && word_is(NULL, NULL),
+          "word: joined CamelCase, punctuation dropped, one word as it is");
+
+    gint64 a = on_note_new_from_text(db, NULL, "Given one\nbody");
+    gint64 b = on_note_new_from_text(db, NULL, "Given two");
+    const char *client[] = { "Big Client" };
+    const char *more[]   = { "bigclient", "Salt" };
+    check(on_note_append_tags(app, a, client, 1) &&
+          body_is(db, a, "Given one\nbody\n#BigClient"),
+          "append: a line of its own under the text");
+    check(on_note_append_tags(app, a, more, 2) &&
+          body_is(db, a, "Given one\nbody\n#BigClient #Salt"),
+          "append: a tag it has is skipped, the next joins the tags' line");
+    check(on_note_append_tags(app, b, client, 1) && body_is(db, b, "Given two\n#BigClient") &&
+          note_title_is(db, b, "Given two"),
+          "append: never on the title line");
+    gchar *tags = note_tags_are(db, a);
+    check(strcmp(tags, "BigClient:-T,Salt:-T") == 0, "append: text tags");
     g_free(tags);
 
-    /* The text gains #big: one row, both sources; the field cannot take it
-     * off, the text can, and the field keeps it.                          */
-    OnDocument *doc = on_note_document_load(db, b);
-    add_tag_line(doc, (const char *[]){ "big", NULL });
-    check(save_with_tags(db, b, doc), "field: a #tag in the text is saved");
+    /* The old Tags field (the move from folders): a field-only tag and one
+     * the text has too.                                                    */
+    gint64      c   = on_note_new_from_text(db, NULL, "Legacy\nbody");
+    OnDocument *doc = on_note_document_load(db, c);
+    add_tag_line(doc, (const char *[]){ "salt", NULL });
+    check(save_with_tags(db, c, doc), "field: a note with #salt in its text");
     on_document_free(doc);
-    check(on_db_note_field_tag_add(db, b, "BIG") != 0, "field: and the field gets it too");
-    tags = note_tags_are(db, b);
-    check(strcmp(tags, "big:FT,Big Client:F-") == 0, "field: one row per tag, by source");
+    gchar *sql = g_strdup_printf(
+        "INSERT INTO tags (name) VALUES ('Old Projects');"
+        "INSERT INTO note_tags (note_id, tag_id, in_field)"
+        " SELECT %1$" G_GINT64_FORMAT ", id, 1 FROM tags WHERE name = 'Old Projects';"
+        "UPDATE note_tags SET in_field = 1 WHERE note_id = %1$" G_GINT64_FORMAT ";",
+        c);
+    check(sqlite3_exec(db->handle, sql, NULL, NULL, NULL) == SQLITE_OK &&
+          on_db_note_set_updated_at(db, c, 1790000000), "field: an old Tags field is set up");
+    g_free(sql);
+    check(on_note_field_tags_to_text(app) == 1 &&
+          body_is(db, c, "Legacy\nbody\n#salt #OldProjects"),
+          "field: its tags go on the bottom line, one the text has is not repeated");
+    tags = note_tags_are(db, c);
+    check(strcmp(tags, "OldProjects:-T,Salt:-T") == 0 && on_db_tag_find(db, "Old Projects") == NULL,
+          "field: emptied; the old spelling nothing carries is gone");
     g_free(tags);
-    OnTag *big = on_db_tag_find(db, "Big");
-    check(big != NULL && on_db_note_field_tag_remove(db, b, big->id) == 0,
-          "field: a tag the text has cannot be taken off in the field");
-    doc = on_note_document_load(db, b);
-    OnText     *t  = on_document_block(doc, 2)->text;
-    on_document_delete_text(doc, (OnPos){ 2, -1, 0 }, t->text->len);
-    check(save_with_tags(db, b, doc), "field: the #tag taken out of the text");
-    on_document_free(doc);
-    tags = note_tags_are(db, b);
-    check(strcmp(tags, "big:F-,Big Client:F-") == 0, "field: the field still has it");
-    g_free(tags);
-    check(big != NULL && on_db_note_field_tag_remove(db, b, big->id) == 1 &&
-          on_db_tag_find(db, "big") == NULL,
-          "field: taken off the field too, the tag nothing carries is gone");
-    on_db_tag_free(big);
+    OnNoteMeta *meta = on_db_note_get(db, c);
+    check(meta != NULL && meta->updated_at == 1790000000, "field: the note's modified time is kept");
+    on_db_note_meta_free(meta);
+    check(on_note_field_tags_to_text(app) == 0, "field: nothing to do the second time");
 
     /* Emoji and the favorite flag; the scopes.                             */
-    OnTag *client = on_db_tag_find(db, "big client");
-    check(client != NULL && on_db_tag_set_emoji(db, client->id, " \xf0\x9f\x8f\xa2 ") &&
-          on_db_tag_set_favorite(db, client->id, TRUE), "tags: an emoji and a favorite set");
-    OnTag *again = client != NULL ? on_db_tag_get(db, client->id) : NULL;
+    OnTag *big = on_db_tag_find(db, "bigclient");
+    check(big != NULL && on_db_tag_set_emoji(db, big->id, " \xf0\x9f\x8f\xa2 ") &&
+          on_db_tag_set_favorite(db, big->id, TRUE), "tags: an emoji and a favorite set");
+    OnTag *again = big != NULL ? on_db_tag_get(db, big->id) : NULL;
     check(again != NULL && strcmp(again->emoji, "\xf0\x9f\x8f\xa2") == 0 && again->favorite,
           "tags: they read back (the emoji trimmed)");
     on_db_tag_free(again);
     check(on_db_notes_trash(db, &a, 1) && on_db_notes_trash(db, &b, 1) &&
-          tag_listed(db, ON_TAGS_ALL, "Big Client") &&
-          !tag_listed(db, ON_TAGS_CARRIED, "Big Client"),
+          tag_listed(db, ON_TAGS_ALL, "BigClient") &&
+          !tag_listed(db, ON_TAGS_CARRIED, "BigClient"),
           "scopes: a tag only trashed notes carry lives, but is not shown");
-    check(on_db_note_restore(db, a) && tag_listed(db, ON_TAGS_CARRIED, "Big Client"),
+    check(on_db_note_restore(db, a) && tag_listed(db, ON_TAGS_CARRIED, "BigClient"),
           "scopes: a restored note brings it back, with its tags");
     GHashTable *names = on_db_note_tag_names_map(db);
-    check(strcmp(g_hash_table_lookup(names, &a), "Big Client") == 0 &&
+    check(strcmp(g_hash_table_lookup(names, &a), "BigClient, Salt") == 0 &&
           g_hash_table_lookup(names, &(gint64){ 999999 }) == NULL,
           "names: each note's tags as one string; none for an unknown note");
     g_hash_table_destroy(names);
-    gint64 both[] = { a, b };
-    check(on_db_notes_delete(db, both, 2) && on_db_tag_find(db, "Big Client") == NULL,
-          "field: deleting the last notes takes their field tags");
-    on_db_tag_free(client);
+    gint64 gone[] = { a, b, c };
+    check(on_db_notes_delete(db, gone, 3) && on_db_tag_find(db, "BigClient") == NULL,
+          "delete: deleting the last notes takes their tags");
+    on_db_tag_free(big);
 }
 
 /* ── Tags ───────────────────────────────────────────────────────────────── */
@@ -762,7 +819,7 @@ test_trash(OnDatabase *db)
     check(on_db_notes_trash(db, &plan, 1) && !action_list_has_note(db, plan),
           "trash: a trashed note's items are hidden");
     gchar *tags = note_tags_are(db, plan);
-    check(strcmp(tags, "Old Projects:F-") == 0, "trash: it keeps its tags");
+    check(strcmp(tags, "OldProjects:-T") == 0, "trash: it keeps its tags");
     g_free(tags);
     check(on_db_note_restore(db, plan) && !on_db_note_is_trashed(db, plan) &&
           action_list_has_note(db, plan), "restore: it comes back, its items with it");
@@ -953,7 +1010,7 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
 {
     gint64 sync = on_note_new_from_text(app->db, "Meetings",
                                         "Weekly sync\n\n! Circulate the minutes\nDecisions: ship it.");
-    on_db_note_field_tag_add(app->db, sync, "Salt");
+    on_note_append_tags(app, sync, (const char *[]){ "Salt" }, 1);
     gint64 gone = on_note_new_from_text(app->db, NULL, "Trashed export\nx");
     on_db_notes_trash(app->db, &gone, 1);
     gint visible = on_db_note_count_visible(app->db);
@@ -1063,7 +1120,7 @@ main(void)
     test_action_lines(app.db);
     test_action_list(app.db);
     test_action_edit(&app);
-    test_field_tags(app.db);
+    test_given_tags(&app);
     test_tags(app.db);
     test_trash(app.db);
     test_search(app.db);

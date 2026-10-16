@@ -123,7 +123,7 @@ on_library_view_t on_library_view(NotesLibrary *lib);
 BOOL on_library_in_trash_view(NotesLibrary *lib);
 
 /*
- * on_library_current_tag — the tag a new note is given (in its Tags field).
+ * on_library_current_tag — the tag a new note is given (as a #tag).
  *
  * Output: the selected tag's name, or nil when anything else is selected.
  */

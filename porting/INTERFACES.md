@@ -15,10 +15,13 @@ that code is the behavioural specification.
 **Tags replace folders (2026-10-15, `../shared_data/PLAN_TAGS.md`).**
 Where the GTK specification has folders, this build has tags shared with
 Tasks: no folder API in `db.h` (notes live in one store; a note's tags
-come from its Tags field and its #tags), no folder commands, no AI modes,
+are the #tags of its text; tags given from outside it — a drop, New Note
+in a tag's view, the move's Tags field — are appended as #words,
+`on_note_append_tags` in `action_sync.h`), no folder commands, no AI modes,
 a flat export.  The sidebar (F) lists the views, the tags the notes carry
 and the Trash, as Tasks' does; `library_favorites.[hm]` (the Favorites
-bar) and the editor's Tags strip are new; Edit Tag lives in
+bar) is new, and the editor's status bar lists the note's #tags where the
+GTK one showed its title; Edit Tag lives in
 `library_commands`.  `on_sb_kind_t` and the drag API carry no folders.
 
 Contents: 1 hard rules · 2 layout of the tree · 3 the core you program
@@ -536,9 +539,8 @@ its inputs as locals, and never reads `self.…` off the main thread.
   layouts — and this port persists the same, in the same keys (`list_columns`
   as `key:vis,…`, not `autosaveName`).  The keys `native_menubar` and
   `touch_assist` are GTK-only and gone.
-- **`make seed`** rebuilds `dev/data/shared_data.db`: notes with tags in
-  their Tags fields (as the move from folders made them) and #tags in their
-  text, emoji on three tags and two favorites, pinned notes, three trashed
+- **`make seed`** rebuilds `dev/data/shared_data.db`: notes with #tags on
+  their bottom lines (the folder tags the move gave them, then their own), emoji on three tags and two favorites, pinned notes, three trashed
   notes, a note with every block kind (note 1), images, a 200-line note, 40
   dated filler notes, and 13 action items — open, done, overdue, due today,
   undated — with due dates relative to today — all through the core API

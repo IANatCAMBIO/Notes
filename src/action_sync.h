@@ -1,5 +1,6 @@
 /* ===========================================================================
- * action_sync.h — pulling outside changes to action items into the notes
+ * action_sync.h — pulling outside changes to action items into the notes,
+ * and tags written into them from outside the editor
  *
  * Notes shares its database with Tasks (and with agents using the shared
  * skill).  A '!' line's task can be renamed, completed, re-dated or
@@ -100,8 +101,44 @@ gint on_action_sync_run(OnApp *app, gboolean refresh);
 gboolean on_action_sync_poll(OnApp *app);
 
 /* ---------------------------------------------------------------------------
+ * on_note_append_tags() — give a note tags from outside its text (a drop on
+ * a sidebar tag, New Note in a tag's view, the old Tags field): each name
+ * becomes a #tag on the note's bottom line (on_document_tag_word,
+ * on_document_append_tag; one it has already is skipped), and the note is
+ * saved with its text tags, in one write transaction (or the caller's).
+ * An open editor's live document takes them as the pull's edits do (see
+ * WHAT above), so they are one undo step there.
+ *
+ * Inputs:
+ *   app     — the application context, its database open
+ *   note_id — the note
+ *   names   — tag names in any spelling ("Old Projects" → #OldProjects)
+ *   n       — how many
+ *
+ * Output: TRUE on success (also when the note had every tag already);
+ *         FALSE when the note could not be read or saved, or its editor
+ *         waits for the "changed outside" panel (nothing written).
+ * ------------------------------------------------------------------------- */
+gboolean on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names,
+                             gsize n);
+
+/* ---------------------------------------------------------------------------
+ * on_note_field_tags_to_text() — every note whose old Tags field (the move
+ * from folders) has tags: they go into its text (on_note_append_tags) and
+ * the field is emptied, its updated_at kept, one transaction per note.
+ * Nothing to do once done.  on_action_sync_start runs it.
+ *
+ * Inputs:
+ *   app — the application context, its database open, no transaction open
+ *
+ * Output: how many notes were converted (failures are logged and skipped).
+ * ------------------------------------------------------------------------- */
+gint on_note_field_tags_to_text(OnApp *app);
+
+/* ---------------------------------------------------------------------------
  * on_action_sync_start() — a database was just opened (launch, or File >
- * Open Database): take its revisions as the baseline, hook its commits
+ * Open Database): write its old Tags fields into the notes' text
+ * (on_note_field_tags_to_text), take its revisions as the baseline, hook its commits
  * (the look after each of Notes' own), run the pull once now, and arm
  * the poll timer (app->sync_timer), once.  on_app_shutdown
  * removes it.

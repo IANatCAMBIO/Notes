@@ -12,8 +12,8 @@
  * It owns the selection: when the user selects a row it writes
  * lib.sel_kind / sel_id / sel_name and calls on_library_notes_refresh and
  * the window's status update.  It is also the library's only DROP target
- * (notes dragged onto a tag get it in their Tags fields; onto the Trash,
- * they go there).
+ * (notes dragged onto a tag get it as a #tag on their bottom lines; onto
+ * the Trash, they go there).
  */
 
 /*

@@ -844,9 +844,10 @@ on_db_note_list_free(GList *notes)
 }
 
 /* =========================================================================
- * tags — the one set both apps share (shared_db.h): a note's come from its
- * Tags field (in_field) and its text (in_text); the schema's triggers drop
- * a tag nothing carries any more
+ * tags — the one set both apps share (shared_db.h): a note's are the #tags
+ * of its text (in_text); in_field rows are the move from folders' until
+ * Notes writes them into the text; the schema's triggers drop a tag
+ * nothing carries any more
  * ========================================================================= */
 
 /* The columns run_tag_query reads, over the tags table aliased g.          */
@@ -1010,12 +1011,12 @@ on_db_note_tags(OnDatabase *db, gint64 note_id)
 
 /* ---------------------------------------------------------------------------
  * tag_link() — the tag `name` (made when no tag of that name exists, in any
- * case) linked to note `note_id` from one source: the Tags field when
- * `field`, else the text.  Inside the caller's transaction.
+ * case) linked to note `note_id` from its text.  Inside the caller's
+ * transaction.
  * Returns the tag id, or 0 on failure.
  * ------------------------------------------------------------------------- */
 static gint64
-tag_link(OnDatabase *db, gint64 note_id, const gchar *name, gboolean field)
+tag_link(OnDatabase *db, gint64 note_id, const gchar *name)
 {
     sqlite3_stmt *stmt = cached_prepare(db,
         "INSERT INTO tags (name) VALUES (?) ON CONFLICT (name) DO NOTHING");
@@ -1024,13 +1025,10 @@ tag_link(OnDatabase *db, gint64 note_id, const gchar *name, gboolean field)
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
     if (!cached_stmt_done(db, stmt))
         return 0;
-    stmt = cached_prepare(db, field
-        ? "INSERT INTO note_tags (note_id, tag_id, in_field)"
-          " SELECT ?1, id, 1 FROM tags WHERE name = ?2"
-          " ON CONFLICT (note_id, tag_id) DO UPDATE SET in_field = 1"
-        : "INSERT INTO note_tags (note_id, tag_id, in_text)"
-          " SELECT ?1, id, 1 FROM tags WHERE name = ?2"
-          " ON CONFLICT (note_id, tag_id) DO UPDATE SET in_text = 1");
+    stmt = cached_prepare(db,
+        "INSERT INTO note_tags (note_id, tag_id, in_text)"
+        " SELECT ?1, id, 1 FROM tags WHERE name = ?2"
+        " ON CONFLICT (note_id, tag_id) DO UPDATE SET in_text = 1");
     if (stmt == NULL)
         return 0;
     sqlite3_bind_int64(stmt, 1, note_id);
@@ -1063,7 +1061,7 @@ on_db_note_set_text_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
     GString *keep = g_string_new("");    /* the kept ids, "1,5,9"           */
     gboolean ok   = TRUE;                /* overall success flag            */
     for (GList *l = tag_names; ok && l != NULL; l = l->next) {
-        gint64 id = tag_link(db, note_id, l->data, FALSE);
+        gint64 id = tag_link(db, note_id, l->data);
         ok = id != 0;
         g_string_append_printf(keep, "%s%" G_GINT64_FORMAT, keep->len > 0 ? "," : "", id);
     }
@@ -1082,53 +1080,39 @@ on_db_note_set_text_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 }
 
 /*
- * on_db_note_field_tag_add — see db.h.
+ * on_db_field_tag_notes — see db.h.
  */
-gint64
-on_db_note_field_tag_add(OnDatabase *db, gint64 note_id, const gchar *name)
+GArray *
+on_db_field_tag_notes(OnDatabase *db)
 {
-    gchar *clean = g_strstrip(g_strdup(name != NULL ? name : ""));
-    if (clean[0] == '\0' || query_int64(db, "SELECT COUNT(*) FROM notes WHERE id=?",
-                                        note_id) == 0) {
-        g_free(clean);
-        return 0;
+    GArray       *out  = g_array_new(FALSE, FALSE, sizeof(gint64));
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT DISTINCT note_id FROM note_tags WHERE in_field = 1 ORDER BY note_id");
+    if (stmt == NULL)
+        return out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        gint64 id = sqlite3_column_int64(stmt, 0);
+        g_array_append_val(out, id);
     }
-    gboolean own;                        /* this call's transaction?       */
-    gint64   id = 0;                     /* the tag's id                    */
-    if (txn_begin(db, &own)) {
-        id = tag_link(db, note_id, clean, TRUE);
-        if (!txn_end(db, own, id != 0))
-            id = 0;
-    }
-    g_free(clean);
-    return id;
+    sqlite3_finalize(stmt);
+    return out;
 }
 
 /*
- * on_db_note_field_tag_remove — see db.h.
+ * on_db_note_field_tags_clear — see db.h.
  */
-gint
-on_db_note_field_tag_remove(OnDatabase *db, gint64 note_id, gint64 tag_id)
+gboolean
+on_db_note_field_tags_clear(OnDatabase *db, gint64 note_id)
 {
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT in_text FROM note_tags WHERE note_id=? AND tag_id=?");
-    if (stmt == NULL)
-        return -1;
-    sqlite3_bind_int64(stmt, 1, note_id);
-    sqlite3_bind_int64(stmt, 2, tag_id);
-    gint row = sqlite3_step(stmt);
-    gboolean in_text = row == SQLITE_ROW && sqlite3_column_int(stmt, 0) != 0;
-    sqlite3_finalize(stmt);
-    if (row != SQLITE_ROW && row != SQLITE_DONE)
-        return -1;
-    if (in_text)
-        return 0;
-    stmt = prepare(db, "DELETE FROM note_tags WHERE note_id=? AND tag_id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_int64(stmt, 1, note_id);
-        sqlite3_bind_int64(stmt, 2, tag_id);
-    }
-    return stmt_done(db, stmt) ? 1 : -1;
+    gchar *sql = g_strdup_printf(
+        "DELETE FROM note_tags WHERE note_id = %" G_GINT64_FORMAT
+        " AND in_field = 1 AND in_text = 0;"
+        "UPDATE note_tags SET in_field = 0 WHERE note_id = %" G_GINT64_FORMAT
+        " AND in_field = 1",
+        note_id, note_id);
+    gboolean ok = exec_simple(db, sql);
+    g_free(sql);
+    return ok;
 }
 
 /*

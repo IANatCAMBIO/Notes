@@ -1493,7 +1493,7 @@ test_edit_tag(NotesLibrary *lib)
     /* Dragging a favorite along the bar reorders it: the order is kept
      * (the favorites_order setting) across a refresh; without it, by
      * name. */
-    new_note_tagged("SmokeAaa", "Order note\nbody");
+    gint64 aaa_note = new_note_tagged("SmokeAaa", "Order note\nbody");
     OnTag *aaa = on_db_tag_find(app.db, "SmokeAaa");
     gint64 aaa_id = aaa != NULL ? aaa->id : 0;
     on_db_tag_free(aaa);
@@ -1525,6 +1525,14 @@ test_edit_tag(NotesLibrary *lib)
     second = button_titled(lib.window.contentView, @"🧪  SmokeTag");
     check(first != nil && second != nil && NSMinX(first.frame) < NSMinX(second.frame),
           "without a saved order, by name again");
+    /* A favorite leaves the bar with its last note (the tag may live on
+     * in Tasks), as it leaves the sidebar. */
+    on_db_notes_trash(app.db, &aaa_note, 1);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(button_titled(lib.window.contentView, @"SmokeAaa") == nil &&
+          button_titled(lib.window.contentView, @"🧪  SmokeTag") != nil,
+          "a favorite whose only note is trashed leaves the bar");
     on_db_tag_set_favorite(app.db, aaa_id, FALSE);
     on_db_tag_set_favorite(app.db, tag_id, FALSE);
     on_library_refresh_all(lib);

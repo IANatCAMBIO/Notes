@@ -5,7 +5,8 @@
 /*
  * library_favorites — the library's Favorites bar: a strip across the whole
  * window under the toolbar (the sidebar and the notes start below it) with
- * one button per tag that is a favorite in Notes (tags.favorite_notes;
+ * one button per tag a note outside the Trash carries (the sidebar's
+ * tags) that is a favorite in Notes (tags.favorite_notes;
  * SharedFavoriteButton) in the order the user dragged them into (the
  * favorites_order setting), new favorites at the end by name: the design
  * of the Tasks app's bar.  View ▸ Hide Favorites Bar slides it away

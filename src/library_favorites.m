@@ -176,7 +176,9 @@ reload
 
     __weak NotesFavoritesBar *ws = self;
     NSMutableArray<SharedFavoriteButton *> *buttons = [NSMutableArray array];
-    GList *tags = on_db_tag_list(lib.app->db, ON_TAGS_ALL);
+    /* The tags Notes shows (the sidebar's): a favorite no note carries,
+     * Tasks' alone or gone, has no button here.                         */
+    GList *tags = on_db_tag_list(lib.app->db, ON_TAGS_CARRIED);
     for (GList *l = tags; l != NULL; l = l->next) {
         const OnTag *t = l->data;
         if (!t->favorite) continue;

@@ -56,17 +56,10 @@
 /* Body text the Comfortable preview line is cut from (GTK NL_PREVIEW_CHARS). */
 static const gint preview_chars = 200;
 
-/* Column fitting, as Tasks' list does it.  A fitted column's header must
- * also fit the sort indicator, and the sorted column's title is drawn
- * bold (macOS 26), so it is measured bold: title + 10 + 22 leaves a point
- * to spare (Tasks measured it by rendering the header). */
+/* Column fitting is shared_ui_fit_columns (as Tasks' list); these are the
+ * columns' floors. */
 static const CGFloat fill_col_min_w   = 120.0;   /* Title, Action: the floor        */
 static const CGFloat fit_col_min_w    = 40.0;    /* Tags, Modified, Created, Due    */
-static const CGFloat header_fit_pad   = 10.0;    /* header title to column edges   */
-static const CGFloat sort_indicator_w = 22.0;    /* every column here sorts        */
-static const CGFloat label_inset      = 2.0;     /* an NSTextField draws its text
-                                                  * this far inside its frame      */
-static const NSUInteger fit_row_limit = 2000;    /* rows measured to fit a column  */
 
 /* Body text a grid card shows at most. */
 static const gint card_text_chars = 300;
@@ -1517,8 +1510,8 @@ title_cell:(NotesNoteRecord *)r
         [cell addSubview:stack];
         cell.textField = title;
         [NSLayoutConstraint activateConstraints:@[
-            [stack.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_cell_pad_h],
-            [stack.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_cell_pad_h],
+            [stack.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:shared_look_cell_pad_h],
+            [stack.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-shared_look_cell_pad_h],
             [stack.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -1560,43 +1553,12 @@ text_of:(NSTableView *)table key:(NSString *)key row:(NSUInteger)row
 }
 
 /*
- * fitted_width:column: — the width a fitted column needs to show its
- * header and its widest cell (the first fit_row_limit rows).  Measured
- * text is rounded up: a label a fraction of a point too narrow truncates.
- *
- * Inputs:
- *   table  — the list or Action Items
- *   column — a fitted column of it
- *
- * Output: the width in points.
- */
-- (CGFloat)
-fitted_width:(NSTableView *)table column:(NSTableColumn *)column
-{
-    NSDictionary<NSAttributedStringKey, id> *attrs = @{ NSFontAttributeName:
-                                                        [NSFont systemFontOfSize:shared_look_ui_font] };
-    NSUInteger rows   = MIN((NSUInteger)[self numberOfRowsInTableView:table], fit_row_limit);
-    CGFloat    widest = 0.0;
-    for (NSUInteger i = 0; i < rows; i++) {
-        NSString *text = [self text_of:table key:column.identifier row:i];
-        if (text.length) widest = MAX(widest, [text sizeWithAttributes:attrs].width);
-    }
-    CGFloat cell_w  = ceil(widest) + 2.0 * (label_inset + on_look_cell_pad_h);
-    NSFont *bold    = [NSFontManager.sharedFontManager convertFont:column.headerCell.font
-                                                       toHaveTrait:NSBoldFontMask];
-    CGFloat title_w = ceil([column.title sizeWithAttributes:@{ NSFontAttributeName: bold }].width);
-    return MAX(column.minWidth, MAX(cell_w, title_w + header_fit_pad + sort_indicator_w));
-}
-
-/*
  * fit_columns:full: — size a table's fitted columns to their content and
  * give its fill column (Title, Action) exactly what is left, so the table
- * is as wide as its pane (as Tasks' list does).  Short of room, the fitted
- * columns give back what the fill column's floor needs, the last first,
- * each down to its own floor.
+ * is as wide as its pane (shared_ui_fit_columns, as Tasks' list).
  *
  * Inputs:
- *   table — the list or Action Items, laid out in its scroll view
+ *   table — the list or Action Items, in its scroll view
  *   full  — YES (a navigation, a column shown): every fitted column is
  *           reset to its width, even narrower; NO (a content refresh):
  *           one is only widened, so a column the user widened stays
@@ -1604,36 +1566,10 @@ fitted_width:(NSTableView *)table column:(NSTableColumn *)column
 - (void)
 fit_columns:(NSTableView *)table full:(BOOL)full
 {
-    CGFloat room = table.enclosingScrollView.contentSize.width;
-    if (room <= 0.0) return;          /* not laid out: the next refresh fits */
-    CGFloat        gap    = table.intercellSpacing.width;
-    NSTableColumn *fill   = nil;
-    CGFloat        others = 0.0;
-    NSMutableArray<NSTableColumn *> *fitted = [NSMutableArray array];
-    for (NSTableColumn *c in table.tableColumns) {
-        if (c.hidden) continue;
-        if (c.resizingMask & NSTableColumnAutoresizingMask) {
-            fill = c;
-            continue;
-        }
-        if (c.resizingMask != NSTableColumnNoResizing) {
-            CGFloat w = [self fitted_width:table column:c];
-            if (full || w > c.width) c.width = w;
-            [fitted addObject:c];
-        }
-        others += c.width + gap;
-    }
-    if (fill == nil) return;
-    CGFloat deficit = others + gap + fill.minWidth - room;
-    for (NSTableColumn *c in fitted.reverseObjectEnumerator) {
-        if (deficit <= 0.0) break;
-        CGFloat give = MIN(deficit, c.width - c.minWidth);
-        if (give <= 0.0) continue;
-        c.width -= give;
-        others  -= give;
-        deficit -= give;
-    }
-    fill.width = MAX(fill.minWidth, room - others - gap);
+    __weak NotesNotesPane *ws = self;
+    shared_ui_fit_columns(table, full, ^NSString *(NSTableColumn *column, NSInteger row) {
+        return [ws text_of:table key:column.identifier row:(NSUInteger)row];
+    });
 }
 
 /*

@@ -249,8 +249,8 @@ on_ui_label_cell(NSTableView *table, NSString *ident)
     [cell addSubview:label];
     cell.textField = label;
     [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:on_look_cell_pad_h],
-        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-on_look_cell_pad_h],
+        [label.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:shared_look_cell_pad_h],
+        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-shared_look_cell_pad_h],
         [label.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
     ]];
     return cell;

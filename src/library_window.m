@@ -162,7 +162,9 @@ build_content
     [main_pane setHoldingPriority:NSLayoutPriorityDefaultLow - 1 forSubviewAtIndex:0];
 
     SharedSplitController *split = [[SharedSplitController alloc] init];
-    split.width_changed = ^(NSInteger width) { on_app_config_set_int(sidebar_width_key, (gint)width); };
+    split.width_changed = ^(NSInteger index, NSInteger width) {
+        on_app_config_set_int(sidebar_width_key, (gint)width);     /* the one side pane */
+    };
     self.split        = split;
     self.sidebar_item = shared_ui_pane_item(on_library_sidebar_new(self.lib), shared_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;

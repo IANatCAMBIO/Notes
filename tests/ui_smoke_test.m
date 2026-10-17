@@ -1429,6 +1429,25 @@ test_edit_tag(NotesLibrary *lib)
     check(lib.sel_kind == on_sb_tag && lib.sel_id == tag_id && button.state == NSControlStateValueOn,
           "clicking it selects the tag, and the button is lit");
     check(save_snapshots(lib.window, @"favorites-bar"), "favorites bar snapshots written, light and dark");
+
+    /* Add to / Remove from Favorites: the item says which; the selected
+     * favorite is removed, and the bar follows. */
+    NSMenuItem *fav_toggle = command_item(@"toggle-favorite");
+    check(on_library_validate_command(lib, fav_toggle) && [fav_toggle.title isEqualToString:@"Remove from Favorites"],
+          "the favorite fav_toggle offers to remove the selected favorite");
+    on_library_run_command(lib, fav_toggle);
+    pump(0.3);
+    OnTag *unfav = on_db_tag_get(app.db, tag_id);
+    check(unfav != NULL && !unfav->favorite && button_titled(lib.window.contentView, @"🧪  SmokeTag") == nil,
+          "Remove from Favorites clears the flag and takes the button away");
+    on_db_tag_free(unfav);
+    /* The real item: one carrying a parameter keeps its own title. */
+    fav_toggle = shared_command_menu_item(@"toggle-favorite", on_library_sb_ref_value(on_sb_tag, tag_id));
+    check(on_library_validate_command(lib, fav_toggle) && [fav_toggle.title isEqualToString:@"Add to Favorites"],
+          "... and then offers to add it, by the tag the item names");
+    on_library_run_command(lib, fav_toggle);
+    pump(0.3);
+    check(button_titled(lib.window.contentView, @"🧪  SmokeTag") != nil, "Add to Favorites brings the button back");
     on_db_tag_set_favorite(app.db, tag_id, FALSE);
     on_library_refresh_all(lib);
     pump(0.2);
@@ -1654,11 +1673,11 @@ test_sidebar(NotesLibrary *lib)
     NSMenu   *tag_menu  = open_menu(right_click(sidebar_table, crate_row));
     on_sb_ref_t ref;
     check(lib.sel_kind == on_sb_all &&
-          [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Search Here…"]] &&
+          [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Add to Favorites", @"Search Here…"]] &&
           on_library_sb_ref(tag_menu.itemArray.firstObject, &ref) &&
           ref.kind == on_sb_tag && ref.ident == crate_tag &&
           on_library_validate_command(lib, tag_menu.itemArray.firstObject),
-          "a right click on a tag keeps the selection; Edit Tag and Search Here name the tag");
+          "a right click on a tag keeps the selection; Edit Tag, the favorite toggle and Search Here name the tag");
     on_library_sidebar_select(lib, on_sb_tag, crate_tag);
     pump(0.1);
     check(label_with_text(lib.window.contentView, @"#Crate") != nil,

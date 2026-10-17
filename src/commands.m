@@ -54,6 +54,7 @@ static const shared_command_t commands[] = {
       @"Move the selected notes to the Trash" },
     { @"empty-trash",      @"Empty Trash…",            @"",  0,         win, nil, nil },
     { @"edit-tag",         @"Edit Tag…",               @"",  0,         win, nil, nil },
+    { @"toggle-favorite",  @"Add to Favorites",        @"",  0,         win, nil, nil },
     { @"search-here",      @"Search Here…",            @"",  0,         win, nil, nil },
     { @"note-pin",         @"Pin",                     @"",  0,         win, nil, nil },
     { @"note-restore",     @"Restore",                 @"",  0,         win, nil, nil },

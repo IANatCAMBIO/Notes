@@ -160,54 +160,86 @@ run_edit_tag(id target, id sender)
 }
 
 /*
- * run_toggle_favorite — "toggle-favorite": flip the favorite flag (Notes'
- * own, as the Edit Tag panel's box does) of the tag the item names, else
- * the selected tag, and refresh.
+ * run_set_favorite — "add-favorite" / "remove-favorite": set the favorite
+ * flag (Notes' own, as the Edit Tag panel's box does) of the tag the item
+ * names, else the selected tag, and refresh.  Adding a favorite again
+ * changes nothing: a favorite is removed only by its own command (the
+ * Favorites bar's menu, the File menu).
  *
  * Inputs:
  *   target — the NotesLibrary
- *   sender — the menu item
+ *   sender — the menu item; its command says which way
  */
 static void
-run_toggle_favorite(id target, id sender)
+run_set_favorite(id target, id sender)
 {
     NotesLibrary *lib = target;
     on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
     on_library_sb_ref(sender, &ref);
     if (ref.kind != on_sb_tag) return;
-    OnTag *tag = on_db_tag_get(lib.app->db, ref.ident);
-    if (tag == NULL) return;
-    if (!on_db_tag_set_favorite(lib.app->db, ref.ident, !tag->favorite)) {
+    BOOL favorite = [shared_command_ident(sender) isEqualToString:@"add-favorite"];
+    if (!on_db_tag_set_favorite(lib.app->db, ref.ident, favorite)) {
         on_app_status(lib.app, "The tag could not be changed");
     }
-    on_db_tag_free(tag);
     on_library_refresh_all(lib);
 }
 
 /*
- * validate_toggle_favorite — the item names a tag, or a tag is selected;
- * the item says what a click will do ("Remove from Favorites" for a
- * favorite).
+ * tag_is_favorite — whether the tag an item names (else the selected
+ * tag) is a favorite.
  *
  * Inputs:
- *   target — the NotesLibrary
- *   item   — the item
- *   state  — the command's look, adjusted here
+ *   lib      — the library
+ *   item     — the item, or nil for the selected tag
+ *   favorite — receives the flag
  *
- * Output: YES to enable it.
+ * Output: NO when there is no such tag.
  */
 static BOOL
-validate_toggle_favorite(id target, id item, SharedCommandState *state)
+tag_is_favorite(NotesLibrary *lib, id item, BOOL *favorite)
 {
-    NotesLibrary *lib = target;
-    on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
+    on_sb_ref_t ref = { lib.sel_kind, lib.sel_id };
     on_library_sb_ref(item, &ref);
     if (ref.kind != on_sb_tag) return NO;
     OnTag *tag = on_db_tag_get(lib.app->db, ref.ident);
     if (tag == NULL) return NO;
-    if (tag->favorite) shared_command_state_set(state, @"Remove from Favorites", nil, NO);
+    *favorite = tag->favorite != FALSE;
     on_db_tag_free(tag);
     return YES;
+}
+
+/*
+ * validate_add_favorite — a tag that is not yet a favorite.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item, or nil
+ *   state  — the command's look (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_add_favorite(id target, id item, SharedCommandState *state)
+{
+    BOOL favorite = NO;
+    return tag_is_favorite(target, item, &favorite) && !favorite;
+}
+
+/*
+ * validate_remove_favorite — a tag that is a favorite.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   item   — the item, or nil
+ *   state  — the command's look (unused)
+ *
+ * Output: YES to enable it.
+ */
+static BOOL
+validate_remove_favorite(id target, id item, SharedCommandState *state)
+{
+    BOOL favorite = NO;
+    return tag_is_favorite(target, item, &favorite) && favorite;
 }
 
 /*
@@ -459,8 +491,9 @@ validate_notes_selected(id target, id item, SharedCommandState *state)
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const shared_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
-    { @"edit-tag",        run_edit_tag,        validate_tag_selected    },
-    { @"toggle-favorite", run_toggle_favorite, validate_toggle_favorite },
+    { @"edit-tag",        run_edit_tag,        validate_tag_selected },
+    { @"add-favorite",    run_set_favorite,    validate_add_favorite    },
+    { @"remove-favorite", run_set_favorite,    validate_remove_favorite },
     { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },

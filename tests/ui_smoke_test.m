@@ -1430,22 +1430,25 @@ test_edit_tag(NotesLibrary *lib)
           "clicking it selects the tag, and the button is lit");
     check(save_snapshots(lib.window, @"favorites-bar"), "favorites bar snapshots written, light and dark");
 
-    /* Add to / Remove from Favorites: the item says which; the selected
-     * favorite is removed, and the bar follows. */
-    NSMenuItem *fav_toggle = command_item(@"toggle-favorite");
-    check(on_library_validate_command(lib, fav_toggle) && [fav_toggle.title isEqualToString:@"Remove from Favorites"],
-          "the favorite fav_toggle offers to remove the selected favorite");
-    on_library_run_command(lib, fav_toggle);
+    /* Add to Favorites on the selected favorite is disabled and changes
+     * nothing; Remove from Favorites (the bar's menu) takes it off, and
+     * Add, by the tag the item names, brings it back. */
+    check(!on_library_validate_command(lib, command_item(@"add-favorite")) &&
+          on_library_validate_command(lib, command_item(@"remove-favorite")),
+          "a favorite can be removed, not added again");
+    on_library_run_command(lib, command_item(@"add-favorite"));
+    pump(0.3);
+    check(button_titled(lib.window.contentView, @"🧪  SmokeTag") != nil,
+          "Add to Favorites on a favorite leaves it one");
+    on_library_run_command(lib, command_item(@"remove-favorite"));
     pump(0.3);
     OnTag *unfav = on_db_tag_get(app.db, tag_id);
     check(unfav != NULL && !unfav->favorite && button_titled(lib.window.contentView, @"🧪  SmokeTag") == nil,
           "Remove from Favorites clears the flag and takes the button away");
     on_db_tag_free(unfav);
-    /* The real item: one carrying a parameter keeps its own title. */
-    fav_toggle = shared_command_menu_item(@"toggle-favorite", on_library_sb_ref_value(on_sb_tag, tag_id));
-    check(on_library_validate_command(lib, fav_toggle) && [fav_toggle.title isEqualToString:@"Add to Favorites"],
-          "... and then offers to add it, by the tag the item names");
-    on_library_run_command(lib, fav_toggle);
+    NSMenuItem *add_named = shared_command_menu_item(@"add-favorite", on_library_sb_ref_value(on_sb_tag, tag_id));
+    check(on_library_validate_command(lib, add_named), "... and then it can be added, by the tag the item names");
+    on_library_run_command(lib, add_named);
     pump(0.3);
     check(button_titled(lib.window.contentView, @"🧪  SmokeTag") != nil, "Add to Favorites brings the button back");
     on_db_tag_set_favorite(app.db, tag_id, FALSE);
@@ -1677,7 +1680,7 @@ test_sidebar(NotesLibrary *lib)
           on_library_sb_ref(tag_menu.itemArray.firstObject, &ref) &&
           ref.kind == on_sb_tag && ref.ident == crate_tag &&
           on_library_validate_command(lib, tag_menu.itemArray.firstObject),
-          "a right click on a tag keeps the selection; Edit Tag, the favorite toggle and Search Here name the tag");
+          "a right click on a tag keeps the selection; Edit Tag, Add to Favorites and Search Here name the tag");
     on_library_sidebar_select(lib, on_sb_tag, crate_tag);
     pump(0.1);
     check(label_with_text(lib.window.contentView, @"#Crate") != nil,

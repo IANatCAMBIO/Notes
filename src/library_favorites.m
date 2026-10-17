@@ -84,7 +84,7 @@ edit_tag:(id)sender
 
 /*
  * menuForEvent: — a right-click on a favorite: Edit Tag… for its tag, and
- * Remove from Favorites (the toggle-favorite command, carrying the tag).
+ * Remove from Favorites (the remove-favorite command, carrying the tag).
  *
  * Inputs:
  *   event — the right mouse-down (unused)
@@ -97,7 +97,7 @@ menuForEvent:(NSEvent *)event
     NSMenu     *menu = [[NSMenu alloc] initWithTitle:@""];
     NSMenuItem *item = [menu addItemWithTitle:@"Edit Tag…" action:@selector(edit_tag:) keyEquivalent:@""];
     item.target = self;
-    [menu addItem:shared_command_menu_item(@"toggle-favorite",
+    [menu addItem:shared_command_menu_item(@"remove-favorite",
                                            on_library_sb_ref_value(on_sb_tag, self.tag_id))];
     return menu;
 }

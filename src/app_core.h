@@ -65,6 +65,10 @@
  *   ai_enabled             "ai_enabled"               0  AI summary available
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
+ *   grid_group             "grid_group"       "none" (default), "day", "week"
+ *                                             or "year": the grid's cards in
+ *                                             sections by the date the list
+ *                                             is sorted by (on_grid_group_t)
  *
  * Backups (backup.h) and the pull (action_sync.h):
  *   backup_running — a backup pass is on its worker; keeps a timer tick
@@ -137,6 +141,14 @@
  *                    by on_app_shutdown and on_app_switch_db.  See
  *                    app_lifecycle.h for the contract.
  * ------------------------------------------------------------------------- */
+/* How the grid groups its cards (the grid_group preference). */
+typedef enum {
+    on_grid_group_none,
+    on_grid_group_day,
+    on_grid_group_week,
+    on_grid_group_year,
+} on_grid_group_t;
+
 typedef struct OnApp {
     OnDatabase *db;
 
@@ -155,6 +167,7 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    ai_enabled;
     gchar      *ai_command;
+    on_grid_group_t grid_group;
 
     gboolean    backup_running;
     on_timer_id_t   backup_timer;

@@ -440,6 +440,14 @@ add_appearance:(NSMutableArray<NSView *> *)rows
     density.target     = self;
     density.action     = @selector(density_changed:);
     [rows addObject:indented(row(@[[NSTextField labelWithString:@"List density:"], density]), indent)];
+    NSPopUpButton *group = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [group addItemsWithTitles:@[@"None", @"Day", @"Week", @"Year"]];
+    [group selectItemAtIndex:(NSInteger)self.lib.app->grid_group];
+    group.identifier = @"grid-group";
+    group.target     = self;
+    group.action     = @selector(grid_group_changed:);
+    group.toolTip    = @"Group the grid's cards into sections by the date the list is sorted by";
+    [rows addObject:indented(row(@[[NSTextField labelWithString:@"Group grid by:"], group]), indent)];
     for (size_t i = 0; i < sizeof appearance_settings / sizeof *appearance_settings; i++)
         [rows addObject:indented([self check_for:&appearance_settings[i]], indent)];
     return head;
@@ -851,6 +859,20 @@ bool_toggled:(NSButton *)sender
 density_changed:(NSPopUpButton *)sender
 {
     [self write_setting:"list_density_comfortable" value:sender.indexOfSelectedItem == 1 ? "1" : "0"];
+    on_library_refresh_all(self.lib);
+}
+
+/*
+ * grid_group_changed: — Group grid by: write it and rebuild the grid.
+ *
+ * Inputs:
+ *   sender — the pop-up, its items in on_grid_group_t order
+ */
+- (void)
+grid_group_changed:(NSPopUpButton *)sender
+{
+    static const char *const names[] = { "none", "day", "week", "year" };
+    [self write_setting:"grid_group" value:names[sender.indexOfSelectedItem]];
     on_library_refresh_all(self.lib);
 }
 

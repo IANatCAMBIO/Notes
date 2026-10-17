@@ -2100,6 +2100,40 @@ test_notes_pane(NotesLibrary *lib)
     }
     all_cards = all_cards && [card_titles isEqualToSet:[NSSet setWithArray:@[@"Bravo renamed", @"Charlie", @"alpha"]]];
     check(all_cards, "every grid card is rendered, with the note's title under it");
+
+    /* Group grid by: the cards in sections under headers, by the day,
+     * week or year of the date the list is sorted by; none by default. */
+    gchar *group_was = on_app_config_get("grid_group");
+    for (const char *const *g = (const char *const[]){ "day", "week", "year", NULL }; *g != NULL; g++) {
+        on_app_config_set("grid_group", *g);
+        on_app_prefs_load(&app);
+        on_library_refresh_all(lib);
+        pump(0.3);
+        NSView *header = [grid supplementaryViewForElementKind:NSCollectionElementKindSectionHeader
+                                                   atIndexPath:[NSIndexPath indexPathForItem:0 inSection:0]];
+        NSTextField *label = (NSTextField *)find_view(header, NSTextField.class, Nil);
+        NSInteger cards_in_sections = 0;
+        for (NSInteger sec = 0; sec < grid.numberOfSections; sec++) cards_in_sections += [grid numberOfItemsInSection:sec];
+        gint64 now = (gint64)time(NULL);
+        NSString *want = strcmp(*g, "day") == 0 ? shared_ui_format_date(now, shared_ui_date_day)
+                       : strcmp(*g, "year") == 0 ? [NSString stringWithFormat:@"%ld", (long)[NSCalendar.currentCalendar component:NSCalendarUnitYear fromDate:NSDate.date]]
+                       : nil;
+        char msg[200];
+        snprintf(msg, sizeof msg, "grid grouped by %s: every card is in a section, the first headed \"%s\"",
+                 *g, label.stringValue.UTF8String);
+        check(grid.numberOfSections >= 1 && cards_in_sections == 3 && header != nil &&
+              (want == nil ? [label.stringValue hasPrefix:@"Week of "] : [label.stringValue isEqualToString:want]),
+              msg);
+    }
+    on_app_config_set("grid_group", group_was);
+    on_app_prefs_load(&app);
+    g_free(group_was);
+    on_library_refresh_all(lib);
+    pump(0.3);
+    check(grid.numberOfSections == 1 &&
+          [grid supplementaryViewForElementKind:NSCollectionElementKindSectionHeader
+                                    atIndexPath:[NSIndexPath indexPathForItem:0 inSection:0]] == nil,
+          "grid ungrouped: one section, no header");
     /* The test has no app delegate, which validates app-scope items in the
      * app, so the toolbar item is validated the way the delegate does it. */
     NSToolbarItem *view_toggle = nil;

@@ -104,6 +104,7 @@ static const double on_look_row_h            = 20.0;   /* compact list row      
 static const double on_look_row_comfortable_h = 40.0;  /* title + preview                        */
 static const double on_look_preview_alpha    = 0.65;   /* the dimmed preview line                */
 static const double on_look_thumb_size       = 140.0;  /* grid card thumbnail, square            */
+static const double on_look_grid_header_h    = 24.0;   /* a grid section's header (Group grid by) */
 static const double on_look_thumb_image_w    = 128.0;  /* a note's first image inside the card   */
 static const double on_look_thumb_image_h    = 72.0;
 static const double on_look_thumb_text_font  = 8.0;

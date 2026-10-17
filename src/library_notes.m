@@ -641,6 +641,42 @@ setSelected:(BOOL)selected
 @end
 
 /*
+ * NotesGridHeader — a grid section's header (Group grid by): the group's
+ * name, small and bold, over the pane's background.
+ */
+@interface NotesGridHeader : NSView
+@property (nonatomic, strong) NSTextField *label;
+@end
+
+@implementation NotesGridHeader
+
+/*
+ * initWithFrame: — the label, inset as the cards are.
+ *
+ * Inputs:
+ *   frame — the initial frame
+ *
+ * Output: the view.
+ */
+- (instancetype)
+initWithFrame:(NSRect)frame
+{
+    if (!(self = [super initWithFrame:frame])) return nil;
+    _label = [NSTextField labelWithString:@""];
+    _label.font      = [NSFont boldSystemFontOfSize:shared_look_ui_font];
+    _label.textColor = NSColor.secondaryLabelColor;
+    _label.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_label];
+    [NSLayoutConstraint activateConstraints:@[
+        [_label.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:2 * card_pad],
+        [_label.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+    ]];
+    return self;
+}
+
+@end
+
+/*
  * NotesCardItem — the grid item of one note.
  */
 @interface NotesCardItem : NSCollectionViewItem
@@ -686,6 +722,9 @@ setSelected:(BOOL)selected
 @property (nonatomic, strong) NSScrollView         *grid_scroll;
 @property (nonatomic, strong) NSScrollView         *actions_scroll;
 @property (nonatomic, strong) NSArray<NotesNoteRecord *>   *records;
+@property (nonatomic, strong) NSArray<NSNumber *>  *group_starts;  /* the grid's sections: each one's
+                                                                    * first record (regroup) */
+@property (nonatomic, strong) NSArray<NSString *>  *group_titles;  /* ... and its header */
 @property (nonatomic, strong) NSArray<NotesActionRecord *> *action_records;
 @property (nonatomic, strong) NSMutableOrderedSet<NSNumber *> *selected;   /* note ids */
 @property (nonatomic, assign) on_sb_kind_t  shown_kind;
@@ -770,6 +809,8 @@ init_with_lib:(NotesLibrary *)lib
     _lib            = lib;
     _records        = @[];
     _action_records = @[];
+    _group_starts   = @[@0];
+    _group_titles   = @[@""];
     _selected       = [NSMutableOrderedSet orderedSet];
     _cards          = [NSMutableDictionary dictionary];
     _card_queue     = [NSMutableOrderedSet orderedSet];
@@ -803,10 +844,13 @@ init_with_lib:(NotesLibrary *)lib
     _grid.allowsMultipleSelection = YES;
     _grid.backgroundColors        = @[NSColor.controlBackgroundColor];
     [_grid registerClass:NotesCardItem.class forItemWithIdentifier:@"card"];
+    [_grid registerClass:NotesGridHeader.class
+        forSupplementaryViewOfKind:NSCollectionElementKindSectionHeader withIdentifier:@"header"];
+    layout.sectionHeadersPinToVisibleBounds = YES;
     [_grid setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
     __weak NotesNotesPane *ws = self;
     _grid.activate_handler = ^(NSSet<NSIndexPath *> *paths) {
-        for (NSIndexPath *ip in paths) [ws open_record:(NSUInteger)ip.item];
+        for (NSIndexPath *ip in paths) [ws open_record:[ws record_at:ip]];
     };
     _grid.menu_handler = ^NSMenu *(NSIndexPath *path) {
         return [ws grid_menu:path];
@@ -862,6 +906,130 @@ sort_records
 {
     NSSortDescriptor *sd = self.list.sortDescriptors.firstObject ?: newest_first();
     self.records = sorted_by(self.records, sd, note_order);
+    [self regroup];
+}
+
+/*
+ * group_key — the day, week or year a record's date falls in, as the
+ * grid's grouping wants it; the date is the one the list is sorted by
+ * (Created when it sorts by Created, else Modified).
+ *
+ * Inputs:
+ *   r     — the record
+ *   group — the grouping (not none)
+ *   title — receives the section's header for the key
+ *
+ * Output: the key: the seconds of the day's, week's or year's start.
+ */
+- (gint64)
+group_key:(NotesNoteRecord *)r group:(on_grid_group_t)group title:(NSString **)title
+{
+    BOOL by_created = [self.list.sortDescriptors.firstObject.key isEqualToString:@"created"];
+    gint64 ts = by_created ? r.created_at : r.updated_at;
+    NSCalendar *cal  = NSCalendar.currentCalendar;
+    NSDate     *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)ts];
+    NSDate     *start = nil;
+    switch (group) {
+    case on_grid_group_day:
+        start  = [cal startOfDayForDate:date];
+        *title = shared_ui_format_date((gint64)start.timeIntervalSince1970, shared_ui_date_day);
+        break;
+    case on_grid_group_week:
+        [cal rangeOfUnit:NSCalendarUnitWeekOfYear startDate:&start interval:NULL forDate:date];
+        *title = [NSString stringWithFormat:@"Week of %@",
+                  shared_ui_format_date((gint64)start.timeIntervalSince1970, shared_ui_date_day)];
+        break;
+    default:
+        [cal rangeOfUnit:NSCalendarUnitYear startDate:&start interval:NULL forDate:date];
+        *title = [NSString stringWithFormat:@"%ld", (long)[cal component:NSCalendarUnitYear fromDate:date]];
+        break;
+    }
+    return (gint64)start.timeIntervalSince1970;
+}
+
+/*
+ * regroup — the grid's sections from the records (the grid_group
+ * preference): none, or one per day, week or year, newest first, the
+ * records put in that order (within a group, the list's order holds) so
+ * that a section is a run of them.  The flow layout gets its headers
+ * while there are groups.
+ */
+- (void)
+regroup
+{
+    on_grid_group_t group = self.lib.app->grid_group;
+    NSCollectionViewFlowLayout *layout = (NSCollectionViewFlowLayout *)self.grid.collectionViewLayout;
+    if (group == on_grid_group_none) {
+        self.group_starts = @[@0];
+        self.group_titles = @[@""];
+        layout.headerReferenceSize = NSZeroSize;
+        return;
+    }
+    NSMutableArray<NSNumber *> *keys = [NSMutableArray arrayWithCapacity:self.records.count];
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:self.records.count];
+    for (NotesNoteRecord *r in self.records) {
+        NSString *title = nil;
+        [keys addObject:@([self group_key:r group:group title:&title])];
+        [titles addObject:title];
+    }
+    NSMutableArray<NSNumber *> *order = [NSMutableArray arrayWithCapacity:self.records.count];
+    for (NSUInteger i = 0; i < self.records.count; i++) [order addObject:@(i)];
+    [order sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        gint64 ka = keys[a.unsignedIntegerValue].longLongValue, kb = keys[b.unsignedIntegerValue].longLongValue;
+        return ka > kb ? NSOrderedAscending : ka < kb ? NSOrderedDescending : NSOrderedSame;
+    }];
+    NSMutableArray<NotesNoteRecord *> *records = [NSMutableArray arrayWithCapacity:order.count];
+    NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
+    NSMutableArray<NSString *> *names  = [NSMutableArray array];
+    gint64 last = 0;
+    for (NSNumber *n in order) {
+        NSUInteger i = n.unsignedIntegerValue;
+        if (starts.count == 0 || keys[i].longLongValue != last) {
+            [starts addObject:@(records.count)];
+            [names addObject:titles[i]];
+            last = keys[i].longLongValue;
+        }
+        [records addObject:self.records[i]];
+    }
+    self.records      = records;
+    self.group_starts = starts.count ? starts : @[@0];
+    self.group_titles = names.count ? names : @[@""];
+    layout.headerReferenceSize = NSMakeSize(0, on_look_grid_header_h);
+}
+
+/*
+ * path_for: — a record's place in the grid.
+ *
+ * Inputs:
+ *   i — the record's index
+ *
+ * Output: its index path.
+ */
+- (NSIndexPath *)
+path_for:(NSUInteger)i
+{
+    NSInteger section = 0;
+    for (NSUInteger g = 1; g < self.group_starts.count; g++) {
+        if (self.group_starts[g].unsignedIntegerValue <= i) section = (NSInteger)g;
+    }
+    return [NSIndexPath indexPathForItem:(NSInteger)(i - self.group_starts[(NSUInteger)section].unsignedIntegerValue)
+                               inSection:section];
+}
+
+/*
+ * record_at: — the record a grid index path names.
+ *
+ * Inputs:
+ *   path — the index path
+ *
+ * Output: the record's index, or NSNotFound for a path beyond the records.
+ */
+- (NSUInteger)
+record_at:(NSIndexPath *)path
+{
+    if (path == nil || (NSUInteger)path.section >= self.group_starts.count) return NSNotFound;
+    NSUInteger i = self.group_starts[(NSUInteger)path.section].unsignedIntegerValue + (NSUInteger)path.item;
+    return i < self.records.count ? i : NSNotFound;
 }
 
 /*
@@ -910,6 +1078,7 @@ load_records:(BOOL)previews
     g_hash_table_destroy(tags);
     if (texts) g_hash_table_destroy(texts);
     self.records = records;
+    [self regroup];
     [self sort_records];
 
     /* Cards are kept for the notes listed, no more (~300 KB each).        */
@@ -981,7 +1150,7 @@ show_selection
         if (i == NSNotFound) continue;
         [kept addObject:nid];
         [rows addIndex:i];
-        [paths addObject:[NSIndexPath indexPathForItem:(NSInteger)i inSection:0]];
+        [paths addObject:[self path_for:i]];
     }
     self.selected = kept;
     self.lib.populating++;
@@ -1178,7 +1347,7 @@ card_done:(NSNumber *)nid image:(NSImage *)image dark:(BOOL)dark gen:(NSUInteger
     e.dark       = dark;
     e.image      = image;
     self.cards[nid] = e;
-    NSCollectionViewItem *item = [self.grid itemAtIndexPath:[NSIndexPath indexPathForItem:(NSInteger)i inSection:0]];
+    NSCollectionViewItem *item = [self.grid itemAtIndexPath:[self path_for:i]];
     ((NotesCardView *)item.view).thumb.image = e.image;
 }
 
@@ -1397,10 +1566,11 @@ select_clicked:(NSUInteger)i
 - (NSMenu *)
 grid_menu:(NSIndexPath *)path
 {
-    if (path == nil || (NSUInteger)path.item >= self.records.count) return nil;
-    [self select_clicked:(NSUInteger)path.item];
+    NSUInteger i = [self record_at:path];
+    if (i == NSNotFound) return nil;
+    [self select_clicked:i];
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-    [self fill_note_menu:menu note:self.records[(NSUInteger)path.item].note_id];
+    [self fill_note_menu:menu note:self.records[i].note_id];
     return menu;
 }
 
@@ -1709,18 +1879,59 @@ tableView:(NSTableView *)table pasteboardWriterForRow:(NSInteger)row
 /* ── Grid data source and delegate ────────────────────────────────────── */
 
 /*
- * collectionView:numberOfItemsInSection: — the notes.
+ * numberOfSectionsInCollectionView: — the groups (one without grouping).
+ *
+ * Inputs:
+ *   cv — the grid (unused)
+ *
+ * Output: the count.
+ */
+- (NSInteger)
+numberOfSectionsInCollectionView:(NSCollectionView *)cv
+{
+    return (NSInteger)self.group_starts.count;
+}
+
+/*
+ * collectionView:numberOfItemsInSection: — a group's notes.
  *
  * Inputs:
  *   cv      — the grid (unused)
- *   section — the section (unused)
+ *   section — the section
  *
  * Output: the count.
  */
 - (NSInteger)
 collectionView:(NSCollectionView *)cv numberOfItemsInSection:(NSInteger)section
 {
-    return (NSInteger)self.records.count;
+    NSUInteger g     = (NSUInteger)section;
+    NSUInteger start = self.group_starts[g].unsignedIntegerValue;
+    NSUInteger end   = g + 1 < self.group_starts.count ? self.group_starts[g + 1].unsignedIntegerValue
+                                                        : self.records.count;
+    return (NSInteger)(end - start);
+}
+
+/*
+ * collectionView:viewForSupplementaryElementOfKind:atIndexPath: — a
+ * group's header, titled.
+ *
+ * Inputs:
+ *   cv   — the grid
+ *   kind — the element kind (a section header)
+ *   path — the section
+ *
+ * Output: the header view.
+ */
+- (NSView *)
+collectionView:(NSCollectionView *)cv viewForSupplementaryElementOfKind:(NSCollectionViewSupplementaryElementKind)kind
+   atIndexPath:(NSIndexPath *)path
+{
+    NotesGridHeader *header = (NotesGridHeader *)[cv makeSupplementaryViewOfKind:kind
+                                                                  withIdentifier:@"header"
+                                                                    forIndexPath:path];
+    header.label.stringValue = (NSUInteger)path.section < self.group_titles.count
+                             ? self.group_titles[(NSUInteger)path.section] : @"";
+    return header;
 }
 
 /*
@@ -1737,7 +1948,7 @@ collectionView:(NSCollectionView *)cv numberOfItemsInSection:(NSInteger)section
 collectionView:(NSCollectionView *)cv itemForRepresentedObjectAtIndexPath:(NSIndexPath *)path
 {
     NSCollectionViewItem *item = [cv makeItemWithIdentifier:@"card" forIndexPath:path];
-    NotesNoteRecord      *r    = self.records[(NSUInteger)path.item];
+    NotesNoteRecord      *r    = self.records[[self record_at:path]];
     NotesCardView        *card = (NotesCardView *)item.view;
     card.thumb.image       = self.cards[@(r.note_id)].image;
     card.title.stringValue = r.title;
@@ -1751,8 +1962,10 @@ collectionView:(NSCollectionView *)cv itemForRepresentedObjectAtIndexPath:(NSInd
 grid_selection_changed
 {
     NSMutableArray<NSNumber *> *ids = [NSMutableArray array];
-    for (NSIndexPath *ip in self.grid.selectionIndexPaths)
-        if ((NSUInteger)ip.item < self.records.count) [ids addObject:@(self.records[(NSUInteger)ip.item].note_id)];
+    for (NSIndexPath *ip in self.grid.selectionIndexPaths) {
+        NSUInteger i = [self record_at:ip];
+        if (i != NSNotFound) [ids addObject:@(self.records[i].note_id)];
+    }
     [self note_selection_changed:ids];
 }
 
@@ -1810,7 +2023,7 @@ collectionView:(NSCollectionView *)cv canDragItemsAtIndexPaths:(NSSet<NSIndexPat
 - (id<NSPasteboardWriting>)
 collectionView:(NSCollectionView *)cv pasteboardWriterForItemAtIndexPath:(NSIndexPath *)path
 {
-    return on_library_drag_item(@[@(self.records[(NSUInteger)path.item].note_id)]);
+    return on_library_drag_item(@[@(self.records[[self record_at:path]].note_id)]);
 }
 
 @end

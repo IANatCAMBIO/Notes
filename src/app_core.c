@@ -50,6 +50,21 @@ on_app_prefs_load(OnApp *app)
     }
     g_free(app->ai_command);
     app->ai_command = on_app_config_get("ai_command");
+
+    static const struct {
+        const gchar     *name;
+        on_grid_group_t  group;
+    } groups[] = {
+        { "day",  on_grid_group_day  },
+        { "week", on_grid_group_week },
+        { "year", on_grid_group_year },
+    };
+    gchar *group = on_app_config_get("grid_group");
+    app->grid_group = on_grid_group_none;
+    for (gsize i = 0; group != NULL && i < G_N_ELEMENTS(groups); i++) {
+        if (g_strcmp0(group, groups[i].name) == 0) app->grid_group = groups[i].group;
+    }
+    g_free(group);
 }
 
 /*

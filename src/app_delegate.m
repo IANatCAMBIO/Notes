@@ -523,7 +523,7 @@ build_menu_bar
     /* ── File menu ── */
     NSMenu *file_menu = add_menu(bar, @"File");
     add_commands(file_menu, @[
-        @"new-note", @"quicknote", menu_rule,
+        @"new-note", menu_rule,
         @"open-db", menu_rule,
         @"export-html", @"export-md", @"note-export-html", @"note-export-md", menu_rule,
         @"edit-tag", menu_rule,

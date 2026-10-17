@@ -58,7 +58,7 @@ typedef enum {
 /* ---------------------------------------------------------------------------
  * on_note_edit_is_blank() — does a note hold nothing at all: only
  * whitespace, and no image, table or task box?  A note closed in this
- * state is deleted rather than saved, so a New Note or Quick Note window
+ * state is deleted rather than saved, so a New Note window
  * closed without typing leaves nothing behind.
  *
  * Inputs:

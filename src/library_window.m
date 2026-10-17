@@ -28,7 +28,7 @@ toolbar_idents(BOOL ai)
 {
     NSArray<NSToolbarItemIdentifier> *head = @[
         @"toggle-sidebar", NSToolbarSpaceItemIdentifier,
-        @"quicknote", @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
+        @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
         @"toggle-view", @"toggle-done", @"search", @"media", @"preferences",
     ];
     NSArray<NSToolbarItemIdentifier> *tail = @[NSToolbarFlexibleSpaceItemIdentifier, search_item_ident];

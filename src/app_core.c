@@ -50,13 +50,6 @@ on_app_prefs_load(OnApp *app)
     }
     g_free(app->ai_command);
     app->ai_command = on_app_config_get("ai_command");
-    g_free(app->default_tag);
-    app->default_tag = on_app_config_get("default_tag");
-    if (app->default_tag != NULL) g_strstrip(app->default_tag);
-    if (app->default_tag != NULL && app->default_tag[0] == '\0') {
-        g_free(app->default_tag);
-        app->default_tag = NULL;
-    }
 }
 
 /*

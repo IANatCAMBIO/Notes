@@ -197,7 +197,7 @@ one package.
 | `image_viewer.h` | **stub** (never opens) | D | D, H |
 | `library_state.h` | real | E | E, F, G, H |
 | `library_window.h` | working skeleton | E | E |
-| `library_commands.h` | New Note, Quick Note, the two trash functions real; the rest to write | E | F, G |
+| `library_commands.h` | New Note, the two trash functions real; the rest to write | E | F, G |
 | `library_sidebar.h` | **stub** (shows counts) | F | E, G, H |
 | `library_notes.h` | **stub** (lists titles) | G | E, H |
 | `settings_window.h`, `search_window.h`, `media_window.h`, `library_ai.h` | **stubs** (register nothing) | H | E |

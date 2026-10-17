@@ -1,10 +1,13 @@
 # Notes AppKit — icons
 
-`composition.png` is the app's icon (the bundle icon and the About
-panel's).  It is the one image `make` copies into the bundle's
-`Contents/Resources`; the app loads it with `on_ui_app_icon()`
-(`src/ui_util.h`), which decodes it **at the size it is drawn** — never at
-the file's full size (see "Memory and ownership" in `porting/INTERFACES.md`).
+`Notes.icns` is the app's icon (the bundle icon and the About panel's);
+`src/identity.h` names it (`ON_APP_ICON`).  It is the one image `make`
+copies into the bundle's `Contents/Resources`; the app loads it with
+`on_ui_app_icon()` (`src/ui_util.h`), which decodes it **at the size it is
+drawn** — never at the file's full size (see "Memory and ownership" in
+`porting/INTERFACES.md`).  The old `composition.png` lives on as
+`tests/fixtures/composition.png`, the large sample image of the seed and
+the UI tests.
 
 ## Toolbar glyphs
 

@@ -34,7 +34,7 @@ extern NSPasteboardType const on_pasteboard_type_rows;
 /* ── Images ─────────────────────────────────────────────────────────────── */
 
 /*
- * on_ui_app_icon — the app's icon as drawn (composition.png, the one bundled
+ * on_ui_app_icon — the app's icon as drawn (ON_APP_ICON, the one bundled
  * image) at the About panel's size (shared_ui_app_icon): the place that
  * knows the artwork's name.
  *

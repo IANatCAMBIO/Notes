@@ -7,8 +7,8 @@
 NSPasteboardType const on_pasteboard_type_fragment = @ON_BUNDLE_ID ".fragment";
 NSPasteboardType const on_pasteboard_type_rows     = @ON_BUNDLE_ID ".rows";
 
-/* The bundled image that is the app's icon. */
-static NSString * const app_icon_name = @"composition";
+/* The bundled image that is the app's icon: its file name (identity.h). */
+static NSString * const app_icon_name = @ON_APP_ICON;
 
 
 /*

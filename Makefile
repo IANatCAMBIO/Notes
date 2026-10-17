@@ -24,7 +24,8 @@ APP_NAME    := $(call ident,ON_APP_NAME)
 BUNDLE_NAME := $(call ident,ON_BUNDLE_NAME)
 BUNDLE_ID   := $(call ident,ON_BUNDLE_ID)
 DATA_ENV    := $(call ident,ON_DATA_DIR_ENV)
-ifeq ($(and $(APP_NAME),$(BUNDLE_NAME),$(BUNDLE_ID),$(DATA_ENV)),)
+APP_ICON    := icons/$(call ident,ON_APP_ICON)
+ifeq ($(and $(APP_NAME),$(BUNDLE_NAME),$(BUNDLE_ID),$(DATA_ENV),$(notdir $(APP_ICON))),)
 $(error src/identity.h does not define every name the Makefile reads)
 endif
 
@@ -160,23 +161,23 @@ all: $(BUNDLE)
 
 # Info.plist gets every name from src/identity.h, the version from VERSION
 # and the time the bundle was assembled as NotesBuildDate (UTC), shown in
-# the About panel. The app icon (icons/composition.png) is copied into
-# Contents/Resources, where the app loads it by name, and README.md, which
-# Help opens. Toolbar glyphs are SF Symbols and need no files.
-IMAGES   = icons/composition.png
-
-$(BUNDLE): $(APP_BIN) resources/Info.plist VERSION src/identity.h $(IMAGES) README.md
+# the About panel. The app icon (APP_ICON, named in src/identity.h) is
+# copied into Contents/Resources, where Finder finds it through
+# CFBundleIconFile and the app loads it by name, and README.md, which Help
+# opens. Toolbar glyphs are SF Symbols and need no files.
+$(BUNDLE): $(APP_BIN) resources/Info.plist VERSION src/identity.h $(APP_ICON) README.md
 	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed images do not linger
 	@cp resources/Info.plist $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleName -string "$(APP_NAME)" $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleExecutable -string "$(BUNDLE_NAME)" $(CONTENTS)/Info.plist
+	@plutil -replace CFBundleIconFile -string "$(basename $(notdir $(APP_ICON)))" $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleShortVersionString -string "$(VERSION)" $(CONTENTS)/Info.plist
 	@plutil -replace CFBundleVersion -string "$(VERSION)" $(CONTENTS)/Info.plist
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_MACOS)" $(CONTENTS)/Info.plist
 	@plutil -replace NotesBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(CONTENTS)/Info.plist
-	@cp $(IMAGES) README.md $(RSRC)/
+	@cp $(APP_ICON) README.md $(RSRC)/
 	@$(call sign,$(BUNDLE))
 	@touch $(BUNDLE)  # codesign rewrites the binaries; keep the bundle newer
 
@@ -230,7 +231,7 @@ build/dev_seed: build/dev_seed.o $(CORE_OBJS)
 # written through the core API by build/dev_seed. It refuses to run while
 # an app holds dev/data.
 seed: build/dev_seed
-	@tools/seed-dev.sh "$(DEV_DATA)" "$(DEV_SHARED_DB)" build/dev_seed icons/composition.png tests/fixtures/folder.png
+	@tools/seed-dev.sh "$(DEV_DATA)" "$(DEV_SHARED_DB)" build/dev_seed tests/fixtures/composition.png tests/fixtures/folder.png
 
 # The development database is seeded once, when it does not exist yet.
 $(DEV_SHARED_DB):

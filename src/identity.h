@@ -38,6 +38,11 @@
  * development build, run and test sets it to a folder under dev/.           */
 #define ON_DATA_DIR_ENV "NOTES_DATA_DIR"
 
+/* The app's icon: the one image file in the bundle's Resources (from
+ * icons/), named to Finder by CFBundleIconFile and loaded by the app
+ * (ui_util.h: on_ui_app_icon).                                              */
+#define ON_APP_ICON "Notes.icns"
+
 /* File names inside the data directory.                                    */
 #define ON_CONFIG_FILENAME "notes.ini"
 #define ON_LOCK_FILENAME "notes.lock"   /* one app per data directory

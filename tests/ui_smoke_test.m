@@ -328,11 +328,22 @@ new_note(const char *text)
  * Inputs:
  *   note_id — the note
  */
+/*
+ * sample_image_url — the large sample PNG under tests/fixtures (the tests
+ * run from the repository root), for notes with an image.
+ *
+ * Output: its file URL.
+ */
+static NSURL *
+sample_image_url(void)
+{
+    return [NSURL fileURLWithPath:@"tests/fixtures/composition.png"];
+}
+
 static void
 add_image(gint64 note_id)
 {
-    NSData *png = [NSData dataWithContentsOfURL:
-        [NSBundle.mainBundle URLForResource:@"composition" withExtension:@"png"]];
+    NSData *png = [NSData dataWithContentsOfURL:sample_image_url()];
     GBytes     *bytes = g_bytes_new(png.bytes, png.length);
     OnDocument *doc   = on_note_document_load(app.db, note_id);
     on_document_insert_block(doc, on_document_n_blocks(doc), on_block_new_image(bytes, 0));
@@ -1059,8 +1070,7 @@ static void
 test_inline_image(void)
 {
     gint64      note_id = new_note("Inline image\nbefore ");
-    NSData     *png     = [NSData dataWithContentsOfURL:
-        [NSBundle.mainBundle URLForResource:@"composition" withExtension:@"png"]];
+    NSData     *png     = [NSData dataWithContentsOfURL:sample_image_url()];
     GBytes     *bytes   = g_bytes_new(png.bytes, png.length);
     OnDocument *doc     = on_note_document_load(app.db, note_id);
     OnText     *line    = on_document_block(doc, 1)->text;
@@ -2996,8 +3006,7 @@ static void
 test_image_rule_control(NSWindow *window)
 {
     @autoreleasepool {
-        NSImage *full = [[NSImage alloc] initWithContentsOfURL:
-            [NSBundle.mainBundle URLForResource:@"composition" withExtension:@"png"]];
+        NSImage *full = [[NSImage alloc] initWithContentsOfURL:sample_image_url()];
         NSImageView *bad = [[NSImageView alloc] init];
         bad.image = full;
         bad.translatesAutoresizingMaskIntoConstraints = NO;

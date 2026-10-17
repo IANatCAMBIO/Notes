@@ -90,7 +90,7 @@ Notes.app/Contents/
   Info.plist            resources/Info.plist + names from src/identity.h,
                         version from VERSION, NotesBuildDate, LSMinimumSystemVersion
   MacOS/Notes           every src/*.c and every src/*.m
-  Resources/            icons/composition.png (the app icon), README.md
+  Resources/            icons/Notes.icns (the app icon), README.md
 build/                  objects, dependency files, test programs, dev_seed
 dev/                    (gitignored) data/, test/, snapshots/
 ```
@@ -144,7 +144,8 @@ app lock while they write (both refuse without `NOTES_DATA_DIR` and
 `tools/bnbf-scan.c` round-trips every note of a database COPY through the
 model and reports what the loader repaired (`make bnbf-scan`).
 
-**Icons.**  The one bundled image is the app icon, `icons/composition.png`.
+**Icons.**  The one bundled image is the app icon, `icons/Notes.icns`
+(named by `ON_APP_ICON` in `src/identity.h`).
 Toolbar and format-bar glyphs are SF Symbols drawn by the system
 (`shared_ui_symbol`, `src/ui_util.h`), so they need no files and no artwork
 tools; the retired toolbar PNGs are kept in `icons/unused/` (see

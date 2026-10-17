@@ -2102,9 +2102,10 @@ test_notes_pane(NotesLibrary *lib)
     check(all_cards, "every grid card is rendered, with the note's title under it");
 
     /* Group grid by: the cards in sections under headers, by the day,
-     * week or year of the date the list is sorted by; none by default. */
+     * week, month or year of the date the list is sorted by; none by
+     * default. */
     gchar *group_was = on_app_config_get("grid_group");
-    for (const char *const *g = (const char *const[]){ "day", "week", "year", NULL }; *g != NULL; g++) {
+    for (const char *const *g = (const char *const[]){ "day", "week", "month", "year", NULL }; *g != NULL; g++) {
         on_app_config_set("grid_group", *g);
         on_app_prefs_load(&app);
         on_library_refresh_all(lib);
@@ -2115,15 +2116,15 @@ test_notes_pane(NotesLibrary *lib)
         NSInteger cards_in_sections = 0;
         for (NSInteger sec = 0; sec < grid.numberOfSections; sec++) cards_in_sections += [grid numberOfItemsInSection:sec];
         gint64 now = (gint64)time(NULL);
-        NSString *want = strcmp(*g, "day") == 0 ? shared_ui_format_date(now, shared_ui_date_day)
-                       : strcmp(*g, "year") == 0 ? [NSString stringWithFormat:@"%ld", (long)[NSCalendar.currentCalendar component:NSCalendarUnitYear fromDate:NSDate.date]]
-                       : nil;
+        NSString *year  = [NSString stringWithFormat:@"%ld", (long)[NSCalendar.currentCalendar component:NSCalendarUnitYear fromDate:NSDate.date]];
+        BOOL headed = strcmp(*g, "day") == 0   ? [label.stringValue isEqualToString:shared_ui_format_date(now, shared_ui_date_day)]
+                    : strcmp(*g, "week") == 0  ? [label.stringValue hasPrefix:@"Week of "]
+                    : strcmp(*g, "month") == 0 ? [label.stringValue hasSuffix:year] && label.stringValue.length > year.length + 3
+                    :                            [label.stringValue isEqualToString:year];
         char msg[200];
         snprintf(msg, sizeof msg, "grid grouped by %s: every card is in a section, the first headed \"%s\"",
                  *g, label.stringValue.UTF8String);
-        check(grid.numberOfSections >= 1 && cards_in_sections == 3 && header != nil &&
-              (want == nil ? [label.stringValue hasPrefix:@"Week of "] : [label.stringValue isEqualToString:want]),
-              msg);
+        check(grid.numberOfSections >= 1 && cards_in_sections == 3 && header != nil && headed, msg);
     }
     on_app_config_set("grid_group", group_was);
     on_app_prefs_load(&app);

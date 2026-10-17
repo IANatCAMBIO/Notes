@@ -5,13 +5,15 @@
 /*
  * library_favorites — the library's Favorites bar: a strip across the whole
  * window under the toolbar (the sidebar and the notes start below it) with
- * one button per tag that is a favorite in Notes (tags.favorite_notes),
- * alphabetically, the design of the Tasks app's bar.  View ▸ Hide
- * Favorites Bar slides it away (library_window.m; the favorites_bar_visible
- * setting).  Clicking a button
- * selects its tag in the sidebar; the button of the selected tag is lit.
- * A right-click on a button offers Edit Tag… (on_library_edit_tag).  With
- * no favorite the bar says how to make one.
+ * one button per tag that is a favorite in Notes (tags.favorite_notes;
+ * SharedFavoriteButton) in the order the user dragged them into (the
+ * favorites_order setting), new favorites at the end by name: the design
+ * of the Tasks app's bar.  View ▸ Hide Favorites Bar slides it away
+ * (library_window.m; the favorites_bar_visible setting).  Clicking a
+ * button selects its tag in the sidebar; the button of the selected tag is
+ * lit.  Dragging a button along the bar reorders it.  A right-click on a
+ * button offers Edit Tag… (on_library_edit_tag) and Remove from Favorites.
+ * With no favorite the bar says how to make one.
  *
  * It owns neither the selection (the sidebar's) nor the tags (the
  * database's).

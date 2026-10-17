@@ -117,11 +117,14 @@ tags Tasks uses (one set in the shared file).
   every tag a note carries (with counts when Settings ▸ Appearance shows
   them), and the **Trash**.  Drop notes on a tag to give them the tag, on
   the Trash to trash them.
-- Right-click a tag, **Edit Tag…**: an emoji (Tasks shows it too) and
-  whether it is a **favorite** — a button in the **Favorites bar** across
-  the top of the window (View ▸ Hide Favorites Bar slides it away, as in
-  Tasks).  Favorites are each app's own.  A tag's name
-  never changes.
+- Right-click a tag, **Edit Tag…**: an emoji (a click in the slot opens
+  the emoji picker; Tasks shows the emoji too) and whether it is a
+  **favorite** — a button in the **Favorites bar** across the top of the
+  window (View ▸ Hide Favorites Bar slides it away, as in Tasks); the
+  tag's menu also offers **Add to Favorites**, a button's **Remove from
+  Favorites**.  Drag a button along the bar to put the favorites in your
+  order (new ones join at the end, by name).  Favorites are each app's
+  own.  A tag's name never changes.
 - A tag lives while a note (trashed too) or a task carries it.  A trashed
   note keeps its tags; Restore brings it back with them.
 - Export writes one file per note into one folder, each starting with its

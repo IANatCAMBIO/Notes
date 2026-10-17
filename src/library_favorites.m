@@ -1,9 +1,11 @@
 /*
  * library_favorites.m — the library's Favorites bar (library_favorites.h).
  *
- * A horizontal scroll view holding a strip of buttons, one per favorite
- * tag; a vertical wheel gesture pans the strip, as Tasks' bar does.  The
- * buttons are rebuilt from one tag query on each refresh (there are few).
+ * A horizontal scroll view holding a strip of SharedFavoriteButtons, one
+ * per favorite tag; a vertical wheel gesture pans the strip, as Tasks' bar
+ * does.  The buttons are rebuilt from one tag query on each refresh (there
+ * are few), in the order the user dragged them into (the favorites_order
+ * setting), new favorites at the end by name.
  */
 
 #import "library_favorites.h"
@@ -13,96 +15,16 @@
 #import "look.h"
 #import "ui_util.h"
 
+#include "config.h"
 #include "db.h"
+#include "shared_order.h"
 
-/* Horizontal padding around the strip and inside a button's title. */
-static const CGFloat strip_pad    = 6.0;
-static const CGFloat btn_text_pad = 16.0;
+/* The setting holding the bar's order: tag ids, comma separated. */
+static const char * const order_key = "favorites_order";
 
 /* What the bar says while no tag is a favorite. */
 static NSString * const empty_hint =
-    @"No favorites yet — right-click a tag in the sidebar and choose Edit Tag…";
-
-/* ── A favorite's button ─────────────────────────────────────────────── */
-
-/*
- * NotesFavoriteButton — a button carrying the tag it stands for.  The lit
- * state is painted behind the title, since the accessory-bar bezel shows
- * its pressed look only while the mouse is held.
- */
-@interface NotesFavoriteButton : NSButton
-@property (nonatomic, assign) gint64        tag_id;
-@property (nonatomic, weak)   NotesLibrary *lib;
-@end
-
-@implementation NotesFavoriteButton
-
-/*
- * setState: — mark the button for redrawing: the lit background follows.
- *
- * Inputs:
- *   state — the new state
- */
-- (void)
-setState:(NSControlStateValue)state
-{
-    [super setState:state];
-    [self setNeedsDisplay:YES];
-}
-
-/*
- * drawRect: — the lit background (rounded, inside the bezel) under the
- * button's own drawing.
- *
- * Inputs:
- *   dirty — the area to draw
- */
-- (void)
-drawRect:(NSRect)dirty
-{
-    if (self.state == NSControlStateValueOn) {
-        [[NSColor.labelColor colorWithAlphaComponent:0.12] setFill];
-        NSRect inner = [self.cell drawingRectForBounds:self.bounds];
-        NSRect lit   = NSMakeRect(NSMinX(self.bounds), NSMinY(inner), NSWidth(self.bounds), NSHeight(inner));
-        [[NSBezierPath bezierPathWithRoundedRect:lit xRadius:4.0 yRadius:4.0] fill];
-    }
-    [super drawRect:dirty];
-}
-
-/*
- * edit_tag: — the menu's Edit Tag…: the panel for this button's tag.
- *
- * Inputs:
- *   sender — the menu item (unused)
- */
-- (void)
-edit_tag:(id)sender
-{
-    NotesLibrary *lib = self.lib;
-    if (lib != nil) on_library_edit_tag(lib, self.tag_id);
-}
-
-/*
- * menuForEvent: — a right-click on a favorite: Edit Tag… for its tag, and
- * Remove from Favorites (the remove-favorite command, carrying the tag).
- *
- * Inputs:
- *   event — the right mouse-down (unused)
- *
- * Output: the menu.
- */
-- (NSMenu *)
-menuForEvent:(NSEvent *)event
-{
-    NSMenu     *menu = [[NSMenu alloc] initWithTitle:@""];
-    NSMenuItem *item = [menu addItemWithTitle:@"Edit Tag…" action:@selector(edit_tag:) keyEquivalent:@""];
-    item.target = self;
-    [menu addItem:shared_command_menu_item(@"remove-favorite",
-                                           on_library_sb_ref_value(on_sb_tag, self.tag_id))];
-    return menu;
-}
-
-@end
+    @"No favorites yet — right-click a tag in the sidebar and choose Add to Favorites";
 
 /* ── The scroll view ─────────────────────────────────────────────────── */
 
@@ -182,14 +104,68 @@ layout
  *   sender — the button
  */
 - (void)
-clicked:(NotesFavoriteButton *)sender
+clicked:(SharedFavoriteButton *)sender
 {
     NotesLibrary *lib = self.lib;
     if (lib != nil) on_library_sidebar_select(lib, on_sb_tag, sender.tag_id);
 }
 
 /*
- * reload — the buttons from the database, the selected tag's lit.
+ * edit_tag: — a button menu's Edit Tag…: the panel for the tag the item
+ * carries.
+ *
+ * Inputs:
+ *   sender — the menu item; its representedObject is the tag's id
+ */
+- (void)
+edit_tag:(NSMenuItem *)sender
+{
+    NotesLibrary *lib = self.lib;
+    if (lib != nil) on_library_edit_tag(lib, [sender.representedObject longLongValue]);
+}
+
+/*
+ * menu_for: — a right-click on a favorite: Edit Tag… for its tag, and
+ * Remove from Favorites (the remove-favorite command, carrying the tag).
+ *
+ * Inputs:
+ *   button — the button
+ *
+ * Output: the menu.
+ */
+- (NSMenu *)
+menu_for:(SharedFavoriteButton *)button
+{
+    NSMenu     *menu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *item = [menu addItemWithTitle:@"Edit Tag…" action:@selector(edit_tag:) keyEquivalent:@""];
+    item.target            = self;
+    item.representedObject = @(button.tag_id);
+    [menu addItem:shared_command_menu_item(@"remove-favorite",
+                                           on_library_sb_ref_value(on_sb_tag, button.tag_id))];
+    return menu;
+}
+
+/*
+ * save_order: — a button was dragged into place: remember the row's order
+ * (the favorites_order setting).
+ *
+ * Inputs:
+ *   order — the buttons, left to right
+ */
+- (void)
+save_order:(NSArray<SharedFavoriteButton *> *)order
+{
+    int64_t *ids = g_new(int64_t, order.count + 1);
+    for (NSUInteger i = 0; i < order.count; i++) ids[i] = order[i].tag_id;
+    char *text = shared_order_text(ids, (int)order.count);
+    on_app_config_set(order_key, text);
+    free(text);
+    g_free(ids);
+}
+
+/*
+ * reload — the buttons from the database, in the saved order, the
+ * selected tag's lit.
  */
 - (void)
 reload
@@ -198,36 +174,41 @@ reload
     if (lib == nil || lib.app->db == NULL) return;
     for (NSView *v in self.strip.subviews.copy) [v removeFromSuperview];
 
-    NSFont       *font  = [NSFont systemFontOfSize:shared_look_ui_font];
-    NSDictionary *attrs = @{ NSFontAttributeName: font };
-    CGFloat       x     = strip_pad;
-    CGFloat       y     = (shared_look_favorites_bar_h - shared_look_favorite_btn_h) / 2.0;
-    GList        *tags  = on_db_tag_list(lib.app->db, ON_TAGS_ALL);
+    __weak NotesFavoritesBar *ws = self;
+    NSMutableArray<SharedFavoriteButton *> *buttons = [NSMutableArray array];
+    GList *tags = on_db_tag_list(lib.app->db, ON_TAGS_ALL);
     for (GList *l = tags; l != NULL; l = l->next) {
         const OnTag *t = l->data;
         if (!t->favorite) continue;
-        NSString *title = shared_ui_tag_label(@(t->emoji), @(t->name));
-        CGFloat w = MAX(shared_look_favorite_btn_min_w, ceil([title sizeWithAttributes:attrs].width) + btn_text_pad);
-        NotesFavoriteButton *btn = [[NotesFavoriteButton alloc]
-                                      initWithFrame:NSMakeRect(x, y, w, shared_look_favorite_btn_h)];
-        btn.title         = title;
-        btn.bezelStyle    = NSBezelStyleAccessoryBar;
-        btn.buttonType    = NSButtonTypeToggle;
-        btn.imagePosition = NSNoImage;
-        btn.font          = font;
-        btn.target        = self;
-        btn.action        = @selector(clicked:);
-        btn.tag_id        = t->id;
-        btn.lib           = lib;
-        btn.state         = lib.sel_kind == on_sb_tag && lib.sel_id == t->id ? NSControlStateValueOn
-                                                                             : NSControlStateValueOff;
-        [self.strip addSubview:btn];
-        x += w + shared_look_favorite_gap;
+        SharedFavoriteButton *btn = [[SharedFavoriteButton alloc]
+                                       init_with_title:shared_ui_tag_label(@(t->emoji), @(t->name))
+                                                tag_id:t->id];
+        btn.target       = self;
+        btn.action       = @selector(clicked:);
+        btn.reordered    = ^(NSArray<SharedFavoriteButton *> *order) { [ws save_order:order]; };
+        btn.context_menu = ^NSMenu *(SharedFavoriteButton *button) { return [ws menu_for:button]; };
+        btn.state        = lib.sel_kind == on_sb_tag && lib.sel_id == t->id ? NSControlStateValueOn
+                                                                            : NSControlStateValueOff;
+        [buttons addObject:btn];
     }
     on_db_tag_list_free(tags);
 
-    self.hint.hidden = self.strip.subviews.count > 0;
-    self.content_w   = x + strip_pad;
+    /* By name from the database; the saved order first, the rest after. */
+    int64_t *ids = g_new(int64_t, buttons.count + 1);
+    for (NSUInteger i = 0; i < buttons.count; i++) ids[i] = buttons[i].tag_id;
+    gchar *saved = on_app_config_get(order_key);
+    int   *order = shared_order_permutation(ids, (int)buttons.count, saved);
+    if (order != NULL) {
+        NSArray<SharedFavoriteButton *> *by_name = buttons.copy;
+        for (NSUInteger i = 0; i < by_name.count; i++) buttons[i] = by_name[(NSUInteger)order[i]];
+    }
+    free(order);
+    g_free(saved);
+    g_free(ids);
+
+    for (SharedFavoriteButton *btn in buttons) [self.strip addSubview:btn];
+    self.content_w   = shared_ui_place_favorites(buttons, NO);
+    self.hint.hidden = buttons.count > 0;
     self.strip.frame = NSMakeRect(0, 0, MAX(self.content_w, NSWidth(self.scroll.bounds)),
                                   shared_look_favorites_bar_h);
 }
@@ -278,7 +259,7 @@ on_library_favorites_new(NotesLibrary *lib)
         [rule.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
         [rule.heightAnchor constraintEqualToConstant:1.0],
-        [bar.hint.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:2 * strip_pad],
+        [bar.hint.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:2 * shared_look_favorites_pad],
         [bar.hint.centerYAnchor constraintEqualToAnchor:bar.scroll.centerYAnchor],
     ]];
     favorites_bar = bar;

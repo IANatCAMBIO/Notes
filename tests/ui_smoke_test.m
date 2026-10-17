@@ -1376,6 +1376,34 @@ test_editor_tags(NotesLibrary *lib)
 }
 
 /*
+ * drag_right — drag a Favorites bar button to the right, as a user would:
+ * the button tracks the drag from its window's queue, so the drags and
+ * the release are posted first and the press handed to it.
+ *
+ * Inputs:
+ *   btn — the button
+ *   dx  — how far, in points
+ */
+static void
+drag_right(NSButton *btn, CGFloat dx)
+{
+    NSWindow *window = btn.window;
+    NSPoint   from   = [btn.superview convertPoint:NSMakePoint(NSMidX(btn.frame), NSMidY(btn.frame)) toView:nil];
+    NSEvent *(^mouse)(NSEventType, NSPoint) = ^NSEvent *(NSEventType type, NSPoint at) {
+        NSEvent *e = [NSEvent mouseEventWithType:type location:at modifierFlags:0
+                                       timestamp:NSProcessInfo.processInfo.systemUptime
+                                    windowNumber:window.windowNumber context:nil
+                                     eventNumber:0 clickCount:1 pressure:1.0];
+        [NSApp postEvent:e atStart:NO];
+        return e;
+    };
+    mouse(NSEventTypeLeftMouseDragged, NSMakePoint(from.x + 20.0, from.y));
+    mouse(NSEventTypeLeftMouseDragged, NSMakePoint(from.x + dx, from.y));
+    mouse(NSEventTypeLeftMouseUp, NSMakePoint(from.x + dx, from.y));
+    [btn mouseDown:mouse(NSEventTypeLeftMouseDown, from)];
+}
+
+/*
  * test_edit_tag — Edit Tag asks in the app's own tool panel, never a
  * native alert or sheet: the tag's name is shown, not editable; OK stores
  * the emoji and Notes' favorite flag, and the favorite gets a button in
@@ -1461,6 +1489,43 @@ test_edit_tag(NotesLibrary *lib)
     on_library_run_command(lib, add_named);
     pump(0.3);
     check(button_titled(lib.window.contentView, @"🧪  SmokeTag") != nil, "Add to Favorites brings the button back");
+
+    /* Dragging a favorite along the bar reorders it: the order is kept
+     * (the favorites_order setting) across a refresh; without it, by
+     * name. */
+    new_note_tagged("SmokeAaa", "Order note\nbody");
+    OnTag *aaa = on_db_tag_find(app.db, "SmokeAaa");
+    gint64 aaa_id = aaa != NULL ? aaa->id : 0;
+    on_db_tag_free(aaa);
+    on_db_tag_set_favorite(app.db, aaa_id, TRUE);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    NSButton *first  = button_titled(lib.window.contentView, @"SmokeAaa");
+    NSButton *second = button_titled(lib.window.contentView, @"🧪  SmokeTag");
+    check(first != nil && second != nil && NSMinX(first.frame) < NSMinX(second.frame),
+          "two favorites stand in the bar by name");
+    drag_right(first, NSMaxX(second.frame) - NSMinX(first.frame));
+    pump(0.4);
+    gchar *kept_order = on_app_config_get("favorites_order");
+    gchar *want_order = g_strdup_printf("%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT, tag_id, aaa_id);
+    check(g_strcmp0(kept_order, want_order) == 0 && NSMinX(first.frame) > NSMinX(second.frame),
+          "dragging the first past the second puts it after, and the order is kept");
+    g_free(kept_order);
+    g_free(want_order);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    first  = button_titled(lib.window.contentView, @"SmokeAaa");
+    second = button_titled(lib.window.contentView, @"🧪  SmokeTag");
+    check(first != nil && second != nil && NSMinX(first.frame) > NSMinX(second.frame),
+          "a refresh shows the dragged order");
+    on_app_config_set("favorites_order", NULL);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    first  = button_titled(lib.window.contentView, @"SmokeAaa");
+    second = button_titled(lib.window.contentView, @"🧪  SmokeTag");
+    check(first != nil && second != nil && NSMinX(first.frame) < NSMinX(second.frame),
+          "without a saved order, by name again");
+    on_db_tag_set_favorite(app.db, aaa_id, FALSE);
     on_db_tag_set_favorite(app.db, tag_id, FALSE);
     on_library_refresh_all(lib);
     pump(0.2);

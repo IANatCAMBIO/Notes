@@ -910,7 +910,7 @@ sort_records
 }
 
 /*
- * group_key — the day, week or year a record's date falls in, as the
+ * group_key — the day, week, month or year a record's date falls in, as the
  * grid's grouping wants it; the date is the one the list is sorted by
  * (Created when it sorts by Created, else Modified).
  *
@@ -939,6 +939,14 @@ group_key:(NotesNoteRecord *)r group:(on_grid_group_t)group title:(NSString **)t
         *title = [NSString stringWithFormat:@"Week of %@",
                   shared_ui_format_date((gint64)start.timeIntervalSince1970, shared_ui_date_day)];
         break;
+    case on_grid_group_month: {
+        [cal rangeOfUnit:NSCalendarUnitMonth startDate:&start interval:NULL forDate:date];
+        NSDateFormatter *month = [[NSDateFormatter alloc] init];
+        month.dateFormat = [NSDateFormatter dateFormatFromTemplate:@"MMMM y" options:0
+                                                            locale:NSLocale.currentLocale];
+        *title = [month stringFromDate:start];
+        break;
+    }
     default:
         [cal rangeOfUnit:NSCalendarUnitYear startDate:&start interval:NULL forDate:date];
         *title = [NSString stringWithFormat:@"%ld", (long)[cal component:NSCalendarUnitYear fromDate:date]];
@@ -949,7 +957,7 @@ group_key:(NotesNoteRecord *)r group:(on_grid_group_t)group title:(NSString **)t
 
 /*
  * regroup — the grid's sections from the records (the grid_group
- * preference): none, or one per day, week or year, newest first, the
+ * preference): none, or one per day, week, month or year, newest first, the
  * records put in that order (within a group, the list's order holds) so
  * that a section is a run of them.  The flow layout gets its headers
  * while there are groups.

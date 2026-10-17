@@ -56,8 +56,9 @@ on_app_prefs_load(OnApp *app)
         on_grid_group_t  group;
     } groups[] = {
         { "day",  on_grid_group_day  },
-        { "week", on_grid_group_week },
-        { "year", on_grid_group_year },
+        { "week",  on_grid_group_week  },
+        { "month", on_grid_group_month },
+        { "year",  on_grid_group_year  },
     };
     gchar *group = on_app_config_get("grid_group");
     app->grid_group = on_grid_group_none;

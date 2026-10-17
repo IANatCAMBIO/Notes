@@ -441,7 +441,7 @@ add_appearance:(NSMutableArray<NSView *> *)rows
     density.action     = @selector(density_changed:);
     [rows addObject:indented(row(@[[NSTextField labelWithString:@"List density:"], density]), indent)];
     NSPopUpButton *group = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [group addItemsWithTitles:@[@"None", @"Day", @"Week", @"Year"]];
+    [group addItemsWithTitles:@[@"None", @"Day", @"Week", @"Month", @"Year"]];
     [group selectItemAtIndex:(NSInteger)self.lib.app->grid_group];
     group.identifier = @"grid-group";
     group.target     = self;
@@ -871,7 +871,7 @@ density_changed:(NSPopUpButton *)sender
 - (void)
 grid_group_changed:(NSPopUpButton *)sender
 {
-    static const char *const names[] = { "none", "day", "week", "year" };
+    static const char *const names[] = { "none", "day", "week", "month", "year" };
     [self write_setting:"grid_group" value:names[sender.indexOfSelectedItem]];
     on_library_refresh_all(self.lib);
 }

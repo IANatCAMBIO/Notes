@@ -65,8 +65,8 @@
  *   ai_enabled             "ai_enabled"               0  AI summary available
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
- *   grid_group             "grid_group"       "none" (default), "day", "week"
- *                                             or "year": the grid's cards in
+ *   grid_group             "grid_group"       "none" (default), "day", "week",
+ *                                             "month" or "year": the grid's cards in
  *                                             sections by the date the list
  *                                             is sorted by (on_grid_group_t)
  *
@@ -146,6 +146,7 @@ typedef enum {
     on_grid_group_none,
     on_grid_group_day,
     on_grid_group_week,
+    on_grid_group_month,
     on_grid_group_year,
 } on_grid_group_t;
 

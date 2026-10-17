@@ -40,8 +40,10 @@ open_new_note(NotesLibrary *lib, NSString *tag)
 }
 
 /*
- * run_new_note — "new-note": a note with the selected tag (none when the
- * selection is not a tag).
+ * run_new_note — "new-note": a note with the selected tag or, when a view
+ * is selected, with the default tag (on_library_current_tag).  Every note
+ * has a tag: with no default the status bar says how to get one (as
+ * Tasks' New Task).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -51,12 +53,18 @@ static void
 run_new_note(id target, id sender)
 {
     NotesLibrary *lib = target;
-    open_new_note(lib, on_library_current_tag(lib));
+    NSString     *tag = on_library_current_tag(lib);
+    if (tag == nil) {
+        on_app_status(lib.app, "Select a tag, or choose a default tag in Settings");
+        return;
+    }
+    open_new_note(lib, tag);
 }
 
 /*
- * run_quicknote — "quicknote": a note with no tag whatever is selected,
- * its editor in front.
+ * run_quicknote — "quicknote": a note with the default tag whatever is
+ * selected, its editor in front.  With no default tag it says so and
+ * opens Settings, where one is chosen (as Tasks' Quick Task).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -65,7 +73,16 @@ run_new_note(id target, id sender)
 static void
 run_quicknote(id target, id sender)
 {
-    open_new_note(target, nil);
+    NotesLibrary *lib = target;
+    if (lib.app->default_tag == NULL) {
+        shared_ui_notice(nil, @"Choose a default tag first",
+                         @"Quick Note gives its note the default tag. "
+                         @"Choose one in Settings, under New Notes.", ^{
+            on_library_run_command(lib, shared_command_menu_item(@"preferences", nil));
+        });
+        return;
+    }
+    open_new_note(lib, @(lib.app->default_tag));
 }
 
 /*

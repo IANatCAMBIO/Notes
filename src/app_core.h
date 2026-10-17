@@ -65,6 +65,12 @@
  *   ai_enabled             "ai_enabled"               0  AI summary available
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
+ *   default_tag            "default_tag"      the tag New Note gives when
+ *                                             no tag is selected, and Quick
+ *                                             Note always (as Tasks';
+ *                                             owned, trimmed; NULL when
+ *                                             unset: every note has a tag,
+ *                                             so neither creates one then)
  *
  * Backups (backup.h) and the pull (action_sync.h):
  *   backup_running — a backup pass is on its worker; keeps a timer tick
@@ -155,6 +161,7 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    ai_enabled;
     gchar      *ai_command;
+    gchar      *default_tag;
 
     gboolean    backup_running;
     on_timer_id_t   backup_timer;

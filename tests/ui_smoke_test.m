@@ -1345,7 +1345,35 @@ test_editor_tags(NotesLibrary *lib)
           "the new note's editor has the caret on its title line");
     on_editor_close_all();
     pump(0.2);
+
+    /* Every note has a tag: in a view, New Note gives the default tag, and
+     * nothing without one. */
     on_library_sidebar_select(lib, on_sb_all, 0);
+    pump(0.2);
+    gchar *default_was = on_app_config_get("default_tag");
+    on_app_config_set("default_tag", NULL);
+    on_app_prefs_load(&app);
+    gint before = on_db_note_count_visible(app.db);
+    on_library_run_command(lib, command_item(@"new-note"));
+    pump(0.3);
+    check(on_db_note_count_visible(app.db) == before && app.default_tag == NULL,
+          "New Note in All Notes with no default tag creates nothing");
+    on_app_config_set("default_tag", " Inbox ");
+    on_app_prefs_load(&app);
+    check(g_strcmp0(app.default_tag, "Inbox") == 0, "the default tag is read trimmed");
+    on_library_run_command(lib, command_item(@"new-note"));
+    pump(0.3);
+    notes  = on_db_note_list_recent(app.db);
+    newest = 0;
+    for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
+    on_db_note_list_free(notes);
+    check(on_db_note_count_visible(app.db) == before + 1 && note_has_tag(newest, "Inbox"),
+          "New Note in All Notes gives the default tag");
+    on_editor_close_all();
+    pump(0.2);
+    on_app_config_set("default_tag", default_was);
+    on_app_prefs_load(&app);
+    g_free(default_was);
 }
 
 /*
@@ -3304,10 +3332,24 @@ main(void)
         test_shell(lib);
         test_secondary_windows(lib);
 
+        on_app_config_set("default_tag", "Inbox");
+        on_app_prefs_load(&app);
         check(on_library_run_command(lib, command_item(@"quicknote")), "Quick Note runs");
         pump(0.3);
-        check(editor_window_titled(@SHARED_DB_NOTE_DEFAULT_TITLE) != nil,
-              "Quick Note creates a note and opens its editor");
+        GList *quick_notes = on_db_note_list_recent(app.db);
+        gint64 quick_id = 0;
+        for (GList *l = quick_notes; l != NULL; l = l->next) quick_id = MAX(quick_id, ((OnNoteMeta *)l->data)->id);
+        on_db_note_list_free(quick_notes);
+        NSWindow *quick_editor = nil;
+        for (NSWindow *window in NSApp.windows) {
+            NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
+            NotesNoteView *view   = [scroll.documentView isKindOfClass:NotesNoteView.class] ? scroll.documentView : nil;
+            if (window.visible && view != nil && on_document_n_blocks(on_note_view_document(view)) == 3) {
+                quick_editor = window;
+            }
+        }
+        check(quick_editor != nil && note_has_tag(quick_id, "Inbox"),
+              "Quick Note creates a note with the default tag and opens its editor");
         on_editor_close_all();
 
 

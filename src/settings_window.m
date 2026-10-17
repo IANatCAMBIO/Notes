@@ -260,7 +260,7 @@ policy_store(OnApp *app, const char *key, gint64 value)
 
 /* ── The window ─────────────────────────────────────────────────────────── */
 
-@interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate>
+@interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate, NSMenuDelegate>
 @property (nonatomic, weak)   NotesLibrary *lib;
 @property (nonatomic, strong) NSTextField  *led;
 @property (nonatomic, strong) NSTextField  *health;
@@ -281,6 +281,8 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSButton     *backup_now;
 @property (nonatomic, strong) NSTextField  *viewer;
 @property (nonatomic, strong) NSTextField  *ai_command;
+@property (nonatomic, strong) NSPopUpButton *default_tag_popup; /* None, then every tag;
+                                                                  * filled as it opens  */
 @property (nonatomic, strong) NSStackView  *ai_sub;
 @property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
@@ -339,6 +341,8 @@ init_with_lib:(NotesLibrary *)lib
     [headings addObject:[self add_appearance:rows]];
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_editor:rows]];
+    [ends addObject:rows.lastObject];
+    [headings addObject:[self add_new_notes:rows]];
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_database:rows]];
     [ends addObject:rows.lastObject];
@@ -621,6 +625,87 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
     s.action       = @selector(number_changed:);
     *stepper = s;
     return field;
+}
+
+/*
+ * add_new_notes: — the New Notes section: the default tag (as Tasks'
+ * New Tasks section).
+ *
+ * Inputs:
+ *   rows — the column to append to
+ *
+ * Output: the section's heading.
+ */
+- (NSView *)
+add_new_notes:(NSMutableArray<NSView *> *)rows
+{
+    NSTextField *head = shared_ui_heading(@"New Notes");
+    [rows addObject:head];
+    self.default_tag_popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.default_tag_popup.identifier    = @"default-tag";
+    self.default_tag_popup.target        = self;
+    self.default_tag_popup.action        = @selector(default_tag_changed:);
+    self.default_tag_popup.menu.delegate = self;
+    self.default_tag_popup.toolTip       =
+        @"New Note gives its note this tag when a view is selected; Quick Note always does.";
+    [self menuNeedsUpdate:self.default_tag_popup.menu];
+    [rows addObject:indented(row(@[[NSTextField labelWithString:@"Default tag:"], self.default_tag_popup]), indent)];
+    [rows addObject:indented(shared_ui_note(@"Every note has a tag. New Note gives the default tag when a view "
+                                            @"is selected rather than a tag. Quick Note always gives it.",
+                                            text_w - indent), indent)];
+    return head;
+}
+
+/*
+ * menuNeedsUpdate: — the default-tag popup's menu is about to open (or is
+ * being built): fill it afresh from the database, so tags made or gone
+ * while Settings is open are offered as they now are.  "None" leads.  A
+ * default that no note carries just now is offered too, by its name: the
+ * next note given it makes the tag again.
+ *
+ * Inputs:
+ *   menu — the popup's menu
+ */
+- (void)
+menuNeedsUpdate:(NSMenu *)menu
+{
+    NSString *current = self.lib.app->default_tag != NULL ? @(self.lib.app->default_tag) : nil;
+
+    [menu removeAllItems];
+    NSMenuItem *none = [menu addItemWithTitle:@"None" action:NULL keyEquivalent:@""];
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSMenuItem *selected = none;
+    GList      *tags     = on_db_tag_list(self.lib.app->db, ON_TAGS_ALL);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *tag  = l->data;
+        NSMenuItem  *item = [menu addItemWithTitle:shared_ui_tag_label(@(tag->emoji), @(tag->name))
+                                            action:NULL keyEquivalent:@""];
+        item.representedObject = @(tag->name);
+        if (current != nil && [current caseInsensitiveCompare:item.representedObject] == NSOrderedSame) {
+            selected = item;
+        }
+    }
+    on_db_tag_list_free(tags);
+    if (current != nil && selected == none) {
+        selected = [menu addItemWithTitle:current action:NULL keyEquivalent:@""];
+        selected.representedObject = current;
+    }
+    [self.default_tag_popup selectItem:selected];
+}
+
+/*
+ * default_tag_changed: — a default tag (or None) was chosen.
+ *
+ * Inputs:
+ *   sender — the popup; the chosen item carries the tag's name, nil for
+ *            None
+ */
+- (void)
+default_tag_changed:(NSPopUpButton *)sender
+{
+    NSString *name = sender.selectedItem.representedObject;
+    [self write_setting:"default_tag" value:name != nil ? name.UTF8String : NULL];
 }
 
 /*

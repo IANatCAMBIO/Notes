@@ -131,9 +131,11 @@ on_library_view_t on_library_view(NotesLibrary *lib);
 BOOL on_library_in_trash_view(NotesLibrary *lib);
 
 /*
- * on_library_current_tag — the tag a new note is given (as a #tag).
+ * on_library_current_tag — the tag New Note gives (as a #tag): the
+ * selected tag, else the default tag (Settings, app->default_tag).
  *
- * Output: the selected tag's name, or nil when anything else is selected.
+ * Output: the tag's name, or nil when anything else is selected and no
+ * default is set.
  */
 NSString *on_library_current_tag(NotesLibrary *lib);
 

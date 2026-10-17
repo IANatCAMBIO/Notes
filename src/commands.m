@@ -30,7 +30,7 @@ static const shared_command_t commands[] = {
     { @"new-note",         @"New Note",                @"n", cmd,       app, @"plus",
       @"Create a note with the selected tag" },
     { @"quicknote",        @"Quick Note",              @"",  0,         app, @"square.and.pencil",
-      @"Create a note with no tag" },
+      @"Create a note with the default tag" },
     { @"open-db",          @"Open Database File…",     @"o", cmd,       app, nil, nil },
     { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },
     { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil, nil },

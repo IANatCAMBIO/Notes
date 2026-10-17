@@ -356,6 +356,14 @@ void on_db_note_meta_free(OnNoteMeta *meta);
 /* Free a list of OnNoteMeta* (on_db_note_list_all and the other listings). */
 void on_db_note_list_free(GList *notes);
 
+/* The ids of a listing's notes, in its order, for the map queries below
+ * (on_db_note_tag_names_map, on_db_note_text_map).
+ *   notes — a GList of OnNoteMeta*.
+ *   n     — receives how many.
+ * Returns an owned array (never NULL, so an empty listing still scopes a
+ * query to nothing); g_free() it.                                           */
+gint64 *on_db_note_list_ids(GList *notes, gsize *n);
+
 /* ------------------------------ tags ------------------------------------ */
 
 /* The tags of `scope`, ordered by name (case-insensitive).
@@ -651,28 +659,35 @@ gint on_db_note_count_visible(OnDatabase *db);
 void on_db_totals(OnDatabase *db, gint *notes, gint *tags);
 
 /* ---------------------------------------------------------------------------
- * on_db_note_text_map() — every filled body_text row in ONE query: note id
+ * on_db_note_text_map() — the filled body_text rows in ONE query: note id
  * (gint64*) → owned text.  The readers that need many notes' text at once
  * use this instead of one SELECT per note — the whole column is ~1.5 MB even
  * for image-heavy databases, and per-query latency is what hurts on
  * shared/network DBs.
  *   max_chars — keep only this many leading characters of each value (the
  *               list-view preview shows one line), or 0 for the full text.
+ *   ids / n   — the notes wanted (the list pane's rows), or NULL / 0 for
+ *               every note.  SQLite reads a whole body_text to take its
+ *               leading slice, so a listing asks for its notes alone.
  * Rows with a NULL cache (pre-column saves) are ABSENT; callers fall back to
  * on_note_text_cached() for those.
  * Destroy with g_hash_table_destroy().                                      */
-GHashTable *on_db_note_text_map(OnDatabase *db, gint max_chars);
+GHashTable *on_db_note_text_map(OnDatabase *db, gint max_chars,
+                                const gint64 *ids, gsize n);
 
 /* Per-tag counts of visible notes in ONE query: tag id (gint64*) →
  * GINT_TO_POINTER(count); missing keys mean zero.  Destroy with
  * g_hash_table_destroy().                                                   */
 GHashTable *on_db_tag_count_map(OnDatabase *db);
 
-/* Every note's tags as one display string, in ONE query: note id
+/* Notes' tags as one display string each, in ONE query: note id
  * (gint64*) → "Salt, Stride" (by name, case-insensitive; owned).  A note
  * with no tag has no entry — callers treat a miss as "".  The notes list's
  * Tags column, the search results and the exporter read this, never one
- * query per note.  Destroy with g_hash_table_destroy().                     */
-GHashTable *on_db_note_tag_names_map(OnDatabase *db);
+ * query per note.
+ *   ids / n — the notes wanted (the list pane's rows), or NULL / 0 for
+ *             every note.
+ * Destroy with g_hash_table_destroy().                                      */
+GHashTable *on_db_note_tag_names_map(OnDatabase *db, const gint64 *ids, gsize n);
 
 #endif /* BLUE_DB_H */

@@ -1,4 +1,5 @@
 #import "library_state.h"
+#import "library_favorites.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
 #import "library_window.h"
@@ -141,6 +142,9 @@ void
 on_library_refresh_all(NotesLibrary *lib)
 {
     if (!lib.window) return;
+    /* The bar's buttons first: the notes refresh that follows (here, or
+     * the sidebar's fallback to All Notes) lights the selected one. */
+    on_library_favorites_refresh(lib);
     if (!on_library_sidebar_refresh(lib)) on_library_notes_refresh(lib);
 }
 

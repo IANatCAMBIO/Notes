@@ -843,6 +843,20 @@ on_db_note_list_free(GList *notes)
     g_list_free_full(notes, (GDestroyNotify)on_db_note_meta_free);
 }
 
+/*
+ * on_db_note_list_ids — see db.h.
+ */
+gint64 *
+on_db_note_list_ids(GList *notes, gsize *n)
+{
+    *n = g_list_length(notes);
+    gint64 *ids = g_new(gint64, *n + 1);
+    gsize   i   = 0;
+    for (GList *l = notes; l != NULL; l = l->next)
+        ids[i++] = ((const OnNoteMeta *)l->data)->id;
+    return ids;
+}
+
 /* =========================================================================
  * tags — the one set both apps share (shared_db.h): a note's are the #tags
  * of its text (in_text); in_field rows are the move from folders' until
@@ -2023,27 +2037,36 @@ on_db_tag_count_map(OnDatabase *db)
         "GROUP BY tag_id");
 }
 
-/*
- * on_db_note_text_map — see db.h.
- */
-GHashTable *
-on_db_note_text_map(OnDatabase *db, gint max_chars)
+/* ---------------------------------------------------------------------------
+ * ids_json() — note ids as a JSON array, "[3,17,42]", for a query's
+ * `id IN (SELECT value FROM json_each(?))`: one bound value however many
+ * ids, where a list of '?' placeholders would hit SQLite's variable cap.
+ *   ids / n — the ids, n > 0.
+ * Returns the owned text; g_free() it after the statement has run.
+ * ------------------------------------------------------------------------- */
+static gchar *
+ids_json(const gint64 *ids, gsize n)
+{
+    GString *json = g_string_new("[");
+    for (gsize i = 0; i < n; i++)
+        g_string_append_printf(json, "%s%" G_GINT64_FORMAT, i > 0 ? "," : "", ids[i]);
+    g_string_append_c(json, ']');
+    return g_string_free(json, FALSE);
+}
+
+/* ---------------------------------------------------------------------------
+ * text_map_from_stmt() — run a two-column (id, text) query into a
+ * gint64* → owned text hash table, finalizing the statement.
+ *   stmt — the prepared, bound statement, or NULL (a failed prepare).
+ * Returns the map; empty when stmt is NULL.
+ * ------------------------------------------------------------------------- */
+static GHashTable *
+text_map_from_stmt(sqlite3_stmt *stmt)
 {
     GHashTable *map = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                             g_free, g_free);
-    /* One statement, two uses: full text for searching, a leading slice for
-     * the list-view previews.  The truncated form used to be a second,
-     * near-identical function.                                              */
-    sqlite3_stmt *stmt = (max_chars > 0)
-        ? prepare(db, "SELECT id, SUBSTR(body_text, 1, ?) FROM notes "
-                      "WHERE body_text IS NOT NULL")
-        : prepare(db, "SELECT id, body_text FROM notes "
-                      "WHERE body_text IS NOT NULL");
     if (stmt == NULL)
         return map;
-    if (max_chars > 0)
-        sqlite3_bind_int(stmt, 1, max_chars);
-
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         gint64 *key = g_new(gint64, 1);
         *key = sqlite3_column_int64(stmt, 0);
@@ -2054,28 +2077,59 @@ on_db_note_text_map(OnDatabase *db, gint max_chars)
     return map;
 }
 
+/* The two map queries, with and without the id filter (`where` is the
+ * filter clause or "").  The filter's parameter is ?2 in the text query,
+ * after max_chars, and ?1 in the tag names query. */
+#define NOTE_TEXT_SQL(where) \
+    "SELECT id, CASE WHEN ?1 > 0 THEN SUBSTR(body_text, 1, ?1) ELSE body_text END " \
+    "FROM notes WHERE body_text IS NOT NULL" where
+#define NOTE_TAG_NAMES_SQL(where) \
+    "SELECT note_id, group_concat(name, ', ') FROM (" \
+    "  SELECT nt.note_id, g.name FROM note_tags nt JOIN tags g ON g.id = nt.tag_id" where \
+    "  ORDER BY nt.note_id, g.name COLLATE NOCASE, g.id)" \
+    " GROUP BY note_id"
+
+/*
+ * on_db_note_text_map — see db.h.
+ */
+GHashTable *
+on_db_note_text_map(OnDatabase *db, gint max_chars, const gint64 *ids, gsize n)
+{
+    /* One statement, two uses: full text for searching, a leading slice for
+     * the list-view previews.  The truncated form used to be a second,
+     * near-identical function.                                              */
+    sqlite3_stmt *stmt = prepare(db, ids != NULL
+        ? NOTE_TEXT_SQL(" AND id IN (SELECT value FROM json_each(?2))")
+        : NOTE_TEXT_SQL(""));
+    gchar *json = NULL;                  /* the id filter, while it runs   */
+    if (stmt != NULL) {
+        sqlite3_bind_int(stmt, 1, max_chars);
+        if (ids != NULL) {
+            json = ids_json(ids, n);
+            sqlite3_bind_text(stmt, 2, json, -1, SQLITE_STATIC);
+        }
+    }
+    GHashTable *map = text_map_from_stmt(stmt);
+    g_free(json);
+    return map;
+}
+
 /*
  * on_db_note_tag_names_map — see db.h.
  */
 GHashTable *
-on_db_note_tag_names_map(OnDatabase *db)
+on_db_note_tag_names_map(OnDatabase *db, const gint64 *ids, gsize n)
 {
-    GHashTable   *map  = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-                                               g_free, g_free);
     /* group_concat over a sorted subquery: SQLite keeps the inner order.   */
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT note_id, group_concat(name, ', ') FROM ("
-        "  SELECT nt.note_id, g.name FROM note_tags nt JOIN tags g ON g.id = nt.tag_id"
-        "  ORDER BY nt.note_id, g.name COLLATE NOCASE, g.id)"
-        " GROUP BY note_id");
-    if (stmt == NULL)
-        return map;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        gint64 *key = g_new(gint64, 1);
-        *key = sqlite3_column_int64(stmt, 0);
-        g_hash_table_insert(map, key,
-            g_strdup((const gchar *)sqlite3_column_text(stmt, 1)));
+    sqlite3_stmt *stmt = prepare(db, ids != NULL
+        ? NOTE_TAG_NAMES_SQL(" WHERE nt.note_id IN (SELECT value FROM json_each(?1))")
+        : NOTE_TAG_NAMES_SQL(""));
+    gchar *json = NULL;                  /* the id filter, while it runs   */
+    if (stmt != NULL && ids != NULL) {
+        json = ids_json(ids, n);
+        sqlite3_bind_text(stmt, 1, json, -1, SQLITE_STATIC);
     }
-    sqlite3_finalize(stmt);
+    GHashTable *map = text_map_from_stmt(stmt);
+    g_free(json);
     return map;
 }

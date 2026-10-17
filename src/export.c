@@ -584,7 +584,7 @@ on_export_all(OnApp *app, const gchar *dest_dir, OnExportFormat format,
      * note's tags in ONE query rather than one per note.                   */
     GHashTable *used = g_hash_table_new_full(g_str_hash, g_str_equal,
                                              g_free, NULL);
-    GHashTable *tags = on_db_note_tag_names_map(app->db);
+    GHashTable *tags = on_db_note_tag_names_map(app->db, NULL, 0);
 
     for (GList *l = notes; l != NULL; l = l->next) {
         OnNoteMeta *m = l->data;     /* the note being exported             */

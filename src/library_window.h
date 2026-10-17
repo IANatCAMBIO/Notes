@@ -41,8 +41,9 @@ void on_library_window_show(NotesLibrary *lib);
 /*
  * on_library_window_location_changed — the selection changed (or what it
  * names did): the status bar's left side shows the new location and the
- * Favorites bar lights the selected tag (and shows a changed tag).  Called
- * by the notes pane whenever it lists a selection.
+ * Favorites bar lights the selected tag (its buttons are rebuilt with the
+ * sidebar, on_library_refresh_all).  Called by the notes pane whenever it
+ * lists a selection.
  *
  * Inputs:
  *   lib — the library

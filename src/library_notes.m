@@ -1055,7 +1055,7 @@ sort_actions
 /*
  * load_records: — the notes of the selection, as rows: tags from one
  * query, preview lines from one text query (only in the Comfortable
- * list).
+ * list), both for the listed notes alone.
  *
  * Inputs:
  *   previews — YES to fetch the preview lines
@@ -1065,8 +1065,11 @@ load_records:(BOOL)previews
 {
     OnDatabase *db    = self.lib.app->db;
     GList      *notes = on_library_notes_for_selection(self.lib);
-    GHashTable *tags  = on_db_note_tag_names_map(db);
-    GHashTable *texts = previews ? on_db_note_text_map(db, preview_chars) : NULL;
+    gsize       n     = 0;
+    gint64     *ids   = on_db_note_list_ids(notes, &n);
+    GHashTable *tags  = on_db_note_tag_names_map(db, ids, n);
+    GHashTable *texts = previews ? on_db_note_text_map(db, preview_chars, ids, n) : NULL;
+    g_free(ids);
     NSMutableArray<NotesNoteRecord *> *records = [NSMutableArray array];
     for (GList *l = notes; l != NULL; l = l->next) {
         const OnNoteMeta *m = l->data;
@@ -1098,14 +1101,20 @@ load_records:(BOOL)previews
 
 /*
  * load_actions — every action item (completed ones only while they are
- * shown), as rows, each with its note's tags (one query for them all).
+ * shown), as rows, each with its note's tags (one query for the items'
+ * notes).
  */
 - (void)
 load_actions
 {
     NSMutableArray<NotesActionRecord *> *rows = [NSMutableArray array];
     GList      *items = on_db_action_list(self.lib.app->db);
-    GHashTable *tags  = on_db_note_tag_names_map(self.lib.app->db);
+    gsize       n     = g_list_length(items);
+    gint64     *ids   = g_new(gint64, n + 1);
+    gsize       i     = 0;
+    for (GList *l = items; l != NULL; l = l->next) ids[i++] = ((const OnActionItem *)l->data)->note_id;
+    GHashTable *tags  = on_db_note_tag_names_map(self.lib.app->db, ids, n);
+    g_free(ids);
     for (GList *l = items; l != NULL; l = l->next) {
         const OnActionItem *it = l->data;
         if (it->done && !self.lib.app->show_done_actions) continue;
@@ -1847,7 +1856,7 @@ note_selection_changed:(NSArray<NSNumber *> *)ids
     if (self.lib.populating > 0) return;
     self.selected = [NSMutableOrderedSet orderedSetWithArray:ids];
     if (ids.count > 0)
-        on_app_status(self.lib.app, "%lu file%s selected", (unsigned long)ids.count, ids.count == 1 ? "" : "s");
+        on_app_status(self.lib.app, "%lu note%s selected", (unsigned long)ids.count, ids.count == 1 ? "" : "s");
 }
 
 /*

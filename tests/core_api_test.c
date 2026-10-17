@@ -725,10 +725,16 @@ test_given_tags(OnApp *app)
           "scopes: a tag only trashed notes carry lives, but is not shown");
     check(on_db_note_restore(db, a) && tag_listed(db, ON_TAGS_CARRIED, "BigClient"),
           "scopes: a restored note brings it back, with its tags");
-    GHashTable *names = on_db_note_tag_names_map(db);
+    GHashTable *names = on_db_note_tag_names_map(db, NULL, 0);
     check(strcmp(g_hash_table_lookup(names, &a), "BigClient, Salt") == 0 &&
+          strcmp(g_hash_table_lookup(names, &b), "BigClient") == 0 &&
           g_hash_table_lookup(names, &(gint64){ 999999 }) == NULL,
           "names: each note's tags as one string; none for an unknown note");
+    g_hash_table_destroy(names);
+    names = on_db_note_tag_names_map(db, &a, 1);
+    check(strcmp(g_hash_table_lookup(names, &a), "BigClient, Salt") == 0 &&
+          g_hash_table_lookup(names, &b) == NULL,
+          "names: scoped to given notes, the others are absent");
     g_hash_table_destroy(names);
     gint64 gone[] = { a, b, c };
     check(on_db_notes_delete(db, gone, 3) && on_db_tag_find(db, "BigClient") == NULL,
@@ -761,6 +767,16 @@ test_tags(OnDatabase *db)
     gchar *body = on_note_text_cached(db, one);
     check(strcmp(body, "Tagged one\nbody\n#salt #urgent") == 0, "tags: the tokens are in the text");
     g_free(body);
+    GHashTable *texts = on_db_note_text_map(db, 0, NULL, 0);
+    check(strcmp(g_hash_table_lookup(texts, &one), "Tagged one\nbody\n#salt #urgent") == 0 &&
+          strcmp(g_hash_table_lookup(texts, &two), "Tagged two\nbody") == 0,
+          "text map: every note's full text");
+    g_hash_table_destroy(texts);
+    texts = on_db_note_text_map(db, 6, &one, 1);
+    check(strcmp(g_hash_table_lookup(texts, &one), "Tagged") == 0 &&
+          g_hash_table_lookup(texts, &two) == NULL,
+          "text map: a leading slice, scoped to the given notes");
+    g_hash_table_destroy(texts);
 
     doc = on_note_document_load(db, two);
     add_tag_line(doc, (const char *[]){ "salt", NULL });

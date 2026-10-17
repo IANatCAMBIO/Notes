@@ -34,11 +34,22 @@ NSView *on_library_favorites_new(NotesLibrary *lib);
 
 /*
  * on_library_favorites_refresh — rebuild the buttons from the database and
- * light the selected tag's.  Called by the library window whenever the
- * selection is listed (on_library_window_location_changed), which every
- * refresh does.
+ * light the selected tag's.  Called with the sidebar's rebuild
+ * (on_library_refresh_all): the tags changed, as Tasks' bar reloads with
+ * its sidebar.
  *
  * Inputs:
  *   lib — the library
  */
 void on_library_favorites_refresh(NotesLibrary *lib);
+
+/*
+ * on_library_favorites_update_selection — light the selected tag's button,
+ * the buttons as they are.  Called by the library window whenever the
+ * selection is listed (on_library_window_location_changed), which every
+ * refresh of the notes pane does.
+ *
+ * Inputs:
+ *   lib — the library
+ */
+void on_library_favorites_update_selection(NotesLibrary *lib);

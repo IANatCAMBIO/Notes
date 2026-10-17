@@ -14,11 +14,6 @@
 
 #include <stdatomic.h>
 
-/* Above this many candidate notes, one bulk body_text query beats reading
- * the rows one at a time; at or below it the bulk fetch would pull the whole
- * column to inspect a handful of notes (a tag-scoped search).               */
-#define SEARCH_BULK_TEXT_MIN 64
-
 
 /* ---------------------------------------------------------------------------
  * on_search_job_t — everything one search needs, snapshotted on the main
@@ -112,23 +107,21 @@ search_worker(void *data)
                    ? on_db_notes_by_tag(db, job->tag_id)
                    : on_db_note_list_all(db, TRUE);
 
-    /* Note id -> its tags' names, all fetched in one query.               */
-    GHashTable *tags = on_db_note_tag_names_map(db);
-
-    /* Note bodies: ONE query for the whole column beats a SELECT per
-     * candidate when searching everything; a scoped search with a handful
-     * of candidates reads just those.                                      */
-    GHashTable *bodies = g_list_length(notes) > SEARCH_BULK_TEXT_MIN
-                         ? on_db_note_text_map(db, 0) : NULL;
+    /* The candidates' tag names and bodies, one query each: a tag-scoped
+     * search reads its tag's notes alone, never the whole column.          */
+    gsize       n      = 0;
+    gint64     *ids    = on_db_note_list_ids(notes, &n);
+    GHashTable *tags   = on_db_note_tag_names_map(db, ids, n);
+    GHashTable *bodies = on_db_note_text_map(db, 0, ids, n);
+    g_free(ids);
 
     for (GList *l = notes; l != NULL; l = l->next) {
         if (atomic_load(&job->cancelled)) {
             break;
         }
         OnNoteMeta  *m    = l->data;
-        const gchar *body = bodies != NULL
-                            ? g_hash_table_lookup(bodies, &m->id) : NULL;
-        gchar *extracted = NULL;     /* small scope, or an uncached row      */
+        const gchar *body = g_hash_table_lookup(bodies, &m->id);
+        gchar *extracted = NULL;     /* an uncached row (a pre-column save)  */
         if (body == NULL) {
             extracted = on_note_text_cached(db, m->id);
             body      = extracted;
@@ -147,9 +140,7 @@ search_worker(void *data)
         h->updated_at = m->updated_at;
         g_ptr_array_add(job->hits, h);
     }
-    if (bodies != NULL) {
-        g_hash_table_destroy(bodies);
-    }
+    g_hash_table_destroy(bodies);
     g_hash_table_destroy(tags);
     on_db_note_list_free(notes);
     on_db_close(db);

@@ -3,9 +3,10 @@
  *
  * A horizontal scroll view holding a strip of SharedFavoriteButtons, one
  * per favorite tag; a vertical wheel gesture pans the strip, as Tasks' bar
- * does.  The buttons are rebuilt from one tag query on each refresh (there
- * are few), in the order the user dragged them into (the favorites_order
- * setting), new favorites at the end by name.
+ * does.  The buttons are rebuilt from one tag query when the tags change
+ * (with the sidebar's rows), in the order the user dragged them into (the
+ * favorites_order setting), new favorites at the end by name; a change of
+ * selection only relights them.
  */
 
 #import "library_favorites.h"
@@ -164,6 +165,19 @@ save_order:(NSArray<SharedFavoriteButton *> *)order
 }
 
 /*
+ * update_selection — light the selected tag's button.
+ */
+- (void)
+update_selection
+{
+    NotesLibrary *lib = self.lib;
+    gint64 selected = lib.sel_kind == on_sb_tag ? lib.sel_id : 0;
+    for (SharedFavoriteButton *btn in self.strip.subviews) {
+        btn.state = btn.tag_id == selected ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+}
+
+/*
  * reload — the buttons from the database, in the saved order, the
  * selected tag's lit.
  */
@@ -276,4 +290,13 @@ void
 on_library_favorites_refresh(NotesLibrary *lib)
 {
     [favorites_bar reload];
+}
+
+/*
+ * on_library_favorites_update_selection — see library_favorites.h.
+ */
+void
+on_library_favorites_update_selection(NotesLibrary *lib)
+{
+    [favorites_bar update_selection];
 }

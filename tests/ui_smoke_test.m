@@ -2169,7 +2169,7 @@ test_notes_pane(NotesLibrary *lib)
     /* The one selection: kept across refreshes and views, dropped on navigation. */
     NSInteger alpha_row = row_with_text(table, @"title", @"alpha");
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)alpha_row] byExtendingSelection:NO];
-    check(label_with_text(lib.window.contentView, @"1 file selected") != nil,
+    check(label_with_text(lib.window.contentView, @"1 note selected") != nil,
           "the status bar counts the selected notes");
     on_library_refresh_all(lib);
     pump(0.1);

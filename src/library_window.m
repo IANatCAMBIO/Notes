@@ -595,5 +595,5 @@ void
 on_library_window_location_changed(NotesLibrary *lib)
 {
     [library_window update_location];
-    on_library_favorites_refresh(lib);
+    on_library_favorites_update_selection(lib);
 }

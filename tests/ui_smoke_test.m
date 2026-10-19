@@ -789,7 +789,20 @@ test_editor_commands(void)
         NSRect area = window.screen.visibleFrame;
         check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - shared_look_screen_margin)) < 1.0,
               "a new editor opens at the bottom-right of the screen");
-        on_editor_close_notes(&note_id, 1);
+
+        /* A second editor, with the first still in the corner, cascades
+         * up and left by the title bar's height. */
+        gint64 cascaded = new_note("Cascade note\nopened beside the first");
+        on_editor_window_open(&app, cascaded, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow *over = editor_window_titled(@"Cascade note");
+        CGFloat   step = NSHeight(window.frame) - NSHeight(window.contentView.frame);
+        check(over != nil && step > 0 &&
+              fabs(NSMinX(over.frame) - (NSMinX(window.frame) - step)) < 1.0 &&
+              fabs(NSMinY(over.frame) - (NSMinY(window.frame) + step)) < 1.0,
+              "an editor opened over another cascades a title bar up and left");
+        gint64 both[] = {note_id, cascaded};
+        on_editor_close_notes(both, 2);
     }
     pump(0.2);
 }
@@ -2297,6 +2310,19 @@ test_notes_pane(NotesLibrary *lib)
     check(row_menu != nil && [validated_titles(lib, open_menu(row_menu)) containsObject:@"Move to Trash"] &&
           on_library_notes_selected_ids(lib).firstObject.longLongValue == alpha,
           "a right click on a row selects it and shows the note menu");
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] byExtendingSelection:NO];
+    row_menu = open_menu(right_click(table, 0));
+    NSMenuItem *open_item = row_menu.itemArray.firstObject;
+    [NSApp sendAction:open_item.action to:open_item.target from:open_item];
+    pump(0.3);
+    check(on_library_notes_selected_ids(lib).count == 2 &&
+          editor_window_titled(cell_text(table, @"title", 0)) != nil &&
+          editor_window_titled(cell_text(table, @"title", 1)) != nil,
+          "a right click inside a selection keeps it, and Open opens every selected note");
+    on_editor_close_all();
+    pump(0.2);
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row_with_text(table, @"title", @"alpha")]
+       byExtendingSelection:NO];
     NSPasteboard *pb = [NSPasteboard pasteboardWithUniqueName];
     [pb clearContents];
     [pb writeObjects:@[[table.dataSource tableView:table pasteboardWriterForRow:0],

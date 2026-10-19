@@ -47,6 +47,24 @@
 /* Open editors: note id -> window controller.  Main thread only. */
 static NSMutableDictionary<NSNumber *, NSWindowController *> *editors;
 
+/*
+ * editor_at — is an open editor's window at this origin (within a point)?
+ *
+ * Inputs:
+ *   origin — a window origin in screen coordinates
+ *
+ * Output: YES when one is.
+ */
+static BOOL
+editor_at(NSPoint origin)
+{
+    for (NSWindowController *editor in editors.allValues) {
+        NSPoint at = editor.window.frame.origin;
+        if (fabs(at.x - origin.x) < 1.0 && fabs(at.y - origin.y) < 1.0) return YES;
+    }
+    return NO;
+}
+
 /* ── Status bar ─────────────────────────────────────────────────────────── */
 
 /*
@@ -622,12 +640,31 @@ init_with_app:(OnApp *)app
  * place_window — put a new editor at the bottom-right of the library's
  * screen (its own when there is no library), shared_look_screen_margin
  * clear of the work area's edges, its title bar always on screen
- * (shared_ui_place_lower_right, where Tasks puts a Quick Task too).
+ * (shared_ui_place_lower_right, where Tasks puts a Quick Task too).  An
+ * editor already at that spot (several notes opened at once) pushes the
+ * new one a step up and left, the step the title bar's height, so the
+ * editors cascade with every title bar in view; the cascade stops at the
+ * work area's edges.  The window is laid out first: its format bar can
+ * make it wider than its configured size, and a window placed before
+ * that grows past the screen's edge.
  */
 - (void)
 place_window
 {
-    shared_ui_place_lower_right(self.window, on_library().window.screen ?: NSScreen.mainScreen);
+    NSScreen *screen = on_library().window.screen ?: NSScreen.mainScreen;
+    [self.window layoutIfNeeded];
+    shared_ui_place_lower_right(self.window, screen);
+    if (screen == nil) return;
+    NSRect  area   = screen.visibleFrame;
+    NSRect  frame  = self.window.frame;
+    CGFloat step   = NSHeight(frame) - NSHeight(self.window.contentView.frame);
+    NSPoint origin = frame.origin;
+    while (editor_at(origin) && origin.x - step >= NSMinX(area) &&
+           origin.y + step + NSHeight(frame) <= NSMaxY(area)) {
+        origin.x -= step;
+        origin.y += step;
+    }
+    [self.window setFrameOrigin:origin];
 }
 
 /*

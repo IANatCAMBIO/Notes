@@ -1510,23 +1510,21 @@ ask_due:(NotesActionRecord *)r
 /* ── Menus ─────────────────────────────────────────────────────────────── */
 
 /*
- * fill_note_menu:note: — the per-note menu (GTK show_note_context_menu):
- * Open the clicked note; in the Trash Restore and Delete Permanently;
- * elsewhere Pin/Unpin, the two exports and Move to Trash — commands that
- * act on the selection.
+ * fill_note_menu: — the per-note menu (GTK show_note_context_menu): Open;
+ * in the Trash Restore and Delete Permanently; elsewhere Pin/Unpin, the
+ * two exports and Move to Trash.  Every item acts on the whole selection
+ * (select_clicked: has put the clicked note in it).
  *
  * Inputs:
- *   menu    — the menu to fill (emptied first)
- *   note_id — the clicked note
+ *   menu — the menu to fill (emptied first)
  */
 - (void)
-fill_note_menu:(NSMenu *)menu note:(gint64)note_id
+fill_note_menu:(NSMenu *)menu
 {
     [menu removeAllItems];
-    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Open" action:@selector(open_clicked:)
+    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Open" action:@selector(open_selected:)
                                            keyEquivalent:@""];
-    open.target            = self;
-    open.representedObject = @(note_id);
+    open.target = self;
     [menu addItem:open];
     if (on_library_in_trash_view(self.lib)) {
         [menu addItem:shared_command_menu_item(@"note-restore", nil)];
@@ -1543,16 +1541,19 @@ fill_note_menu:(NSMenu *)menu note:(gint64)note_id
 }
 
 /*
- * open_clicked: — the menu's Open: just the clicked note.
+ * open_selected: — the menu's Open: an editor for every selected note,
+ * in selection order (the editors cascade, see NotesEditorWindow's
+ * place_window).
  *
  * Inputs:
- *   sender — the menu item (its object is the note id)
+ *   sender — the menu item (unused)
  */
 - (void)
-open_clicked:(NSMenuItem *)sender
+open_selected:(NSMenuItem *)sender
 {
-    if (self.lib.app->open_note)
-        self.lib.app->open_note(self.lib.app, [sender.representedObject longLongValue]);
+    if (!self.lib.app->open_note) return;
+    for (NSNumber *nid in self.selected.array)
+        self.lib.app->open_note(self.lib.app, nid.longLongValue);
 }
 
 /*
@@ -1587,7 +1588,7 @@ grid_menu:(NSIndexPath *)path
     if (i == NSNotFound) return nil;
     [self select_clicked:i];
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-    [self fill_note_menu:menu note:self.records[i].note_id];
+    [self fill_note_menu:menu];
     return menu;
 }
 
@@ -1607,7 +1608,7 @@ menuNeedsUpdate:(NSMenu *)menu
         NSInteger row = self.list.clickedRow;
         if (row < 0 || (NSUInteger)row >= self.records.count) return;
         [self select_clicked:(NSUInteger)row];
-        [self fill_note_menu:menu note:self.records[(NSUInteger)row].note_id];
+        [self fill_note_menu:menu];
         return;
     }
     BOOL                 is_list = menu == self.list.headerView.menu;

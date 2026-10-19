@@ -654,8 +654,8 @@ gboolean on_db_trash_empty(OnDatabase *db);
  * count shown on the "All Notes" sidebar row.                               */
 gint on_db_note_count_visible(OnDatabase *db);
 
-/* Totals for the About dialog (either out-param may be NULL): every note,
- * and the tags notes carry.                                                 */
+/* Totals for the Settings window's database section (either out-param may
+ * be NULL): every note, and the tags notes carry.                           */
 void on_db_totals(OnDatabase *db, gint *notes, gint *tags);
 
 /* ---------------------------------------------------------------------------

@@ -20,6 +20,11 @@
 /* Info.plist key the Makefile writes the build time under (UTC, ISO 8601). */
 static NSString * const build_date_key = @"NotesBuildDate";
 
+/* The About panel's credits: the app's motto, then two links. */
+static NSString * const about_motto =
+    @"Remember kids, the only difference between science and just screwing "
+    @"around, is writing it down!\n— Adam Savage";
+
 /* A separator in the menu layouts below. */
 static NSString * const menu_rule = @"-";
 
@@ -43,14 +48,11 @@ hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
     shared_ui_notice(on_library().window, @(title), @(message), nil);
 }
 
-/* Links in the About panel's credits: the author's site and the license
- * (as the Files and Tasks apps have them; GTK: author and BSD license). */
-
 /*
  * run_about — "about": the standard About panel, as Files and Tasks show
- * it.  Its version line reads "Version <VERSION> (built <date>)" from
- * Info.plist; the credits say which database is open and what it holds,
- * then "camb.io · BSD License", each a link.
+ * it.  Its version line reads "built <date>" from Info.plist; the credits
+ * are the app's motto, then "camb.io · BSD License", each a link.  What
+ * database is open and what it holds is the Settings window's business.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -59,15 +61,7 @@ hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
 static void
 run_about(id target, id sender)
 {
-    NotesLibrary *lib = target;
-    OnDatabase   *db  = lib.app->db;
-    gint notes = 0, tags = 0;
-    on_db_totals(db, &notes, &tags);
-    NSNumber *size = [NSFileManager.defaultManager attributesOfItemAtPath:@(db->path)
-                                                                    error:nil][NSFileSize];
-    shared_ui_show_about([NSString stringWithFormat:@"%@\n%d notes, %d tags — %@",
-                          @(db->path), notes, tags, shared_ui_format_bytes(size.longLongValue)],
-                         on_ui_app_icon(), build_date_key);
+    shared_ui_show_about(about_motto, on_ui_app_icon(), build_date_key);
 }
 
 /*

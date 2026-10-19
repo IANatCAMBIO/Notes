@@ -372,7 +372,7 @@ test_library(NotesLibrary *lib)
         NSWindow *window = lib.window;
         check(window != nil && window.visible, "the library window is on screen");
         check(lib.sel_kind == on_sb_all, "the library opens on All Notes");
-        check(window.toolbar.items.count >= 12, "its toolbar is built from the command table");
+        check(window.toolbar.items.count >= 11, "its toolbar is built from the command table");
         BOOL glyphs = YES;
         for (NSToolbarItem *ti in window.toolbar.items) {
             if (ti.view == nil && ti.image != nil) glyphs = glyphs && ti.image.template;

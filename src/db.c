@@ -1325,10 +1325,10 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
     gint64 now = task_now();
     sqlite3_stmt *stmt = prepare(db,
         "INSERT INTO tasks (parent_id, title, due, status,"
-        "                   completed_at, position, updated_at)"
+        "                   completed_at, position, updated_at, created_at)"
         " VALUES (NULL, ?1, ?2, ?3, ?4,"
         "   (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks"
-        "     WHERE parent_id IS NULL), ?5)");
+        "     WHERE parent_id IS NULL), ?5, ?5)");
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_text(stmt, 1, it->text, -1, SQLITE_TRANSIENT);

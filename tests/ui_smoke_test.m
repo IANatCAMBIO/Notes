@@ -1772,11 +1772,11 @@ test_sidebar(NotesLibrary *lib)
     NSMenu   *tag_menu  = open_menu(right_click(sidebar_table, crate_row));
     on_sb_ref_t ref;
     check(lib.sel_kind == on_sb_all &&
-          [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Add to Favorites", @"Clear from all Notes", @"Search Here…"]] &&
+          [menu_titles(tag_menu) isEqualToArray:@[@"Edit Tag…", @"Add to Favorites", @"Clear Tag from All Notes", @"Search Here…"]] &&
           on_library_sb_ref(tag_menu.itemArray.firstObject, &ref) &&
           ref.kind == on_sb_tag && ref.ident == crate_tag &&
           on_library_validate_command(lib, tag_menu.itemArray.firstObject),
-          "a right click on a tag keeps the selection; Edit Tag, Add to Favorites, Clear from all Notes and Search Here name the tag");
+          "a right click on a tag keeps the selection; Edit Tag, Add to Favorites, Clear Tag from All Notes and Search Here name the tag");
     on_library_sidebar_select(lib, on_sb_tag, crate_tag);
     pump(0.1);
     check(label_with_text(lib.window.contentView, @"#Crate") != nil,

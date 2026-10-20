@@ -197,7 +197,7 @@ clear_tag(NotesLibrary *lib, gint64 tag_id)
 }
 
 /*
- * run_clear_tag — "clear-tag": Clear from all Notes.  Ask, then take the
+ * run_clear_tag — "clear-tag": Clear Tag from All Notes.  Ask, then take the
  * tag out of every note that carries it, trashed ones too.  The tag leaves this sidebar at
  * once; it stays in the tag lists until no task carries it either.
  *
@@ -218,15 +218,17 @@ run_clear_tag(id target, id sender)
     if (tag == NULL) return;
     GArray   *notes = on_db_note_ids_with_tag(lib.app->db, tag_id);
     guint     n     = notes->len;
-    NSString *title = [NSString stringWithFormat:@"Do you want to remove the tag %@ from %u %@?",
+    NSString *title = [NSString stringWithFormat:@"Are you sure you want to remove the tag %@ from %u %@?",
                        @(tag->name), n, n == 1 ? @"note" : @"notes"];
+    NSString *note  = [NSString stringWithFormat:
+        @"Removing from All Notes will hide %@ in the sidebar, but it will still be available in "
+        @"the tags list. To delete, it must be removed from All Notes and All Tasks.", @(tag->name)];
     g_array_unref(notes);
     on_db_tag_free(tag);
 
     /* The panel is not modal: the database may have been switched. */
     NSString *path = @(lib.app->db->path);
-    shared_ui_confirm(lib.window, title, @"The tag is deleted once no note or task carries it.",
-                      @"Remove", YES, ^(BOOL confirmed) {
+    shared_ui_confirm(lib.window, title, note, @"Remove", YES, ^(BOOL confirmed) {
         if (!confirmed || lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return;
         clear_tag(lib, tag_id);
     });

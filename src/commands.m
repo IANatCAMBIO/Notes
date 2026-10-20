@@ -56,7 +56,7 @@ static const shared_command_t commands[] = {
     { @"edit-tag",         @"Edit Tag…",               @"",  0,         win, nil, nil },
     { @"add-favorite",     @"Add to Favorites",        @"",  0,         win, nil, nil },
     { @"remove-favorite",  @"Remove from Favorites",   @"",  0,         win, nil, nil },
-    { @"clear-tag",        @"Clear from all Notes",    @"",  0,         win, nil, nil },
+    { @"clear-tag",        @"Clear Tag from All Notes",    @"",  0,         win, nil, nil },
     { @"search-here",      @"Search Here…",            @"",  0,         win, nil, nil },
     { @"note-pin",         @"Pin",                     @"",  0,         win, nil, nil },
     { @"note-restore",     @"Restore",                 @"",  0,         win, nil, nil },

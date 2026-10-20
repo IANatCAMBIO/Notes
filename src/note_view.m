@@ -12,7 +12,7 @@
  * =========================================================================== */
 
 #import "note_view.h"
-#import "tag_popup.h"
+#import "shared_tag_popup.h"
 #import "ui_util.h"
 
 #include "db.h"
@@ -91,7 +91,7 @@ static const NSTimeInterval blink_interval = 0.56;
 @property (nonatomic, assign) BOOL           tag_capturing;
 @property (nonatomic, assign) OnPos          tag_start;
 @property (nonatomic, assign) GList         *tag_choices;
-@property (nonatomic, strong) NotesTagPopup *tag_popup;
+@property (nonatomic, strong) SharedTagPopup *tag_popup;
 
 @end
 
@@ -1312,7 +1312,7 @@ tag_popup_update(NotesNoteView *v)
     on_rect_t r;
     on_doc_layout_caret_rect(v.layout, s, &r);
     if (v.tag_popup == nil) {
-        v.tag_popup = [[NotesTagPopup alloc] init];
+        v.tag_popup = [[SharedTagPopup alloc] init];
         __weak NotesNoteView *wv = v;
         v.tag_popup.chosen_handler = ^(NSString *name) { tag_choose(wv, name); };
     }

@@ -239,7 +239,8 @@ on_text_walk(const OnText *t, const OnTextWalk *walk, gpointer data)
 gboolean
 on_block_kind_is_text(OnBlockKind kind)
 {
-    return kind != ON_BLOCK_IMAGE && kind != ON_BLOCK_TABLE;
+    return kind != ON_BLOCK_IMAGE && kind != ON_BLOCK_TABLE &&
+           kind != ON_BLOCK_FILE;
 }
 
 gboolean
@@ -290,6 +291,16 @@ on_block_new_image(GBytes *png, guint32 display_width)
 }
 
 OnBlock *
+on_block_new_file(gint64 id, const gchar *name)
+{
+    OnBlock *b = g_new0(OnBlock, 1);
+    b->kind      = ON_BLOCK_FILE;
+    b->file_id   = id;
+    b->file_name = g_strdup(name);
+    return b;
+}
+
+OnBlock *
 on_block_new_table(gint rows, gint cols)
 {
     OnBlock *b = g_new0(OnBlock, 1);
@@ -312,6 +323,7 @@ on_block_free(OnBlock *b)
         b->pixels_free(b->pixels);
     if (b->png != NULL)
         g_bytes_unref(b->png);
+    g_free(b->file_name);
     if (b->cells != NULL)
         g_ptr_array_free(b->cells, TRUE);
     g_free(b);
@@ -343,6 +355,7 @@ on_block_copy(const OnBlock *b)
     *c = *b;
     c->text  = (b->text != NULL) ? on_text_copy(b->text) : NULL;
     c->png   = (b->png != NULL) ? g_bytes_ref(b->png) : NULL;
+    c->file_name = g_strdup(b->file_name);
     c->pixels      = NULL;           /* a view's cache is not copied        */
     c->pixels_free = NULL;
     c->cells = NULL;
@@ -536,6 +549,14 @@ on_document_check(const OnDocument *d, GString *why)
             if (b->png == NULL) {
                 if (why != NULL)
                     g_string_printf(why, "%s: image without bytes", where);
+                ok = FALSE;
+            }
+        } else if (b->kind == ON_BLOCK_FILE) {
+            if (b->file_name == NULL || b->file_name[0] == '\0' ||
+                b->file_id <= 0) {
+                if (why != NULL)
+                    g_string_printf(why, "%s: file without name or id",
+                                    where);
                 ok = FALSE;
             }
         } else {                     /* TABLE                                */
@@ -741,8 +762,12 @@ ensure_text(Loader *L)
         on_text_add_image(L->cur->text, 0, img->png, img->display_width);
         on_block_free(img);
         L->rep->image_inline++;
-    } else if (L->cur->kind == ON_BLOCK_TABLE) {
-        L->rep->split_table++;
+    } else if (L->cur->kind == ON_BLOCK_TABLE ||
+               L->cur->kind == ON_BLOCK_FILE) {
+        if (L->cur->kind == ON_BLOCK_TABLE)
+            L->rep->split_table++;
+        else
+            L->rep->split_file++;
         finish_line(L);
         L->cur = on_block_new_text(ON_BLOCK_PARA);
     }
@@ -806,6 +831,24 @@ image_record(Loader *L, const OnBnbfRecord *rec)
         L->rep->image_inline++;
     }
     g_bytes_unref(png);
+}
+
+/* file_record() — a FILE record: always a block of its own.  A name that
+ * is not valid UTF-8 is repaired; an empty one becomes "file".             */
+static void
+file_record(Loader *L, const OnBnbfRecord *rec)
+{
+    if (L->strip_space) {
+        L->strip_space = FALSE;
+        L->rep->check_no_space++;
+    }
+    if (L->cur != NULL || L->from_check) {
+        L->rep->split_file++;
+        finish_line(L);
+    }
+    gchar *name = g_utf8_make_valid(rec->name, (gssize)rec->n_name);
+    L->cur = on_block_new_file(rec->file_id, name[0] != '\0' ? name : "file");
+    g_free(name);
 }
 
 /* table_record() — a TABLE record: always a block of its own.               */
@@ -1015,6 +1058,7 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
                 }
                 case ON_REC_IMAGE: image_record(&L, &rec); break;
                 case ON_REC_TABLE: table_record(&L, &rec); break;
+                case ON_REC_FILE:  file_record(&L, &rec); break;
                 case ON_REC_CHECK: check_record(&L, &rec); break;
                 case ON_REC_ACTION: action_record(&L, &rec); break;
                 default: break;
@@ -1045,6 +1089,7 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->styled_prefix == 0 && rep->check_no_space == 0 &&
            rep->check_no_tag == 0 && rep->check_no_box == 0 &&
            rep->split_check == 0 && rep->split_table == 0 &&
+           rep->split_file == 0 &&
            rep->run_split == 0 && rep->cr_newlines == 0 &&
            rep->action_dup == 0 && rep->action_stray == 0 &&
            rep->bad_utf8 == 0;
@@ -1165,6 +1210,11 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
         }
         case ON_BLOCK_IMAGE:
             sv_image(&S, b->png, b->display_width);
+            break;
+        case ON_BLOCK_FILE:
+            sv_flush(&S);
+            on_bnbf_write_file(&S.w, b->file_id, b->file_name,
+                               strlen(b->file_name));
             break;
         case ON_BLOCK_TABLE:
             sv_flush(&S);
@@ -2059,7 +2109,8 @@ pos_valid(const OnDocument *d, OnPos p)
     OnBlock *b = on_document_block(d, p.block);
     if (b == NULL)
         return FALSE;
-    if (b->kind == ON_BLOCK_IMAGE || (b->kind == ON_BLOCK_TABLE && p.cell < 0))
+    if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_FILE ||
+        (b->kind == ON_BLOCK_TABLE && p.cell < 0))
         return p.offset <= 1;
     return pos_text_ok(d, p);
 }
@@ -2432,6 +2483,54 @@ on_document_clear_undo(OnDocument *d)
     g_ptr_array_set_size(d->redo_stack, 0);
 }
 
+/* file_ids_of_group() — append the ids of the FILE blocks the ops of one
+ * undo group hold.                                                          */
+static void
+file_ids_of_group(GPtrArray *group, GArray *ids)
+{
+    for (guint i = 0; group != NULL && i < group->len; i++) {
+        const Op *op = g_ptr_array_index(group, i);
+        if (op->block != NULL && op->block->kind == ON_BLOCK_FILE)
+            g_array_append_val(ids, op->block->file_id);
+    }
+}
+
+GArray *
+on_document_file_ids(const OnDocument *d, gboolean with_history)
+{
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    for (guint i = 0; i < d->blocks->len; i++) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->kind == ON_BLOCK_FILE)
+            g_array_append_val(ids, b->file_id);
+    }
+    if (with_history) {
+        for (guint i = 0; i < d->undo_stack->len; i++)
+            file_ids_of_group(g_ptr_array_index(d->undo_stack, i), ids);
+        for (guint i = 0; i < d->redo_stack->len; i++)
+            file_ids_of_group(g_ptr_array_index(d->redo_stack, i), ids);
+        file_ids_of_group(d->open_group, ids);
+    }
+    return ids;
+}
+
+void
+on_document_remap_files(OnDocument *d, gint64 (*map)(gint64 id, gpointer data),
+                        gpointer data)
+{
+    for (guint i = d->blocks->len; i > 0; i--) {
+        OnBlock *b = g_ptr_array_index(d->blocks, i - 1);
+        if (b->kind != ON_BLOCK_FILE)
+            continue;
+        gint64 id = map(b->file_id, data);
+        if (id > 0)
+            b->file_id = id;
+        else
+            remove_block_keeping_one(d, i - 1);
+    }
+    on_document_clear_undo(d);
+}
+
 void
 on_document_set_observer(OnDocument *d, const OnDocumentObserver *obs,
                          gpointer data)
@@ -2501,6 +2600,9 @@ on_document_plain_text(const OnDocument *d)
             break;
         case ON_BLOCK_IMAGE:
             break;
+        case ON_BLOCK_FILE:
+            g_string_append(out, b->file_name);
+            break;
         case ON_BLOCK_TABLE:
             for (guint c = 0; c < b->cells->len; c++) {
                 const OnText *cell = g_ptr_array_index(b->cells, c);
@@ -2564,7 +2666,8 @@ on_document_title(const OnDocument *d, const gchar *fallback, glong max_chars)
     gchar *title = NULL;             /* the rendered first line             */
     for (guint i = 0; i < d->blocks->len && title == NULL; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE) {
+        if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE ||
+            b->kind == ON_BLOCK_FILE) {
             title = g_strdup("");    /* a line, but no text on it           */
         } else if (b->text->text->len > 0) {
             GString *line = g_string_new(NULL);

@@ -42,19 +42,51 @@ on_ui_app_icon(void)
 }
 
 /*
+ * on_ui_temp_file_from — a temporary file, written by the caller, quarantined.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSURL *
+on_ui_temp_file_from(NSString *name, BOOL (^write)(NSString *path))
+{
+    if (name.length == 0) return nil;
+    NSString *dir = [[NSTemporaryDirectory() stringByAppendingPathComponent:@ON_BUNDLE_ID]
+                        stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    if (![NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES
+                                                  attributes:nil error:NULL])
+        return nil;
+    NSString *path = [dir stringByAppendingPathComponent:name];
+    if (!write(path)) return nil;
+    NSURL *url = [NSURL fileURLWithPath:path];
+    /* Marked as downloaded, so double-clicking an attached program or script
+     * gets the system's usual check instead of running unasked. */
+    [url setResourceValue:@{ (__bridge NSString *)kLSQuarantineTypeKey:
+                                 (__bridge NSString *)kLSQuarantineTypeOtherDownload }
+                   forKey:NSURLQuarantinePropertiesKey error:NULL];
+    return url;
+}
+
+/*
+ * on_ui_temp_file — a note's bytes as a quarantined temporary file.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSURL *
+on_ui_temp_file(NSData *data, NSString *name)
+{
+    if (data == nil) return nil;
+    return on_ui_temp_file_from(name, ^BOOL(NSString *path) {
+        return [data writeToFile:path atomically:YES];
+    });
+}
+
+/*
  * on_ui_open_image_external — a note's image in an outside viewer.
  * Inputs/output are documented in ui_util.h.
  */
 BOOL
 on_ui_open_image_external(NSData *png)
 {
-    if (png == nil) return NO;
-    NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@ON_BUNDLE_ID];
-    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES
-                                             attributes:nil error:NULL];
-    NSString *name = [NSString stringWithFormat:@"image-%@.png", NSUUID.UUID.UUIDString];
-    NSURL    *url  = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:name]];
-    if (![png writeToURL:url atomically:YES]) return NO;
+    NSURL *url = on_ui_temp_file(png, @"image.png");
+    if (url == nil) return NO;
 
     gchar *viewer = on_app_config_get("image_viewer");
     BOOL   ok;

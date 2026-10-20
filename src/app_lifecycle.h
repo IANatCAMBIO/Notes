@@ -120,6 +120,7 @@ gboolean on_app_open_db(OnApp *app, gchar **err);
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
  * open, the hooks are installed and the library window exists: the
+ * sweep of attached files no note names (a crash leaves them), the
  * integrity check, the backup poll and the pull of outside changes
  * (action_sync.h: once now, then its poll timer).
  *

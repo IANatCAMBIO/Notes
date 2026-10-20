@@ -75,6 +75,34 @@ NSImage *on_ui_thumbnail(const uint8_t *bytes, size_t n, CGFloat box_w,
  */
 BOOL on_ui_open_image_external(NSData *png);
 
+/*
+ * on_ui_temp_file_from — make a temporary file that keeps the given name
+ * (so the app that opens it, or the Finder it is pasted into, sees the real
+ * name), in a folder of its own, and mark it as downloaded (quarantined).
+ * The caller writes the bytes, so a large file can be streamed.  The system
+ * clears the temporary directory; nothing here deletes it.
+ *
+ * Inputs:
+ *   name  — the file's name, no path; empty does nothing
+ *   write — called with the path to create; returns NO when it could not
+ *           write the file
+ *
+ * Output: the file's URL, or nil when the folder or the file could not be
+ *         made.
+ */
+NSURL *on_ui_temp_file_from(NSString *name, BOOL (^write)(NSString *path));
+
+/*
+ * on_ui_temp_file — on_ui_temp_file_from for bytes already in memory.
+ *
+ * Inputs:
+ *   data — the bytes; nil does nothing
+ *   name — the file's name
+ *
+ * Output: the file's URL, or nil.
+ */
+NSURL *on_ui_temp_file(NSData *data, NSString *name);
+
 /* ── Window lifetime ────────────────────────────────────────────────────── */
 
 /*

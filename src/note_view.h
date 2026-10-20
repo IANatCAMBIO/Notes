@@ -32,6 +32,11 @@
  * thread. */
 @property (nonatomic, copy) void (^image_activated_handler)(NSInteger ordinal);
 
+/* The note the view edits (note_file rows are owned by a note, so attached
+ * files go to it).  0 until the host sets it; a view with no note refuses
+ * files.  Set once by the host, before the user can drop anything. */
+@property (nonatomic, assign) gint64 note_id;
+
 /* The pasteboard Cut, Copy and Paste use: the general one, unless a test
  * gives the view a private one so it never touches the user's clipboard. */
 @property (nonatomic, strong) NSPasteboard *pasteboard;

@@ -217,12 +217,60 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
         g_free(title);
         g_free(blob);
     }
+    if (ok) {
+        GArray *files = on_document_file_ids(doc, TRUE);
+        ok = on_db_note_files_keep(db, id, (const gint64 *)files->data, files->len);
+        g_array_unref(files);
+    }
 
     /* 3. The tasks the lines are: the push.                               */
     if (ok && sync_actions)
         ok = on_db_note_save_actions(db, id, items, changed);
     on_db_action_list_free(items);
     return on_db_txn_end(db, own, ok);
+}
+
+/*
+ * on_note_files_sweep — see serialize.h.
+ */
+gboolean
+on_note_files_sweep(OnDatabase *db, gint64 note_id)
+{
+    GArray *notes;                   /* the notes to settle                 */
+    if (note_id != 0) {
+        notes = g_array_new(FALSE, FALSE, sizeof(gint64));
+        g_array_append_val(notes, note_id);
+    } else {
+        notes = on_db_note_ids_with_files(db);
+    }
+    gboolean all = TRUE;             /* every note settled so far           */
+    for (guint i = 0; i < notes->len; i++) {
+        gint64  id = g_array_index(notes, gint64, i);
+        guint8 *blob = NULL;
+        gsize   len  = 0;
+        if (!on_db_note_load(db, id, &blob, &len))
+            continue;                /* gone (its files went with it)       */
+        GArray *keep = g_array_new(FALSE, FALSE, sizeof(gint64));
+        OnBnbfReader r;
+        OnBnbfRecord rec;
+        gboolean readable = blob == NULL;    /* no content: names nothing   */
+        if (blob != NULL && on_bnbf_open(&r, blob, len)) {
+            while (on_bnbf_next(&r, &rec))
+                if (rec.type == ON_REC_FILE)
+                    g_array_append_val(keep, rec.file_id);
+            readable = r.error == NULL && r.saw_end;
+        }
+        g_free(blob);
+        if (readable)
+            all = on_db_note_files_keep(db, id, (const gint64 *)keep->data,
+                                        keep->len) && all;
+        else
+            g_warning("note %" G_GINT64_FORMAT ": unreadable content, "
+                      "its files are kept", id);
+        g_array_unref(keep);
+    }
+    g_array_unref(notes);
+    return all;
 }
 
 /*

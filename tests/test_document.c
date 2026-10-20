@@ -480,6 +480,116 @@ test_image_block(void)
     g_bytes_unref(blob);
 }
 
+/* on_document_remap_files() maps for test_file_block.                      */
+static gint64
+remap_plus_100(gint64 id, gpointer data)
+{
+    (void)data;
+    return id + 100;
+}
+
+static gint64
+remap_none(gint64 id, gpointer data)
+{
+    (void)id;
+    (void)data;
+    return 0;
+}
+
+static void
+test_file_block(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, 0, "a\n");
+    on_bnbf_write_file(&b.w, 7, "notes \xc3\xa9.zip", strlen("notes \xc3\xa9.zip"));
+    blob_text(&b, 0, "\nb");
+    GBytes *blob = blob_end(&b);
+
+    OnDocument *d = load_clean(blob);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    OnBlock *f = on_document_block(d, 1);
+    g_assert_cmpint(f->kind, ==, ON_BLOCK_FILE);
+    g_assert_cmpstr(f->file_name, ==, "notes \xc3\xa9.zip");
+    g_assert_cmpint(f->file_id, ==, 7);
+    g_assert_cmpint(on_document_image_count(d), ==, 0);
+    assert_roundtrip(d, blob);
+
+    /* A selection across it copies it; a delete removes it.                */
+    OnPos a = { 0, -1, 0 }, e = { 2, -1, 1 };
+    OnDocument *frag = on_document_copy_range(d, a, e);
+    g_assert_cmpuint(on_document_n_blocks(frag), ==, 3);
+    g_assert_cmpint(on_document_block(frag, 1)->kind, ==, ON_BLOCK_FILE);
+    g_assert_cmpint(on_document_block(frag, 1)->file_id, ==, 7);
+    assert_valid(frag);
+
+    /* A fragment's files are remapped on their way into another note: a
+     * new id, or, when 0, the block goes.                                  */
+    on_document_remap_files(frag, remap_plus_100, NULL);
+    g_assert_cmpint(on_document_block(frag, 1)->file_id, ==, 107);
+    on_document_remap_files(frag, remap_none, NULL);
+    g_assert_cmpuint(on_document_n_blocks(frag), ==, 2);
+    assert_valid(frag);
+    on_document_free(frag);
+
+    gchar *plain = on_document_plain_text(d);
+    g_assert_cmpstr(plain, ==, "a\nnotes \xc3\xa9.zip\nb");
+    g_free(plain);
+
+    /* The history keeps a deleted block's id alive until it is cleared.    */
+    OnPos from = { 1, -1, 0 }, to = { 1, -1, 1 };
+    g_assert_true(on_document_delete_range(d, from, to, NULL));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    assert_valid(d);
+    GArray *live = on_document_file_ids(d, FALSE);
+    GArray *held = on_document_file_ids(d, TRUE);
+    g_assert_cmpuint(live->len, ==, 0);
+    g_assert_cmpuint(held->len, ==, 1);
+    g_assert_cmpint(g_array_index(held, gint64, 0), ==, 7);
+    g_array_unref(live);
+    g_array_unref(held);
+    g_assert_true(on_document_undo(d));
+    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_FILE);
+    assert_roundtrip(d, blob);
+    held = on_document_file_ids(d, TRUE);          /* in the doc and in redo */
+    g_assert_cmpuint(held->len, >=, 1);
+    g_array_unref(held);
+    on_document_clear_undo(d);
+    held = on_document_file_ids(d, TRUE);
+    g_assert_cmpuint(held->len, ==, 1);
+    g_array_unref(held);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    /* A FILE record on a line with text splits the line, as a table does.  */
+    blob_begin(&b);
+    blob_text(&b, 0, "x");
+    on_bnbf_write_file(&b.w, 3, "f.bin", 5);
+    blob_text(&b, 0, "y");
+    blob = blob_end(&b);
+    gsize n;
+    const guint8 *data = g_bytes_get_data(blob, &n);
+    OnDocLoadReport rep;
+    d = on_document_from_bnbf(data, n, &rep);
+    g_assert_cmpuint(rep.split_file, ==, 2);
+    g_assert_false(on_document_load_report_is_clean(&rep));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_FILE);
+    assert_valid(d);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    /* A record with a zero id is malformed: the load stops there.          */
+    blob_begin(&b);
+    on_bnbf_write_file(&b.w, 0, "f.bin", 5);
+    blob = blob_end(&b);
+    data = g_bytes_get_data(blob, &n);
+    d = on_document_from_bnbf(data, n, &rep);
+    g_assert_nonnull(rep.error);
+    on_document_free(d);
+    g_bytes_unref(blob);
+}
+
 static void
 test_image_inline(void)
 {
@@ -1944,6 +2054,7 @@ main(int argc, char **argv)
     g_test_add_func("/document/numbers", test_numbers);
     g_test_add_func("/document/checks", test_checks);
     g_test_add_func("/document/image-block", test_image_block);
+    g_test_add_func("/document/file-block", test_file_block);
     g_test_add_func("/document/image-inline", test_image_inline);
     g_test_add_func("/document/table", test_table);
     g_test_add_func("/document/run-merge", test_run_merge_across_blocks);

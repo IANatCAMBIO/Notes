@@ -331,6 +331,12 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
                 emit_table(ctx, b);
                 g_string_append(ctx->out, "</p>\n");
                 break;
+            case ON_BLOCK_FILE: {
+                gchar *esc = g_markup_escape_text(b->file_name, -1);
+                g_string_append_printf(ctx->out, "<p>%s</p>\n", esc);
+                g_free(esc);
+                break;
+            }
             default:
                 if (b->text->text->len > 0) {
                     g_string_append(ctx->out, "<p>");
@@ -378,6 +384,9 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
             case ON_BLOCK_TABLE:
                 emit_table(ctx, b);
                 g_string_append(ctx->out, "\n\n");
+                break;
+            case ON_BLOCK_FILE:
+                g_string_append_printf(ctx->out, "%s\n\n", b->file_name);
                 break;
             default:
                 render_inline(ctx, b->text, FALSE);

@@ -7,6 +7,7 @@
 #include "action_sync.h"
 #include "backup.h"
 #include "identity.h"
+#include "serialize.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -122,6 +123,8 @@ void
 on_app_start_services(OnApp *app)
 {
     on_app_status(app, "DB at %s loaded", app->db->path);
+    on_note_files_sweep(app->db, 0); /* no editor is open yet: free the files
+                                        no note names (left by a crash)    */
     on_app_db_health_start(app);
     on_backup_auto_start(app);
     on_action_sync_start(app, FALSE);
@@ -162,6 +165,7 @@ on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
     on_action_sync_start(app, TRUE); /* its revisions, its pending changes,
                                         and the refresh the new file needs */
     on_app_status(app, "DB at %s loaded", app->db->path);
+    on_note_files_sweep(app->db, 0); /* no editor is open (flushed above)    */
     on_app_db_health_start(app);     /* every opened database is checked     */
     return ON_SWITCH_DONE;
 }

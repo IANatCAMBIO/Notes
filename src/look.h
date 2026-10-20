@@ -64,6 +64,9 @@ static const double on_look_table_col_max    = 320.0;
 static const double on_look_checkbox_size    = 14.0;
 static const double on_look_image_thumb_w    = 200.0;  /* box a freshly inserted image fits      */
 static const double on_look_image_thumb_h    = 125.0;
+static const double on_look_file_tile_w      = 104.0;  /* an attached file: its tile's width     */
+static const double on_look_file_icon        = 48.0;   /* … the icon's side                      */
+static const double on_look_file_pad         = 4.0;    /* … room round icon and name             */
 
 /* ── Windows ──────────────────────────────────────────────────────────────── */
 

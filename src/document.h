@@ -2,7 +2,7 @@
  * document.h — OnDocument, the block model of a note
  *
  * GLib only — no GTK.  A note is an array of BLOCKS: paragraphs, headings,
- * list items, code lines, images and tables.  Each text block owns its
+ * list items, code lines, images, tables and attached files.  Each text block owns its
  * text and the RUNS of inline flags over it; the block boundary IS the
  * newline, so no text block contains one.  This is the shape BNBF
  * (bnbf.h) already has — a flat record stream whose lines carry a
@@ -41,6 +41,9 @@ typedef enum {
                                         blocks are one visual code block     */
     ON_BLOCK_IMAGE,                  /* an image on a line of its own        */
     ON_BLOCK_TABLE,                  /* rows × cols of text cells            */
+    ON_BLOCK_FILE,                   /* an attached file on a line of its own:
+                                        its name, and the id of the note_file
+                                        row that holds its bytes             */
     ON_N_BLOCK_KINDS
 } OnBlockKind;
 
@@ -75,7 +78,7 @@ typedef struct {
 
 typedef struct {
     OnBlockKind kind;
-    OnText     *text;                /* every kind but IMAGE and TABLE       */
+    OnText     *text;                /* every kind but IMAGE, TABLE and FILE */
     gboolean    checked;             /* CHECK                                */
     guint32     eol_flags;           /* ON_FMT_RUN_MASK bits the line's
                                         NEWLINE carries in the blob.  Pure
@@ -96,6 +99,10 @@ typedef struct {
     gint        rows, cols;
     gboolean    header;              /* first row is a header row            */
     GPtrArray  *cells;               /* OnText*, rows*cols, row-major        */
+    /* FILE */
+    gint64      file_id;             /* its note_file row, always > 0        */
+    gchar      *file_name;           /* the name shown under the icon: no
+                                        path, valid UTF-8, never empty       */
     /* identity — NOT serialized, survives every edit of this block         */
     gint64      action_uid;          /* the item's note_task.uid, 0 = none
                                         yet; serialized as the ACTION record
@@ -174,6 +181,10 @@ OnBlock *on_block_new_text(OnBlockKind kind);
 /* on_block_new_image() — an image block; takes its own reference on png. */
 OnBlock *on_block_new_image(GBytes *png, guint32 display_width);
 
+/* on_block_new_file() — a file block for the note_file row `id` (> 0);
+ * copies `name` (UTF-8, no path, not empty).                              */
+OnBlock *on_block_new_file(gint64 id, const gchar *name);
+
 /* on_block_new_table() — a rows×cols table of empty cells (min 1×1).      */
 OnBlock *on_block_new_table(gint rows, gint cols);
 
@@ -183,7 +194,8 @@ void on_block_free(OnBlock *b);
 /* on_block_copy() — a deep copy, uid included.                            */
 OnBlock *on_block_copy(const OnBlock *b);
 
-/* on_block_kind_is_text() — PARA/H1/H2/BULLET/NUMBER/CHECK/CODE.          */
+/* on_block_kind_is_text() — PARA/H1/H2/BULLET/NUMBER/CHECK/CODE (never
+ * IMAGE, TABLE or FILE).          */
 gboolean on_block_kind_is_text(OnBlockKind kind);
 
 /* on_block_kind_is_list() — BULLET/NUMBER/CHECK: a list line.             */
@@ -241,6 +253,7 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *   check_no_box   — a LIST_CHECK line with no CHECK record (gains one)
  *   split_check    — a CHECK record mid-line: the line splits there
  *   split_table    — a TABLE record on a line with anything else: splits
+ *   split_file     — a FILE record on a line with anything else: splits
  *   image_inline   — an IMAGE record sharing a line with text (kept as an
  *                    inline image — informational, round-trips exactly)
  *   cr_newlines    — a line ended in "\r\n", a lone "\r" or U+2029 (a
@@ -267,7 +280,7 @@ typedef struct {
     guint mixed_para, unknown_flags;
     guint bullet_no_prefix, number_renumbered, styled_prefix;
     guint check_no_space, check_no_tag, check_no_box, split_check;
-    guint split_table, image_inline;
+    guint split_table, split_file, image_inline;
     guint run_split, cr_newlines, old_version;
     guint action_dup, action_stray;
     guint bad_utf8;
@@ -436,6 +449,27 @@ guint on_document_undo_depth(const OnDocument *d);
 
 /* on_document_clear_undo() — forget the whole history (after a load).    */
 void on_document_clear_undo(OnDocument *d);
+
+/* ---------------------------------------------------------------------------
+ * ATTACHED FILES — which note_file rows a document names.
+ *
+ * on_document_file_ids() — the id of every FILE block of the document, in
+ * order; with `with_history`, also the ids of the FILE blocks the undo and
+ * redo history holds (a block that was deleted but can come back).  Ids may
+ * repeat.  A save keeps exactly these rows: with the history, because an
+ * undo must find its file; without it (the history just cleared), the
+ * rows the note's content names.  Returns a new GArray of gint64 (free it
+ * with g_array_unref).
+ *
+ * on_document_remap_files() — for a DETACHED document (a fragment on its
+ * way into a note): give every FILE block the id `map(old, data)` returns;
+ * a block it maps to 0 is removed.  The document is left valid (at least
+ * one block) and its undo history is cleared.
+ * ------------------------------------------------------------------------- */
+GArray *on_document_file_ids(const OnDocument *d, gboolean with_history);
+void on_document_remap_files(OnDocument *d,
+                             gint64 (*map)(gint64 id, gpointer data),
+                             gpointer data);
 
 /* ---------------------------------------------------------------------------
  * OBSERVER — what changed, for the layout.  Every callback is optional.

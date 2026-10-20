@@ -325,6 +325,51 @@ gboolean on_db_note_set_updated_at(OnDatabase *db, gint64 id, gint64 ts);
 gboolean on_db_note_load(OnDatabase *db, gint64 id, guint8 **out,
                          gsize *out_len);
 
+/* ---------------------------------------------------------------------------
+ * ATTACHED FILES — the note_file table (../shared_data, schema 203).
+ *
+ * A file's bytes live in a note_file row owned by ONE note; the note's
+ * content holds only the row's id and the file's name (a FILE record).
+ * Rows go when the note does (ON DELETE CASCADE: Delete, Empty Trash) and
+ * when a save of the note stops naming them (on_db_note_files_keep).  The
+ * bytes are streamed between the file system and the row in 1 MB pieces
+ * (SQLite's incremental blob I/O), never held whole in memory.
+ * ------------------------------------------------------------------------- */
+
+/* The biggest file a note takes, in bytes: under SQLite's own limit on one
+ * value (SQLITE_MAX_LENGTH, 1,000,000,000 by default).                     */
+#define ON_FILE_MAX_BYTES 900000000
+
+/* on_db_note_file_add() — store a file in a new note_file row of a note.
+ *   note_id — the note that will own it.
+ *   path    — the file to read (a regular file of at most ON_FILE_MAX_BYTES).
+ *   name    — the name to keep, UTF-8, no path, not blank.
+ * Returns the new row's id, or 0 when the file could not be read, is too
+ * big or not regular, or the row could not be written (nothing is kept).    */
+gint64 on_db_note_file_add(OnDatabase *db, gint64 note_id, const gchar *path,
+                           const gchar *name);
+
+/* on_db_note_file_copy() — a new row for `note_id` with the bytes and name
+ * of row `id` (a copy made inside the database, whatever the size).
+ * Returns the new row's id, or 0 when row `id` does not exist.              */
+gint64 on_db_note_file_copy(OnDatabase *db, gint64 id, gint64 note_id);
+
+/* on_db_note_file_export() — write row `id`'s bytes to a NEW file at `path`
+ * (mode 0600; an existing file is never overwritten).  Returns FALSE when
+ * the row does not exist or the file could not be written (a partial file
+ * is removed).                                                              */
+gboolean on_db_note_file_export(OnDatabase *db, gint64 id, const gchar *path);
+
+/* on_db_note_files_keep() — delete the rows of `note_id` whose id is not
+ * among `keep` (n ids; may be NULL when n is 0).  Rows of other notes are
+ * never touched.  Returns TRUE on success.                                  */
+gboolean on_db_note_files_keep(OnDatabase *db, gint64 note_id,
+                               const gint64 *keep, gsize n);
+
+/* on_db_note_ids_with_files() — the ids of the notes that own at least one
+ * file row.  Returns a GArray of gint64 (g_array_unref it).                 */
+GArray *on_db_note_ids_with_files(OnDatabase *db);
+
 /* Fetch metadata for a single note. Returns an OnNoteMeta* to free with
  * on_db_note_meta_free(), or NULL if not found.                             */
 OnNoteMeta *on_db_note_get(OnDatabase *db, gint64 id);

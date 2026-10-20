@@ -80,10 +80,27 @@ OnDocument *on_note_document_load(OnDatabase *db, gint64 id);
  * on_document_free.
  *   changed — optional; receives whether any task row was written (the
  *             library's full refresh hangs on it).
+ * The note's attached files are settled in the same transaction: every
+ * note_file row of the note that `doc` no longer names — in its blocks, or
+ * in the undo/redo history that could bring a block back — is deleted
+ * (on_db_note_files_keep).  A host that has just emptied the history
+ * (on_document_clear_undo) therefore frees the files of deleted blocks
+ * with its next save.
  * Returns TRUE on success.
  * ------------------------------------------------------------------------- */
 gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                                gboolean sync_actions, gboolean *changed);
+
+/* ---------------------------------------------------------------------------
+ * on_note_files_sweep() — delete the note_file rows that a note's STORED
+ * content does not name: the safety net behind the saves, for the files an
+ * editor discarded or a crash left (run at launch, and when an editor
+ * closes without saving).  A note whose content cannot be read is skipped,
+ * never swept.
+ *   note_id — the note to sweep, or 0 for every note that owns a file.
+ * Returns TRUE when every note it looked at was settled.
+ * ------------------------------------------------------------------------- */
+gboolean on_note_files_sweep(OnDatabase *db, gint64 note_id);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_save_tags() — rewrite note `id`'s TEXT tags from the

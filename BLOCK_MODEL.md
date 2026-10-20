@@ -14,6 +14,27 @@
 > `GTK4_MIGRATION.md` and `CLAUDE.md` mean the GTK build's `docs/` at
 > that commit.
 
+> **Attached files (2026-10-20, BNBF v7, schema 203).**  `ON_BLOCK_FILE` is
+> an object block like an image: its own line, positions 0/1, no text.  It
+> holds `file_name` (UTF-8, no path) and `file_id`, the id of a `note_file`
+> row (`../shared_data`) that owns the bytes; the blob stores the FILE
+> record (`0x06`: `[i64 id][u32 name_len][name]`) and so stays small however
+> big the file is.  A FILE record on a line with anything else splits the
+> line (`split_file`), as a table does.  The format version is 7; a build
+> older than this one refuses such a blob.
+>
+> **No row outlives what names it.**  A row belongs to ONE note and goes with
+> it (`ON DELETE CASCADE`: Delete, Empty Trash).  `on_note_document_save`
+> deletes, in the save's own transaction, every row of the note that the
+> document no longer names — in its blocks or in its undo/redo history
+> (`on_document_file_ids(doc, TRUE)`: a deleted block can come back, so its
+> file stays until the history ends).  The editor ends the history when it
+> closes, so the last save (or `on_note_files_sweep`, when nothing is
+> unsaved) frees what is left; the same sweep runs at launch for what a
+> crash left.  A dropped or pasted file gets its row at once (streamed, in
+> pieces); a pasted fragment's files are copied inside the database
+> (`on_db_note_file_copy`), so no two notes ever share a row.
+
 Written 2026-09-15 on the `gtk4` branch, after the day that produced
 D14/D17/D23/D27/D29.  This is a SPEC, not a log: it says what `OnDocument`
 and the drawn view are, so that step 1 below can start from an API rather

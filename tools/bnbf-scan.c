@@ -76,6 +76,10 @@ rec_dump(const guint8 *data, gsize len, gsize mark)
             printf("%s %6" G_GSIZE_FORMAT "  ACTION uid=%" G_GINT64_FORMAT
                    "\n", flag, at, rec.uid);
             break;
+        case ON_REC_FILE:
+            printf("%s %6" G_GSIZE_FORMAT "  FILE  id=%" G_GINT64_FORMAT " \"%.*s\"\n",
+                   flag, at, rec.file_id, (int)rec.n_name, rec.name);
+            break;
         case ON_REC_TABLE:
             printf("%s %6" G_GSIZE_FORMAT "  TABLE %dx%d%s\n", flag, at,
                    rec.table->rows, rec.table->cols,
@@ -99,6 +103,7 @@ first_diff(const guint8 *a, gsize na, const guint8 *b, gsize nb)
 
 static const gchar *KIND_NAMES[ON_N_BLOCK_KINDS] = {
     "PARA", "H1", "H2", "BULLET", "NUMBER", "CHECK", "CODE", "IMAGE", "TABLE",
+    "FILE",
 };
 
 /* blocks_dump() — one line per block.                                       */
@@ -111,6 +116,8 @@ blocks_dump(const OnDocument *d)
         if (b->kind == ON_BLOCK_IMAGE) {
             printf(" w=%u %" G_GSIZE_FORMAT " bytes", b->display_width,
                    g_bytes_get_size(b->png));
+        } else if (b->kind == ON_BLOCK_FILE) {
+            printf(" id=%" G_GINT64_FORMAT " \"%s\"", b->file_id, b->file_name);
         } else if (b->kind == ON_BLOCK_TABLE) {
             printf(" %dx%d%s", b->rows, b->cols, b->header ? " header" : "");
         } else {

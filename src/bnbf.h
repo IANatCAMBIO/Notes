@@ -29,6 +29,12 @@
  *                      starts here — the note_task.uid of its task row.
  *                      Sits immediately before the line's first TEXT
  *                      record, like CHECK; never inside a line.
+ *   [u8 0x06]  FILE  : [i64 id]                       (version >= 7)
+ *                      [u32 name_len] [name_len UTF-8 bytes]
+ *                      an attached file: the id of its note_file row (the
+ *                      bytes live in the database, not in the blob) and its
+ *                      name (no path).  Always a line of its own, like a
+ *                      TABLE.
  *
  * IMAGE records always hold the image at its ORIGINAL resolution; the
  * display_width field records how wide the user chose to show it in the
@@ -140,9 +146,9 @@ void on_table_free(OnTable *table);
 /* Current format version the writer emits.  Version 2 added the
  * display_width field to IMAGE records; version 3 added TABLE records;
  * version 4 added the tflags field to TABLE records; version 5 added CHECK
- * records; version 6 added ACTION records.  All older versions are still
- * readable.                                                               */
-#define ON_BNBF_VERSION 6u
+ * records; version 6 added ACTION records; version 7 added FILE records.
+ * All older versions are still readable.                                  */
+#define ON_BNBF_VERSION 7u
 
 /* Record type bytes.                                                      */
 #define ON_REC_END   0x00            /* end of document                     */
@@ -151,6 +157,7 @@ void on_table_free(OnTable *table);
 #define ON_REC_TABLE 0x03            /* embedded table of text cells        */
 #define ON_REC_CHECK 0x04            /* task-list checkbox                  */
 #define ON_REC_ACTION 0x05           /* action line identity (uid)          */
+#define ON_REC_FILE  0x06            /* an attached file: name + bytes      */
 
 typedef struct {
     const guint8 *data;              /* the blob                            */
@@ -165,7 +172,7 @@ typedef struct {
  * `type` are meaningful; `text` and `png` point INTO the blob.            */
 typedef struct {
     guint8        type;              /* ON_REC_TEXT / IMAGE / TABLE / CHECK
-                                        / ACTION                            */
+                                        / ACTION / FILE                     */
     guint32       flags;             /* TEXT: ON_FMT_* bits of the run      */
     const gchar  *text;              /* TEXT: run bytes (NOT terminated)    */
     guint32       n_text;
@@ -174,6 +181,10 @@ typedef struct {
     guint32       display_width;     /* IMAGE: stored display width (v2+)   */
     gboolean      checked;           /* CHECK: the box's state              */
     gint64        uid;               /* ACTION: the line's item uid (> 0)   */
+    gint64        file_id;           /* FILE: its note_file row (> 0)       */
+    const gchar  *name;              /* FILE: the file's name (NOT
+                                        terminated)                         */
+    guint32       n_name;
     OnTable      *table;             /* TABLE: parsed; the CALLER owns it   */
 } OnBnbfRecord;
 
@@ -213,6 +224,11 @@ void on_bnbf_write_text(OnBnbfWriter *w, guint32 flags, const gchar *text,
 /* on_bnbf_write_image() — an IMAGE record: the encoded bytes VERBATIM.    */
 void on_bnbf_write_image(OnBnbfWriter *w, guint32 display_width,
                          const guint8 *png, gsize n_png);
+
+/* on_bnbf_write_file() — a FILE record: the note_file row's id (positive)
+ * and the file's name.                                                    */
+void on_bnbf_write_file(OnBnbfWriter *w, gint64 id, const gchar *name,
+                        gsize n_name);
 
 /* on_bnbf_write_check() — a CHECK record.                                 */
 void on_bnbf_write_check(OnBnbfWriter *w, gboolean checked);

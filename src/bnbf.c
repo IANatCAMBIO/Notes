@@ -258,6 +258,29 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
         r->pos += rec->n_png;
         return TRUE;
 
+    case ON_REC_FILE:
+        if (r->version < 7) {
+            r->error = "FILE record in a pre-v7 blob";
+            return FALSE;
+        }
+        {
+            guint64 id;              /* the stored row id                   */
+            if (!get_u64(r->data, r->len, &r->pos, &id) ||
+                !get_u32(r->data, r->len, &r->pos, &rec->n_name) ||
+                r->pos + rec->n_name > r->len) {
+                r->error = "truncated FILE record";
+                return FALSE;
+            }
+            if (id == 0 || id > (guint64)G_MAXINT64) {
+                r->error = "bad FILE record";
+                return FALSE;
+            }
+            rec->file_id = (gint64)id;
+        }
+        rec->name = (const gchar *)r->data + r->pos;
+        r->pos += rec->n_name;
+        return TRUE;
+
     case ON_REC_CHECK:
         if (r->pos >= r->len) {
             r->error = "truncated CHECK record";
@@ -366,6 +389,15 @@ on_bnbf_write_image(OnBnbfWriter *w, guint32 display_width,
     put_u32(w->out, display_width);
     put_u32(w->out, (guint32)n_png);
     g_byte_array_append(w->out, png, (guint)n_png);
+}
+
+void
+on_bnbf_write_file(OnBnbfWriter *w, gint64 id, const gchar *name, gsize n_name)
+{
+    put_rec(w, ON_REC_FILE);
+    put_u64(w->out, (guint64)id);
+    put_u32(w->out, (guint32)n_name);
+    g_byte_array_append(w->out, (const guint8 *)name, (guint)n_name);
 }
 
 void

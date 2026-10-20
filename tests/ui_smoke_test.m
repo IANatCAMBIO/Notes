@@ -1143,6 +1143,165 @@ test_inline_image(void)
 }
 
 /*
+ * count_blocks — how many blocks of a kind a document has.
+ *
+ * Inputs:
+ *   doc  — the document
+ *   kind — the kind
+ *
+ * Output: the count.
+ */
+static guint
+count_blocks(const OnDocument *doc, OnBlockKind kind)
+{
+    guint n = 0;
+    for (guint i = 0; i < on_document_n_blocks(doc); i++)
+        if (on_document_block(doc, i)->kind == kind) n++;
+    return n;
+}
+
+/*
+ * file_rows — how many note_file rows a note owns.
+ *
+ * Inputs:
+ *   note_id — the note
+ *
+ * Output: the count.
+ */
+static int
+file_rows(gint64 note_id)
+{
+    sqlite3_stmt *st = NULL;
+    int n = -1;
+    if (sqlite3_prepare_v2(app.db->handle, "SELECT COUNT(*) FROM note_file WHERE note_id = ?",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, note_id);
+        if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+/*
+ * select_file_tile — click down the left of a note until an attached file's
+ * tile is selected.
+ *
+ * Inputs:
+ *   view — the note view
+ */
+static void
+select_file_tile(NotesNoteView *view)
+{
+    OnDocument *doc = on_note_view_document(view);
+    for (CGFloat y = 30; y < view.frame.size.height; y += 6) {
+        on_note_view_feed_click(view, 24 + on_look_file_tile_w / 2, y, 1, 0, NO);
+        if (on_note_view_caret(view).offset == 1 &&
+            on_document_block(doc, on_note_view_caret(view).block)->kind == ON_BLOCK_FILE) return;
+    }
+}
+
+/*
+ * test_file_attachment — an attached file is a tile in the note (icon, name
+ * under it) whose bytes are a note_file row: a click selects it, Copy puts
+ * it on the pasteboard as a note fragment AND as a real file, Paste gives
+ * the note a row of its own, and a pasted or dropped file becomes a tile —
+ * unless it is a picture, which becomes an image.  Deleting a tile (and
+ * closing the editor, which ends the undo history) deletes its row.
+ */
+static void
+test_file_attachment(void)
+{
+    gint64      note_id = new_note("Attachment note\nbody");
+    const char  payload[] = "attached \x00 bytes";
+    NSString   *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"notes-attach-test"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES
+                                             attributes:nil error:NULL];
+    NSString   *pdf = [dir stringByAppendingPathComponent:@"report.pdf"];
+    [[NSData dataWithBytes:payload length:sizeof payload] writeToFile:pdf atomically:YES];
+    gint64      row = on_db_note_file_add(app.db, note_id, pdf.fileSystemRepresentation, "report.pdf");
+    OnDocument *doc = on_note_document_load(app.db, note_id);
+    on_document_insert_block(doc, 1, on_block_new_file(row, "report.pdf"));
+    on_note_document_save(app.db, note_id, doc, TRUE, NULL);
+    on_document_free(doc);
+    check(row > 0 && file_rows(note_id) == 1, "the file is a row of the note");
+
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Attachment note");
+        NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        check(view.frame.size.height > on_look_file_icon,
+              "an attached file takes its icon's room");
+        check(save_snapshots(window, @"file-attachment"), "attachment snapshots written");
+
+        /* The tile is the second block: find it by clicking down the left. */
+        OnDocument *shown = on_note_view_document(view);
+        for (CGFloat y = 30; y < view.frame.size.height; y += 6) {
+            on_note_view_feed_click(view, 24 + on_look_file_tile_w / 2, y, 1, 0, NO);
+            if (on_note_view_caret(view).block == 1 && on_note_view_caret(view).offset == 1) break;
+        }
+        check(on_note_view_caret(view).block == 1 && on_note_view_caret(view).offset == 1 &&
+              [on_note_view_selected_text(view) isEqual:@"report.pdf"],
+              "a click on the tile selects it");
+
+        /* Copy: the note fragment and a real file with the same bytes. */
+        view.pasteboard = [NSPasteboard pasteboardWithUniqueName];
+        on_note_view_feed_key(view, on_key_character, 'c', on_mod_command);
+        NSArray<NSURL *> *urls = [view.pasteboard readObjectsForClasses:@[NSURL.class]
+                                  options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
+        NSData *copied = urls.count == 1 ? [NSData dataWithContentsOfURL:urls[0]] : nil;
+        check(urls.count == 1 && [urls[0].lastPathComponent isEqual:@"report.pdf"] &&
+              copied.length == sizeof payload && memcmp(copied.bytes, payload, sizeof payload) == 0 &&
+              [view.pasteboard dataForType:on_pasteboard_type_fragment] != nil,
+              "Copy puts the file on the pasteboard, name and bytes intact, beside the note fragment");
+
+        /* Paste of our own copy: from the fragment, a row of its own (the
+         * caret goes into the title first: a paste over the selected tile
+         * would replace it). */
+        on_note_view_feed_click(view, 300, 20, 1, 0, NO);
+        on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
+        check(count_blocks(shown, ON_BLOCK_FILE) == 2 && file_rows(note_id) == 2,
+              "Paste brings the attachment back, with a row of its own");
+
+        /* Paste of files alone (what the Finder offers): a text file is a
+         * tile, a picture is an image block. */
+        NSURL *text = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:@"notes-test.txt"]];
+        [@"plain" writeToURL:text atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        [view.pasteboard clearContents];
+        [view.pasteboard writeObjects:@[text, sample_image_url().absoluteURL]];
+        guint images_before = count_blocks(shown, ON_BLOCK_IMAGE);
+        on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
+        check(count_blocks(shown, ON_BLOCK_FILE) == 3 && file_rows(note_id) == 3 &&
+              count_blocks(shown, ON_BLOCK_IMAGE) == images_before + 1,
+              "a pasted text file becomes a tile with a row, a pasted picture an image");
+
+        /* Delete a tile: its row goes when the editor closes (until then an
+         * undo could bring the tile back). */
+        select_file_tile(view);
+        on_note_view_feed_key(view, on_key_backspace, 0, 0);
+        check(count_blocks(shown, ON_BLOCK_FILE) == 2, "Delete removes the selected tile");
+        on_note_view_feed_key(view, on_key_character, 'z', on_mod_command);
+        check(count_blocks(shown, ON_BLOCK_FILE) == 3, "and undo brings it back");
+        select_file_tile(view);
+        on_note_view_feed_key(view, on_key_backspace, 0, 0);
+
+        [view.pasteboard releaseGlobally];
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+    check(file_rows(note_id) == 2,
+          "closing the editor leaves a row for each tile that is left, and none for the deleted one");
+
+    OnDocument *saved = on_note_document_load(app.db, note_id);
+    check(saved != NULL && count_blocks(saved, ON_BLOCK_FILE) == 2, "attachments round-trip through the blob");
+    on_document_free(saved);
+    on_db_notes_delete(app.db, &note_id, 1);
+    check(file_rows(note_id) == 0, "deleting the note deletes the rest");
+    [NSFileManager.defaultManager removeItemAtPath:dir error:NULL];
+    pump(0.2);
+}
+
+/*
  * mouse_moved — a synthetic mouse-moved event at a point of a view.
  *
  * Inputs:
@@ -3474,6 +3633,7 @@ main(void)
         test_open_note_sync();
         test_editor_commands();
         test_inline_image();
+        test_file_attachment();
         test_accessibility();
         test_strike_snapshot();
         test_tag_suggestions();

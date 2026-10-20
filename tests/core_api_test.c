@@ -19,6 +19,8 @@
 
 #include "check.h"
 
+#include <unistd.h>
+
 #include "action_edit.h"
 #include "action_sync.h"
 #include "app_lifecycle.h"
@@ -1171,6 +1173,164 @@ test_backup(OnDatabase *db, const char *data_dir)
  *
  * Output: 0 when every check held.
  */
+/*
+ * count_files — how many note_file rows a note owns.
+ *
+ * Inputs:
+ *   db   — the database
+ *   note — the note
+ *
+ * Output: the count.
+ */
+static int
+count_files(OnDatabase *db, gint64 note)
+{
+    sqlite3_stmt *st = NULL;
+    int n = -1;
+    if (sqlite3_prepare_v2(db->handle, "SELECT COUNT(*) FROM note_file WHERE note_id = ?",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, note);
+        if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+/*
+ * files_equal — do two files hold the same bytes?
+ *
+ * Inputs:
+ *   a, b — the paths
+ *
+ * Output: TRUE when both read and are equal.
+ */
+static gboolean
+files_equal(const char *a, const char *b)
+{
+    gchar *da = NULL, *db_ = NULL;
+    gsize  na = 0, nb = 0;
+    gboolean same = g_file_get_contents(a, &da, &na, NULL) &&
+                    g_file_get_contents(b, &db_, &nb, NULL) &&
+                    na == nb && memcmp(da, db_, na) == 0;
+    g_free(da);
+    g_free(db_);
+    return same;
+}
+
+/*
+ * save_with_file — a note whose document is its text and one attached file.
+ *
+ * Inputs:
+ *   db   — the database
+ *   note — the note
+ *   id   — the note_file row
+ *   name — the file's name
+ */
+static void
+save_with_file(OnDatabase *db, gint64 note, gint64 id, const char *name)
+{
+    OnDocument *doc = on_note_document_load(db, note);
+    on_document_insert_block(doc, on_document_n_blocks(doc), on_block_new_file(id, name));
+    on_note_document_save(db, note, doc, TRUE, NULL);
+    on_document_free(doc);
+}
+
+/*
+ * test_files — attached files live in note_file rows and never outlive
+ * what names them: streamed in and out intact (a file larger than one
+ * piece), copied inside the database, kept by a save while the note or its
+ * undo history names them and deleted when neither does, deleted with the
+ * note (Delete and Empty Trash), and swept when nothing names them.
+ *
+ * Inputs:
+ *   db       — the database
+ *   data_dir — the test's data directory (scratch files go here)
+ */
+static void
+test_files(OnDatabase *db, const char *data_dir)
+{
+    gchar *src = g_build_filename(data_dir, "attach-src.bin", NULL);
+    gchar *out = g_build_filename(data_dir, "attach-out.bin", NULL);
+    gsize  n = 2500000;              /* more than two 1 MB pieces           */
+    guint8 *bytes = g_malloc(n);
+    for (gsize i = 0; i < n; i++) bytes[i] = (guint8)(i * 31 + (i >> 8));
+    g_file_set_contents(src, (gchar *)bytes, (gssize)n, NULL);
+    g_free(bytes);
+
+    gint64 a = on_note_new_from_text(db, NULL, "Files A\nbody");
+    gint64 b = on_note_new_from_text(db, NULL, "Files B\nbody");
+    gint64 f = on_db_note_file_add(db, a, src, "big.bin");
+    check(f > 0 && count_files(db, a) == 1, "a file is stored in a row of its note");
+    unlink(out);
+    check(on_db_note_file_export(db, f, out) && files_equal(src, out),
+          "a stored file comes back byte for byte (streamed in pieces)");
+    check(!on_db_note_file_export(db, f, out), "export never overwrites a file");
+    unlink(out);
+    check(on_db_note_file_add(db, a, data_dir, "dir") == 0 &&
+          on_db_note_file_add(db, a, "/nonexistent/attach", "x") == 0 &&
+          count_files(db, a) == 1, "a folder or a missing file stores nothing");
+    check(!on_db_note_file_export(db, 999999, out) && access(out, F_OK) != 0,
+          "exporting a row that does not exist fails and leaves nothing");
+
+    gint64 copy = on_db_note_file_copy(db, f, b);
+    check(copy > 0 && copy != f && count_files(db, b) == 1 &&
+          on_db_note_file_export(db, copy, out) && files_equal(src, out),
+          "a copy inside the database is a row of the other note with the same bytes");
+    unlink(out);
+    check(on_db_note_file_copy(db, 999999, b) == 0, "copying a missing row gives 0");
+
+    /* A save keeps what the note names; the history counts as naming.      */
+    save_with_file(db, a, f, "big.bin");
+    check(count_files(db, a) == 1, "a save keeps the file its note names");
+    OnDocument *doc = on_note_document_load(db, a);
+    guint last = on_document_n_blocks(doc) - 1;
+    OnPos from = { last, -1, 0 }, to = { last, -1, 1 };
+    check(on_document_block(doc, last)->kind == ON_BLOCK_FILE &&
+          on_document_delete_range(doc, from, to, NULL), "the file's block is deleted");
+    on_note_document_save(db, a, doc, TRUE, NULL);
+    check(count_files(db, a) == 1,
+          "the save keeps the file while an undo could bring its block back");
+    check(on_document_undo(doc), "undo brings the block back");
+    OnPos from2 = { last, -1, 0 }, to2 = { last, -1, 1 };
+    on_document_delete_range(doc, from2, to2, NULL);
+    on_document_clear_undo(doc);
+    on_note_document_save(db, a, doc, TRUE, NULL);
+    check(count_files(db, a) == 0, "with the history gone, the next save deletes the file");
+    on_document_free(doc);
+
+    /* Delete and Empty Trash take a note's files with it.                  */
+    check(count_files(db, b) == 1, "B still owns its copy");
+    check(on_db_notes_delete(db, &b, 1) && count_files(db, b) == 0,
+          "deleting a note deletes its files");
+    gint64 t = on_note_new_from_text(db, NULL, "Files trashed\nbody");
+    gint64 tf = on_db_note_file_add(db, t, src, "t.bin");
+    save_with_file(db, t, tf, "t.bin");
+    check(on_db_notes_trash(db, &t, 1) && count_files(db, t) == 1,
+          "a trashed note keeps its files");
+    check(on_db_trash_empty(db) && count_files(db, t) == 0,
+          "emptying the Trash deletes them");
+
+    /* The sweep deletes rows no stored note names, and never touches a
+     * note it cannot read.                                                 */
+    gint64 s_note = on_note_new_from_text(db, NULL, "Files swept\nbody");
+    gint64 named  = on_db_note_file_add(db, s_note, src, "named.bin");
+    save_with_file(db, s_note, named, "named.bin");
+    gint64 stray  = on_db_note_file_add(db, s_note, src, "stray.bin");
+    check(stray > 0 && count_files(db, s_note) == 2, "a stray row (a crash's leftover)");
+    check(on_note_files_sweep(db, 0) && count_files(db, s_note) == 1,
+          "the sweep deletes the row no note names and keeps the one it does");
+    const guint8 junk[] = { 1, 2, 3 };
+    check(on_db_note_save(db, s_note, "x", junk, sizeof junk, "x") &&
+          on_note_files_sweep(db, s_note) && count_files(db, s_note) == 1,
+          "a note whose content cannot be read keeps its files");
+
+    on_db_notes_delete(db, &a, 1);
+    on_db_notes_delete(db, &s_note, 1);
+    unlink(src);
+    g_free(src);
+    g_free(out);
+}
+
 int
 main(void)
 {
@@ -1191,6 +1351,7 @@ main(void)
     test_stats(app.db);
     gint64 pictures = test_images(app.db);
     test_export(&app, data_dir, pictures);
+    test_files(app.db, data_dir);
     test_backup(app.db, data_dir);
     on_app_shutdown(&app);
     return check_result();

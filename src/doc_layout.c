@@ -9,6 +9,7 @@
 #include "text_layout.h"
 #include "paint.h"
 #include "image_io.h"
+#include "file_icon.h"
 #include "utf_index.h"
 #include "look.h"
 
@@ -43,7 +44,8 @@ typedef struct {
     double              h;          /* height INCLUDING BLOCK_GAP            */
     double              x;          /* left of text / object                 */
     double              w;          /* layout width / object width           */
-    double              img_h;      /* IMAGE block height                    */
+    double              img_h;      /* IMAGE and FILE block height           */
+    on_text_layout_t   *label;      /* FILE: the name under the icon         */
     /* TABLE */
     double             *col_w;      /* [cols]                                */
     double             *row_h;      /* [rows]                                */
@@ -88,6 +90,8 @@ bl_clear(BL *b)
 {
     on_text_layout_free(b->layout);
     b->layout = NULL;
+    on_text_layout_free(b->label);
+    b->label = NULL;
     if (b->cells) {
         for (size_t k = 0; k < b->n_cells; k++)
             on_text_layout_free(b->cells[k]);
@@ -197,6 +201,37 @@ image_fit(const OnDocLayout *L, int src_w, int src_h, guint32 display_width,
     *out_w = want;
     *out_h = src_h > 0 ? (want * (double)src_h / (double)src_w) : want;
     if (*out_h < 1.0) *out_h = 1.0;
+}
+
+/* ── file_label_text ────────────────────────────────────────────────────── */
+
+/* The longest file name shown whole under an attached file's icon, in
+ * characters; a longer one keeps its head and its tail (the extension).    */
+#define FILE_LABEL_MAX 24
+
+/*
+ * file_label_text — the name an attached file's tile shows: the name itself,
+ * or its head and its tail round an ellipsis when it is longer than
+ * FILE_LABEL_MAX characters.
+ *
+ * Inputs:
+ *   name — the file's name, UTF-8
+ *
+ * Output: a new string (g_free it).
+ */
+static gchar *
+file_label_text(const gchar *name)
+{
+    glong n = g_utf8_strlen(name, -1);
+    if (n <= FILE_LABEL_MAX)
+        return g_strdup(name);
+    glong tail = FILE_LABEL_MAX / 2;
+    gchar *head = g_utf8_substring(name, 0, FILE_LABEL_MAX - tail - 1);
+    gchar *end  = g_utf8_substring(name, n - tail, n);
+    gchar *out  = g_strconcat(head, "\xe2\x80\xa6", end, NULL);
+    g_free(head);
+    g_free(end);
+    return out;
 }
 
 /* ── preedit helpers ────────────────────────────────────────────────────── */
@@ -398,6 +433,27 @@ layout_block(OnDocLayout *L, size_t i)
         b->w     = fw;
         b->img_h = fh;
         b->h     = fh + BLOCK_GAP;
+        b->valid = true;
+        return;
+    }
+
+    if (blk->kind == ON_BLOCK_FILE) {
+        gchar *shown = file_label_text(blk->file_name);
+        OnRun run = { strlen(shown), 0 };
+        on_text_content_t ct = { .text = shown, .len = run.len,
+                                 .runs = &run, .n_runs = 1 };
+        on_text_style_t st = { .font_size = L->font_size, .scale = 1.0,
+                               .width = on_look_file_tile_w - 2.0 * on_look_file_pad,
+                               .centered = true, .dark = L->style.dark };
+        b->label = on_text_layout_new(&ct, &st);
+        g_free(shown);
+        double pw, ph;
+        on_text_layout_size(b->label, &pw, &ph);
+        b->x     = LEFT_MARGIN;
+        b->w     = on_look_file_tile_w;
+        b->img_h = on_look_file_pad + on_look_file_icon + on_look_file_pad + ph +
+                   on_look_file_pad;
+        b->h     = b->img_h + BLOCK_GAP;
         b->valid = true;
         return;
     }
@@ -898,7 +954,8 @@ on_doc_layout_caret_rect(OnDocLayout *L, OnPos pos, on_rect_t *out)
     double ox = 0.0, oy = 0.0;
     on_text_layout_t *layout = layout_for(L, pos, &ox, &oy);
     if (!layout) {
-        double h = (blk->kind == ON_BLOCK_IMAGE) ? b->img_h : b->h - BLOCK_GAP;
+        double h = (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE)
+                   ? b->img_h : b->h - BLOCK_GAP;
         *out = (on_rect_t){ b->x + (pos.offset > 0 ? b->w : -1.0), b->y, 1.0, h };
         return;
     }
@@ -990,6 +1047,40 @@ layout_image(OnDocLayout *L, guint block, gint inline_ord, CGContextRef ctx, on_
     return img_ref;
 }
 
+/*
+ * layout_file_icon — the icon of a FILE block, rendered at the size it is
+ * drawn (on_look_file_icon points at the context's scale) and cached on the
+ * block (OnBlock.pixels, released with it).
+ *
+ * Inputs:
+ *   doc   — the document
+ *   block — the FILE block's index
+ *   ctx   — the context being drawn into (its scale decides the pixels)
+ *
+ * Output: the icon, BORROWED (valid while the block lives and until the
+ *         next call for it).
+ */
+static CGImageRef
+layout_file_icon(OnDocument *doc, guint block, CGContextRef ctx)
+{
+    OnBlock *blk = on_document_block(doc, block);
+    CGSize dev   = CGContextConvertSizeToDeviceSpace(
+        ctx, CGSizeMake(on_look_file_icon, on_look_file_icon));
+    double scale = fabs(dev.width) / on_look_file_icon;
+    CGImageRef cached = blk->pixels;
+    if (cached != NULL &&
+        (double)CGImageGetWidth(cached) >= ceil(on_look_file_icon * scale))
+        return cached;
+    CGImageRef icon = on_file_icon(blk->file_name, on_look_file_icon, scale);
+    if (icon == NULL)
+        return cached;
+    if (cached != NULL)
+        blk->pixels_free(cached);
+    blk->pixels      = icon;
+    blk->pixels_free = (GDestroyNotify)CGImageRelease;
+    return icon;
+}
+
 /* ── Hit testing ────────────────────────────────────────────────────────── */
 
 /*
@@ -1027,11 +1118,13 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
     out->block = (guint)i;
     out->pos.block = (guint)i;
 
-    if (blk->kind == ON_BLOCK_IMAGE) {
+    if (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE) {
         bool inside = x >= b->x && x < b->x + b->w &&
                       y >= b->y && y < b->y + b->img_h;
         out->pos.offset = (x < b->x + b->w / 2.0) ? 0 : 1;
-        if (inside) {
+        if (inside && blk->kind == ON_BLOCK_FILE) {
+            out->kind = ON_HIT_FILE;
+        } else if (inside) {
             out->kind = ON_HIT_IMAGE;
             out->image_ord = image_ord_of(L, i, 0);
         }
@@ -1122,7 +1215,7 @@ block_end_pos(OnDocLayout *L, size_t i)
     if (blk->kind == ON_BLOCK_TABLE) {
         p.cell   = blk->rows * blk->cols - 1;
         p.offset = (gsize)text_len_at(L, p);
-    } else if (blk->kind == ON_BLOCK_IMAGE) {
+    } else if (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE) {
         p.offset = 1;
     } else {
         p.offset = (gsize)blk->text->text->len;
@@ -1293,7 +1386,7 @@ on_doc_layout_move(OnDocLayout *L, OnPos pos, OnDocMove how, double *goal_x)
         out.block = (guint)j;
         out.cell  = -1;
         const OnBlock *nb = on_document_block(L->doc, (guint)j);
-        if (nb->kind == ON_BLOCK_IMAGE) {
+        if (nb->kind == ON_BLOCK_IMAGE || nb->kind == ON_BLOCK_FILE) {
             const BL *b = &L->bl[j];
             out.offset = (*goal_x > b->x + b->w / 2.0) ? 1 : 0;
             return out;
@@ -1482,6 +1575,21 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             if (sel_span(L, p, i, -1, 1, &s, &e, &whole) &&
                 (whole || (s == 0 && e == 1)))
                 on_paint_fill_rect(ctx, r, selc);
+            continue;
+        }
+
+        if (blk->kind == ON_BLOCK_FILE) {
+            on_rect_t r = { b->x, b->y, b->w, b->img_h };
+            if (sel_span(L, p, i, -1, 1, &s, &e, &whole) &&
+                (whole || (s == 0 && e == 1)))
+                on_paint_rounded_rect(ctx, r, 6.0, selc, selc, 0.0);
+            CGImageRef icon = layout_file_icon(L->doc, (guint)i, ctx);
+            on_rect_t ir = { b->x + (b->w - on_look_file_icon) / 2.0,
+                             b->y + on_look_file_pad,
+                             on_look_file_icon, on_look_file_icon };
+            on_paint_image(ctx, icon, ir);
+            on_text_layout_draw(b->label, ctx, b->x + on_look_file_pad,
+                                ir.y + ir.h + on_look_file_pad);
             continue;
         }
 

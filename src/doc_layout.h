@@ -159,7 +159,8 @@ double on_doc_layout_height(OnDocLayout *layout);
 
 /* ---------------------------------------------------------------------------
  * on_doc_layout_caret_rect() — the caret at a position: a 1 pt wide box.
- * For an image or table block, offset 0 is its left edge and 1 its right.
+ * For an image, file or table block, offset 0 is its left edge and 1 its
+ * right.
  *
  * Inputs:
  *   layout — the layout
@@ -174,6 +175,7 @@ void on_doc_layout_caret_rect(OnDocLayout *layout, OnPos pos, on_rect_t *out);
 typedef enum {
     ON_HIT_TEXT,                     /* a text position (pos)               */
     ON_HIT_IMAGE,                    /* an image: block, or inline at pos   */
+    ON_HIT_FILE,                     /* an attached file's tile             */
     ON_HIT_CHECKBOX,                 /* a task block's box                  */
     ON_HIT_COPY,                     /* a code run's "copy" word            */
     ON_HIT_OBJECT,                   /* a table's border / outside a cell   */

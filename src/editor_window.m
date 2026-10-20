@@ -677,6 +677,7 @@ build_note_view
     NotesNoteView *view = [[NotesNoteView alloc] init_with_app:self.app];
     view.autoresizingMask = NSViewWidthSizable;   /* the text wraps at the window's width;
                                                    * the view sets its own height */
+    view.note_id = self.note_id;
     self.note_view = view;
 
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
@@ -1368,14 +1369,23 @@ windowWillClose:(NSNotification *)note
 
     OnDocument *doc = on_note_view_document(self.note_view);
     if (self.discard) {
-        /* The note is gone or unreadable, or the user let the edits go. */
+        /* The note is gone or unreadable, or the user let the edits go: the
+         * files this session added that the stored note does not name go. */
+        on_note_files_sweep(app->db, self.note_id);
     } else if (on_note_edit_is_blank(doc)) {
         gint64 nid = self.note_id;
-        on_db_notes_delete(app->db, &nid, 1);
+        on_db_notes_delete(app->db, &nid, 1);   /* its files go with it */
         on_app_status(app, "Deleted empty note");
         if (app->notify_notes_changed != NULL) app->notify_notes_changed(app);
-    } else if (self.dirty) {
-        [self save];
+    } else {
+        /* The undo history ends here, so a file whose block was deleted can
+         * no longer come back: the save (or, when nothing is unsaved, the
+         * sweep) frees it. */
+        on_document_clear_undo(doc);
+        if (self.dirty)
+            [self save];
+        else
+            on_note_files_sweep(app->db, self.note_id);
     }
     [editors removeObjectForKey:@(self.note_id)]; /* last: may release self */
 }

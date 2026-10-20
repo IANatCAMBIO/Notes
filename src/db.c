@@ -9,8 +9,11 @@
 #include "db.h"
 #include "main_service.h"            /* the health pass's worker + hand-back */
 
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <glib/gstdio.h>
 
 /* The async health pass in flight on a connection (health section).    */
@@ -557,6 +560,148 @@ on_db_notes_delete(OnDatabase *db, const gint64 *ids, gsize n)
 {
     /* One transaction for the lot — autocommit would fsync per note.     */
     return bulk_ids(db, "DELETE FROM notes WHERE id=?", ids, n);
+}
+
+/* The size of the pieces a file moves in between the file system and a blob. */
+#define FILE_CHUNK (1024 * 1024)
+
+/*
+ * on_db_note_file_add — see db.h.
+ */
+gint64
+on_db_note_file_add(OnDatabase *db, gint64 note_id, const gchar *path,
+                    const gchar *name)
+{
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0)
+        return 0;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size > ON_FILE_MAX_BYTES) {
+        close(fd);
+        return 0;
+    }
+    gboolean own;                        /* this call's transaction?        */
+    if (!txn_begin(db, &own)) {
+        close(fd);
+        return 0;
+    }
+    gint64 id = 0;                       /* the new row                     */
+    gboolean ok = FALSE;
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "INSERT INTO note_file (note_id, name, size, data) "
+        "VALUES (?, ?, ?, zeroblob(?))");
+    if (stmt != NULL) {
+        sqlite3_bind_int64(stmt, 1, note_id);
+        sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 3, st.st_size);
+        sqlite3_bind_int64(stmt, 4, st.st_size);
+        ok = sqlite3_step(stmt) == SQLITE_DONE;
+        if (ok)
+            id = sqlite3_last_insert_rowid(db->handle);
+        else
+            g_warning("db: note_file add: %s", sqlite3_errmsg(db->handle));
+        sqlite3_reset(stmt);
+    }
+    sqlite3_blob *blob = NULL;
+    if (ok && st.st_size > 0)
+        ok = sqlite3_blob_open(db->handle, "main", "note_file", "data", id, 1,
+                               &blob) == SQLITE_OK;
+    guint8 *buf = ok && blob != NULL ? g_malloc(FILE_CHUNK) : NULL;
+    for (off_t at = 0; ok && blob != NULL && at < st.st_size; ) {
+        ssize_t got = read(fd, buf, FILE_CHUNK);
+        /* A file that shrank under us would leave zeros: refuse it.        */
+        ok = got > 0 && sqlite3_blob_write(blob, buf, (int)got, (int)at) == SQLITE_OK;
+        at += got > 0 ? got : 0;
+    }
+    g_free(buf);
+    if (blob != NULL)
+        sqlite3_blob_close(blob);
+    close(fd);
+    return txn_end(db, own, ok) && ok ? id : 0;
+}
+
+/*
+ * on_db_note_file_copy — see db.h.
+ */
+gint64
+on_db_note_file_copy(OnDatabase *db, gint64 id, gint64 note_id)
+{
+    sqlite3_stmt *stmt = cached_prepare(db,
+        "INSERT INTO note_file (note_id, name, size, data) "
+        "SELECT ?, name, size, data FROM note_file WHERE id = ?");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_int64(stmt, 1, note_id);
+    sqlite3_bind_int64(stmt, 2, id);
+    gint64 copy = 0;                     /* the new row, or 0               */
+    if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db->handle) == 1)
+        copy = sqlite3_last_insert_rowid(db->handle);
+    sqlite3_reset(stmt);
+    return copy;
+}
+
+/*
+ * on_db_note_file_export — see db.h.
+ */
+gboolean
+on_db_note_file_export(OnDatabase *db, gint64 id, const gchar *path)
+{
+    sqlite3_blob *blob = NULL;
+    if (sqlite3_blob_open(db->handle, "main", "note_file", "data", id, 0,
+                          &blob) != SQLITE_OK)
+        return FALSE;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
+        sqlite3_blob_close(blob);
+        return FALSE;
+    }
+    int      size = sqlite3_blob_bytes(blob);
+    guint8  *buf  = g_malloc(FILE_CHUNK);
+    gboolean ok   = TRUE;
+    for (int at = 0; ok && at < size; ) {
+        int n = MIN(FILE_CHUNK, size - at);
+        ok = sqlite3_blob_read(blob, buf, n, at) == SQLITE_OK &&
+             write(fd, buf, (size_t)n) == n;
+        at += n;
+    }
+    g_free(buf);
+    sqlite3_blob_close(blob);
+    ok = close(fd) == 0 && ok;
+    if (!ok)
+        unlink(path);
+    return ok;
+}
+
+/*
+ * on_db_note_files_keep — see db.h.
+ */
+gboolean
+on_db_note_files_keep(OnDatabase *db, gint64 note_id, const gint64 *keep,
+                      gsize n)
+{
+    GString *sql = g_string_new("DELETE FROM note_file WHERE note_id = ?");
+    if (n > 0) {
+        g_string_append(sql, " AND id NOT IN (");
+        for (gsize i = 0; i < n; i++)
+            g_string_append_printf(sql, i > 0 ? ",%" G_GINT64_FORMAT : "%" G_GINT64_FORMAT,
+                                   keep[i]);
+        g_string_append_c(sql, ')');
+    }
+    sqlite3_stmt *stmt = n == 0 ? cached_prepare(db, sql->str) : prepare(db, sql->str);
+    gboolean ok = FALSE;
+    if (stmt != NULL) {
+        sqlite3_bind_int64(stmt, 1, note_id);
+        ok = sqlite3_step(stmt) == SQLITE_DONE;
+        if (!ok)
+            g_warning("db: note_file keep: %s", sqlite3_errmsg(db->handle));
+        if (n == 0)
+            sqlite3_reset(stmt);
+        else
+            sqlite3_finalize(stmt);
+    }
+    g_string_free(sql, TRUE);
+    return ok;
 }
 
 /*
@@ -1957,6 +2102,15 @@ GArray *
 on_db_trash_note_ids(OnDatabase *db)
 {
     return run_id_query(prepare(db, "SELECT id FROM notes WHERE trashed=1"));
+}
+
+/*
+ * on_db_note_ids_with_files — see db.h.
+ */
+GArray *
+on_db_note_ids_with_files(OnDatabase *db)
+{
+    return run_id_query(prepare(db, "SELECT DISTINCT note_id FROM note_file"));
 }
 
 /*

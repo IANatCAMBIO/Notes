@@ -83,6 +83,7 @@ src/                 flat; one module = one .h + one .c or .m
   config.[ch]               the data-directory policy + notes.ini
   main_service.[ch]         main-thread posts, timers, workers (GCD)
   image_io.[ch]             the one decoded image type: CGImageRef
+  file_icon.[hm]            the system icon of an attached file, as a CGImage
   app_core.[ch]             OnApp: state, preferences, the hooks
   app_lifecycle.[ch]        the app lock, open the database, start
                             services, shut down

@@ -123,7 +123,7 @@ on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
     NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
     NSString       *path  = @(lib.app->db->path);
     SharedToolPanel *panel = [SharedToolPanel
-        panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
+        panel_with_title:@"Edit Tag" headline:@"Edit Tag"
                 subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
                   symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
@@ -157,6 +157,79 @@ run_edit_tag(id target, id sender)
     on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
     on_library_sb_ref(sender, &ref);
     if (ref.kind == on_sb_tag) on_library_edit_tag(lib, ref.ident);
+}
+
+/*
+ * clear_tag — take a tag out of the text of every note that carries it,
+ * trashed ones too, in one transaction (all or none).  The schema's triggers
+ * delete the tag itself once no task carries it either.
+ *
+ * Inputs:
+ *   lib    — the library
+ *   tag_id — the tag
+ */
+static void
+clear_tag(NotesLibrary *lib, gint64 tag_id)
+{
+    OnDatabase *db  = lib.app->db;
+    OnTag      *tag = on_db_tag_get(db, tag_id);
+    if (tag == NULL) return;                         /* it has gone */
+    GArray   *notes = on_db_note_ids_with_tag(db, tag_id);
+    gchar    *name  = g_strdup(tag->name);
+    on_db_tag_free(tag);
+
+    gboolean own;
+    BOOL     ok = on_db_txn_begin(db, &own);
+    if (ok) {
+        BOOL cleared = YES;
+        for (guint i = 0; cleared && i < notes->len; i++) {
+            cleared = on_note_remove_tags(lib.app, g_array_index(notes, gint64, i),
+                                          (const gchar *const *)&name, 1);
+        }
+        ok = on_db_txn_end(db, own, cleared) && cleared;
+    }
+    if (ok) on_app_status(lib.app, "Cleared “%s” from %u note%s", name,
+                          notes->len, notes->len == 1 ? "" : "s");
+    else    on_app_status(lib.app, "The tag could not be cleared");
+    g_array_unref(notes);
+    g_free(name);
+    on_library_refresh_all(lib);
+}
+
+/*
+ * run_clear_tag — "clear-tag": Clear from all Notes.  Ask, then take the
+ * tag out of every note that carries it, trashed ones too.  The tag leaves this sidebar at
+ * once; it stays in the tag lists until no task carries it either.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item (it names the tag), else the selected tag
+ */
+static void
+run_clear_tag(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
+    on_library_sb_ref(sender, &ref);
+    if (ref.kind != on_sb_tag) return;
+    gint64 tag_id = ref.ident;
+
+    OnTag *tag = on_db_tag_get(lib.app->db, tag_id);
+    if (tag == NULL) return;
+    GArray   *notes = on_db_note_ids_with_tag(lib.app->db, tag_id);
+    guint     n     = notes->len;
+    NSString *title = [NSString stringWithFormat:@"Do you want to remove the tag %@ from %u %@?",
+                       @(tag->name), n, n == 1 ? @"note" : @"notes"];
+    g_array_unref(notes);
+    on_db_tag_free(tag);
+
+    /* The panel is not modal: the database may have been switched. */
+    NSString *path = @(lib.app->db->path);
+    shared_ui_confirm(lib.window, title, @"The tag is deleted once no note or task carries it.",
+                      @"Remove", YES, ^(BOOL confirmed) {
+        if (!confirmed || lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return;
+        clear_tag(lib, tag_id);
+    });
 }
 
 /*
@@ -494,6 +567,7 @@ static const shared_command_handler_t handlers[] = {
     { @"edit-tag",        run_edit_tag,        validate_tag_selected },
     { @"add-favorite",    run_set_favorite,    validate_add_favorite    },
     { @"remove-favorite", run_set_favorite,    validate_remove_favorite },
+    { @"clear-tag",       run_clear_tag,       validate_tag_selected },
     { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },

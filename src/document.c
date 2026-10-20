@@ -2596,6 +2596,73 @@ on_document_tag_char(gunichar c)
     return g_unichar_isalnum(c) || c == '_' || c == '-';
 }
 
+/* A #tag in a block's text: the byte span of its consecutive TAG runs.     */
+typedef struct {
+    gsize start;
+    gsize end;
+} tag_span_t;
+
+/*
+ * tag_spans — the #tags of one block's text.  A tag is the SPAN of
+ * consecutive TAG-carrying runs, not one run: runs also split on
+ * bold/italic/…, so a style applied inside "#hello" makes three runs of
+ * one tag — per run they would have become "h", "el", "lo" and the real
+ * tag gone on the next save.
+ *
+ * Inputs:
+ *   t — the block's text
+ *
+ * Output: a new GArray of tag_span_t in text order; g_array_unref() it.
+ */
+static GArray *
+tag_spans(const OnText *t)
+{
+    GArray   *spans  = g_array_new(FALSE, FALSE, sizeof(tag_span_t));
+    gsize     at     = 0;            /* start of run k                      */
+    gsize     span   = 0;            /* start of the open tag span          */
+    gboolean  in_tag = FALSE;
+    for (guint k = 0; k <= t->runs->len; k++) {
+        const OnRun *r = (k < t->runs->len)
+            ? &g_array_index(t->runs, OnRun, k) : NULL;
+        gboolean tagged = r != NULL && (r->flags & ON_FMT_TAG) != 0;
+        if (tagged && !in_tag) {
+            span   = at;
+            in_tag = TRUE;
+        } else if (!tagged && in_tag) {
+            tag_span_t s = { span, at };
+            g_array_append_val(spans, s);
+            in_tag = FALSE;
+        }
+        if (r != NULL)
+            at += r->len;
+    }
+    return spans;
+}
+
+/*
+ * tag_span_name — a tag's name: its span's text, whitespace-trimmed,
+ * without the leading '#'.
+ *
+ * Inputs:
+ *   t    — the block's text
+ *   span — the tag's span in it
+ *
+ * Output: a new string; NULL when nothing is left.  g_free it.
+ */
+static gchar *
+tag_span_name(const OnText *t, tag_span_t span)
+{
+    gchar *name = g_strndup(t->text->str + span.start, span.end - span.start);
+    g_strstrip(name);
+    gchar *bare = g_strdup(*name == '#' ? name + 1 : name);
+    g_free(name);
+    if (*bare == '\0') {
+        g_free(bare);
+        return NULL;
+    }
+    return bare;
+}
+
 GList *
 on_document_collect_tags(const OnDocument *d)
 {
@@ -2604,35 +2671,16 @@ on_document_collect_tags(const OnDocument *d)
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         if (b->text == NULL)
             continue;
-        /* A tag is the SPAN of consecutive TAG-carrying runs, not one run:
-         * runs also split on bold/italic/…, so a style applied inside
-         * "#hello" makes three runs of one tag — per run they would have
-         * become "h", "el", "lo" and the real tag gone on the next save.  */
-        gsize at = 0;                /* start of run k                      */
-        gsize span = 0;              /* start of the open tag span          */
-        gboolean in_tag = FALSE;
-        for (guint k = 0; k <= b->text->runs->len; k++) {
-            const OnRun *r = (k < b->text->runs->len)
-                ? &g_array_index(b->text->runs, OnRun, k) : NULL;
-            gboolean tagged = r != NULL && (r->flags & ON_FMT_TAG) != 0;
-            if (tagged && !in_tag) {
-                span = at;
-                in_tag = TRUE;
-            } else if (!tagged && in_tag) {
-                gchar *name = g_strndup(b->text->text->str + span,
-                                        at - span);
-                g_strstrip(name);
-                const gchar *bare = (*name == '#') ? name + 1 : name;
-                if (*bare != '\0' &&
-                    g_list_find_custom(names, bare,
-                                       (GCompareFunc)g_strcmp0) == NULL)
-                    names = g_list_prepend(names, g_strdup(bare));
-                g_free(name);
-                in_tag = FALSE;
-            }
-            if (r != NULL)
-                at += r->len;
+        GArray *spans = tag_spans(b->text);
+        for (guint k = 0; k < spans->len; k++) {
+            gchar *bare = tag_span_name(b->text, g_array_index(spans, tag_span_t, k));
+            if (bare != NULL &&
+                g_list_find_custom(names, bare, (GCompareFunc)g_strcmp0) == NULL)
+                names = g_list_prepend(names, bare);
+            else
+                g_free(bare);
         }
+        g_array_unref(spans);
     }
     return g_list_reverse(names);
 }
@@ -2730,6 +2778,67 @@ on_document_append_tag(OnDocument *d, const gchar *word)
     g_free(token);
     on_document_end_group(d);
     return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * text_is_blank() — is a text empty or only whitespace?
+ * ------------------------------------------------------------------------- */
+static gboolean
+text_is_blank(const OnText *t)
+{
+    for (const gchar *c = t->text->str; *c != '\0'; c = g_utf8_next_char(c))
+        if (!g_unichar_isspace(g_utf8_get_char(c)))
+            return FALSE;
+    return TRUE;
+}
+
+gboolean
+on_document_remove_tag(OnDocument *d, const gchar *word)
+{
+    if (word == NULL || *word == '\0')
+        return FALSE;
+    gchar   *folded  = g_utf8_casefold(word, -1);
+    gboolean removed = FALSE;
+
+    on_document_begin_group(d);
+    /* Last block and last tag first, so the offsets still to be used hold. */
+    for (guint i = d->blocks->len; i-- > 0; ) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->text == NULL)
+            continue;
+        GArray  *spans = tag_spans(b->text);
+        gboolean hit   = FALSE;      /* a tag left this block               */
+        for (guint k = spans->len; k-- > 0; ) {
+            tag_span_t span = g_array_index(spans, tag_span_t, k);
+            gchar *bare = tag_span_name(b->text, span);
+            gchar *f    = bare != NULL ? g_utf8_casefold(bare, -1) : NULL;
+            gboolean match = f != NULL && strcmp(f, folded) == 0;
+            g_free(f);
+            g_free(bare);
+            if (!match)
+                continue;
+
+            /* The gap goes with it: the whitespace before the tag, or at a
+             * line's start the whitespace after it.                        */
+            const gchar *str  = b->text->text->str;
+            gsize        from = span.start;
+            gsize        to   = span.end;
+            while (from > 0 && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(str + from))))
+                from = (gsize)(g_utf8_prev_char(str + from) - str);
+            while (from == 0 && str[to] != '\0' && g_unichar_isspace(g_utf8_get_char(str + to)))
+                to = (gsize)(g_utf8_next_char(str + to) - str);
+            if (on_document_delete_text(d, (OnPos){ i, -1, from }, to - from))
+                hit = removed = TRUE;
+        }
+        g_array_unref(spans);
+        /* A body line that held nothing else goes; the title line stays.   */
+        if (hit && i > 0 && d->blocks->len > 1 && b->kind == ON_BLOCK_PARA &&
+            text_is_blank(b->text))
+            on_document_remove_block(d, i);
+    }
+    on_document_end_group(d);
+    g_free(folded);
+    return removed;
 }
 
 GArray *

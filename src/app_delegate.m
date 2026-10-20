@@ -520,7 +520,7 @@ build_menu_bar
         @"new-note", menu_rule,
         @"open-db", menu_rule,
         @"export-html", @"export-md", @"note-export-html", @"note-export-md", menu_rule,
-        @"edit-tag", @"add-favorite", @"remove-favorite", menu_rule,
+        @"edit-tag", @"add-favorite", @"remove-favorite", @"clear-tag", menu_rule,
         @"delete-note", @"note-restore", @"empty-trash",
         menu_rule,
     ]);

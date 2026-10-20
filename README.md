@@ -125,6 +125,12 @@ tags Tasks uses (one set in the shared file).
   Favorites**.  Drag a button along the bar to put the favorites in your
   order (new ones join at the end, by name).  Favorites are each app's
   own.  A tag's name never changes.
+- Right-click a tag, **Clear from all Notes**: after a confirmation
+  ("Do you want to remove the tag … from N notes?") its #word is taken out
+  of the text of every note that carries it, trashed ones too (the gap
+  goes too, and a line left holding nothing else), so the tag leaves this
+  sidebar.  It stays in the tag lists while a task carries it; once no note
+  and no task does, it is deleted.
 - A tag lives while a note (trashed too) or a task carries it.  A trashed
   note keeps its tags; Restore brings it back with them.
 - Export writes one file per note into one folder, each starting with its

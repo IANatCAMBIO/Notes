@@ -123,6 +123,26 @@ gboolean on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *nam
                              gsize n);
 
 /* ---------------------------------------------------------------------------
+ * on_note_remove_tags() — take tags out of a note's text
+ * (on_document_remove_tag), the way on_note_append_tags puts them in: the
+ * open editor's document when it has one, one undo step there, else the
+ * stored note.  A tag the note does not carry is skipped; a tag no note and
+ * no task carries any more is deleted by the schema's triggers.
+ *
+ * Inputs:
+ *   app     — the application context, its database open
+ *   note_id — the note
+ *   names   — tag names in any spelling
+ *   n       — how many
+ *
+ * Output: TRUE on success (also when the note carried none of them);
+ *         FALSE when the note could not be read or saved, or its editor
+ *         waits for the "changed outside" panel (nothing written).
+ * ------------------------------------------------------------------------- */
+gboolean on_note_remove_tags(OnApp *app, gint64 note_id, const gchar *const *names,
+                             gsize n);
+
+/* ---------------------------------------------------------------------------
  * on_note_field_tags_to_text() — every note whose old Tags field (the move
  * from folders) has tags: they go into its text (on_note_append_tags) and
  * the field is emptied, its updated_at kept, one transaction per note.

@@ -543,6 +543,15 @@ gchar *on_document_tag_word(const gchar *name);
 gboolean on_document_append_tag(OnDocument *d, const gchar *word);
 
 /* ---------------------------------------------------------------------------
+ * on_document_remove_tag() — take every #tag whose word is `word` (any
+ * case) out of the note's text, with the space that set it off.  A body
+ * paragraph left with nothing else on it is removed; the first line (the
+ * title) is never.  One undo step.
+ * Returns TRUE when a tag was removed.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_remove_tag(OnDocument *d, const gchar *word);
+
+/* ---------------------------------------------------------------------------
  * ACTION ITEMS BY ORDINAL — the note's REAL action lines numbered in
  * document order: a non-CODE text block whose text starts with '!' and
  * whose rest is more than whitespace and a "due <date>" (bare "!" lines

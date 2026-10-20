@@ -104,10 +104,24 @@ on_action_sync_note(OnApp *app, gint64 note_id)
 }
 
 /*
- * on_note_append_tags — see action_sync.h.
+ * edit_note_tags — change a note's #tags with a document edit, applied to
+ * the open editor's document when the note is being edited, else to the
+ * stored one, in one transaction.
+ *
+ * Inputs:
+ *   app     — the application context, its database open
+ *   note_id — the note
+ *   names   — tag names in any spelling (on_document_tag_word)
+ *   n       — how many
+ *   apply   — the edit for one tag word; TRUE when it changed the document
+ *
+ * Output: TRUE on success (also when nothing needed changing); FALSE when
+ *         the note could not be read or saved, or its editor waits for the
+ *         "changed outside" panel (nothing written).
  */
-gboolean
-on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
+static gboolean
+edit_note_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n,
+               gboolean (*apply)(OnDocument *d, const gchar *word))
 {
     OnDatabase *db = app->db;
     if (sync_held(app, note_id)) {
@@ -120,10 +134,10 @@ on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize
     OnDocument *live = app->live_document != NULL ? app->live_document(app, note_id) : NULL;
     OnDocument *doc  = live != NULL ? live : on_note_document_load(db, note_id);
     gboolean    ok   = doc != NULL;
-    gboolean    edited = FALSE;      /* a tag went on the bottom line       */
+    gboolean    edited = FALSE;      /* the document was changed            */
     for (gsize i = 0; ok && i < n; i++) {
         gchar *word = on_document_tag_word(names[i]);
-        if (word != NULL && on_document_append_tag(doc, word)) {
+        if (word != NULL && apply(doc, word)) {
             edited = TRUE;
         }
         g_free(word);
@@ -143,6 +157,24 @@ on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize
         on_note_document_release(db, doc);
     }
     return on_db_txn_end(db, own, ok);
+}
+
+/*
+ * on_note_append_tags — see action_sync.h.
+ */
+gboolean
+on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
+{
+    return edit_note_tags(app, note_id, names, n, on_document_append_tag);
+}
+
+/*
+ * on_note_remove_tags — see action_sync.h.
+ */
+gboolean
+on_note_remove_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
+{
+    return edit_note_tags(app, note_id, names, n, on_document_remove_tag);
 }
 
 /*

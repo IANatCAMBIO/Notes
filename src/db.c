@@ -1113,6 +1113,26 @@ on_db_field_tag_notes(OnDatabase *db)
 }
 
 /*
+ * on_db_note_ids_with_tag — see db.h.
+ */
+GArray *
+on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id)
+{
+    GArray       *out  = g_array_new(FALSE, FALSE, sizeof(gint64));
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT DISTINCT note_id FROM note_tags WHERE tag_id = ? ORDER BY note_id");
+    if (stmt == NULL)
+        return out;
+    sqlite3_bind_int64(stmt, 1, tag_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        gint64 id = sqlite3_column_int64(stmt, 0);
+        g_array_append_val(out, id);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+/*
  * on_db_note_field_tags_clear — see db.h.
  */
 gboolean

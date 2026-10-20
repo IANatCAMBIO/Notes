@@ -804,6 +804,50 @@ test_tags(OnDatabase *db)
     on_document_free(doc);
     check(tag_count(db, "urgent") == -1 && tag_count(db, "salt") == 2,
           "untag: the tag no note carries is pruned, the other kept");
+    /* Remove a tag: any case, with its gap; a line left empty goes.        */
+    doc = on_note_document_load(db, two);
+    check(!on_document_remove_tag(doc, "nosuchtag"), "remove tag: a tag the note lacks is skipped");
+    check(on_document_remove_tag(doc, "SALT"), "remove tag: found in any case");
+    check(save_with_tags(db, two, doc), "remove tag: saved");
+    on_document_free(doc);
+    gchar *cleared = on_note_text_cached(db, two);
+    check(strcmp(cleared, "Tagged two\nbody") == 0, "remove tag: its line goes with it");
+    g_free(cleared);
+    check(tag_count(db, "salt") == 1, "remove tag: the other note keeps the tag");
+    doc = on_note_document_load(db, one);
+    OnBlock *mid = on_block_new_text(ON_BLOCK_PARA);
+    on_text_append(mid->text, "see ", 4, 0);
+    on_text_append(mid->text, "#salt", 5, ON_FMT_TAG);
+    on_text_append(mid->text, " here", 5, 0);
+    on_document_insert_block(doc, 1, mid);
+    check(on_document_remove_tag(doc, "salt"), "remove tag: removed inside a line");
+    check(strcmp(on_document_block(doc, 1)->text->text->str, "see here") == 0,
+          "remove tag: the gap goes with it");
+    check(on_document_n_blocks(doc) == 3, "remove tag: the line that held the tag too is gone");
+    check(save_with_tags(db, one, doc), "remove tag: saved");
+    on_document_free(doc);
+    check(tag_count(db, "salt") == -1, "remove tag: the last carrier gone, the tag is pruned");
+    /* A trashed note keeps its tag: it is found, and clearing it frees the tag. */
+    doc = on_note_document_load(db, two);
+    add_tag_line(doc, (const char *[]){ "salt", NULL });
+    check(save_with_tags(db, two, doc), "trashed tag: saved");
+    on_document_free(doc);
+    check(on_db_notes_trash(db, &two, 1), "trashed tag: trashed");
+    gint64 salt_tag = 0;
+    tags = on_db_tag_list(db, ON_TAGS_ALL);
+    for (GList *l = tags; l != NULL; l = l->next)
+        if (strcmp(((OnTag *)l->data)->name, "salt") == 0) salt_tag = ((OnTag *)l->data)->id;
+    on_db_tag_list_free(tags);
+    GArray *carriers = on_db_note_ids_with_tag(db, salt_tag);
+    labelled = on_db_notes_by_tag(db, salt_tag);
+    check(salt_tag != 0 && carriers->len == 1 && g_array_index(carriers, gint64, 0) == two &&
+          labelled == NULL, "trashed tag: found among the carriers, not among the visible notes");
+    g_array_unref(carriers);
+    doc = on_note_document_load(db, two);
+    check(on_document_remove_tag(doc, "salt") && save_with_tags(db, two, doc),
+          "trashed tag: removed from the trashed note");
+    on_document_free(doc);
+    check(tag_count(db, "salt") == -1, "trashed tag: the last carrier gone, the tag is pruned");
     gint64 both[] = { one, two };
     check(on_db_notes_delete(db, both, 2) && tag_count(db, "salt") == -1,
           "tags: deleting the last notes prunes their tags");

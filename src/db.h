@@ -407,6 +407,11 @@ gboolean on_db_note_set_text_tags(OnDatabase *db, gint64 note_id,
  * g_array_unref().                                                          */
 GArray *on_db_field_tag_notes(OnDatabase *db);
 
+/* Every note carrying tag `tag_id`, TRASHED ones too (they keep their tags),
+ * by id, oldest first.  Returns a GArray of gint64; free with
+ * g_array_unref().                                                          */
+GArray *on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id);
+
 /* Empty note `note_id`'s old Tags field: a tag only the field gave goes, a
  * tag its text has too stays as a text tag.  Once its text has them
  * (on_note_field_tags_to_text).  Runs in the caller's transaction when one

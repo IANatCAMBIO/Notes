@@ -452,8 +452,9 @@ command_item(NSString *ident, NSString *title)
 /*
  * menuNeedsUpdate: — the table's menu is about to open on the row under
  * the pointer (clickedRow; the selection is left alone): the Trash
- * empties; a tag is edited (its emoji and Notes' favorite flag) or made a
- * favorite (a favorite is removed from the Favorites bar's own menu);
+ * empties; a tag is edited (its emoji and Notes' favorite flag), made a
+ * favorite (a favorite is removed from the Favorites bar's own menu) or
+ * cleared from every note;
  * every row but the Trash searches within itself.  The items are commands, run
  * by the library through the responder chain, each carrying its row.
  * Nothing for empty space or the Tags header.
@@ -476,6 +477,7 @@ menuNeedsUpdate:(NSMenu *)menu
     if (it.kind == on_sb_tag) {
         [menu addItem:command_item(@"edit-tag", nil)];
         [menu addItem:command_item(@"add-favorite", nil)];
+        [menu addItem:command_item(@"clear-tag", nil)];
         [menu addItem:NSMenuItem.separatorItem];
     }
     [menu addItem:command_item(@"search-here", nil)];

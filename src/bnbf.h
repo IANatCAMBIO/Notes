@@ -33,8 +33,9 @@
  *                      [u32 name_len] [name_len UTF-8 bytes]
  *                      an attached file: the id of its note_file row (the
  *                      bytes live in the database, not in the blob) and its
- *                      name (no path).  Always a line of its own, like a
- *                      TABLE.
+ *                      name (no path).  An object in the line it sits on,
+ *                      like an inline image: several in a row sit side by
+ *                      side.
  *
  * IMAGE records always hold the image at its ORIGINAL resolution; the
  * display_width field records how wide the user chose to show it in the

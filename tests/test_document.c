@@ -499,91 +499,90 @@ remap_none(gint64 id, gpointer data)
 static void
 test_file_block(void)
 {
+    /* Two files side by side in one line, with text around them: attached
+     * files are inline objects, like inline images.                        */
     Blob b;
     blob_begin(&b);
-    blob_text(&b, 0, "a\n");
+    blob_text(&b, 0, "a ");
     on_bnbf_write_file(&b.w, 7, "notes \xc3\xa9.zip", strlen("notes \xc3\xa9.zip"));
-    blob_text(&b, 0, "\nb");
+    on_bnbf_write_file(&b.w, 9, "b.pdf", 5);
+    blob_text(&b, 0, " tail\nnext");
     GBytes *blob = blob_end(&b);
 
     OnDocument *d = load_clean(blob);
-    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
-    OnBlock *f = on_document_block(d, 1);
-    g_assert_cmpint(f->kind, ==, ON_BLOCK_FILE);
-    g_assert_cmpstr(f->file_name, ==, "notes \xc3\xa9.zip");
-    g_assert_cmpint(f->file_id, ==, 7);
-    g_assert_cmpint(on_document_image_count(d), ==, 0);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    OnText *t = on_document_block(d, 0)->text;
+    g_assert_cmpuint(t->objects->len, ==, 2);
+    const OnInlineObject *o0 = &g_array_index(t->objects, OnInlineObject, 0);
+    const OnInlineObject *o1 = &g_array_index(t->objects, OnInlineObject, 1);
+    g_assert_cmpint(o0->kind, ==, ON_OBJECT_FILE);
+    g_assert_cmpint(o0->file_id, ==, 7);
+    g_assert_cmpstr(o0->file_name, ==, "notes \xc3\xa9.zip");
+    g_assert_cmpint(o1->file_id, ==, 9);
+    g_assert_cmpuint(o1->offset, ==, o0->offset + ON_OBJ_CHAR_LEN);
+    g_assert_cmpint(on_document_image_count(d), ==, 0);   /* not pictures */
     assert_roundtrip(d, blob);
 
-    /* A selection across it copies it; a delete removes it.                */
-    OnPos a = { 0, -1, 0 }, e = { 2, -1, 1 };
-    OnDocument *frag = on_document_copy_range(d, a, e);
-    g_assert_cmpuint(on_document_n_blocks(frag), ==, 3);
-    g_assert_cmpint(on_document_block(frag, 1)->kind, ==, ON_BLOCK_FILE);
-    g_assert_cmpint(on_document_block(frag, 1)->file_id, ==, 7);
-    assert_valid(frag);
+    /* Plain text reads a file as its name.                                 */
+    gchar *plain = on_document_plain_text(d);
+    g_assert_cmpstr(plain, ==, "a notes \xc3\xa9.zipb.pdf tail\nnext");
+    g_free(plain);
 
-    /* A fragment's files are remapped on their way into another note: a
-     * new id, or, when 0, the block goes.                                  */
+    /* A selection copies the files; remapping gives them new ids, or, when
+     * 0, takes them out of the line.                                       */
+    OnPos a = { 0, -1, 0 }, e = { 0, -1, (gsize)t->text->len };
+    OnDocument *frag = on_document_copy_range(d, a, e);
+    g_assert_cmpuint(g_array_index(on_document_block(frag, 0)->text->objects,
+                                   OnInlineObject, 1).file_id, ==, 9);
     on_document_remap_files(frag, remap_plus_100, NULL);
-    g_assert_cmpint(on_document_block(frag, 1)->file_id, ==, 107);
+    g_assert_cmpint(g_array_index(on_document_block(frag, 0)->text->objects,
+                                  OnInlineObject, 0).file_id, ==, 107);
+    assert_valid(frag);
     on_document_remap_files(frag, remap_none, NULL);
-    g_assert_cmpuint(on_document_n_blocks(frag), ==, 2);
+    g_assert_cmpuint(on_document_block(frag, 0)->text->objects->len, ==, 0);
     assert_valid(frag);
     on_document_free(frag);
 
-    gchar *plain = on_document_plain_text(d);
-    g_assert_cmpstr(plain, ==, "a\nnotes \xc3\xa9.zip\nb");
-    g_free(plain);
-
-    /* The history keeps a deleted block's id alive until it is cleared.    */
-    OnPos from = { 1, -1, 0 }, to = { 1, -1, 1 };
-    g_assert_true(on_document_delete_range(d, from, to, NULL));
-    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    /* The history keeps a deleted file's id alive until it is cleared.     */
+    OnPos from = { 0, -1, o0->offset };
+    g_assert_true(on_document_delete_range(d, from,
+                  (OnPos){ 0, -1, o0->offset + 2 * ON_OBJ_CHAR_LEN }, NULL));
+    g_assert_cmpuint(on_document_block(d, 0)->text->objects->len, ==, 0);
     assert_valid(d);
     GArray *live = on_document_file_ids(d, FALSE);
     GArray *held = on_document_file_ids(d, TRUE);
     g_assert_cmpuint(live->len, ==, 0);
-    g_assert_cmpuint(held->len, ==, 1);
-    g_assert_cmpint(g_array_index(held, gint64, 0), ==, 7);
+    g_assert_cmpuint(held->len, ==, 2);
     g_array_unref(live);
     g_array_unref(held);
     g_assert_true(on_document_undo(d));
-    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_FILE);
     assert_roundtrip(d, blob);
-    held = on_document_file_ids(d, TRUE);          /* in the doc and in redo */
-    g_assert_cmpuint(held->len, >=, 1);
-    g_array_unref(held);
     on_document_clear_undo(d);
     held = on_document_file_ids(d, TRUE);
-    g_assert_cmpuint(held->len, ==, 1);
+    g_assert_cmpuint(held->len, ==, 2);
     g_array_unref(held);
     on_document_free(d);
     g_bytes_unref(blob);
 
-    /* A FILE record on a line with text splits the line, as a table does.  */
+    /* A file alone on its line is a line with one object; a zero id is
+     * malformed: the load stops there.                                     */
     blob_begin(&b);
-    blob_text(&b, 0, "x");
     on_bnbf_write_file(&b.w, 3, "f.bin", 5);
-    blob_text(&b, 0, "y");
+    blob_text(&b, 0, "\nz");
+    blob = blob_end(&b);
+    d = load_clean(blob);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    g_assert_cmpuint(on_document_block(d, 0)->text->objects->len, ==, 1);
+    assert_roundtrip(d, blob);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    blob_begin(&b);
+    on_bnbf_write_file(&b.w, 0, "f.bin", 5);
     blob = blob_end(&b);
     gsize n;
     const guint8 *data = g_bytes_get_data(blob, &n);
     OnDocLoadReport rep;
-    d = on_document_from_bnbf(data, n, &rep);
-    g_assert_cmpuint(rep.split_file, ==, 2);
-    g_assert_false(on_document_load_report_is_clean(&rep));
-    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
-    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_FILE);
-    assert_valid(d);
-    on_document_free(d);
-    g_bytes_unref(blob);
-
-    /* A record with a zero id is malformed: the load stops there.          */
-    blob_begin(&b);
-    on_bnbf_write_file(&b.w, 0, "f.bin", 5);
-    blob = blob_end(&b);
-    data = g_bytes_get_data(blob, &n);
     d = on_document_from_bnbf(data, n, &rep);
     g_assert_nonnull(rep.error);
     on_document_free(d);
@@ -612,9 +611,9 @@ test_image_inline(void)
     g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
     OnText *t = on_document_block(d, 0)->text;
     g_assert_cmpstr(t->text->str, ==, "ab" ON_OBJ_CHAR "cd" ON_OBJ_CHAR);
-    g_assert_cmpuint(t->images->len, ==, 2);
-    g_assert_cmpuint(g_array_index(t->images, OnInlineImage, 0).offset, ==, 2);
-    g_assert_cmpuint(g_array_index(t->images, OnInlineImage, 1).offset, ==, 7);
+    g_assert_cmpuint(t->objects->len, ==, 2);
+    g_assert_cmpuint(g_array_index(t->objects, OnInlineObject, 0).offset, ==, 2);
+    g_assert_cmpuint(g_array_index(t->objects, OnInlineObject, 1).offset, ==, 7);
     g_assert_cmpuint(t->runs->len, ==, 1);    /* U+FFFC took the bold      */
     g_assert_cmpint(on_document_image_count(d), ==, 2);
     guint32 w;
@@ -639,7 +638,7 @@ test_image_inline(void)
     d = on_document_from_bnbf(data, n, &rep);
     g_assert_cmpuint(on_document_n_blocks(d), ==, 1);
     g_assert_cmpint(on_document_block(d, 0)->kind, ==, ON_BLOCK_PARA);
-    g_assert_cmpuint(on_document_block(d, 0)->text->images->len, ==, 1);
+    g_assert_cmpuint(on_document_block(d, 0)->text->objects->len, ==, 1);
     assert_valid(d);
     assert_roundtrip(d, blob);
     on_document_free(d);
@@ -901,10 +900,10 @@ test_text_ops(void)
     on_text_add_image(t, 4, png, 0);
     assert_valid(d);
     on_text_insert(t, 0, "Q", 1, 0);
-    g_assert_cmpuint(g_array_index(t->images, OnInlineImage, 0).offset, ==, 5);
+    g_assert_cmpuint(g_array_index(t->objects, OnInlineObject, 0).offset, ==, 5);
     assert_valid(d);
     on_text_delete(t, 5, ON_OBJ_CHAR_LEN);
-    g_assert_cmpuint(t->images->len, ==, 0);
+    g_assert_cmpuint(t->objects->len, ==, 0);
     assert_valid(d);
     g_bytes_unref(png);
 
@@ -955,7 +954,7 @@ test_block_copy(void)
 
     OnBlock *text = on_block_copy(on_document_block(d, 0));
     g_assert_cmpstr(text->text->text->str, ==, "x" ON_OBJ_CHAR);
-    g_assert_cmpuint(text->text->images->len, ==, 1);
+    g_assert_cmpuint(text->text->objects->len, ==, 1);
     g_assert_cmpuint(text->text->runs->len, ==, 1);
     on_block_free(text);
 
@@ -1081,11 +1080,11 @@ test_ops_text(void)
     GBytes *with_img = snapshot(d);
     g_assert_true(on_document_delete_text(d, at(0, 3), 6));  /* "lo" img " " */
     g_assert_cmpstr(block_text(d, 0), ==, "hel#tag");
-    g_assert_cmpuint(t->images->len, ==, 0);
+    g_assert_cmpuint(t->objects->len, ==, 0);
     assert_valid(d);
     g_assert_true(on_document_undo(d));
-    g_assert_cmpuint(t->images->len, ==, 1);
-    g_assert_cmpuint(g_array_index(t->images, OnInlineImage, 0).display_width,
+    g_assert_cmpuint(t->objects->len, ==, 1);
+    g_assert_cmpuint(g_array_index(t->objects, OnInlineObject, 0).display_width,
                      ==, 44);
     assert_roundtrip(d, with_img);
     g_bytes_unref(png);

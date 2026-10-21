@@ -14,7 +14,7 @@ on_note_edit_is_blank(const OnDocument *doc)
         const OnBlock *b = on_document_block(doc, i);
         /* An image or table block, a task box, an inline image: content.   */
         if (b->text == NULL || b->kind == ON_BLOCK_CHECK ||
-            b->text->images->len > 0) {
+            b->text->objects->len > 0) {
             return false;
         }
         for (const gchar *p = b->text->text->str; *p != '\0';

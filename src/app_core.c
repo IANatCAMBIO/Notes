@@ -35,6 +35,7 @@ static const bool_pref_t bool_prefs[] = {
     { "statusbar_note_id",        FALSE, offsetof(OnApp, statusbar_note_id)      },
     { "show_done_actions",        TRUE,  offsetof(OnApp, show_done_actions)      },
     { "bold_list_titles",         TRUE,  offsetof(OnApp, bold_list_titles)       },
+    { "drop_files_last_line",     FALSE, offsetof(OnApp, drop_files_last_line)   },
     { "ai_enabled",               FALSE, offsetof(OnApp, ai_enabled)             },
 };
 

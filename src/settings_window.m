@@ -58,6 +58,7 @@ typedef enum {
     apply_sidebar_fit,               /* the sidebar's width                 */
     apply_editors,                   /* every open editor                   */
     apply_status_path,               /* the library and editor status bars  */
+    apply_none,                      /* read when it is used                */
 } apply_t;
 
 /* One checkbox: its label, its ini key and what it changes. */
@@ -81,6 +82,7 @@ static const bool_setting_t editor_settings[] = {
     { "First line is Title formatted",                                "first_line_title",       apply_editors },
     { "Compact toolbar (group paragraph styles and lists into menus)", "compact_editor_toolbar", apply_editors },
     { "Show note id in the editor status bar",                        "statusbar_note_id",      apply_editors },
+    { "Always put dropped files on the last line of the note",        "drop_files_last_line",   apply_none    },
 };
 
 /*
@@ -107,6 +109,7 @@ setting_on(const OnApp *app, const char *key)
         { "first_line_title",       offsetof(OnApp, first_line_title)       },
         { "compact_editor_toolbar", offsetof(OnApp, compact_editor_toolbar) },
         { "statusbar_note_id",      offsetof(OnApp, statusbar_note_id)      },
+        { "drop_files_last_line",   offsetof(OnApp, drop_files_last_line)   },
     };
     for (size_t i = 0; i < sizeof fields / sizeof *fields; i++)
         if (strcmp(fields[i].key, key) == 0) return *(const gboolean *)((const char *)app + fields[i].off);
@@ -846,6 +849,7 @@ bool_toggled:(NSButton *)sender
         on_library_refresh_all(self.lib);
         on_editor_settings_changed();
         break;
+    case apply_none:        break;
     }
 }
 

@@ -192,7 +192,7 @@ typedef struct {
     gboolean     raw;                /* inside a code block: no styling     */
 } RenderInline;
 
-/* render_inline_text() / render_inline_image() — on_text_walk callbacks for
+/* render_inline_text() / render_inline_object() — on_text_walk callbacks for
  * render_inline.                                                            */
 static void
 render_inline_text(const gchar *s, gsize n, guint32 flags, gpointer data)
@@ -202,13 +202,25 @@ render_inline_text(const gchar *s, gsize n, guint32 flags, gpointer data)
 }
 
 static void
-render_inline_image(const OnInlineImage *img, gpointer data)
+render_inline_object(const OnInlineObject *obj, gpointer data)
 {
-    emit_image(((RenderInline *)data)->ctx, img->png);
+    OnExportCtx *ctx = ((RenderInline *)data)->ctx;
+    if (obj->kind == ON_OBJECT_IMAGE) {
+        emit_image(ctx, obj->png);
+        return;
+    }
+    /* An attached file is its name: its bytes are not in an export.         */
+    if (ctx->format == ON_EXPORT_HTML) {
+        gchar *esc = g_markup_escape_text(obj->file_name, -1);
+        g_string_append(ctx->out, esc);
+        g_free(esc);
+    } else {
+        g_string_append(ctx->out, obj->file_name);
+    }
 }
 
 /* ---------------------------------------------------------------------------
- * render_inline() — a text block's runs in order, its inline images where
+ * render_inline() — a text block's runs in order, its inline objects where
  * they sit (the U+FFFC placeholders themselves are not emitted).
  *   ctx  — rendering context.
  *   t    — the block's text.
@@ -217,7 +229,7 @@ render_inline_image(const OnInlineImage *img, gpointer data)
 static void
 render_inline(OnExportCtx *ctx, const OnText *t, gboolean raw)
 {
-    static const OnTextWalk walk = { render_inline_text, render_inline_image };
+    static const OnTextWalk walk = { render_inline_text, render_inline_object };
     RenderInline r = { ctx, raw };
     on_text_walk(t, &walk, &r);
 }
@@ -331,12 +343,6 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
                 emit_table(ctx, b);
                 g_string_append(ctx->out, "</p>\n");
                 break;
-            case ON_BLOCK_FILE: {
-                gchar *esc = g_markup_escape_text(b->file_name, -1);
-                g_string_append_printf(ctx->out, "<p>%s</p>\n", esc);
-                g_free(esc);
-                break;
-            }
             default:
                 if (b->text->text->len > 0) {
                     g_string_append(ctx->out, "<p>");
@@ -384,9 +390,6 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
             case ON_BLOCK_TABLE:
                 emit_table(ctx, b);
                 g_string_append(ctx->out, "\n\n");
-                break;
-            case ON_BLOCK_FILE:
-                g_string_append_printf(ctx->out, "%s\n\n", b->file_name);
                 break;
             default:
                 render_inline(ctx, b->text, FALSE);

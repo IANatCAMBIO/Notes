@@ -158,6 +158,19 @@ void on_note_view_toggle_paragraph(NotesNoteView *view, guint32 flag);
 void on_note_view_insert_image(NotesNoteView *view, const uint8_t *png, size_t n);
 
 /*
+ * on_note_view_drop_files — files dropped on the note: they become tiles
+ * (pictures, images) at the drop point, or at the end of the note's last
+ * line when the "drop_files_last_line" setting is on.  An existing
+ * selection is never replaced.  What performDragOperation: does.
+ *
+ * Inputs:
+ *   view  — the view
+ *   urls  — the dropped files, in order
+ *   point — where they were dropped, in the view's coordinates
+ */
+void on_note_view_drop_files(NotesNoteView *view, NSArray<NSURL *> *urls, NSPoint point);
+
+/*
  * on_note_view_insert_table — a fresh 3x3 table at the caret.
  * on_note_view_insert_date  — today's date (YYYY-MM-DD) as typed text.
  */

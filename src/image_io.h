@@ -1,7 +1,7 @@
 /* ===========================================================================
  * image_io.h — the one image type of the core, and its four operations
  *
- * An image inside a note is PNG bytes (OnBlock.png, OnInlineImage.png): the
+ * An image inside a note is PNG bytes (OnBlock.png, OnInlineObject.png): the
  * model, the database and the exporter never hold anything else,
  * and stored bytes are written back verbatim, never re-encoded.  Pixels are
  * needed only to draw, and for that there is exactly one decoded type, a

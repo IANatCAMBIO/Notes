@@ -44,8 +44,10 @@ typedef struct {
     double              h;          /* height INCLUDING BLOCK_GAP            */
     double              x;          /* left of text / object                 */
     double              w;          /* layout width / object width           */
-    double              img_h;      /* IMAGE and FILE block height           */
-    on_text_layout_t   *label;      /* FILE: the name under the icon         */
+    double              img_h;      /* IMAGE block height                    */
+    on_text_layout_t  **labels;     /* [n_labels]: the name under each inline
+                                       file's icon (NULL for an image)       */
+    size_t              n_labels;
     /* TABLE */
     double             *col_w;      /* [cols]                                */
     double             *row_h;      /* [rows]                                */
@@ -90,8 +92,11 @@ bl_clear(BL *b)
 {
     on_text_layout_free(b->layout);
     b->layout = NULL;
-    on_text_layout_free(b->label);
-    b->label = NULL;
+    for (size_t k = 0; k < b->n_labels; k++)
+        on_text_layout_free(b->labels[k]);
+    free(b->labels);
+    b->labels   = NULL;
+    b->n_labels = 0;
     if (b->cells) {
         for (size_t k = 0; k < b->n_cells; k++)
             on_text_layout_free(b->cells[k]);
@@ -234,6 +239,30 @@ file_label_text(const gchar *name)
     return out;
 }
 
+/*
+ * file_label_layout — the name label of an attached file's tile: the name
+ * (file_label_text), centred, wrapped to the tile's width.
+ *
+ * Inputs:
+ *   L    — the layout (font size, appearance)
+ *   name — the file's name
+ *
+ * Output: the layout (on_text_layout_free it).
+ */
+static on_text_layout_t *
+file_label_layout(const OnDocLayout *L, const gchar *name)
+{
+    gchar *shown = file_label_text(name);
+    OnRun run = { strlen(shown), 0 };
+    on_text_content_t ct = { .text = shown, .len = run.len, .runs = &run, .n_runs = 1 };
+    on_text_style_t st = { .font_size = L->font_size, .scale = 1.0,
+                           .width = on_look_file_tile_w - 2.0 * on_look_file_pad,
+                           .centered = true, .dark = L->style.dark };
+    on_text_layout_t *label = on_text_layout_new(&ct, &st);
+    g_free(shown);
+    return label;
+}
+
 /* ── preedit helpers ────────────────────────────────────────────────────── */
 
 /*
@@ -270,14 +299,17 @@ typedef struct {
     on_text_content_t c;
     char             *text_buf;     /* the preedit-spliced text, or NULL     */
     on_text_span_t   *hits;         /* this text's find highlights           */
-    on_text_box_t    *boxes;        /* its inline images' boxes              */
+    on_text_box_t    *boxes;        /* its inline objects' boxes             */
+    on_text_layout_t **labels;      /* a file's name label per object, else
+                                       NULL; layout_block takes them over    */
+    size_t            n_labels;
 } content_t;
 
 /*
  * make_content — describe a text or a table cell to the text layout: its
  * text (with the input method's preedit spliced in), its runs, its find
- * highlights and a box for each inline image, sized as GTK sizes them
- * (image_fit; 16 pt for an image that cannot be read).
+ * highlights and a box for each inline object, sized as GTK sizes an image
+ * (image_fit; 16 pt for an image that cannot be read) or as a file's tile.
  *
  * Inputs:
  *   L           — the layout
@@ -317,21 +349,34 @@ make_content(const OnDocLayout *L, const OnText *t, size_t block, int cell, cont
     c->runs   = (const OnRun *)t->runs->data;
     c->n_runs = (size_t)t->runs->len;
 
-    /* Inline images: a box each, at the object character's offset. */
-    guint n_img = t->images ? t->images->len : 0;
-    if (n_img > 0) {
-        out->boxes = calloc(n_img, sizeof *out->boxes);
-        for (guint k = 0; k < n_img; k++) {
-            const OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
-            int    iw = 0, ih = 0;
+    /* Inline objects: a box each, at the object character's offset — an
+     * image's is its fitted size, an attached file's its tile (icon and
+     * name label).                                                          */
+    guint n_obj = t->objects ? t->objects->len : 0;
+    if (n_obj > 0) {
+        out->boxes    = calloc(n_obj, sizeof *out->boxes);
+        out->labels   = calloc(n_obj, sizeof *out->labels);
+        out->n_labels = n_obj;
+        for (guint k = 0; k < n_obj; k++) {
+            const OnInlineObject *obj = &g_array_index(t->objects, OnInlineObject, k);
             double w = 16.0, h = 16.0;
-            if (on_image_probe_size(g_bytes_get_data(img->png, NULL),
-                                    (size_t)g_bytes_get_size(img->png), &iw, &ih))
-                image_fit(L, iw, ih, img->display_width, &w, &h);
-            out->boxes[k] = (on_text_box_t){ idx_of(L, block, cell, img->offset), w, h };
+            if (obj->kind == ON_OBJECT_FILE) {
+                out->labels[k] = file_label_layout(L, obj->file_name);
+                double lw, lh;
+                on_text_layout_size(out->labels[k], &lw, &lh);
+                w = on_look_file_tile_w;
+                h = on_look_file_pad + on_look_file_icon + on_look_file_pad + lh +
+                    on_look_file_pad;
+            } else {
+                int iw = 0, ih = 0;
+                if (on_image_probe_size(g_bytes_get_data(obj->png, NULL),
+                                        (size_t)g_bytes_get_size(obj->png), &iw, &ih))
+                    image_fit(L, iw, ih, obj->display_width, &w, &h);
+            }
+            out->boxes[k] = (on_text_box_t){ idx_of(L, block, cell, obj->offset), w, h };
         }
         c->boxes   = out->boxes;
-        c->n_boxes = n_img;
+        c->n_boxes = n_obj;
     }
 
     /* Find hits on this block/cell. */
@@ -363,6 +408,9 @@ content_free(content_t *content)
     free(content->text_buf);
     free(content->hits);
     free(content->boxes);
+    for (size_t k = 0; k < content->n_labels; k++)
+        on_text_layout_free(content->labels[k]);
+    free(content->labels);
 }
 
 /* ── text_style_for ─────────────────────────────────────────────────────── */
@@ -433,27 +481,6 @@ layout_block(OnDocLayout *L, size_t i)
         b->w     = fw;
         b->img_h = fh;
         b->h     = fh + BLOCK_GAP;
-        b->valid = true;
-        return;
-    }
-
-    if (blk->kind == ON_BLOCK_FILE) {
-        gchar *shown = file_label_text(blk->file_name);
-        OnRun run = { strlen(shown), 0 };
-        on_text_content_t ct = { .text = shown, .len = run.len,
-                                 .runs = &run, .n_runs = 1 };
-        on_text_style_t st = { .font_size = L->font_size, .scale = 1.0,
-                               .width = on_look_file_tile_w - 2.0 * on_look_file_pad,
-                               .centered = true, .dark = L->style.dark };
-        b->label = on_text_layout_new(&ct, &st);
-        g_free(shown);
-        double pw, ph;
-        on_text_layout_size(b->label, &pw, &ph);
-        b->x     = LEFT_MARGIN;
-        b->w     = on_look_file_tile_w;
-        b->img_h = on_look_file_pad + on_look_file_icon + on_look_file_pad + ph +
-                   on_look_file_pad;
-        b->h     = b->img_h + BLOCK_GAP;
         b->valid = true;
         return;
     }
@@ -536,7 +563,11 @@ layout_block(OnDocLayout *L, size_t i)
     content_t ct;
     make_content(L, blk->text, i, -1, &ct);
     on_text_style_t st = text_style_for(L, blk, i, -1, b->w, false, false);
-    b->layout = on_text_layout_new(&ct.c, &st);
+    b->layout   = on_text_layout_new(&ct.c, &st);
+    b->labels   = ct.labels;         /* the layout owns the labels now      */
+    b->n_labels = ct.n_labels;
+    ct.labels   = NULL;
+    ct.n_labels = 0;
     content_free(&ct);
 
     double pw, ph;
@@ -743,8 +774,22 @@ layout_for(const OnDocLayout *L, OnPos pos, double *ox, double *oy)
 /* ── image_ord_of ───────────────────────────────────────────────────────── */
 
 /*
- * image_ord_of — the document ordinal of block i's inline image k, or
- * the IMAGE block at i.
+ * image_objects_before — how many of a text's first `n` inline objects are
+ * images (attached files are not numbered with the images).
+ */
+static int
+image_objects_before(const OnText *t, guint n)
+{
+    int images = 0;
+    for (guint k = 0; k < n; k++)
+        if (g_array_index(t->objects, OnInlineObject, k).kind == ON_OBJECT_IMAGE)
+            images++;
+    return images;
+}
+
+/*
+ * image_ord_of — the document ordinal of block i's inline object k (an
+ * image), or the IMAGE block at i.
  */
 static int
 image_ord_of(const OnDocLayout *L, size_t i, int k)
@@ -755,9 +800,11 @@ image_ord_of(const OnDocLayout *L, size_t i, int k)
         if (blk->kind == ON_BLOCK_IMAGE)
             ord++;
         else if (blk->text)
-            ord += (int)blk->text->images->len;
+            ord += image_objects_before(blk->text, blk->text->objects->len);
     }
-    return ord + (k >= 0 ? k : 0);
+    if (k > 0)
+        ord += image_objects_before(on_document_block(L->doc, (guint)i)->text, (guint)k);
+    return ord;
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -954,8 +1001,7 @@ on_doc_layout_caret_rect(OnDocLayout *L, OnPos pos, on_rect_t *out)
     double ox = 0.0, oy = 0.0;
     on_text_layout_t *layout = layout_for(L, pos, &ox, &oy);
     if (!layout) {
-        double h = (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE)
-                   ? b->img_h : b->h - BLOCK_GAP;
+        double h = (blk->kind == ON_BLOCK_IMAGE) ? b->img_h : b->h - BLOCK_GAP;
         *out = (on_rect_t){ b->x + (pos.offset > 0 ? b->w : -1.0), b->y, 1.0, h };
         return;
     }
@@ -1021,10 +1067,10 @@ layout_image(OnDocLayout *L, guint block, gint inline_ord, CGContextRef ctx, on_
         png = blk->png;
     } else {
         if (!blk->text || inline_ord < 0 ||
-            (size_t)inline_ord >= blk->text->images->len)
+            (size_t)inline_ord >= blk->text->objects->len)
             return NULL;
-        OnInlineImage *img =
-            &g_array_index(blk->text->images, OnInlineImage, (guint)inline_ord);
+        OnInlineObject *img =
+            &g_array_index(blk->text->objects, OnInlineObject, (guint)inline_ord);
         png   = img->png;
         cache = &img->pixels;
         cfree = &img->pixels_free;
@@ -1048,36 +1094,34 @@ layout_image(OnDocLayout *L, guint block, gint inline_ord, CGContextRef ctx, on_
 }
 
 /*
- * layout_file_icon — the icon of a FILE block, rendered at the size it is
- * drawn (on_look_file_icon points at the context's scale) and cached on the
- * block (OnBlock.pixels, released with it).
+ * layout_file_icon — the icon of an attached file, rendered at the size it
+ * is drawn (on_look_file_icon points at the context's scale) and cached on
+ * the object (OnInlineObject.pixels, released with it).
  *
  * Inputs:
- *   doc   — the document
- *   block — the FILE block's index
- *   ctx   — the context being drawn into (its scale decides the pixels)
+ *   obj — the FILE object
+ *   ctx — the context being drawn into (its scale decides the pixels)
  *
- * Output: the icon, BORROWED (valid while the block lives and until the
+ * Output: the icon, BORROWED (valid while the object lives and until the
  *         next call for it).
  */
 static CGImageRef
-layout_file_icon(OnDocument *doc, guint block, CGContextRef ctx)
+layout_file_icon(OnInlineObject *obj, CGContextRef ctx)
 {
-    OnBlock *blk = on_document_block(doc, block);
     CGSize dev   = CGContextConvertSizeToDeviceSpace(
         ctx, CGSizeMake(on_look_file_icon, on_look_file_icon));
     double scale = fabs(dev.width) / on_look_file_icon;
-    CGImageRef cached = blk->pixels;
+    CGImageRef cached = obj->pixels;
     if (cached != NULL &&
         (double)CGImageGetWidth(cached) >= ceil(on_look_file_icon * scale))
         return cached;
-    CGImageRef icon = on_file_icon(blk->file_name, on_look_file_icon, scale);
+    CGImageRef icon = on_file_icon(obj->file_name, on_look_file_icon, scale);
     if (icon == NULL)
         return cached;
     if (cached != NULL)
-        blk->pixels_free(cached);
-    blk->pixels      = icon;
-    blk->pixels_free = (GDestroyNotify)CGImageRelease;
+        obj->pixels_free(cached);
+    obj->pixels      = icon;
+    obj->pixels_free = (GDestroyNotify)CGImageRelease;
     return icon;
 }
 
@@ -1111,6 +1155,7 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
     out->kind = ON_HIT_TEXT;
     out->pos.cell = -1;
     out->image_ord = -1;
+    out->object    = -1;
     if (!L->n_bl) return;
     size_t i = block_at_y(L, y);
     const BL *b = &L->bl[i];
@@ -1118,13 +1163,11 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
     out->block = (guint)i;
     out->pos.block = (guint)i;
 
-    if (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE) {
+    if (blk->kind == ON_BLOCK_IMAGE) {
         bool inside = x >= b->x && x < b->x + b->w &&
                       y >= b->y && y < b->y + b->img_h;
         out->pos.offset = (x < b->x + b->w / 2.0) ? 0 : 1;
-        if (inside && blk->kind == ON_BLOCK_FILE) {
-            out->kind = ON_HIT_FILE;
-        } else if (inside) {
+        if (inside) {
             out->kind = ON_HIT_IMAGE;
             out->image_ord = image_ord_of(L, i, 0);
         }
@@ -1172,18 +1215,23 @@ on_doc_layout_hit(OnDocLayout *L, double x, double y, OnDocHitResult *out)
         size_t idx = on_text_layout_index_at(b->layout, x - b->x, y - ty);
         out->pos.offset = off_of(L, i, -1, idx);
     }
-    /* Check for inline image hit. */
-    for (guint k = 0; k < blk->text->images->len; k++) {
-        const OnInlineImage *img =
-            &g_array_index(blk->text->images, OnInlineImage, k);
+    /* Check for an inline object hit: an image, or an attached file. */
+    for (guint k = 0; k < blk->text->objects->len; k++) {
+        const OnInlineObject *obj =
+            &g_array_index(blk->text->objects, OnInlineObject, k);
         on_rect_t br;
         on_text_layout_box_rect(b->layout, (size_t)k, &br);
         if (x >= b->x + br.x && x < b->x + br.x + br.w &&
             y >= ty + br.y    && y < ty + br.y + br.h) {
-            out->kind         = ON_HIT_IMAGE;
-            out->inline_image = true;
-            out->image_ord    = image_ord_of(L, i, (int)k);
-            out->pos.offset   = img->offset;
+            out->object       = (gint)k;
+            out->pos.offset   = obj->offset;
+            if (obj->kind == ON_OBJECT_FILE) {
+                out->kind = ON_HIT_FILE;
+            } else {
+                out->kind         = ON_HIT_IMAGE;
+                out->inline_image = true;
+                out->image_ord    = image_ord_of(L, i, (int)k);
+            }
             return;
         }
     }
@@ -1215,7 +1263,7 @@ block_end_pos(OnDocLayout *L, size_t i)
     if (blk->kind == ON_BLOCK_TABLE) {
         p.cell   = blk->rows * blk->cols - 1;
         p.offset = (gsize)text_len_at(L, p);
-    } else if (blk->kind == ON_BLOCK_IMAGE || blk->kind == ON_BLOCK_FILE) {
+    } else if (blk->kind == ON_BLOCK_IMAGE) {
         p.offset = 1;
     } else {
         p.offset = (gsize)blk->text->text->len;
@@ -1386,7 +1434,7 @@ on_doc_layout_move(OnDocLayout *L, OnPos pos, OnDocMove how, double *goal_x)
         out.block = (guint)j;
         out.cell  = -1;
         const OnBlock *nb = on_document_block(L->doc, (guint)j);
-        if (nb->kind == ON_BLOCK_IMAGE || nb->kind == ON_BLOCK_FILE) {
+        if (nb->kind == ON_BLOCK_IMAGE) {
             const BL *b = &L->bl[j];
             out.offset = (*goal_x > b->x + b->w / 2.0) ? 1 : 0;
             return out;
@@ -1578,21 +1626,6 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             continue;
         }
 
-        if (blk->kind == ON_BLOCK_FILE) {
-            on_rect_t r = { b->x, b->y, b->w, b->img_h };
-            if (sel_span(L, p, i, -1, 1, &s, &e, &whole) &&
-                (whole || (s == 0 && e == 1)))
-                on_paint_rounded_rect(ctx, r, 6.0, selc, selc, 0.0);
-            CGImageRef icon = layout_file_icon(L->doc, (guint)i, ctx);
-            on_rect_t ir = { b->x + (b->w - on_look_file_icon) / 2.0,
-                             b->y + on_look_file_pad,
-                             on_look_file_icon, on_look_file_icon };
-            on_paint_image(ctx, icon, ir);
-            on_text_layout_draw(b->label, ctx, b->x + on_look_file_pad,
-                                ir.y + ir.h + on_look_file_pad);
-            continue;
-        }
-
         if (blk->kind == ON_BLOCK_TABLE) {
             double cx, cy, cw, ch;
             shared_rgba_t bd = shared_look_pick(on_look_table_border, L->style.dark);
@@ -1700,11 +1733,23 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             }
         }
         on_text_layout_draw(b->layout, ctx, b->x, ty);
-        /* Inline images over their boxes. */
-        for (guint k = 0; k < blk->text->images->len; k++) {
+        /* Inline objects over their boxes: images, and attached files'
+         * tiles (icon over name). */
+        for (guint k = 0; k < blk->text->objects->len; k++) {
+            OnInlineObject *obj = &g_array_index(blk->text->objects, OnInlineObject, k);
             on_rect_t br;
             on_text_layout_box_rect(b->layout, (size_t)k, &br);
             on_rect_t ir = { b->x + br.x, ty + br.y, br.w, br.h };
+            if (obj->kind == ON_OBJECT_FILE) {
+                on_rect_t icon_r = { ir.x + (ir.w - on_look_file_icon) / 2.0,
+                                     ir.y + on_look_file_pad,
+                                     on_look_file_icon, on_look_file_icon };
+                on_paint_image(ctx, layout_file_icon(obj, ctx), icon_r);
+                if (k < b->n_labels && b->labels[k] != NULL)
+                    on_text_layout_draw(b->labels[k], ctx, ir.x + on_look_file_pad,
+                                        icon_r.y + icon_r.h + on_look_file_pad);
+                continue;
+            }
             CGImageRef cg = layout_image(L, (guint)i, (gint)k, ctx, ir);
             if (cg) on_paint_image(ctx, cg, ir);
         }

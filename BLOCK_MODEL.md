@@ -14,14 +14,18 @@
 > `GTK4_MIGRATION.md` and `CLAUDE.md` mean the GTK build's `docs/` at
 > that commit.
 
-> **Attached files (2026-10-20, BNBF v7, schema 203).**  `ON_BLOCK_FILE` is
-> an object block like an image: its own line, positions 0/1, no text.  It
+> **Attached files (2026-10-20, BNBF v7, schema 203).**  An attached file
+> is an INLINE OBJECT, like an inline image (`OnInlineObject`, kind
+> `ON_OBJECT_FILE`): the line carries a U+FFFC where it sits, and the object
 > holds `file_name` (UTF-8, no path) and `file_id`, the id of a `note_file`
-> row (`../shared_data`) that owns the bytes; the blob stores the FILE
-> record (`0x06`: `[i64 id][u32 name_len][name]`) and so stays small however
-> big the file is.  A FILE record on a line with anything else splits the
-> line (`split_file`), as a table does.  The format version is 7; a build
-> older than this one refuses such a blob.
+> row (`../shared_data`) that owns the bytes.  The view draws a tile — the
+> system icon with the name under it — that flows in the line, so several
+> files dropped together sit side by side, and text may follow them.  The
+> blob stores the FILE record (`0x06`: `[i64 id][u32 name_len][name]`), in
+> the line like an IMAGE record, and so stays small however big the file
+> is.  Images and files share the inline-object array; the image ordinals
+> (media browser, viewer) count images only.  The format version is 7; a
+> build older than this one refuses such a blob.
 >
 > **No row outlives what names it.**  A row belongs to ONE note and goes with
 > it (`ON DELETE CASCADE`: Delete, Empty Trash).  `on_note_document_save`

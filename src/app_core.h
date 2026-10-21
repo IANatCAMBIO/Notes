@@ -49,6 +49,7 @@
  * defaults are one table in app_core.c):
  *   code_copy_buttons      "code_copy_button"         1  code runs show "copy"
  *   code_line_numbers      "code_line_numbers"        1  gutter numbers
+ *   drop_files_last_line   "drop_files_last_line"     0  dropped files go to the note's last line
  *   sidebar_counts         "sidebar_counts"           1  counts in the sidebar (Tasks' key too)
  *   sidebar_fit_content    "sidebar_fit_content"      1  sidebar fits its rows
  *   sidebar_visible        "sidebar_visible"          1  the sidebar shows
@@ -167,6 +168,7 @@ typedef struct OnApp {
     gboolean    statusbar_note_id;
     gboolean    show_done_actions;
     gboolean    bold_list_titles;
+    gboolean    drop_files_last_line;
     gboolean    ai_enabled;
     gchar      *ai_command;
     on_grid_group_t grid_group;

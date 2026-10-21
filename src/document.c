@@ -22,17 +22,45 @@ on_text_new(void)
     OnText *t = g_new0(OnText, 1);
     t->text   = g_string_new(NULL);
     t->runs   = g_array_new(FALSE, FALSE, sizeof(OnRun));
-    t->images = g_array_new(FALSE, FALSE, sizeof(OnInlineImage));
+    t->objects = g_array_new(FALSE, FALSE, sizeof(OnInlineObject));
     return t;
 }
 
-/* inline_image_clear() — release what an inline image holds.               */
+/* inline_object_clear() — release what an inline object holds.             */
 static void
-inline_image_clear(OnInlineImage *img)
+inline_object_clear(OnInlineObject *obj)
 {
-    if (img->pixels_free != NULL)
-        img->pixels_free(img->pixels);
-    g_bytes_unref(img->png);
+    if (obj->pixels_free != NULL)
+        obj->pixels_free(obj->pixels);
+    if (obj->png != NULL)
+        g_bytes_unref(obj->png);
+    g_free(obj->file_name);
+}
+
+/* inline_object_dup() — a copy of an object, at `offset`: its bytes shared,
+ * its name copied, a view's pixel cache not copied.                         */
+static OnInlineObject
+inline_object_dup(const OnInlineObject *src, gsize offset)
+{
+    OnInlineObject c = *src;
+    c.offset      = offset;
+    c.png         = src->png != NULL ? g_bytes_ref(src->png) : NULL;
+    c.file_name   = g_strdup(src->file_name);
+    c.pixels      = NULL;
+    c.pixels_free = NULL;
+    return c;
+}
+
+/* text_insert_object() — put an object (taken, not copied) into the text's
+ * array, keeping it sorted by offset.                                       */
+static void
+text_insert_object(OnText *t, OnInlineObject obj)
+{
+    guint k = 0;
+    while (k < t->objects->len &&
+           g_array_index(t->objects, OnInlineObject, k).offset < obj.offset)
+        k++;
+    g_array_insert_val(t->objects, k, obj);
 }
 
 void
@@ -40,9 +68,9 @@ on_text_free(OnText *t)
 {
     if (t == NULL)
         return;
-    for (guint i = 0; i < t->images->len; i++)
-        inline_image_clear(&g_array_index(t->images, OnInlineImage, i));
-    g_array_free(t->images, TRUE);
+    for (guint i = 0; i < t->objects->len; i++)
+        inline_object_clear(&g_array_index(t->objects, OnInlineObject, i));
+    g_array_free(t->objects, TRUE);
     g_array_free(t->runs, TRUE);
     g_string_free(t->text, TRUE);
     g_free(t);
@@ -54,12 +82,10 @@ on_text_copy(const OnText *t)
     OnText *c = on_text_new();
     g_string_append_len(c->text, t->text->str, (gssize)t->text->len);
     g_array_append_vals(c->runs, t->runs->data, t->runs->len);
-    for (guint i = 0; i < t->images->len; i++) {
-        OnInlineImage img = g_array_index(t->images, OnInlineImage, i);
-        g_bytes_ref(img.png);
-        img.pixels      = NULL;      /* a view's cache is not copied        */
-        img.pixels_free = NULL;
-        g_array_append_val(c->images, img);
+    for (guint i = 0; i < t->objects->len; i++) {
+        const OnInlineObject *src = &g_array_index(t->objects, OnInlineObject, i);
+        OnInlineObject dup = inline_object_dup(src, src->offset);
+        g_array_append_val(c->objects, dup);
     }
     return c;
 }
@@ -124,8 +150,8 @@ on_text_insert(OnText *t, gsize off, const gchar *s, gsize n,
     runs_normalize(t);
 
     g_string_insert_len(t->text, (gssize)off, s, (gssize)n);
-    for (guint k = 0; k < t->images->len; k++) {
-        OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
+    for (guint k = 0; k < t->objects->len; k++) {
+        OnInlineObject *img = &g_array_index(t->objects, OnInlineObject, k);
         if (img->offset >= off)
             img->offset += n;
     }
@@ -150,11 +176,11 @@ on_text_delete(OnText *t, gsize off, gsize n)
     runs_normalize(t);
 
     g_string_erase(t->text, (gssize)off, (gssize)n);
-    for (guint k = 0; k < t->images->len; ) {
-        OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
+    for (guint k = 0; k < t->objects->len; ) {
+        OnInlineObject *img = &g_array_index(t->objects, OnInlineObject, k);
         if (img->offset >= off && img->offset < off + n) {
-            inline_image_clear(img);
-            g_array_remove_index(t->images, k);
+            inline_object_clear(img);
+            g_array_remove_index(t->objects, k);
             continue;
         }
         if (img->offset >= off + n)
@@ -201,12 +227,20 @@ on_text_add_image(OnText *t, gsize off, GBytes *png, guint32 display_width)
     g_return_if_fail(off + ON_OBJ_CHAR_LEN <= t->text->len);
     g_return_if_fail(memcmp(t->text->str + off, ON_OBJ_CHAR,
                             ON_OBJ_CHAR_LEN) == 0);
-    OnInlineImage img = { off, g_bytes_ref(png), display_width, NULL, NULL };
-    guint k = 0;                     /* keep the array sorted by offset     */
-    while (k < t->images->len &&
-           g_array_index(t->images, OnInlineImage, k).offset < off)
-        k++;
-    g_array_insert_val(t->images, k, img);
+    OnInlineObject img = { .kind = ON_OBJECT_IMAGE, .offset = off,
+                           .png = g_bytes_ref(png), .display_width = display_width };
+    text_insert_object(t, img);
+}
+
+void
+on_text_add_file(OnText *t, gsize off, gint64 id, const gchar *name)
+{
+    g_return_if_fail(off + ON_OBJ_CHAR_LEN <= t->text->len);
+    g_return_if_fail(memcmp(t->text->str + off, ON_OBJ_CHAR,
+                            ON_OBJ_CHAR_LEN) == 0);
+    OnInlineObject file = { .kind = ON_OBJECT_FILE, .offset = off,
+                            .file_id = id, .file_name = g_strdup(name) };
+    text_insert_object(t, file);
 }
 
 /* ===========================================================================
@@ -221,13 +255,13 @@ on_text_walk(const OnText *t, const OnTextWalk *walk, gpointer data)
     for (guint i = 0; i < t->runs->len; i++) {
         const OnRun *r = &g_array_index(t->runs, OnRun, i);
         gsize cur = at, end = at + r->len;
-        while (k < t->images->len &&
-               g_array_index(t->images, OnInlineImage, k).offset < end) {
-            const OnInlineImage *img =
-                &g_array_index(t->images, OnInlineImage, k);
+        while (k < t->objects->len &&
+               g_array_index(t->objects, OnInlineObject, k).offset < end) {
+            const OnInlineObject *img =
+                &g_array_index(t->objects, OnInlineObject, k);
             walk->text(t->text->str + cur, img->offset - cur, r->flags, data);
-            if (walk->image != NULL)
-                walk->image(img, data);
+            if (walk->object != NULL)
+                walk->object(img, data);
             cur = img->offset + ON_OBJ_CHAR_LEN;
             k++;
         }
@@ -239,8 +273,7 @@ on_text_walk(const OnText *t, const OnTextWalk *walk, gpointer data)
 gboolean
 on_block_kind_is_text(OnBlockKind kind)
 {
-    return kind != ON_BLOCK_IMAGE && kind != ON_BLOCK_TABLE &&
-           kind != ON_BLOCK_FILE;
+    return kind != ON_BLOCK_IMAGE && kind != ON_BLOCK_TABLE;
 }
 
 gboolean
@@ -291,16 +324,6 @@ on_block_new_image(GBytes *png, guint32 display_width)
 }
 
 OnBlock *
-on_block_new_file(gint64 id, const gchar *name)
-{
-    OnBlock *b = g_new0(OnBlock, 1);
-    b->kind      = ON_BLOCK_FILE;
-    b->file_id   = id;
-    b->file_name = g_strdup(name);
-    return b;
-}
-
-OnBlock *
 on_block_new_table(gint rows, gint cols)
 {
     OnBlock *b = g_new0(OnBlock, 1);
@@ -323,7 +346,6 @@ on_block_free(OnBlock *b)
         b->pixels_free(b->pixels);
     if (b->png != NULL)
         g_bytes_unref(b->png);
-    g_free(b->file_name);
     if (b->cells != NULL)
         g_ptr_array_free(b->cells, TRUE);
     g_free(b);
@@ -339,8 +361,8 @@ block_forget_pixels(OnBlock *b)
         b->pixels_free(b->pixels);
     b->pixels      = NULL;
     b->pixels_free = NULL;
-    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++) {
-        OnInlineImage *img = &g_array_index(b->text->images, OnInlineImage, k);
+    for (guint k = 0; b->text != NULL && k < b->text->objects->len; k++) {
+        OnInlineObject *img = &g_array_index(b->text->objects, OnInlineObject, k);
         if (img->pixels_free != NULL)
             img->pixels_free(img->pixels);
         img->pixels      = NULL;
@@ -355,7 +377,6 @@ on_block_copy(const OnBlock *b)
     *c = *b;
     c->text  = (b->text != NULL) ? on_text_copy(b->text) : NULL;
     c->png   = (b->png != NULL) ? g_bytes_ref(b->png) : NULL;
-    c->file_name = g_strdup(b->file_name);
     c->pixels      = NULL;           /* a view's cache is not copied        */
     c->pixels_free = NULL;
     c->cells = NULL;
@@ -497,28 +518,32 @@ text_check(const OnText *t, gboolean allow_newline, const gchar *where,
              sum, t->text->len);
 
     gsize last = 0;                  /* previous image offset               */
-    for (guint k = 0; k < t->images->len; k++) {
-        const OnInlineImage *img = &g_array_index(t->images, OnInlineImage, k);
+    for (guint k = 0; k < t->objects->len; k++) {
+        const OnInlineObject *img = &g_array_index(t->objects, OnInlineObject, k);
         if (k > 0 && img->offset <= last)
-            FAIL("inline images out of order");
+            FAIL("inline objects out of order");
         if (img->offset + ON_OBJ_CHAR_LEN > t->text->len ||
             memcmp(t->text->str + img->offset, ON_OBJ_CHAR,
                    ON_OBJ_CHAR_LEN) != 0)
-            FAIL("inline image %u has no U+FFFC at its offset", k);
-        if (img->png == NULL)
+            FAIL("inline object %u has no U+FFFC at its offset", k);
+        if (img->kind == ON_OBJECT_IMAGE && img->png == NULL)
             FAIL("inline image %u has no bytes", k);
+        if (img->kind == ON_OBJECT_FILE &&
+            (img->file_id <= 0 || img->file_name == NULL ||
+             img->file_name[0] == '\0'))
+            FAIL("inline file %u has no id or name", k);
         last = img->offset;
     }
-    /* Every U+FFFC must have an image.                                     */
+    /* Every U+FFFC must have an object.                                    */
     guint n_obj = 0;                 /* U+FFFC characters in the text       */
     for (const gchar *p = t->text->str;
          (p = g_strstr_len(p, (gssize)(t->text->len - (p - t->text->str)),
                            ON_OBJ_CHAR)) != NULL;
          p += ON_OBJ_CHAR_LEN)
         n_obj++;
-    if (n_obj != t->images->len)
-        FAIL("%u U+FFFC characters but %u inline images", n_obj,
-             t->images->len);
+    if (n_obj != t->objects->len)
+        FAIL("%u U+FFFC characters but %u inline objects", n_obj,
+             t->objects->len);
     return TRUE;
 #undef FAIL
 }
@@ -551,14 +576,6 @@ on_document_check(const OnDocument *d, GString *why)
                     g_string_printf(why, "%s: image without bytes", where);
                 ok = FALSE;
             }
-        } else if (b->kind == ON_BLOCK_FILE) {
-            if (b->file_name == NULL || b->file_name[0] == '\0' ||
-                b->file_id <= 0) {
-                if (why != NULL)
-                    g_string_printf(why, "%s: file without name or id",
-                                    where);
-                ok = FALSE;
-            }
         } else {                     /* TABLE                                */
             if (b->rows < 1 || b->cols < 1 || b->cells == NULL ||
                 b->cells->len != (guint)(b->rows * b->cols)) {
@@ -569,7 +586,7 @@ on_document_check(const OnDocument *d, GString *why)
             for (guint c = 0; ok && c < b->cells->len; c++) {
                 const OnText *cell = g_ptr_array_index(b->cells, c);
                 g_snprintf(where, sizeof where, "block %u cell %u", i, c);
-                if (cell == NULL || cell->images->len != 0) {
+                if (cell == NULL || cell->objects->len != 0) {
                     if (why != NULL)
                         g_string_printf(why, "%s: %s", where,
                                         cell == NULL ? "missing"
@@ -762,12 +779,8 @@ ensure_text(Loader *L)
         on_text_add_image(L->cur->text, 0, img->png, img->display_width);
         on_block_free(img);
         L->rep->image_inline++;
-    } else if (L->cur->kind == ON_BLOCK_TABLE ||
-               L->cur->kind == ON_BLOCK_FILE) {
-        if (L->cur->kind == ON_BLOCK_TABLE)
-            L->rep->split_table++;
-        else
-            L->rep->split_file++;
+    } else if (L->cur->kind == ON_BLOCK_TABLE) {
+        L->rep->split_table++;
         finish_line(L);
         L->cur = on_block_new_text(ON_BLOCK_PARA);
     }
@@ -833,8 +846,9 @@ image_record(Loader *L, const OnBnbfRecord *rec)
     g_bytes_unref(png);
 }
 
-/* file_record() — a FILE record: always a block of its own.  A name that
- * is not valid UTF-8 is repaired; an empty one becomes "file".             */
+/* file_record() — a FILE record: an object in the line it sits on, like an
+ * inline image (several in a row sit side by side).  A name that is not
+ * valid UTF-8 is repaired; an empty one becomes "file".                     */
 static void
 file_record(Loader *L, const OnBnbfRecord *rec)
 {
@@ -842,12 +856,12 @@ file_record(Loader *L, const OnBnbfRecord *rec)
         L->strip_space = FALSE;
         L->rep->check_no_space++;
     }
-    if (L->cur != NULL || L->from_check) {
-        L->rep->split_file++;
-        finish_line(L);
-    }
+    OnBlock *b = ensure_text(L);
+    gsize off = b->text->text->len;
+    on_text_append(b->text, ON_OBJ_CHAR, ON_OBJ_CHAR_LEN,
+                   on_text_flags_at(b->text, off));
     gchar *name = g_utf8_make_valid(rec->name, (gssize)rec->n_name);
-    L->cur = on_block_new_file(rec->file_id, name[0] != '\0' ? name : "file");
+    on_text_add_file(b->text, off, rec->file_id, name[0] != '\0' ? name : "file");
     g_free(name);
 }
 
@@ -1089,7 +1103,6 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->styled_prefix == 0 && rep->check_no_space == 0 &&
            rep->check_no_tag == 0 && rep->check_no_box == 0 &&
            rep->split_check == 0 && rep->split_table == 0 &&
-           rep->split_file == 0 &&
            rep->run_split == 0 && rep->cr_newlines == 0 &&
            rep->action_dup == 0 && rep->action_stray == 0 &&
            rep->bad_utf8 == 0;
@@ -1145,7 +1158,7 @@ typedef struct {
     guint32  para;                   /* the line's paragraph bit            */
 } SvRuns;
 
-/* sv_runs_text() / sv_runs_image() — on_text_walk callbacks for sv_runs.    */
+/* sv_runs_text() / sv_runs_object() — on_text_walk callbacks for sv_runs.   */
 static void
 sv_runs_text(const gchar *s, gsize n, guint32 flags, gpointer data)
 {
@@ -1154,16 +1167,23 @@ sv_runs_text(const gchar *s, gsize n, guint32 flags, gpointer data)
 }
 
 static void
-sv_runs_image(const OnInlineImage *img, gpointer data)
+sv_runs_object(const OnInlineObject *obj, gpointer data)
 {
-    sv_image(((SvRuns *)data)->S, img->png, img->display_width);
+    Saver *S = ((SvRuns *)data)->S;
+    if (obj->kind == ON_OBJECT_FILE) {
+        sv_flush(S);
+        on_bnbf_write_file(&S->w, obj->file_id, obj->file_name,
+                           strlen(obj->file_name));
+    } else {
+        sv_image(S, obj->png, obj->display_width);
+    }
 }
 
-/* sv_runs() — a text's runs under `para`, its inline images as records.     */
+/* sv_runs() — a text's runs under `para`, its inline objects as records.    */
 static void
 sv_runs(Saver *S, const OnText *t, guint32 para)
 {
-    static const OnTextWalk walk = { sv_runs_text, sv_runs_image };
+    static const OnTextWalk walk = { sv_runs_text, sv_runs_object };
     SvRuns w = { S, para };
     on_text_walk(t, &walk, &w);
 }
@@ -1210,11 +1230,6 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
         }
         case ON_BLOCK_IMAGE:
             sv_image(&S, b->png, b->display_width);
-            break;
-        case ON_BLOCK_FILE:
-            sv_flush(&S);
-            on_bnbf_write_file(&S.w, b->file_id, b->file_name,
-                               strlen(b->file_name));
             break;
         case ON_BLOCK_TABLE:
             sv_flush(&S);
@@ -1348,14 +1363,11 @@ text_slice(const OnText *t, gsize off, gsize n)
         }
         at += r->len;
     }
-    for (guint k = 0; k < t->images->len; k++) {
-        OnInlineImage img = g_array_index(t->images, OnInlineImage, k);
-        if (img.offset >= off && img.offset < off + n) {
-            img.offset -= off;
-            g_bytes_ref(img.png);
-            img.pixels      = NULL;
-            img.pixels_free = NULL;
-            g_array_append_val(f->images, img);
+    for (guint k = 0; k < t->objects->len; k++) {
+        const OnInlineObject *obj = &g_array_index(t->objects, OnInlineObject, k);
+        if (obj->offset >= off && obj->offset < off + n) {
+            OnInlineObject dup = inline_object_dup(obj, obj->offset - off);
+            g_array_append_val(f->objects, dup);
         }
     }
     return f;
@@ -1371,9 +1383,9 @@ text_paste(OnText *t, gsize off, const OnText *f)
         on_text_insert(t, off + at, f->text->str + at, r->len, r->flags);
         at += r->len;
     }
-    for (guint k = 0; k < f->images->len; k++) {
-        const OnInlineImage *img = &g_array_index(f->images, OnInlineImage, k);
-        on_text_add_image(t, off + img->offset, img->png, img->display_width);
+    for (guint k = 0; k < f->objects->len; k++) {
+        const OnInlineObject *obj = &g_array_index(f->objects, OnInlineObject, k);
+        text_insert_object(t, inline_object_dup(obj, off + obj->offset));
     }
 }
 
@@ -1724,7 +1736,7 @@ apply_op(OnDocument *d, Op *op)
     case OP_IMAGE_WIDTH: {
         guint32 *slot = (op->at < 0)
             ? &b->display_width
-            : &g_array_index(b->text->images, OnInlineImage, op->at)
+            : &g_array_index(b->text->objects, OnInlineObject, op->at)
                   .display_width;
         inv = op_new(OP_IMAGE_WIDTH);
         inv->pos.block = i;
@@ -2000,9 +2012,11 @@ on_document_set_image_width(OnDocument *d, guint i, gint inline_ord,
         if (b->display_width == width)
             return TRUE;
     } else {
-        if (b->text == NULL || (guint)inline_ord >= b->text->images->len)
+        if (b->text == NULL || (guint)inline_ord >= b->text->objects->len ||
+            g_array_index(b->text->objects, OnInlineObject, inline_ord).kind
+                != ON_OBJECT_IMAGE)
             return FALSE;
-        if (g_array_index(b->text->images, OnInlineImage, inline_ord)
+        if (g_array_index(b->text->objects, OnInlineObject, inline_ord)
                 .display_width == width)
             return TRUE;
     }
@@ -2109,8 +2123,7 @@ pos_valid(const OnDocument *d, OnPos p)
     OnBlock *b = on_document_block(d, p.block);
     if (b == NULL)
         return FALSE;
-    if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_FILE ||
-        (b->kind == ON_BLOCK_TABLE && p.cell < 0))
+    if (b->kind == ON_BLOCK_IMAGE || (b->kind == ON_BLOCK_TABLE && p.cell < 0))
         return p.offset <= 1;
     return pos_text_ok(d, p);
 }
@@ -2483,15 +2496,28 @@ on_document_clear_undo(OnDocument *d)
     g_ptr_array_set_size(d->redo_stack, 0);
 }
 
-/* file_ids_of_group() — append the ids of the FILE blocks the ops of one
- * undo group hold.                                                          */
+/* file_ids_of_text() — append the ids of the attached files in a text.     */
+static void
+file_ids_of_text(const OnText *t, GArray *ids)
+{
+    for (guint k = 0; t != NULL && k < t->objects->len; k++) {
+        const OnInlineObject *obj = &g_array_index(t->objects, OnInlineObject, k);
+        if (obj->kind == ON_OBJECT_FILE)
+            g_array_append_val(ids, obj->file_id);
+    }
+}
+
+/* file_ids_of_group() — append the ids of the files the ops of one undo
+ * group hold: in the text they would insert back, or the block they would
+ * insert back.                                                              */
 static void
 file_ids_of_group(GPtrArray *group, GArray *ids)
 {
     for (guint i = 0; group != NULL && i < group->len; i++) {
         const Op *op = g_ptr_array_index(group, i);
-        if (op->block != NULL && op->block->kind == ON_BLOCK_FILE)
-            g_array_append_val(ids, op->block->file_id);
+        file_ids_of_text(op->frag, ids);
+        if (op->block != NULL)
+            file_ids_of_text(op->block->text, ids);
     }
 }
 
@@ -2499,11 +2525,8 @@ GArray *
 on_document_file_ids(const OnDocument *d, gboolean with_history)
 {
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    for (guint i = 0; i < d->blocks->len; i++) {
-        const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        if (b->kind == ON_BLOCK_FILE)
-            g_array_append_val(ids, b->file_id);
-    }
+    for (guint i = 0; i < d->blocks->len; i++)
+        file_ids_of_text(((const OnBlock *)g_ptr_array_index(d->blocks, i))->text, ids);
     if (with_history) {
         for (guint i = 0; i < d->undo_stack->len; i++)
             file_ids_of_group(g_ptr_array_index(d->undo_stack, i), ids);
@@ -2518,15 +2541,22 @@ void
 on_document_remap_files(OnDocument *d, gint64 (*map)(gint64 id, gpointer data),
                         gpointer data)
 {
-    for (guint i = d->blocks->len; i > 0; i--) {
-        OnBlock *b = g_ptr_array_index(d->blocks, i - 1);
-        if (b->kind != ON_BLOCK_FILE)
+    for (guint i = 0; i < d->blocks->len; i++) {
+        OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->text == NULL)
             continue;
-        gint64 id = map(b->file_id, data);
-        if (id > 0)
-            b->file_id = id;
-        else
-            remove_block_keeping_one(d, i - 1);
+        for (guint k = b->text->objects->len; k > 0; k--) {
+            OnInlineObject *obj = &g_array_index(b->text->objects, OnInlineObject, k - 1);
+            if (obj->kind != ON_OBJECT_FILE)
+                continue;
+            gint64 id = map(obj->file_id, data);
+            if (id > 0) {
+                obj->file_id = id;
+            } else {
+                OnPos at = { i, -1, obj->offset };
+                on_document_delete_text(d, at, ON_OBJ_CHAR_LEN);
+            }
+        }
     }
     on_document_clear_undo(d);
 }
@@ -2571,11 +2601,22 @@ append_text_piece(const gchar *s, gsize n, guint32 flags, gpointer data)
     g_string_append_len(data, s, (gssize)n);
 }
 
-/* append_text_line() — a text's characters minus every U+FFFC.              */
+/* append_file_name() — on_text_walk callback: an attached file reads as its
+ * name (so it is found by search and titles a line it stands alone on); an
+ * image reads as nothing.                                                   */
+static void
+append_file_name(const OnInlineObject *obj, gpointer data)
+{
+    if (obj->kind == ON_OBJECT_FILE)
+        g_string_append(data, obj->file_name);
+}
+
+/* append_text_line() — a text's characters minus every U+FFFC, an attached
+ * file as its name.                                                         */
 static void
 append_text_line(GString *out, const OnText *t)
 {
-    static const OnTextWalk walk = { append_text_piece, NULL };
+    static const OnTextWalk walk = { append_text_piece, append_file_name };
     on_text_walk(t, &walk, out);
 }
 
@@ -2600,9 +2641,6 @@ on_document_plain_text(const OnDocument *d)
             break;
         case ON_BLOCK_IMAGE:
             break;
-        case ON_BLOCK_FILE:
-            g_string_append(out, b->file_name);
-            break;
         case ON_BLOCK_TABLE:
             for (guint c = 0; c < b->cells->len; c++) {
                 const OnText *cell = g_ptr_array_index(b->cells, c);
@@ -2619,6 +2657,17 @@ on_document_plain_text(const OnDocument *d)
     return g_string_free(out, FALSE);
 }
 
+/* text_image_count() — how many of a text's inline objects are images.     */
+static gint
+text_image_count(const OnText *t)
+{
+    gint n = 0;
+    for (guint k = 0; k < t->objects->len; k++)
+        if (g_array_index(t->objects, OnInlineObject, k).kind == ON_OBJECT_IMAGE)
+            n++;
+    return n;
+}
+
 gint
 on_document_image_count(const OnDocument *d)
 {
@@ -2628,7 +2677,7 @@ on_document_image_count(const OnDocument *d)
         if (b->kind == ON_BLOCK_IMAGE)
             n++;
         else if (b->text != NULL)
-            n += (gint)b->text->images->len;
+            n += text_image_count(b->text);
     }
     return n;
 }
@@ -2647,14 +2696,15 @@ on_document_image_nth(const OnDocument *d, gint ord, guint32 *display_width)
                 return b->png;
             }
         } else if (b->text != NULL) {
-            if ((guint)ord < b->text->images->len) {
-                const OnInlineImage *img =
-                    &g_array_index(b->text->images, OnInlineImage, ord);
+            for (guint k = 0; k < b->text->objects->len; k++) {
+                const OnInlineObject *img =
+                    &g_array_index(b->text->objects, OnInlineObject, k);
+                if (img->kind != ON_OBJECT_IMAGE || ord-- != 0)
+                    continue;
                 if (display_width != NULL)
                     *display_width = img->display_width;
                 return img->png;
             }
-            ord -= (gint)b->text->images->len;
         }
     }
     return NULL;
@@ -2666,8 +2716,7 @@ on_document_title(const OnDocument *d, const gchar *fallback, glong max_chars)
     gchar *title = NULL;             /* the rendered first line             */
     for (guint i = 0; i < d->blocks->len && title == NULL; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE ||
-            b->kind == ON_BLOCK_FILE) {
+        if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE) {
             title = g_strdup("");    /* a line, but no text on it           */
         } else if (b->text->text->len > 0) {
             GString *line = g_string_new(NULL);

@@ -103,7 +103,6 @@ first_diff(const guint8 *a, gsize na, const guint8 *b, gsize nb)
 
 static const gchar *KIND_NAMES[ON_N_BLOCK_KINDS] = {
     "PARA", "H1", "H2", "BULLET", "NUMBER", "CHECK", "CODE", "IMAGE", "TABLE",
-    "FILE",
 };
 
 /* blocks_dump() — one line per block.                                       */
@@ -116,14 +115,12 @@ blocks_dump(const OnDocument *d)
         if (b->kind == ON_BLOCK_IMAGE) {
             printf(" w=%u %" G_GSIZE_FORMAT " bytes", b->display_width,
                    g_bytes_get_size(b->png));
-        } else if (b->kind == ON_BLOCK_FILE) {
-            printf(" id=%" G_GINT64_FORMAT " \"%s\"", b->file_id, b->file_name);
         } else if (b->kind == ON_BLOCK_TABLE) {
             printf(" %dx%d%s", b->rows, b->cols, b->header ? " header" : "");
         } else {
             gchar *esc = g_strescape(b->text->text->str, NULL);
             printf(" eol=0x%x runs=%u img=%u \"%.60s%s\"",
-                   b->eol_flags, b->text->runs->len, b->text->images->len,
+                   b->eol_flags, b->text->runs->len, b->text->objects->len,
                    esc, strlen(esc) > 60 ? "…" : "");
             g_free(esc);
             if (b->kind == ON_BLOCK_CHECK)
@@ -228,7 +225,7 @@ main(int argc, char **argv)
             const OnBlock *b = on_document_block(d, i);
             if (b->text != NULL) {
                 text_bytes += (guint)b->text->text->len;
-                if (b->text->images->len > 0)
+                if (b->text->objects->len > 0)
                     has_inline = TRUE;
             }
             has_table |= b->kind == ON_BLOCK_TABLE;

@@ -1218,7 +1218,8 @@ files_equal(const char *a, const char *b)
 }
 
 /*
- * save_with_file — a note whose document is its text and one attached file.
+ * save_with_file — a note whose document is its text and a line holding one
+ * attached file.
  *
  * Inputs:
  *   db   — the database
@@ -1229,8 +1230,11 @@ files_equal(const char *a, const char *b)
 static void
 save_with_file(OnDatabase *db, gint64 note, gint64 id, const char *name)
 {
-    OnDocument *doc = on_note_document_load(db, note);
-    on_document_insert_block(doc, on_document_n_blocks(doc), on_block_new_file(id, name));
+    OnDocument *doc  = on_note_document_load(db, note);
+    OnBlock    *line = on_block_new_text(ON_BLOCK_PARA);
+    on_text_append(line->text, ON_OBJ_CHAR, ON_OBJ_CHAR_LEN, 0);
+    on_text_add_file(line->text, 0, id, name);
+    on_document_insert_block(doc, on_document_n_blocks(doc), line);
     on_note_document_save(db, note, doc, TRUE, NULL);
     on_document_free(doc);
 }
@@ -1284,15 +1288,15 @@ test_files(OnDatabase *db, const char *data_dir)
     check(count_files(db, a) == 1, "a save keeps the file its note names");
     OnDocument *doc = on_note_document_load(db, a);
     guint last = on_document_n_blocks(doc) - 1;
-    OnPos from = { last, -1, 0 }, to = { last, -1, 1 };
-    check(on_document_block(doc, last)->kind == ON_BLOCK_FILE &&
-          on_document_delete_range(doc, from, to, NULL), "the file's block is deleted");
+    OnPos from = { last, -1, 0 }, to = { last, -1, ON_OBJ_CHAR_LEN };
+    check(on_document_block(doc, last)->text->objects->len == 1 &&
+          on_document_delete_range(doc, from, to, NULL), "the file's tile is deleted");
     on_note_document_save(db, a, doc, TRUE, NULL);
     check(count_files(db, a) == 1,
-          "the save keeps the file while an undo could bring its block back");
-    check(on_document_undo(doc), "undo brings the block back");
-    OnPos from2 = { last, -1, 0 }, to2 = { last, -1, 1 };
-    on_document_delete_range(doc, from2, to2, NULL);
+          "the save keeps the file while an undo could bring its tile back");
+    check(on_document_undo(doc) && on_document_block(doc, last)->text->objects->len == 1,
+          "undo brings the tile back");
+    on_document_delete_range(doc, from, to, NULL);
     on_document_clear_undo(doc);
     on_note_document_save(db, a, doc, TRUE, NULL);
     check(count_files(db, a) == 0, "with the history gone, the next save deletes the file");

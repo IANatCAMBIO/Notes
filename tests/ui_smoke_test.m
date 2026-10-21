@@ -1102,8 +1102,8 @@ test_inline_image(void)
         check(view.frame.size.height > on_look_image_thumb_h,
               "an inline image takes its thumbnail's room in the line");
         check(save_snapshots(window, @"inline-image"), "inline image snapshots written");
-        const OnInlineImage *shown = &g_array_index(
-            on_document_block(on_note_view_document(view), 1)->text->images, OnInlineImage, 0);
+        const OnInlineObject *shown = &g_array_index(
+            on_document_block(on_note_view_document(view), 1)->text->objects, OnInlineObject, 0);
         int src_w = 0;
         on_image_probe_size(png.bytes, png.length, &src_w, NULL);
         check(shown->pixels != NULL && (int)CGImageGetWidth(shown->pixels) < src_w,
@@ -1183,6 +1183,26 @@ file_rows(gint64 note_id)
 }
 
 /*
+ * count_tiles — how many attached files (inline tiles) a document holds.
+ *
+ * Inputs:
+ *   doc — the document
+ *
+ * Output: the count.
+ */
+static guint
+count_tiles(const OnDocument *doc)
+{
+    guint n = 0;
+    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
+        const OnText *t = on_document_block(doc, i)->text;
+        for (guint k = 0; t != NULL && k < t->objects->len; k++)
+            if (g_array_index(t->objects, OnInlineObject, k).kind == ON_OBJECT_FILE) n++;
+    }
+    return n;
+}
+
+/*
  * select_file_tile — click down the left of a note until an attached file's
  * tile is selected.
  *
@@ -1195,8 +1215,11 @@ select_file_tile(NotesNoteView *view)
     OnDocument *doc = on_note_view_document(view);
     for (CGFloat y = 30; y < view.frame.size.height; y += 6) {
         on_note_view_feed_click(view, 24 + on_look_file_tile_w / 2, y, 1, 0, NO);
-        if (on_note_view_caret(view).offset == 1 &&
-            on_document_block(doc, on_note_view_caret(view).block)->kind == ON_BLOCK_FILE) return;
+        OnPos at = on_note_view_caret(view);
+        const OnText *t = on_document_block(doc, at.block)->text;
+        for (guint k = 0; t != NULL && at.offset >= ON_OBJ_CHAR_LEN && k < t->objects->len; k++)
+            if (g_array_index(t->objects, OnInlineObject, k).offset == at.offset - ON_OBJ_CHAR_LEN)
+                return;
     }
 }
 
@@ -1219,8 +1242,10 @@ test_file_attachment(void)
     NSString   *pdf = [dir stringByAppendingPathComponent:@"report.pdf"];
     [[NSData dataWithBytes:payload length:sizeof payload] writeToFile:pdf atomically:YES];
     gint64      row = on_db_note_file_add(app.db, note_id, pdf.fileSystemRepresentation, "report.pdf");
-    OnDocument *doc = on_note_document_load(app.db, note_id);
-    on_document_insert_block(doc, 1, on_block_new_file(row, "report.pdf"));
+    OnDocument *doc  = on_note_document_load(app.db, note_id);
+    OnText     *line = on_document_block(doc, 1)->text;
+    on_text_insert(line, 0, ON_OBJ_CHAR, ON_OBJ_CHAR_LEN, 0);
+    on_text_add_file(line, 0, row, "report.pdf");
     on_note_document_save(app.db, note_id, doc, TRUE, NULL);
     on_document_free(doc);
     check(row > 0 && file_rows(note_id) == 1, "the file is a row of the note");
@@ -1234,13 +1259,11 @@ test_file_attachment(void)
               "an attached file takes its icon's room");
         check(save_snapshots(window, @"file-attachment"), "attachment snapshots written");
 
-        /* The tile is the second block: find it by clicking down the left. */
+        /* The tile starts the second block: select it with a click. */
         OnDocument *shown = on_note_view_document(view);
-        for (CGFloat y = 30; y < view.frame.size.height; y += 6) {
-            on_note_view_feed_click(view, 24 + on_look_file_tile_w / 2, y, 1, 0, NO);
-            if (on_note_view_caret(view).block == 1 && on_note_view_caret(view).offset == 1) break;
-        }
-        check(on_note_view_caret(view).block == 1 && on_note_view_caret(view).offset == 1 &&
+        select_file_tile(view);
+        check(on_note_view_caret(view).block == 1 &&
+              on_note_view_caret(view).offset == ON_OBJ_CHAR_LEN &&
               [on_note_view_selected_text(view) isEqual:@"report.pdf"],
               "a click on the tile selects it");
 
@@ -1260,28 +1283,39 @@ test_file_attachment(void)
          * would replace it). */
         on_note_view_feed_click(view, 300, 20, 1, 0, NO);
         on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
-        check(count_blocks(shown, ON_BLOCK_FILE) == 2 && file_rows(note_id) == 2,
+        check(count_tiles(shown) == 2 && file_rows(note_id) == 2,
               "Paste brings the attachment back, with a row of its own");
 
         /* Paste of files alone (what the Finder offers): a text file is a
          * tile, a picture is an image block. */
         NSURL *text = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:@"notes-test.txt"]];
+        NSURL *text2 = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:@"notes-test-2.txt"]];
         [@"plain" writeToURL:text atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        [@"plain too" writeToURL:text2 atomically:YES encoding:NSUTF8StringEncoding error:NULL];
         [view.pasteboard clearContents];
-        [view.pasteboard writeObjects:@[text, sample_image_url().absoluteURL]];
+        [view.pasteboard writeObjects:@[text, text2, sample_image_url().absoluteURL]];
         guint images_before = count_blocks(shown, ON_BLOCK_IMAGE);
         on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
-        check(count_blocks(shown, ON_BLOCK_FILE) == 3 && file_rows(note_id) == 3 &&
+        check(count_tiles(shown) == 4 && file_rows(note_id) == 4 &&
               count_blocks(shown, ON_BLOCK_IMAGE) == images_before + 1,
-              "a pasted text file becomes a tile with a row, a pasted picture an image");
+              "pasted text files become tiles with rows, a pasted picture an image");
+        BOOL side_by_side = NO;          /* two tiles next to each other in one line */
+        for (guint i = 0; i < on_document_n_blocks(shown); i++) {
+            const OnText *t = on_document_block(shown, i)->text;
+            for (guint k = 1; t != NULL && k < t->objects->len; k++)
+                if (g_array_index(t->objects, OnInlineObject, k).offset ==
+                    g_array_index(t->objects, OnInlineObject, k - 1).offset + ON_OBJ_CHAR_LEN)
+                    side_by_side = YES;
+        }
+        check(side_by_side, "files pasted together sit side by side in the line");
 
         /* Delete a tile: its row goes when the editor closes (until then an
          * undo could bring the tile back). */
         select_file_tile(view);
         on_note_view_feed_key(view, on_key_backspace, 0, 0);
-        check(count_blocks(shown, ON_BLOCK_FILE) == 2, "Delete removes the selected tile");
+        check(count_tiles(shown) == 3, "Delete removes the selected tile");
         on_note_view_feed_key(view, on_key_character, 'z', on_mod_command);
-        check(count_blocks(shown, ON_BLOCK_FILE) == 3, "and undo brings it back");
+        check(count_tiles(shown) == 4, "and undo brings it back");
         select_file_tile(view);
         on_note_view_feed_key(view, on_key_backspace, 0, 0);
 
@@ -1289,16 +1323,59 @@ test_file_attachment(void)
         on_editor_close_notes(&note_id, 1);
     }
     pump(0.2);
-    check(file_rows(note_id) == 2,
+    check(file_rows(note_id) == 3,
           "closing the editor leaves a row for each tile that is left, and none for the deleted one");
 
     OnDocument *saved = on_note_document_load(app.db, note_id);
-    check(saved != NULL && count_blocks(saved, ON_BLOCK_FILE) == 2, "attachments round-trip through the blob");
+    check(saved != NULL && count_tiles(saved) == 3, "attachments round-trip through the blob");
     on_document_free(saved);
     on_db_notes_delete(app.db, &note_id, 1);
     check(file_rows(note_id) == 0, "deleting the note deletes the rest");
     [NSFileManager.defaultManager removeItemAtPath:dir error:NULL];
     pump(0.2);
+}
+
+/*
+ * test_drop_last_line — a file dropped on the note lands at the drop point;
+ * with "Always put dropped files on the last line" on, it lands at the end
+ * of the last line wherever it was dropped.
+ */
+static void
+test_drop_last_line(void)
+{
+    gint64    note_id = new_note("Drop note\nfirst\nlast");
+    NSString *dir  = [NSTemporaryDirectory() stringByAppendingPathComponent:@"notes-drop-test"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES
+                                             attributes:nil error:NULL];
+    NSURL *file = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:@"dropped.txt"]];
+    [@"dropped" writeToURL:file atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+
+    @autoreleasepool {
+        on_editor_window_open(&app, note_id, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow      *window = editor_window_titled(@"Drop note");
+        NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
+        OnDocument    *doc    = on_note_view_document(view);
+        guint          last   = on_document_n_blocks(doc) - 1;
+
+        check(!app.drop_files_last_line, "dropped files go where they are dropped by default");
+        on_note_view_drop_files(view, @[file], NSMakePoint(300, 20));    /* the title line */
+        check(on_document_block(doc, 0)->text->objects->len == 1 &&
+              on_document_block(doc, last)->text->objects->len == 0,
+              "a drop lands on the line it was dropped on");
+
+        app.drop_files_last_line = TRUE;
+        on_note_view_drop_files(view, @[file], NSMakePoint(300, 20));
+        const OnText *end = on_document_block(doc, last)->text;
+        check(on_document_block(doc, 0)->text->objects->len == 1 && end->objects->len == 1 &&
+              g_array_index(end->objects, OnInlineObject, 0).offset == end->text->len - ON_OBJ_CHAR_LEN,
+              "with the setting on, it lands at the end of the last line");
+        app.drop_files_last_line = FALSE;
+        on_editor_close_notes(&note_id, 1);
+    }
+    pump(0.2);
+    on_db_notes_delete(app.db, &note_id, 1);
+    [NSFileManager.defaultManager removeItemAtPath:dir error:NULL];
 }
 
 /*
@@ -3634,6 +3711,7 @@ main(void)
         test_editor_commands();
         test_inline_image();
         test_file_attachment();
+        test_drop_last_line();
         test_accessibility();
         test_strike_snapshot();
         test_tag_suggestions();

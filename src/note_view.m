@@ -190,8 +190,8 @@ sel_bounds(NotesNoteView *v, OnPos *a, OnPos *b)
 
 /*
  * clamp_pos — the valid position nearest to p in the document (GTK:
- * clamp_pos): past the end means the end; beside an image, a file or a
- * table at offset 0 or 1; in a cell that exists; within its text, never inside a
+ * clamp_pos): past the end means the end; beside an image or a table at
+ * offset 0 or 1; in a cell that exists; within its text, never inside a
  * UTF-8 sequence.
  *
  * Inputs:
@@ -211,8 +211,7 @@ clamp_pos(const OnDocument *doc, OnPos p)
         p.offset = G_MAXSIZE;
     }
     const OnBlock *b = on_document_block(doc, p.block);
-    if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_FILE ||
-        (b->kind == ON_BLOCK_TABLE && p.cell < 0)) {
+    if (b->kind == ON_BLOCK_IMAGE || (b->kind == ON_BLOCK_TABLE && p.cell < 0)) {
         p.cell   = -1;
         p.offset = MIN(p.offset, 1);
         return p;
@@ -460,7 +459,7 @@ refresh_hits(NotesNoteView *v)
 /*
  * access_text — what VoiceOver reads for one block: its text; a table's
  * cells with a tab between cells and a newline between rows; an image
- * block as one object character; a file block as its name.
+ * block as one object character.
  *
  * Inputs:
  *   b — the block
@@ -471,7 +470,6 @@ static NSString *
 access_text(const OnBlock *b)
 {
     if (b->kind == ON_BLOCK_IMAGE) return @"\uFFFC";
-    if (b->kind == ON_BLOCK_FILE) return @(b->file_name);
     if (b->kind != ON_BLOCK_TABLE) return @(b->text->text->str);
     NSMutableString *s = [NSMutableString string];
     for (gint i = 0; i < b->rows * b->cols; i++) {
@@ -498,7 +496,6 @@ access_offset(const OnDocument *doc, OnPos p)
     for (guint i = 0; i < p.block; i++) at += access_text(on_document_block(doc, i)).length + 1;
     const OnBlock *b = on_document_block(doc, p.block);
     if (b->kind == ON_BLOCK_IMAGE) return at + MIN(p.offset, 1);
-    if (b->kind == ON_BLOCK_FILE) return at + (p.offset > 0 ? access_text(b).length : 0);
     if (b->kind != ON_BLOCK_TABLE) return at + on_utf16_from_utf8(b->text->text->str, p.offset);
     gint cell = MAX(p.cell, 0);
     for (gint i = 0; i < cell; i++)
@@ -1017,22 +1014,22 @@ insert_block_at_caret(NotesNoteView *v, OnBlock *block)
 /* ── Clipboard ───────────────────────────────────────────────────────────── */
 
 /*
- * file_block_url — an attached file as a temporary file with its own name,
+ * file_object_url — an attached file as a temporary file with its own name,
  * streamed out of the database.
  *
  * Inputs:
- *   v — the view (its database)
- *   b — the FILE block
+ *   v   — the view (its database)
+ *   obj — the FILE object
  *
  * Output: the file's URL, or nil when its row is missing or the file could
  *         not be written.
  */
 static NSURL *
-file_block_url(NotesNoteView *v, const OnBlock *b)
+file_object_url(NotesNoteView *v, const OnInlineObject *obj)
 {
     OnDatabase *db = v.app->db;
-    gint64      id = b->file_id;
-    return on_ui_temp_file_from(@(b->file_name), ^BOOL(NSString *path) {
+    gint64      id = obj->file_id;
+    return on_ui_temp_file_from(@(obj->file_name), ^BOOL(NSString *path) {
         return on_db_note_file_export(db, id, path.fileSystemRepresentation);
     });
 }
@@ -1064,10 +1061,12 @@ copy_selection(NotesNoteView *v)
     /* An attached file also goes out as a file, for the Finder and any app
      * that takes files. */
     for (guint i = 0; i < on_document_n_blocks(frag); i++) {
-        const OnBlock *fb = on_document_block(frag, i);
-        if (fb->kind != ON_BLOCK_FILE) continue;
-        NSURL *url = file_block_url(v, fb);
-        if (url != nil) [items addObject:url];
+        const OnText *t = on_document_block(frag, i)->text;
+        for (guint k = 0; t != NULL && k < t->objects->len; k++) {
+            const OnInlineObject *obj = &g_array_index(t->objects, OnInlineObject, k);
+            NSURL *url = obj->kind == ON_OBJECT_FILE ? file_object_url(v, obj) : nil;
+            if (url != nil) [items addObject:url];
+        }
     }
     on_document_free(frag);
     g_free(blob);                       /* on_document_to_bnbf: g_free */
@@ -1147,66 +1146,75 @@ pasteboard_file_urls(NSPasteboard *pb)
 }
 
 /*
- * file_block_for_url — the block a file becomes: the standard image block
- * for a picture ImageIO reads (stored as PNG, once, in the note), an
- * attached-file block for anything else (its bytes go into a note_file row
- * of the note, streamed, at once).
+ * file_image_block — the standard image block for a picture ImageIO reads
+ * (stored as PNG, once, in the note).
+ *
+ * Inputs:
+ *   url — the file
+ *
+ * Output: the block (ownership passes to the caller), or NULL when the file
+ *         is not a picture ImageIO can read.
+ */
+static OnBlock *
+file_image_block(NSURL *url)
+{
+    UTType *type = [UTType typeWithFilenameExtension:url.pathExtension];
+    if (type == nil || ![type conformsToType:UTTypeImage]) return NULL;
+    size_t   n   = 0;
+    uint8_t *png = on_image_file_to_png(url.fileSystemRepresentation, &n);
+    if (png == NULL) return NULL;
+    GBytes *bytes = g_bytes_new(png, n);
+    free(png);
+    OnBlock *block = on_block_new_image(bytes, 0);
+    g_bytes_unref(bytes);
+    return block;
+}
+
+/*
+ * file_store — store a file in a note_file row of the note (streamed, at
+ * once).
  *
  * Inputs:
  *   v      — the view (its database and note)
  *   url    — the file
- *   reason — receives why there is no block (a short phrase)
+ *   reason — receives why it was not stored (a short phrase)
  *
- * Output: the block (ownership passes to the caller), or NULL with *reason
- *         set: a folder, an unreadable file, one over ON_FILE_MAX_BYTES, a
- *         view with no note.
+ * Output: the row's id, or 0 with *reason set: a folder, an unreadable file,
+ *         one over ON_FILE_MAX_BYTES, a view with no note.
  */
-static OnBlock *
-file_block_for_url(NotesNoteView *v, NSURL *url, NSString **reason)
+static gint64
+file_store(NotesNoteView *v, NSURL *url, NSString **reason)
 {
     NSNumber *is_dir = nil, *size = nil;
     [url getResourceValue:&is_dir forKey:NSURLIsDirectoryKey error:NULL];
     [url getResourceValue:&size forKey:NSURLFileSizeKey error:NULL];
     if (is_dir.boolValue) {
         *reason = @"a folder cannot be attached";
-        return NULL;
+        return 0;
     }
     if (size == nil) {
         *reason = @"it could not be read";
-        return NULL;
-    }
-    UTType *type = [UTType typeWithFilenameExtension:url.pathExtension];
-    if (type != nil && [type conformsToType:UTTypeImage]) {
-        size_t   n   = 0;
-        uint8_t *png = on_image_file_to_png(url.fileSystemRepresentation, &n);
-        if (png != NULL) {
-            GBytes *bytes = g_bytes_new(png, n);
-            free(png);
-            OnBlock *block = on_block_new_image(bytes, 0);
-            g_bytes_unref(bytes);
-            return block;
-        }
+        return 0;
     }
     if (size.unsignedLongLongValue > ON_FILE_MAX_BYTES) {
         *reason = [NSString stringWithFormat:@"it is over %d MB", ON_FILE_MAX_BYTES / 1000000];
-        return NULL;
+        return 0;
     }
     if (v.note_id == 0) {
         *reason = @"this note cannot take files";
-        return NULL;
+        return 0;
     }
     gint64 id = on_db_note_file_add(v.app->db, v.note_id, url.fileSystemRepresentation,
                                     url.lastPathComponent.UTF8String);
-    if (id == 0) {
-        *reason = @"it could not be stored";
-        return NULL;
-    }
-    return on_block_new_file(id, url.lastPathComponent.UTF8String);
+    if (id == 0) *reason = @"it could not be stored";
+    return id;
 }
 
 /*
- * insert_files — put files into the note at the caret, one block each, as
- * one undo step; the ones that cannot be attached are named in a notice.
+ * insert_files — put files into the note at the caret as one undo step.  A
+ * picture becomes an image block; every other file becomes a tile in the
+ * line, side by side with the tiles dropped with it (a run of files is one
+ * insertion).  The ones that cannot be attached are named in a notice.
  *
  * Inputs:
  *   v    — the view
@@ -1218,15 +1226,28 @@ static void
 insert_files(NotesNoteView *v, NSArray<NSURL *> *urls)
 {
     NSMutableArray<NSString *> *refused = [NSMutableArray array];
+    OnBlock *tiles = NULL;               /* the run of files being gathered  */
     on_document_begin_group(v.doc);
     for (NSURL *url in urls) {
+        OnBlock *image = file_image_block(url);
+        if (image != NULL) {
+            if (tiles != NULL) insert_block_at_caret(v, tiles);
+            tiles = NULL;
+            insert_block_at_caret(v, image);
+            continue;
+        }
         NSString *reason = nil;
-        OnBlock  *block  = file_block_for_url(v, url, &reason);
-        if (block != NULL)
-            insert_block_at_caret(v, block);
-        else
+        gint64    id     = file_store(v, url, &reason);
+        if (id == 0) {
             [refused addObject:[NSString stringWithFormat:@"%@ — %@", url.lastPathComponent, reason]];
+            continue;
+        }
+        if (tiles == NULL) tiles = on_block_new_text(ON_BLOCK_PARA);
+        gsize at = tiles->text->text->len;
+        on_text_append(tiles->text, ON_OBJ_CHAR, ON_OBJ_CHAR_LEN, 0);
+        on_text_add_file(tiles->text, at, id, url.lastPathComponent.UTF8String);
     }
+    if (tiles != NULL) insert_block_at_caret(v, tiles);
     on_document_end_group(v.doc);
     if (refused.count > 0)
         shared_ui_notice(v.window, @"Not attached",
@@ -1234,40 +1255,45 @@ insert_files(NotesNoteView *v, NSArray<NSURL *> *urls)
 }
 
 /*
- * select_block — select an object block (an attached file's tile) whole.
+ * select_object — select one inline object (an attached file's tile).
  *
  * Inputs:
- *   v     — the view
- *   block — its index
+ *   v      — the view
+ *   block  — its block
+ *   offset — the byte offset of its U+FFFC
  *
  * Output: none.
  */
 static void
-select_block(NotesNoteView *v, guint block)
+select_object(NotesNoteView *v, guint block, gsize offset)
 {
-    set_caret(v, (OnPos){ block, -1, 1 }, NO);
-    v.anchor = (OnPos){ block, -1, 0 };
+    set_caret(v, (OnPos){ block, -1, offset + ON_OBJ_CHAR_LEN }, NO);
+    v.anchor = (OnPos){ block, -1, offset };
 }
 
 /*
- * open_file_block — open an attached file in its default app.
+ * open_file_object — open an attached file in its default app.
  *
  * Inputs:
- *   v     — the view
- *   block — the FILE block's index
+ *   v      — the view
+ *   block  — the block of the line it is in
+ *   object — its index among that block's inline objects
  *
  * Output: none.
  */
 static void
-open_file_block(NotesNoteView *v, guint block)
+open_file_object(NotesNoteView *v, guint block, gint object)
 {
     const OnBlock *b = on_document_block(v.doc, block);
-    if (b == NULL || b->kind != ON_BLOCK_FILE) return;
-    NSURL *url = file_block_url(v, b);
+    if (b == NULL || b->text == NULL || object < 0 || (guint)object >= b->text->objects->len)
+        return;
+    const OnInlineObject *obj = &g_array_index(b->text->objects, OnInlineObject, object);
+    if (obj->kind != ON_OBJECT_FILE) return;
+    NSURL *url = file_object_url(v, obj);
     if (url == nil)
         shared_ui_notice(v.window, @"Cannot open the file",
                          [NSString stringWithFormat:@"%@ is missing from the database.",
-                                                    @(b->file_name)], nil);
+                                                    @(obj->file_name)], nil);
     else
         [NSWorkspace.sharedWorkspace openURL:url];
 }
@@ -1863,8 +1889,8 @@ press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
     v.dragging = NO;
 
     if (hit.kind == ON_HIT_FILE) {
-        if (clicks >= 2) open_file_block(v, hit.block);
-        else             select_block(v, hit.block);
+        if (clicks >= 2) open_file_object(v, hit.block, hit.object);
+        else             select_object(v, hit.block, hit.pos.offset);
         return YES;
     }
     if (clicks == 1) {
@@ -1918,8 +1944,8 @@ context_image_index(NotesNoteView *v)
     OnBlock *b = on_document_block(v.doc, hit.block);
     if (b == NULL) return -2;
     if (!hit.inline_image) return -1;
-    for (guint k = 0; b->text != NULL && k < b->text->images->len; k++)
-        if (g_array_index(b->text->images, OnInlineImage, k).offset == hit.pos.offset)
+    for (guint k = 0; b->text != NULL && k < b->text->objects->len; k++)
+        if (g_array_index(b->text->objects, OnInlineObject, k).offset == hit.pos.offset)
             return (gint)k;
     return -2;
 }
@@ -1939,7 +1965,7 @@ context_image_width(NotesNoteView *v)
     gint     k = context_image_index(v);
     OnBlock *b = on_document_block(v.doc, v.ctx_hit.block);
     if (k == -1) return b->display_width;
-    return k >= 0 ? g_array_index(b->text->images, OnInlineImage, k).display_width : 0;
+    return k >= 0 ? g_array_index(b->text->objects, OnInlineObject, k).display_width : 0;
 }
 
 /*
@@ -1962,7 +1988,7 @@ context_menu(NotesNoteView *v, double x, double y)
     on_doc_layout_hit(v.layout, x, y, &hit);
     typing_end(v);
     if (hit.kind == ON_HIT_FILE)
-        select_block(v, hit.block);
+        select_object(v, hit.block, hit.pos.offset);
     else if (!has_selection(v) || hit.kind != ON_HIT_TEXT)
         set_caret(v, hit.pos, NO);
     v.ctx_hit = hit;
@@ -2426,7 +2452,7 @@ menuForEvent:(NSEvent *)event
 - (void)
 file_open:(id)sender
 {
-    open_file_block(self, _ctx_hit.block);
+    open_file_object(self, _ctx_hit.block, _ctx_hit.object);
 }
 
 /*
@@ -2466,14 +2492,8 @@ performDragOperation:(id<NSDraggingInfo>)sender
 {
     NSArray<NSURL *> *files = pasteboard_file_urls(sender.draggingPasteboard);
     if (files.count == 0) return NO;
-    NSPoint pt = [self convertPoint:sender.draggingLocation fromView:nil];
-    OnDocHitResult hit;
-    on_doc_layout_hit(_layout, pt.x, pt.y, &hit);
-    [self.window makeFirstResponder:self];
-    im_reset(self);
-    typing_end(self);
-    set_caret(self, hit.pos, NO);
-    insert_files(self, files);
+    on_note_view_drop_files(self, files,
+                            [self convertPoint:sender.draggingLocation fromView:nil]);
     return YES;
 }
 
@@ -3216,6 +3236,24 @@ on_note_view_insert_image(NotesNoteView *view, const uint8_t *png, size_t n)
 }
 
 /*
+ * on_note_view_drop_files — see note_view.h.
+ */
+void
+on_note_view_drop_files(NotesNoteView *view, NSArray<NSURL *> *urls, NSPoint point)
+{
+    OnDocHitResult hit;
+    on_doc_layout_hit(view.layout, point.x, point.y, &hit);
+    OnPos at = hit.pos;
+    if (view.app->drop_files_last_line)
+        at = (OnPos){ on_document_n_blocks(view.doc) - 1, -1, G_MAXSIZE };   /* clamped to the end */
+    [view.window makeFirstResponder:view];
+    im_reset(view);
+    typing_end(view);
+    set_caret(view, at, NO);
+    insert_files(view, urls);
+}
+
+/*
  * on_note_view_insert_table — see note_view.h.
  */
 void
@@ -3367,12 +3405,14 @@ image_locate(const OnDocument *doc, NSInteger ordinal, guint *block, gint *inlin
                 return YES;
             }
         } else if (b->text != NULL) {
-            if ((NSUInteger)ordinal < b->text->images->len) {
+            for (guint k = 0; k < b->text->objects->len; k++) {
+                if (g_array_index(b->text->objects, OnInlineObject, k).kind != ON_OBJECT_IMAGE ||
+                    ordinal-- != 0)
+                    continue;
                 *block = i;
-                *inline_ord = (gint)ordinal;
+                *inline_ord = (gint)k;
                 return YES;
             }
-            ordinal -= (NSInteger)b->text->images->len;
         }
     }
     return NO;
@@ -3446,8 +3486,8 @@ on_note_view_image_reveal(NotesNoteView *view, NSInteger ordinal)
     if (!image_locate(view.doc, ordinal, &block, &k)) return NO;
     OnPos p = { block, -1, 0 };
     if (k >= 0)
-        p.offset = g_array_index(on_document_block(view.doc, block)->text->images,
-                                 OnInlineImage, k).offset;
+        p.offset = g_array_index(on_document_block(view.doc, block)->text->objects,
+                                 OnInlineObject, k).offset;
     reveal_pos(view, p);
     return YES;
 }

@@ -91,7 +91,6 @@ kind_name(OnBlockKind kind)
     case ON_BLOCK_CODE:   return "code";
     case ON_BLOCK_IMAGE:  return "image";
     case ON_BLOCK_TABLE:  return "table";
-    case ON_BLOCK_FILE:   return "file";
     case ON_N_BLOCK_KINDS: break;
     }
     return "?";

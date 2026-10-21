@@ -138,6 +138,37 @@ update_path:(NSString *)path note_id:(NSString *)note_id dirty:(BOOL)dirty
 /* ── Format bar helpers ─────────────────────────────────────────────────── */
 
 /*
+ * format_symbol — the glyph of a format bar button, at the bar's icon size.
+ *
+ * Inputs:
+ *   symbol — SF Symbols name
+ *
+ * Output: the template image (cached by shared_ui_symbol).
+ */
+static NSImage *
+format_symbol(NSString *symbol)
+{
+    return shared_ui_symbol(symbol, on_look_format_icon - 3);
+}
+
+/*
+ * pin_glyph — the keep-on-top button's glyph: the outline stack while the
+ * window is normal, the filled stack while it floats.  The button is not a
+ * push-on-push-off toggle, so it keeps its light bezel and only the glyph
+ * shows the state.
+ *
+ * Inputs:
+ *   on — YES while the window floats
+ *
+ * Output: the template image.
+ */
+static NSImage *
+pin_glyph(BOOL on)
+{
+    return format_symbol(on ? @"square.stack.3d.up.fill" : @"square.stack.3d.up");
+}
+
+/*
  * format_button — one button of the format bar: an SF Symbol or a short
  * text label, in the recessed style of the Files app's bookmark bar.  It
  * runs its command through the responder chain like a menu item does.
@@ -161,7 +192,7 @@ format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
     b.toolTip    = tooltip;
     b.refusesFirstResponder = YES;
     if (toggle) [b setButtonType:NSButtonTypePushOnPushOff];
-    NSImage *img = symbol ? shared_ui_symbol(symbol, on_look_format_icon - 3) : nil;
+    NSImage *img = symbol ? format_symbol(symbol) : nil;
     if (img) {
         b.image              = img;
         b.imagePosition      = NSImageOnly;
@@ -174,25 +205,33 @@ format_button(NSString *symbol, NSString *face, NSString *ident, BOOL toggle)
 
 /*
  * format_menu — a pull-down of the format bar whose items are commands
- * (with their shortcuts shown, as in the menu bar).
+ * (with their shortcuts shown, as in the menu bar).  The pull-down's own
+ * title is drawn in the grey of the bar's other buttons and at a size that
+ * makes its glyph match theirs; the items keep the menu font.
  *
  * Inputs:
- *   face    — the pull-down's own title, e.g. @"Insert"
- *   tooltip — hover help
- *   idents  — the commands, in order
+ *   face      — the pull-down's own title, e.g. @"Insert"
+ *   face_size — its point size
+ *   tooltip   — hover help
+ *   idents    — the commands, in order
  *
  * Output: the pop-up button.
  */
 static NSPopUpButton *
-format_menu(NSString *face, NSString *tooltip, NSArray<NSString *> *idents)
+format_menu(NSString *face, double face_size, NSString *tooltip, NSArray<NSString *> *idents)
 {
     NSPopUpButton *menu = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
     menu.bezelStyle = NSBezelStyleRecessed;
     menu.showsBorderOnlyWhileMouseInside = YES;
     menu.font       = [NSFont systemFontOfSize:shared_look_ui_font];
+    menu.contentTintColor = NSColor.secondaryLabelColor;   /* the chevron, as grey as the glyphs */
     menu.toolTip    = tooltip;
     menu.refusesFirstResponder = YES;
     [menu addItemWithTitle:face];                  /* the pull-down's own title */
+    menu.itemArray[0].attributedTitle = [[NSAttributedString alloc] initWithString:face attributes:@{
+        NSFontAttributeName:            [NSFont systemFontOfSize:face_size],
+        NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
+    }];                                            /* the buttons' glyph size and grey */
     for (NSString *ident in idents) [menu.menu addItem:shared_command_menu_item(ident, nil)];
     menu.translatesAutoresizingMaskIntoConstraints = NO;
     [menu.heightAnchor constraintEqualToConstant:on_look_format_btn_h].active = YES;
@@ -246,8 +285,9 @@ separator(void)
 /* Format bar toggle buttons, kept to mirror the inline format state. */
 @property (nonatomic, copy)   NSArray<NSButton *> *inline_buttons;
 
-/* In-note find field at the format bar's right edge. */
+/* In-note find field at the format bar's right edge, and the pin after its buttons. */
 @property (nonatomic, strong) NSSearchField *search_field;
+@property (nonatomic, strong) NSButton      *pin_button;
 
 @property (nonatomic, assign) BOOL    dirty;          /* unsaved edits       */
 @property (nonatomic, assign) BOOL    discard;        /* close without saving:
@@ -529,6 +569,42 @@ validate_find_selection(id target, id item, SharedCommandState *state)
     return !find_has_focus(ed) && on_note_view_selected_text(ed.note_view).length > 0;
 }
 
+/*
+ * run_keep_on_top — "keep-on-top": toggle whether this window floats above
+ * every other window, and show the new state on the format bar's pin.
+ *
+ * Inputs:
+ *   target — the editor
+ *   sender — the item (unused)
+ */
+static void
+run_keep_on_top(id target, id sender)
+{
+    NotesEditorWindow *ed = target;
+    BOOL on = ed.window.level == NSNormalWindowLevel;
+    ed.window.level = on ? NSFloatingWindowLevel : NSNormalWindowLevel;
+    ed.pin_button.image = pin_glyph(on);
+}
+
+/*
+ * validate_keep_on_top — always available; the menu item is checked while
+ * the window floats.
+ *
+ * Inputs:
+ *   target — the editor
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_keep_on_top(id target, id item, SharedCommandState *state)
+{
+    shared_command_state_set(state, nil, nil,
+                             ((NotesEditorWindow *)target).window.level != NSNormalWindowLevel);
+    return YES;
+}
+
 /* Every command an editor runs. */
 static const shared_command_handler_t editor_commands[] = {
     { @"find",             run_find,           NULL                    },
@@ -550,6 +626,7 @@ static const shared_command_handler_t editor_commands[] = {
     { @"insert-table",     run_insert_table,   validate_editing        },
     { @"insert-emoji",     run_insert_emoji,   validate_editing        },
     { @"insert-date",      run_insert_date,    validate_editing        },
+    { @"keep-on-top",      run_keep_on_top,    validate_keep_on_top    },
 };
 #define EDITOR_COMMAND_COUNT (sizeof editor_commands / sizeof *editor_commands)
 
@@ -748,7 +825,7 @@ build_layout
 /*
  * build_format_bar — the formatting row: the style groups (rebuilt by
  * rebuild_format_groups) and, at the right edge, the find field with its
- * previous / next buttons.  The window's minimum width keeps every group
+ * previous / next buttons and, last, the keep-on-top pin.  The window's minimum width keeps every group
  * on show, as the GTK toolbar's natural width did.
  *
  * Output: the bar, for build_layout to place.
@@ -767,10 +844,14 @@ build_format_bar
     field.translatesAutoresizingMaskIntoConstraints = NO;
     self.search_field = field;
 
+    self.pin_button = format_button(@"square.stack.3d.up", @"", @"keep-on-top", NO);
+
     NSStackView *find = [NSStackView stackViewWithViews:@[
         field,
         format_button(@"chevron.up",   @"", @"find-previous", NO),
         format_button(@"chevron.down", @"", @"find-next",     NO),
+        group_separator(),
+        self.pin_button,
     ]];
     find.spacing = on_look_format_gap;
     find.translatesAutoresizingMaskIntoConstraints = NO;
@@ -809,10 +890,10 @@ rebuild_format_groups
     [views addObject:format_button(@"curlybraces", @"", @"para-code", NO)];
     [views addObject:group_separator()];
     if (self.app->compact_editor_toolbar) {
-        [views addObject:format_menu(@"Aa", @"Styles — paragraph style: heading or body text",
+        [views addObject:format_menu(@"Aa", on_look_format_icon - 3, @"Styles — paragraph style: heading or body text",
                                      @[@"para-h1", @"para-h2", @"para-body"])];
         [views addObject:group_separator()];
-        [views addObject:format_menu(@"≡", @"Lists — bullets, numbers, or task checkboxes",
+        [views addObject:format_menu(@"≡", on_look_format_icon, @"Lists — bullets, numbers, or task checkboxes",
                                      @[@"para-bullet", @"para-number", @"para-check"])];
     } else {
         [views addObject:format_button(nil, @"H1",   @"para-h1",   NO)];
@@ -824,7 +905,7 @@ rebuild_format_groups
         [views addObject:format_button(@"checklist",   @"", @"para-check",  NO)];
     }
     [views addObject:group_separator()];
-    [views addObject:format_menu(@"+", @"Insert an image, a table, an emoji, or today's date at the cursor",
+    [views addObject:format_menu(@"+", on_look_format_icon, @"Insert an image, a table, an emoji, or today's date at the cursor",
                                  @[@"insert-image", @"insert-table", @"insert-emoji", @"insert-date"])];
 
     NSStackView *groups = [NSStackView stackViewWithViews:views];

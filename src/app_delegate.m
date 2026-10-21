@@ -569,7 +569,7 @@ build_menu_bar
     NSMenu *window_menu = add_menu(bar, @"Window");
     [window_menu addItem:make_item(@"Minimize", @selector(performMiniaturize:), @"m", cmd)];
     [window_menu addItem:make_item(@"Zoom", @selector(performZoom:), @"", 0)];
-    add_commands(window_menu, @[menu_rule, @"show-library", menu_rule]);
+    add_commands(window_menu, @[menu_rule, @"keep-on-top", menu_rule, @"show-library", menu_rule]);
     [window_menu addItem:make_item(@"Bring All to Front", @selector(arrangeInFront:), @"", 0)];
     NSApp.windowsMenu = window_menu;
 

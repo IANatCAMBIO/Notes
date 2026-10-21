@@ -89,6 +89,8 @@ static const shared_command_t commands[] = {
     { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil, nil },
     { @"insert-emoji",     @"Emoji…",                  @"",  0,         win, nil, nil },
     { @"insert-date",      @"Date",                    @"d", cmd,       win, nil, nil },
+    { @"keep-on-top",      @"Keep on Top",             @"",  0,         win, nil,
+      @"Keep this window on top" },
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 

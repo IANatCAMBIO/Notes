@@ -69,8 +69,9 @@ run_new_note(id target, id sender)
 
 /*
  * tag_fields — the Edit Tag panel's controls: the tag's name (fixed), an
- * optional emoji (a one-character slot that opens the emoji picker when
- * clicked, as Tasks' Edit Tag has), and Favorite, filled in from the tag.
+ * emoji (a one-character slot that opens the emoji picker when clicked, as
+ * Tasks' Edit Tag has), and the Favorite box (its label is the row's own,
+ * so the box has no title), filled in from the tag.
  *
  * Inputs:
  *   tag — the tag
@@ -86,8 +87,9 @@ tag_fields(const OnTag *tag)
     f.emoji = shared_ui_emoji_field(@(tag->emoji));
     f.emoji.identifier = @"tag-emoji";
 
-    f.favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar" target:nil action:nil];
+    f.favorite = [NSButton checkboxWithTitle:@"" target:nil action:nil];
     f.favorite.font       = font;
+    f.favorite.accessibilityLabel = @"Show in the Favorites Bar";
     f.favorite.identifier = @"tag-favorite";
     f.favorite.state      = tag->favorite ? NSControlStateValueOn : NSControlStateValueOff;
 
@@ -100,12 +102,12 @@ tag_fields(const OnTag *tag)
     name.font = [NSFont boldSystemFontOfSize:shared_look_ui_font];
     NSGridView *grid = [NSGridView gridViewWithViews:@[
         @[label(@"Tag:"),               name],
-        @[label(@"Emoji (optional):"),  f.emoji],
-        @[label(@"Favorite:"),          f.favorite],
+        @[label(@"Emoji:"),                     f.emoji],
+        @[label(@"Favorite:"),                  f.favorite],
     ]];
     grid.rowSpacing    = shared_look_tool_btn_gap;
     grid.columnSpacing = shared_look_tool_btn_gap;
-    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
     for (NSInteger r = 0; r < grid.numberOfRows; r++) [grid rowAtIndex:r].yPlacement = NSGridCellPlacementCenter;
     f.view = grid;
     return f;
@@ -123,9 +125,9 @@ on_library_edit_tag(NotesLibrary *lib, gint64 tag_id)
     NSCharacterSet *space = NSCharacterSet.whitespaceAndNewlineCharacterSet;
     NSString       *path  = @(lib.app->db->path);
     SharedToolPanel *panel = [SharedToolPanel
-        panel_with_title:@"Edit Tag" headline:@"Edit Tag"
-                subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
-                  symbol:@"tag" content:f.view buttons:@[@"OK", @"Cancel"] destructive:-1
+        panel_with_title:@"Edit Tag" headline:@""
+                subtitle:nil
+                  symbol:nil content:f.view buttons:@[@"OK", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
         if (index != 0) return nil;                  /* Cancel */
         /* The panel is not modal: the database may have been switched. */

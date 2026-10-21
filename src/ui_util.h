@@ -117,17 +117,6 @@ NSURL *on_ui_temp_file(NSData *data, NSString *name);
 @end
 
 /*
- * NotesKeyFilterPanel — NotesKeyFilterWindow as a panel, for a tool window
- * with the utility title bar (the media window).  AppKit gives that title
- * bar only to an NSPanel, and the editor must stay an NSWindow (a panel
- * cannot be the main window), so the filter has a class of each kind;
- * both run the same filter code.
- */
-@interface NotesKeyFilterPanel : NSPanel
-@property (nonatomic, copy) BOOL (^key_filter)(NSEvent *event);
-@end
-
-/*
  * on_ui_keep_until_closed — own a window controller until its window
  * closes.  For windows that may be open several at a time and that nothing
  * else holds (search, media): an NSWindow does not keep its controller

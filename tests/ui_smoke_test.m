@@ -2890,8 +2890,8 @@ test_secondary_windows(NotesLibrary *lib)
             }
         }
         check(settings_win != nil, "the settings window opens on 'preferences' command");
-        check([settings_win isKindOfClass:NSPanel.class] && (settings_win.styleMask & NSWindowStyleMaskUtilityWindow),
-              "Settings is a tool window");
+        check(![settings_win isKindOfClass:NSPanel.class] && !(settings_win.styleMask & NSWindowStyleMaskUtilityWindow),
+              "Settings is a standard window");
         NSView *root = settings_win.contentView;
         check(label_with_text(root, @"Appearance") && label_with_text(root, @"Editor") &&
               label_with_text(root, @"Database") && label_with_text(root, @"AI Features"),

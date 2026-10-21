@@ -134,23 +134,6 @@ sendEvent:(NSEvent *)event
 
 @end
 
-@implementation NotesKeyFilterPanel
-
-/*
- * sendEvent: — a key-down the filter takes goes no further.
- *
- * Inputs:
- *   event — any event for the panel
- */
-- (void)
-sendEvent:(NSEvent *)event
-{
-    if (filter_takes(self.key_filter, event)) return;
-    [super sendEvent:event];
-}
-
-@end
-
 /* Controllers on_ui_keep_until_closed owns, until their windows close. */
 static NSMutableSet<NSWindowController *> *kept_controllers;
 

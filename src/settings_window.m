@@ -315,7 +315,7 @@ settings_notify_db_state(OnApp *app)
 
 /*
  * init_with_lib: — build the window: one column of sections in a scroll
- * view, the panel sized to it up to on_look_settings_max_h.
+ * view, the window sized to it up to on_look_settings_max_h.
  *
  * Inputs:
  *   lib — the library
@@ -325,16 +325,15 @@ settings_notify_db_state(OnApp *app)
 - (instancetype)
 init_with_lib:(NotesLibrary *)lib
 {
-    NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 400, 400)
-                                                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                                          NSWindowStyleMaskUtilityWindow
-                                                  backing:NSBackingStoreBuffered defer:NO];
-    panel.title              = @"Settings";
-    panel.hidesOnDeactivate  = NO;
-    panel.releasedWhenClosed = NO;
-    if (!(self = [super initWithWindow:panel])) return nil;
+    NSWindow *win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 400)
+                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                                        NSWindowStyleMaskMiniaturizable
+                                                backing:NSBackingStoreBuffered defer:NO];
+    win.title              = @"Settings";
+    win.releasedWhenClosed = NO;
+    if (!(self = [super initWithWindow:win])) return nil;
     _lib = lib;
-    panel.delegate = self;
+    win.delegate = self;
 
     NSMutableArray<NSView *> *rows     = [NSMutableArray array];
     NSMutableArray<NSView *> *headings = [NSMutableArray array];
@@ -393,11 +392,11 @@ init_with_lib:(NotesLibrary *)lib
         [doc.leadingAnchor    constraintEqualToAnchor:scroll.contentView.leadingAnchor],
         [doc.trailingAnchor   constraintEqualToAnchor:scroll.contentView.trailingAnchor],
     ]];
-    panel.contentView = scroll;
+    win.contentView = scroll;
     CGFloat bar = fit.height > on_look_settings_max_h
                 ? [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:NSScrollerStyleLegacy] : 0;
-    [panel setContentSize:NSMakeSize(fit.width + extra_w + bar, MIN(fit.height, on_look_settings_max_h))];
-    [panel center];
+    [win setContentSize:NSMakeSize(fit.width + extra_w + bar, MIN(fit.height, on_look_settings_max_h))];
+    [win center];
 
     lib.app->notify_db_state = settings_notify_db_state;
     return self;

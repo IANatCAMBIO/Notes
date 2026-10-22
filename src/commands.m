@@ -8,6 +8,7 @@ enum {
     cmd_shift = NSEventModifierFlagCommand | NSEventModifierFlagShift,
     cmd_ctrl  = NSEventModifierFlagCommand | NSEventModifierFlagControl,
     cmd_opt   = NSEventModifierFlagCommand | NSEventModifierFlagOption,
+    cmd_ctrl_opt = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption,
     app       = SharedCommandScopeApp,
     win       = SharedCommandScopeWindow,
 };
@@ -27,7 +28,7 @@ static const shared_command_t commands[] = {
     { @"about",            @"About " ON_APP_NAME,      @"",  0,         app, nil, nil },
     { @"preferences",      @"Settings…",               @",", cmd,       app, @"gearshape",
       @"Open the settings window" },
-    { @"new-note",         @"New Note",                @"n", cmd,       app, @"plus",
+    { @"new-note",         @"New Note",                @"n", cmd_ctrl_opt, app, @"plus",
       @"Create a note, with the selected tag" },
     { @"open-db",          @"Open Database File…",     @"o", cmd,       app, nil, nil },
     { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },

@@ -9,6 +9,7 @@
 #import "media_window.h"
 #import "search_window.h"
 #import "settings_window.h"
+#import "shared_hotkey.h"
 #import "ui_util.h"
 
 #include "action_sync.h"
@@ -102,6 +103,24 @@ raise_running_copy(void)
 static const shared_command_handler_t handlers[] = {
     { @"about",        run_about,        NULL },
     { @"show-library", run_show_library, NULL },
+};
+
+static const OnApp *hotkey_app;      /* the context new_note_wanted reads    */
+
+/*
+ * new_note_wanted — whether the New Note shortcut setting is on.
+ *
+ * Output: the setting; NO before the application context is known.
+ */
+static BOOL
+new_note_wanted(void)
+{
+    return hotkey_app != NULL && hotkey_app->new_note_hotkey;
+}
+
+/* New Note's system-wide shortcut, ⌃⌥⌘N.  The menu item's copy is in commands.m. */
+static const shared_hotkey_t new_note_hotkey = {
+    kVK_ANSI_N, controlKey | optionKey | cmdKey, 'NotN', new_note_wanted,
 };
 
 @implementation NotesAppDelegate {
@@ -279,7 +298,25 @@ open_database_and_start
     on_library_window_show(self.lib);
 
     on_app_start_services(&_app);
+    [self start_hotkey];
     return YES;
+}
+
+/*
+ * start_hotkey — arm New Note's system-wide shortcut (shared_hotkey.h),
+ * which runs New Note from any app.  A shortcut another app already holds
+ * is reported in the status bar.
+ */
+- (void)
+start_hotkey
+{
+    hotkey_app = &_app;
+    __weak NotesAppDelegate *ws = self;
+    BOOL ok = shared_hotkey_start(&new_note_hotkey, ^{
+        [NSApp activate];
+        on_library_run_command(ws.lib, shared_command_menu_item(@"new-note", nil));
+    });
+    if (!ok) on_app_status(&_app, "The New Note shortcut is in use by another app");
 }
 
 /* ── Quit ────────────────────────────────────────────────────────────────── */
@@ -330,6 +367,7 @@ applicationShouldTerminate:(NSApplication *)sender
         on_editor_report_unsaved(@"Could not quit", nil);
         return NSTerminateCancel;
     }
+    shared_hotkey_stop();
     NSLog(@"[quit] editors flushed, database closed");
     return NSTerminateNow;
 }

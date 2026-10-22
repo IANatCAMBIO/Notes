@@ -326,7 +326,7 @@ hand-builds an item for a command or writes a second dispatch scheme.
 
 | Shortcut | Command | Scope | vs. GTK build |
 |---|---|---|---|
-| ⌘N | New Note | app | same |
+| ⌃⌥⌘N | New Note (also system-wide while Notes runs; Settings → Editor turns that off) | app | changed (matches Tasks' Quick Task, ⌃⌥⌘T) |
 | ⌘, | Settings… | app | same |
 | ⌘Q | Quit | AppKit | same |
 | ⌘W | Close Window | AppKit | new (standard) |

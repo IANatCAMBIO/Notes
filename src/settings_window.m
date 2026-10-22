@@ -18,6 +18,7 @@
 #import "settings_window.h"
 
 #import "editor_window.h"
+#import "shared_hotkey.h"
 #import "library_sidebar.h"
 #import "look.h"
 #import "ui_util.h"
@@ -58,6 +59,7 @@ typedef enum {
     apply_sidebar_fit,               /* the sidebar's width                 */
     apply_editors,                   /* every open editor                   */
     apply_status_path,               /* the library and editor status bars  */
+    apply_hotkey,                    /* the system-wide New Note shortcut   */
     apply_none,                      /* read when it is used                */
 } apply_t;
 
@@ -83,6 +85,7 @@ static const bool_setting_t editor_settings[] = {
     { "Compact toolbar (group paragraph styles and lists into menus)", "compact_editor_toolbar", apply_editors },
     { "Show note id in the editor status bar",                        "statusbar_note_id",      apply_editors },
     { "Always put dropped files on the last line of the note",        "drop_files_last_line",   apply_none    },
+    { "New Note (\u2303\u2325\u2318N) works from any app",             "new_note_hotkey",        apply_hotkey  },
 };
 
 /*
@@ -110,6 +113,7 @@ setting_on(const OnApp *app, const char *key)
         { "compact_editor_toolbar", offsetof(OnApp, compact_editor_toolbar) },
         { "statusbar_note_id",      offsetof(OnApp, statusbar_note_id)      },
         { "drop_files_last_line",   offsetof(OnApp, drop_files_last_line)   },
+        { "new_note_hotkey",        offsetof(OnApp, new_note_hotkey)        },
     };
     for (size_t i = 0; i < sizeof fields / sizeof *fields; i++)
         if (strcmp(fields[i].key, key) == 0) return *(const gboolean *)((const char *)app + fields[i].off);
@@ -831,7 +835,9 @@ write_setting:(const char *)key value:(const char *)value
 }
 
 /*
- * bool_toggled: — a checkbox: write it, then apply it live.
+ * bool_toggled: — a checkbox: write it, then apply it live.  A shortcut
+ * another app holds cannot be registered: its box goes back off, the
+ * setting with it, and a notice says why.
  *
  * Inputs:
  *   sender — the checkbox (identifier = key, tag = apply_t)
@@ -847,6 +853,13 @@ bool_toggled:(NSButton *)sender
     case apply_status_path:
         on_library_refresh_all(self.lib);
         on_editor_settings_changed();
+        break;
+    case apply_hotkey:
+        if (shared_hotkey_apply()) break;
+        sender.state = NSControlStateValueOff;
+        [self write_setting:sender.identifier.UTF8String value:"0"];
+        shared_ui_notice(self.window, @"The shortcut is in use",
+                         @"Another app has already taken \u2303\u2325\u2318N.", nil);
         break;
     case apply_none:        break;
     }

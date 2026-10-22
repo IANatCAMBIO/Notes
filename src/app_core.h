@@ -65,6 +65,7 @@
  *   show_done_actions      "show_done_actions"        1  list completed items
  *   bold_list_titles       "bold_list_titles"         1  bold comfortable titles
  *   ai_enabled             "ai_enabled"               0  AI summary available
+ *   new_note_hotkey        "new_note_hotkey"          1  New Note works from any app
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
  *   grid_group             "grid_group"       "none" (default), "day", "week",
@@ -170,6 +171,7 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    drop_files_last_line;
     gboolean    ai_enabled;
+    gboolean    new_note_hotkey;
     gchar      *ai_command;
     on_grid_group_t grid_group;
 

@@ -11,6 +11,7 @@
 | shared_data | its `main` | the repository beside this one (`../shared_data`) | `src/shared_db.c` is compiled into the core — see below |
 | shared_ui | its `main` | the repository beside this one (`../shared_ui`) | `src/*.m` are compiled into the app — see below |
 | Cocoa, CoreText, CoreGraphics, ImageIO, UniformTypeIdentifiers | system | macOS SDK | |
+| Carbon (`RegisterEventHotKey` only) | New Note's system-wide shortcut, ⌃⌥⌘N (`../shared_ui/src/shared_hotkey.m`); needs no Accessibility permission | macOS SDK | |
 
 ```sh
 export PATH=/opt/local/bin:$PATH    # MacPorts pkg-config

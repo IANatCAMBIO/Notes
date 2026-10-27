@@ -50,6 +50,18 @@ void on_library_notes_refresh(NotesLibrary *lib);
 void on_library_notes_note_saved(NotesLibrary *lib, gint64 note_id);
 
 /*
+ * on_library_notes_note_added — a NEW note was created by the library: add
+ * its row to the pane and nothing else.  The note is empty and carries no
+ * tag or the selected tag, so the pane lists it in All Notes and in that
+ * tag's view, and not in Pinned, Trash or Action Items.
+ *
+ * Inputs:
+ *   lib     — the library
+ *   note_id — the new note
+ */
+void on_library_notes_note_added(NotesLibrary *lib, gint64 note_id);
+
+/*
  * on_library_notes_selected_ids — the notes selected in the pane.
  *
  * Output: their ids, in display order; empty when none (and in the Action

@@ -19,8 +19,9 @@
 /*
  * open_new_note — create a new note: an empty title line and an empty body
  * line, then the #tag on a line of its own when a tag is given
- * (on_note_new_from_text); show it in the library and open its editor in
- * front, the caret on the title line.
+ * (on_note_new_from_text); show it in the library (its sidebar counts and
+ * its row, nothing else is re-read) and open its editor in front, the
+ * caret on the title line.
  *
  * Inputs:
  *   lib — the library
@@ -33,9 +34,10 @@ open_new_note(NotesLibrary *lib, NSString *tag)
 {
     gint64 note_id = on_note_new_from_text(lib.app->db, tag.UTF8String, "\n");
     if (note_id == 0) return;
-    /* The full refresh: a new note changes the counts as well as the
-     * notes pane. */
-    on_library_refresh_all(lib);
+    /* An empty note changes only the counts of All Notes and its tag, and
+     * adds one row; the tag is the selected one, so lib.sel_id is its id. */
+    on_library_sidebar_note_added(lib, tag != nil ? lib.sel_id : 0);
+    on_library_notes_note_added(lib, note_id);
     on_editor_window_open(lib.app, note_id, NotesEditorRevealNone, 0, nil);
 }
 

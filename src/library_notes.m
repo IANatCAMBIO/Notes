@@ -174,6 +174,31 @@ preview_line(const gchar *body)
 }
 
 /*
+ * note_record — one row of the notes pane from a note's stored data.
+ *
+ * Inputs:
+ *   m       — the note's metadata
+ *   tags    — its tag names, comma-separated, or NULL for none
+ *   preview — its Comfortable preview line, or nil for none
+ *
+ * Output: the new record.
+ */
+static NotesNoteRecord *
+note_record(const OnNoteMeta *m, const gchar *tags, NSString *preview)
+{
+    NotesNoteRecord *r = [[NotesNoteRecord alloc] init];
+    r.note_id    = m->id;
+    r.title      = @(m->title ?: "");
+    r.updated_at = m->updated_at;
+    r.created_at = m->created_at;
+    r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
+    r.created    = shared_ui_format_date(m->created_at, shared_ui_date_list);
+    r.tags       = tags != NULL ? @(tags) : @"";
+    r.preview    = preview;
+    return r;
+}
+
+/*
  * casecmp — case-insensitive comparison, nil as empty.
  *
  * Inputs:
@@ -1073,17 +1098,8 @@ load_records:(BOOL)previews
     NSMutableArray<NotesNoteRecord *> *records = [NSMutableArray array];
     for (GList *l = notes; l != NULL; l = l->next) {
         const OnNoteMeta *m = l->data;
-        NotesNoteRecord  *r = [[NotesNoteRecord alloc] init];
-        r.note_id    = m->id;
-        r.title      = @(m->title ?: "");
-        r.updated_at = m->updated_at;
-        r.created_at = m->created_at;
-        r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
-        r.created    = shared_ui_format_date(m->created_at, shared_ui_date_list);
-        const gchar *names = g_hash_table_lookup(tags, &m->id);
-        r.tags    = names != NULL ? @(names) : @"";
-        r.preview = texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil;
-        [records addObject:r];
+        [records addObject:note_record(m, g_hash_table_lookup(tags, &m->id),
+                                       texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil)];
     }
     on_db_note_list_free(notes);
     g_hash_table_destroy(tags);
@@ -1278,6 +1294,43 @@ refresh_note:(gint64)note_id
                              columnIndexes:[NSIndexSet indexSetWithIndexesInRange:
                                             NSMakeRange(0, (NSUInteger)self.list.numberOfColumns)]];
     }
+    if (mode == on_library_view_list) [self fit_columns:self.list full:NO];
+    if (mode == on_library_view_grid) {
+        [self.card_queue addObject:@(note_id)];
+        [self schedule_cards];
+    }
+}
+
+/*
+ * add_note: — a note was just created by this window: put its row in the
+ * list or grid without re-reading the other notes.  A new note carries no
+ * tag or the selected tag, so only All Notes and that tag's view list it;
+ * Pinned, Trash and Action Items do not.
+ *
+ * Inputs:
+ *   note_id — the new note
+ */
+- (void)
+add_note:(gint64)note_id
+{
+    NotesLibrary *lib = self.lib;
+    if (lib.sel_kind != on_sb_all && lib.sel_kind != on_sb_tag) return;
+    OnNoteMeta *m = on_db_note_get(lib.app->db, note_id);
+    if (m == NULL) return;
+    on_library_view_t mode     = on_library_view(lib);
+    BOOL              previews = mode == on_library_view_list && lib.app->comfortable_list;
+    gint64            ids[1]   = { note_id };
+    GHashTable       *tags     = on_db_note_tag_names_map(lib.app->db, ids, 1);
+    gchar            *body     = previews ? on_db_note_body_text(lib.app->db, note_id) : NULL;
+    NotesNoteRecord  *r        = note_record(m, g_hash_table_lookup(tags, &m->id),
+                                             previews ? preview_line(body) : nil);
+    g_free(body);
+    g_hash_table_destroy(tags);
+    on_db_note_meta_free(m);
+
+    self.records = [self.records arrayByAddingObject:r];
+    [self sort_records];
+    [self reload_notes];
     if (mode == on_library_view_list) [self fit_columns:self.list full:NO];
     if (mode == on_library_view_grid) {
         [self.card_queue addObject:@(note_id)];
@@ -2362,6 +2415,15 @@ void
 on_library_notes_note_saved(NotesLibrary *lib, gint64 note_id)
 {
     [notes_pane refresh_note:note_id];
+}
+
+/*
+ * on_library_notes_note_added — see library_notes.h.
+ */
+void
+on_library_notes_note_added(NotesLibrary *lib, gint64 note_id)
+{
+    [notes_pane add_note:note_id];
 }
 
 /*

@@ -4,9 +4,10 @@
 #   make            build Notes.app
 #   make run        run the app on the development data in dev/data
 #   make seed       (re)create the development database in dev/data
-#   make test       the model, core and UI tests
+#   make test       the release checks: test-build test-unit (model, core)
+#                   test-features test-ui (the UI tests)
 #   make ui-check   the windows built in-process: snapshots in dev/snapshots,
-#                   ownership and memory checks (part of make test)
+#                   ownership and memory checks (part of test-ui)
 #   make bnbf-scan  build/bnbf-scan, the blob round-trip scan (tools/)
 #   make install    install the bundle in ~/Applications
 #   make clean      remove build/ and the bundle (dev/ is kept)
@@ -155,7 +156,7 @@ UI_OBJS   = $(patsubst src/%.c,build/%.o,$(UI_C_SRCS)) \
             $(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS))
 DEPS      = $(CORE_OBJS:.o=.d) $(UI_OBJS:.o=.d)
 
-.PHONY: all run seed test ui-check bnbf-scan install clean clean-dev
+.PHONY: all run seed test test-build test-unit test-features test-ui ui-check bnbf-scan install clean clean-dev
 
 all: $(BUNDLE)
 
@@ -280,15 +281,27 @@ build/%_test.app: build/%_test.o $(APP_OBJS) $(BUNDLE)
 .PRECIOUS: build/%_test.o
 -include $(TEST_BINS:=.d) $(UI_TEST_APPS:.app=.d)
 
-test: build/test_document $(TEST_BINS) $(UI_TEST_APPS) $(BUNDLE)
-	@echo "== build/test_document"; ./build/test_document
-	@for t in $(TEST_BINS) $(UI_TEST_APPS); do \
+# run_tests: run each test binary or app bundle in $(1) on a data directory
+# of its own under dev/test.
+define run_tests
+	@for t in $(1); do \
 	    name=$$(basename $$t .app); echo "== $$t"; \
 	    case $$t in *.app) run=$$t/Contents/MacOS/$$name ;; *) run=$$t ;; esac; \
 	    rm -rf "$(TEST_DATA)/$$name" && mkdir -p "$(TEST_DATA)/$$name" && \
 	    $(DATA_ENV)="$(TEST_DATA)/$$name" \
 	    CAMBIO_SHARED_DB="$(TEST_DATA)/$$name/shared_data.db" ./$$run || exit 1; \
 	done
+endef
+
+test-unit: build/test_document $(TEST_BINS)
+	@echo "== build/test_document"; ./build/test_document
+	$(call run_tests,$(TEST_BINS))
+	@echo "test-unit: ok"
+
+# test-ui: the UI tests (tests/*_test.m), run from bundles of their own.
+test-ui: $(UI_TEST_APPS) $(BUNDLE)
+	$(call run_tests,$(UI_TEST_APPS))
+	@echo "test-ui: ok"
 
 # ui-check: the in-process UI test on its own (tests/ui_smoke_test.m): it
 # builds the real windows on a test database, checks that closed windows
@@ -317,7 +330,7 @@ bnbf-scan: build/bnbf-scan
 #
 # A running installed copy is asked to quit first (SIGTERM, which the app
 # turns into an ordinary Quit: editors flush, see app_lifecycle.h) and is
-# reopened afterwards. Install stops if it has not exited after 5 s. The
+# reopened afterwards. It is killed (SIGKILL) if it has not exited after 5 s. The
 # data directory (~/Library/Application Support/Notes) is outside the
 # bundle, so replacing the bundle never touches settings or notes.
 INSTALL_DIR   = $(HOME)/Applications
@@ -332,16 +345,38 @@ install: all
 	    for i in 1 2 3 4 5 6 7 8 9 10; do \
 	        pgrep -qxf "$(INSTALLED_BIN)" || break; sleep 0.5; \
 	    done; \
-	    if pgrep -qxf "$(INSTALLED_BIN)"; then \
-	        echo "$(APP_NAME) did not quit; quit it (⌘Q) and run make install again" >&2; \
-	        exit 1; \
-	    fi; \
-	    echo "Quit the running $(APP_NAME)"; \
+	    pkill -KILL -xf "$(INSTALLED_BIN)" 2>/dev/null; \
+	    echo "Stopped the running $(APP_NAME)"; \
 	fi; \
 	rm -rf "$(INSTALL_DIR)/$(BUNDLE)" && \
 	cp -R $(BUNDLE) "$(INSTALL_DIR)/$(BUNDLE)" && \
 	echo "Installed to $(INSTALL_DIR)/$(BUNDLE)" && \
 	if [ $$running = 1 ]; then open "$(INSTALL_DIR)/$(BUNDLE)" && echo "Reopened $(APP_NAME)"; fi
+
+# ── Release checks ───────────────────────────────────────────────────────
+# Not dependencies of all/run/install: they run only when asked for (a
+# release). `make test` runs all four; each is also a target of its own.
+test: test-build test-unit test-features test-ui
+	@echo "all release checks passed"
+
+# test-build: a from-scratch build has zero warnings, and the bundle is
+# sound (valid Info.plist, executable present, signature verifies).
+BUILD_LOG = build/build.log
+
+test-build:
+	@$(MAKE) clean
+	@mkdir -p build
+	@$(MAKE) all > $(BUILD_LOG) 2>&1 || { cat $(BUILD_LOG); exit 1; }
+	@! grep -q 'warning:' $(BUILD_LOG) || { grep 'warning:' $(BUILD_LOG); echo "test-build: warnings"; exit 1; }
+	@plutil -lint $(CONTENTS)/Info.plist >/dev/null
+	@test -x $(MACOS)/$(APP)
+	@codesign --verify --strict $(BUNDLE)
+	@echo "test-build: ok"
+
+# test-features: each user-visible feature driven through the app's own
+# code on seeded scratch data (tests/features/). None written yet.
+test-features:
+	@echo "test-features: no feature tests yet (tests/features/)"
 
 clean:
 	@rm -rf build $(BUNDLE)

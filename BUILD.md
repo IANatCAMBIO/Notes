@@ -77,10 +77,14 @@ it; objects also depend on the Makefile and on `VERSION`.
 | `make` | builds `Notes.app`: the app (`Contents/MacOS/Notes`), `Info.plist`, the app icon and README in `Contents/Resources`; signs it |
 | `make run` | runs the app in the foreground on `dev/data` (seeding it first if needed); `NOTES_DATA_DIR=dev/data` and `CAMBIO_SHARED_DB=dev/data/shared_data.db` are set for you |
 | `make seed` | wipes and rebuilds the development database `dev/data/shared_data.db` with `build/dev_seed` (refuses while an app holds `dev/data`) |
-| `make test` | `build/test_document` (the model, GLib only), every `tests/*_test.c` (core), every `tests/*_test.m` (UI, in-process); each with its own `dev/test/<name>/` and `CAMBIO_SHARED_DB` inside it |
+| `make test` | The release checks: `test-build`, `test-unit`, `test-features`, `test-ui`. Never part of `make`, `run` or `install` |
+| `make test-build` | From-scratch build with zero warnings; valid `Info.plist`, executable and signature |
+| `make test-unit` | `build/test_document` (the model, GLib only) and every `tests/*_test.c` (core); each with its own `dev/test/<name>/` and `CAMBIO_SHARED_DB` inside it |
+| `make test-features` | Feature tests (`tests/features/`); none written yet |
+| `make test-ui` | Every `tests/*_test.m` (UI, in-process), each with its own `dev/test/<name>/` |
 | `make ui-check` | the in-process UI test alone: window snapshots (light and dark) in `dev/snapshots`, ownership and memory checks |
 | `make bnbf-scan` | `build/bnbf-scan`, the blob round-trip scan for a database COPY |
-| `make install` | copies the bundle to `~/Applications`, replacing an installed copy (a running one is asked to quit, which saves open notes, and is reopened) |
+| `make install` | copies the bundle to `~/Applications`, replacing an installed copy (a running one is sent SIGTERM, which saves open notes, killed after 5 s, and reopened) |
 | `make clean` | removes `build/` and the bundle |
 | `make clean-dev` | removes `dev/` (development data, test data, snapshots) |
 

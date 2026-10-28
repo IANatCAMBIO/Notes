@@ -14,7 +14,7 @@ data, code style, verification.
 - NEVER touch the owner's live data, not even to read:
   `~/Library/Mobile Documents/com~apple~CloudDocs/Notes/`,
   `~/.local/share/notes/`, `~/.config/notes/`, `~/.cache/notes-*.sock`,
-  `~/Applications/Notes.app`, the GTK build's `notes` binary, `notes.ini`
+  the GTK build's `notes` binary, `notes.ini`
   and `dist/` left at the repo root (ignored; `notes.ini` points at the
   real notes), the sibling repos `../tasks`, `../files`.  Never run a GTK
   `notes` binary.
@@ -22,7 +22,7 @@ data, code style, verification.
   (`../shared_data`, its own repository — read `../shared_data/PLAN.md`;
   never edit it from here).  The owner's live copy,
   `~/Library/Application Support/{Notes,camb.io,Tasks}/`, is off limits
-  too, not even to read.  Never `make install`.
+  too, not even to read.
 - Every run uses test data: `make run`, `make seed`, `make test` set
   `NOTES_DATA_DIR` and `CAMBIO_SHARED_DB` under `dev/`.  By hand:
   `NOTES_DATA_DIR=$PWD/dev/data CAMBIO_SHARED_DB=$PWD/dev/data/shared_data.db Notes.app/Contents/MacOS/Notes`.

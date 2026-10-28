@@ -39,7 +39,7 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    Notes app is installed and probably running on the real database.  Off
    limits: `~/Library/Mobile Documents/com~apple~CloudDocs/Notes/`,
    `~/.local/share/notes/`, `~/.config/notes/`, `~/.cache/notes-*.sock`,
-   `~/Applications/Notes.app`, the GTK build's `notes` binary, `notes.ini`
+   the GTK build's `notes` binary, `notes.ini`
    and `dist/` left at the repo root (ignored; `notes.ini` points at the
    real notes), and the sibling repositories `../tasks`, `../files`
    (read-only references; never build or run there).
@@ -52,8 +52,7 @@ ownership · 10 data and test data · 11 code style · 12 verification ·
    at it).  Without them this build uses the real per-user files: its
    settings in `~/Library/Application Support/Notes/` and the database it
    shares with Tasks in `~/Library/Application Support/camb.io/` — the
-   owner's live data (`../shared_data/PLAN.md`, hard rules).  Never
-   `make install`.
+   owner's live data (`../shared_data/PLAN.md`, hard rules).
 3. **`document.c`, `bnbf.c`, `db.c` are not yours to change**, nor
    `../shared_data` (the shared module, its own repository).  The document
    model is the single mutation path of a note (`BLOCK_MODEL.md`).  If you

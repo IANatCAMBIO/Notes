@@ -2,6 +2,7 @@
 #import "library_ai.h"
 #import "library_favorites.h"
 #import "library_notes.h"
+#import "library_planner.h"
 #import "library_sidebar.h"
 #import "search_window.h"
 #import "ui_util.h"
@@ -29,7 +30,7 @@ toolbar_idents(BOOL ai)
     NSArray<NSToolbarItemIdentifier> *head = @[
         @"toggle-sidebar", NSToolbarSpaceItemIdentifier,
         @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
-        @"toggle-view", @"toggle-done", @"search", @"media",
+        @"toggle-view", @"toggle-done", @"search", @"media", @"toggle-day-planner",
     ];
     NSArray<NSToolbarItemIdentifier> *tail = @[NSToolbarFlexibleSpaceItemIdentifier, search_item_ident];
     return [[head arrayByAddingObjectsFromArray:ai ? @[NSToolbarSpaceItemIdentifier, @"ai-summary"] : @[]]
@@ -41,6 +42,11 @@ toolbar_idents(BOOL ai)
 static const char *const sidebar_width_key   = "sidebar_width";
 static const char *const sidebar_visible_key = "sidebar_visible";
 
+/* The day planner's width and visibility, as Tasks keeps its own; hidden
+ * until first shown. */
+static const char *const planner_width_key   = "day_planner_width";
+static const char *const planner_visible_key = "day_planner_visible";
+
 /* The window's place and size, saved when it closes (as Tasks' win_x/y/w/h). */
 static const char *const win_x_key = "win_x";
 static const char *const win_y_key = "win_y";
@@ -50,8 +56,10 @@ static const char *const win_h_key = "win_h";
 @interface NotesLibraryWindow : NSWindowController <NSWindowDelegate, NSToolbarDelegate,
                                                     NSUserInterfaceValidations>
 @property (nonatomic, strong) NotesLibrary *lib;
-@property (nonatomic, strong) NSSplitViewController *split;   /* sidebar | notes */
+@property (nonatomic, strong) NSSplitViewController *split;   /* sidebar | notes | planner */
 @property (nonatomic, strong) NSSplitViewItem *sidebar_item;
+@property (nonatomic, strong) NSSplitViewItem *planner_item;
+@property (nonatomic, strong) NotesPlannerHost *planner_host; /* the planner and its delegate */
 @property (nonatomic, strong) NSView *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height;   /* 0 while hidden */
 @property (nonatomic, strong) NSTextField *status_path;       /* left: the selection */
@@ -111,7 +119,6 @@ init_with_library:(NotesLibrary *)lib
                     backing:NSBackingStoreBuffered
                       defer:NO];
     win.title              = @ON_APP_NAME;
-    win.contentMinSize     = NSMakeSize(on_look_library_min_w, on_look_library_min_h);
     win.toolbarStyle       = NSWindowToolbarStyleExpanded;
     win.releasedWhenClosed = NO;
     /* Where it was last time (win_x/y/w/h in the config, as Tasks keeps
@@ -140,6 +147,7 @@ init_with_library:(NotesLibrary *)lib
     win.toolbar         = toolbar;
 
     [self build_content];
+    win.contentMinSize = [self content_min_size];
     shared_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_location];
     return self;
@@ -147,7 +155,8 @@ init_with_library:(NotesLibrary *)lib
 
 /*
  * build_content — the Favorites bar across the window, the split view
- * (sidebar | notes over the AI pane) under it, above the status bar.
+ * (sidebar | notes over the AI pane | day planner) under it, above the
+ * status bar.
  */
 - (void)
 build_content
@@ -163,7 +172,7 @@ build_content
 
     SharedSplitController *split = [[SharedSplitController alloc] init];
     split.width_changed = ^(NSInteger index, NSInteger width) {
-        on_app_config_set_int(sidebar_width_key, (gint)width);     /* the one side pane */
+        on_app_config_set_int(index == 0 ? sidebar_width_key : planner_width_key, (gint)width);
     };
     self.split        = split;
     self.sidebar_item = shared_ui_pane_item(on_library_sidebar_new(self.lib), shared_look_sidebar_min_w);
@@ -172,6 +181,11 @@ build_content
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
     [self.split addSplitViewItem:self.sidebar_item];
     [self.split addSplitViewItem:shared_ui_pane_item(main_pane, on_look_pane_min_w)];
+    self.planner_host = [[NotesPlannerHost alloc] init_with_library:self.lib];
+    self.planner_item = shared_ui_pane_item(self.planner_host.view, shared_look_day_planner_min_w);
+    self.planner_item.canCollapse     = YES;
+    self.planner_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
+    [self.split addSplitViewItem:self.planner_item];
     self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
 
     NSBox *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
@@ -218,11 +232,64 @@ build_content
         [self.status_event.leadingAnchor
             constraintGreaterThanOrEqualToAnchor:self.status_path.trailingAnchor constant:inset],
     ]];
-    /* The width it was last dragged to, at least the narrowest drag; the
-     * initial width until the first drag. */
+    /* Each side pane at the width it was last dragged to, at least the
+     * narrowest drag; the initial width until the first drag.  Set once
+     * the split view has its frame (a position set before layout is
+     * clamped to a zero width); then the planner is collapsed if it was
+     * left hidden, so that showing it brings that width back. */
+    [content layoutSubtreeIfNeeded];
+    NSSplitView *split_view = self.split.splitView;
     gint saved = on_app_config_get_int(sidebar_width_key, 0);
-    [self.split.splitView setPosition:saved > 0 ? MAX(saved, shared_look_sidebar_min_w) : shared_look_sidebar_w
-                   ofDividerAtIndex:0];
+    [split_view setPosition:saved > 0 ? MAX(saved, shared_look_sidebar_min_w) : shared_look_sidebar_w
+           ofDividerAtIndex:0];
+    [split_view setPosition:NSWidth(split_view.bounds) - [self planner_extent] - split_view.dividerThickness
+           ofDividerAtIndex:1];
+    self.planner_item.collapsed = !on_app_config_get_int(planner_visible_key, 0);
+    if (!self.planner_item.collapsed) {
+        [self.planner_host.view reload];
+        [self.planner_host.view scroll_to_now];
+    }
+}
+
+/*
+ * planner_extent — the shown day planner's width: the one it was last
+ * dragged to, at least shared_look_day_planner_min_w;
+ * shared_look_day_planner_w until the first drag.
+ *
+ * Output: the width, in points.
+ */
+- (CGFloat)
+planner_extent
+{
+    gint saved = on_app_config_get_int(planner_width_key, 0);
+    return saved > 0 ? MAX((CGFloat)saved, shared_look_day_planner_min_w) : shared_look_day_planner_w;
+}
+
+/*
+ * content_min_size — the window's least content size: the sidebar and
+ * the notes pane, and the day planner's narrowest width while it is set
+ * to show (the setting, not the split item, which is mid-slide while it
+ * is toggled).
+ *
+ * Output: the size, for the window's contentMinSize.
+ */
+- (NSSize)
+content_min_size
+{
+    CGFloat width = on_look_library_min_w;
+    if (on_app_config_get_int(planner_visible_key, 0))
+        width += self.split.splitView.dividerThickness + shared_look_day_planner_min_w;
+    return NSMakeSize(width, on_look_library_min_h);
+}
+
+/*
+ * reload_planner — the day planner's day may have changed (another app
+ * committed, the database was switched): read it again, while it shows.
+ */
+- (void)
+reload_planner
+{
+    if (!self.planner_item.collapsed) [self.planner_host.view reload];
 }
 
 /*
@@ -276,6 +343,31 @@ toggle_sidebar
     on_app_config_set(sidebar_visible_key, show ? "1" : "0");
     on_app_prefs_load(self.lib.app);
     self.sidebar_item.animator.collapsed = !show;
+}
+
+/*
+ * toggle_day_planner — slide the day planner in or out and remember which
+ * (the day_planner_visible setting): its split item collapses, the same
+ * slide as the sidebar's.  The window's least width follows, and a window
+ * too narrow for the planner widens, keeping its left edge.
+ */
+- (void)
+toggle_day_planner
+{
+    BOOL show = self.planner_item.collapsed;
+    on_app_config_set(planner_visible_key, show ? "1" : "0");
+    NSSize least = [self content_min_size];
+    self.window.contentMinSize = least;
+    NSRect content = [self.window contentRectForFrameRect:self.window.frame];
+    if (NSWidth(content) < least.width) {
+        content.size.width = least.width;
+        [self.window setFrame:[self.window frameRectForContentRect:content] display:YES animate:YES];
+    }
+    if (show) {
+        [self.planner_host.view reload];
+        [self.planner_host.view scroll_to_now];
+    }
+    self.planner_item.animator.collapsed = !show;
 }
 
 /*
@@ -426,6 +518,7 @@ windowWillClose:(NSNotification *)note
     }
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
+    [self.planner_host.view shut_down];
     on_library_notes_closed();
     library_window    = nil;         /* may release self: last */
 }
@@ -434,7 +527,8 @@ windowWillClose:(NSNotification *)note
 
 /*
  * hook_notes_changed — OnApp.notify_notes_changed: something structural
- * changed; rebuild both panes.
+ * changed (or another database was opened); rebuild both panes, and read
+ * the planner's day again.
  *
  * Inputs:
  *   app — the application context (unused)
@@ -443,6 +537,20 @@ static void
 hook_notes_changed(OnApp *app)
 {
     on_library_refresh_all(on_library());
+    [library_window reload_planner];
+}
+
+/*
+ * hook_outside_commit — OnApp.notify_outside_commit: another writer
+ * committed; Tasks' sync may have pulled events, or Tasks moved a session.
+ *
+ * Inputs:
+ *   app — the application context (unused)
+ */
+static void
+hook_outside_commit(OnApp *app)
+{
+    [library_window reload_planner];
 }
 
 /*
@@ -538,10 +646,43 @@ validate_toggle_favorites(id target, id item, SharedCommandState *state)
     return library_window != nil;
 }
 
+/*
+ * run_toggle_day_planner — "toggle-day-planner".
+ *
+ * Inputs:
+ *   target — the NotesLibrary (unused: there is one window)
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_day_planner(id target, id sender)
+{
+    [library_window toggle_day_planner];
+}
+
+/*
+ * validate_toggle_day_planner — the item names what a click will do, and
+ * is disabled while the library window is closed.
+ *
+ * Inputs:
+ *   target — the NotesLibrary (unused)
+ *   item   — the item
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES while the window is open.
+ */
+static BOOL
+validate_toggle_day_planner(id target, id item, SharedCommandState *state)
+{
+    BOOL collapsed = library_window == nil || library_window.planner_item.collapsed;
+    shared_command_state_set(state, collapsed ? @"Show Day Planner" : @"Hide Day Planner", nil, NO);
+    return library_window != nil;
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const shared_command_handler_t handlers[] = {
-    { @"toggle-sidebar",   run_toggle_sidebar,   validate_toggle_sidebar   },
-    { @"toggle-favorites", run_toggle_favorites, validate_toggle_favorites },
+    { @"toggle-sidebar",     run_toggle_sidebar,     validate_toggle_sidebar     },
+    { @"toggle-favorites",   run_toggle_favorites,   validate_toggle_favorites   },
+    { @"toggle-day-planner", run_toggle_day_planner, validate_toggle_day_planner },
 };
 
 /*
@@ -551,9 +692,10 @@ void
 on_library_window_install(NotesLibrary *lib)
 {
     on_library_add_commands(handlers, sizeof handlers / sizeof handlers[0]);
-    lib.app->notify_notes_changed = hook_notes_changed;
-    lib.app->notify_note_saved    = hook_note_saved;
-    lib.app->notify_status        = hook_status;
+    lib.app->notify_notes_changed  = hook_notes_changed;
+    lib.app->notify_note_saved     = hook_note_saved;
+    lib.app->notify_status         = hook_status;
+    lib.app->notify_outside_commit = hook_outside_commit;
 }
 
 /*

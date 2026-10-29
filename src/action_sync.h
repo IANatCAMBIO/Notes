@@ -24,6 +24,9 @@
  *   - only 'notes' moved: no pull — the editors check their notes and the
  *     library refreshes (another writer changed notes or tags);
  *   - neither moved (e.g. only shared_settings changed): nothing.
+ * Every outside commit, whatever moved, is then reported through
+ * OnApp.notify_outside_commit (the day planner re-reads its day: Tasks'
+ * calendar sync writes tables no revision covers).
  * A pull that left a note unsynced sets app->pull_failed, and the next
  * tick pulls again whether or not anything else committed.  A note whose
  * open editor waits for the user to answer its "changed outside" panel

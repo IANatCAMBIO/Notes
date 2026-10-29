@@ -64,8 +64,12 @@ make seed && make run   # the app on dev/data
 - `../shared_data/src/shared_db.h` — the shared database's frozen API
   (compiled into the core from `SHARED_DATA_DIR`).
 - `../shared_ui/src/` — the interface elements shared with Tasks
-  (`shared_look.h`, `shared_ui.h`, `shared_commands.h`, `shared_tool_panel.h`; compiled in
-  from `SHARED_UI_DIR`): change them there, for both apps.
+  (`shared_look.h`, `shared_ui.h`, `shared_commands.h`, `shared_tool_panel.h`,
+  `shared_day_planner.h`; compiled in from `SHARED_UI_DIR`): change them
+  there, for both apps.
+- `src/library_planner.[hm]` — the day planner's Notes side: reads the
+  calendar cache Tasks' sync writes; a double-click on an event is
+  `serialize.c` `on_note_for_event`.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written

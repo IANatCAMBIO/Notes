@@ -41,6 +41,7 @@
 #import "library_notes.h"
 #import "library_sidebar.h"
 #import "library_state.h"
+#import "shared_day_planner.h"
 #import "library_window.h"
 #import "media_window.h"
 #import "note_view.h"
@@ -2025,6 +2026,122 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 }
 
 /*
+ * planner_width — the day planner's width in the library window: 0 while
+ * its split item is collapsed.
+ *
+ * Inputs:
+ *   planner — the panel
+ *
+ * Output: the width, in points.
+ */
+static CGFloat
+planner_width(SharedDayPlanner *planner)
+{
+    return planner.hidden ? 0.0 : NSWidth(planner.frame);
+}
+
+/*
+ * test_day_planner — the library's day planner: hidden until asked for,
+ * shown and hidden by ⌘⇧D (remembered); it draws the day's scheduled
+ * tasks and the calendar events Tasks' sync cached; a double-click on an
+ * event makes its note (title, "Attendees:", attendees as bullets, an
+ * empty line, another) and opens it with the caret on the last, and a second
+ * one opens the same note.  Snapshots: library-planner-light/dark.
+ *
+ * Inputs:
+ *   lib — the library (its window on screen)
+ */
+static void
+test_day_planner(NotesLibrary *lib)
+{
+    SharedDayPlanner *planner =
+        (SharedDayPlanner *)find_view(lib.window.contentView, SharedDayPlanner.class, Nil);
+    check(planner != nil && planner_width(planner) < 1.0 &&
+          !on_app_config_get_int("day_planner_visible", 0),
+          "the day planner is in the library window, hidden until asked for");
+
+    int64_t lo = (int64_t)[NSCalendar.currentCalendar startOfDayForDate:[NSDate date]]
+                     .timeIntervalSince1970;
+    char sql[1024];
+    snprintf(sql, sizeof sql,
+             "INSERT INTO gcal_calendar (id, summary, color) VALUES ('plan-cal', 'Work', '#33aa66');"
+             "INSERT INTO gcal_event (calendar_id, event_id, title, start, end, attendees)"
+             " VALUES ('plan-cal', 'plan-ev', 'Planning sync', %lld, %lld,"
+             "         'Ann Lee' || char(10) || 'bo@x.com');"
+             "INSERT INTO tasks (title, scheduled_start, scheduled_duration)"
+             " VALUES ('Draft the agenda', %lld, 60);",
+             (long long)(lo + 10 * 3600), (long long)(lo + 11 * 3600), (long long)(lo + 9 * 3600));
+    check(sqlite3_exec(app.db->handle, sql, NULL, NULL, NULL) == SQLITE_OK,
+          "planner: a cached event and a scheduled task for today");
+
+    on_library_run_command(lib, command_item(@"toggle-day-planner"));
+    pump(0.4);
+    check(on_app_config_get_int("day_planner_visible", 0) &&
+          planner_width(planner) >= shared_look_day_planner_min_w - 1.0,
+          "⌘⇧D slides the planner in, at least its narrowest width, and remembers it");
+
+    id<SharedDayPlannerDelegate> host = [planner valueForKey:@"delegate"];
+    SharedDayItem *event = nil, *task = nil;
+    for (SharedDayItem *item in [host day_planner:planner items_from:lo to:lo + 86400]) {
+        if ([item.event_id isEqualToString:@"plan-ev"]) event = item;
+        if ([item.title isEqualToString:@"Draft the agenda"]) task = item;
+    }
+    check(event != nil && [event.title isEqualToString:@"Planning sync"] &&
+          [event.color isEqualToString:@"#33aa66"] && event.duration == 60,
+          "planner: today's event from the cache, with its calendar's colour");
+    check(task != nil && !task.is_event && task.duration == 60,
+          "planner: today's scheduled task, read-only");
+    check(![host respondsToSelector:@selector(day_planner:moved_task:start:duration:stretched:)] &&
+          planner.drop_types.count == 0,
+          "planner: Notes plans nothing: no moves, no drops");
+    check(save_snapshots(lib.window, @"library-planner"), "planner snapshots written");
+
+    gint count = on_db_note_count_visible(app.db);
+    [host day_planner:planner open_event:event];
+    pump(0.3);
+    gint64 note = on_db_event_note(app.db, "plan-cal", "plan-ev");
+    NSWindow *editor = editor_window_titled(@"Planning sync");
+    check(note != 0 && editor != nil && on_db_note_count_visible(app.db) == count + 1,
+          "double-clicking an event makes its note and opens it");
+    OnDocument *doc = note != 0 ? on_note_document_load(app.db, note) : NULL;
+    check(doc != NULL && on_document_n_blocks(doc) == 7 &&
+          strcmp(on_document_block(doc, 2)->text->text->str, "Attendees:") == 0 &&
+          on_document_block(doc, 3)->kind == ON_BLOCK_BULLET &&
+          strcmp(on_document_block(doc, 3)->text->text->str, "Ann Lee") == 0 &&
+          on_document_block(doc, 4)->kind == ON_BLOCK_BULLET &&
+          strcmp(on_document_block(doc, 4)->text->text->str, "bo@x.com") == 0 &&
+          on_document_block(doc, 5)->text->text->len == 0 &&
+          on_document_block(doc, 6)->text->text->len == 0,
+          "the event's note: an Attendees: line, its attendees as bullets, two empty lines");
+    if (doc != NULL) on_document_free(doc);
+    NotesNoteView *view = editor != nil
+        ? (NotesNoteView *)find_view(editor.contentView, NotesNoteView.class, Nil) : nil;
+    check(view != nil && on_note_view_caret(view).block == 6 && on_note_view_caret(view).offset == 0,
+          "the new note opens with the caret on the second empty line below the attendees");
+    [editor close];
+    pump(0.2);
+    [host day_planner:planner open_event:event];
+    pump(0.3);
+    editor = editor_window_titled(@"Planning sync");
+    check(editor != nil && on_db_note_count_visible(app.db) == count + 1 &&
+          on_db_event_note(app.db, "plan-cal", "plan-ev") == note,
+          "double-clicking it again opens the same note");
+    [editor close];
+    pump(0.2);
+
+    on_library_run_command(lib, command_item(@"toggle-day-planner"));
+    pump(0.4);
+    check(!on_app_config_get_int("day_planner_visible", 1) && planner_width(planner) < 1.0,
+          "⌘⇧D slides it away again, remembered");
+
+    on_db_notes_delete(app.db, &note, 1);
+    sqlite3_exec(app.db->handle,
+                 "DELETE FROM gcal_event; DELETE FROM gcal_calendar;"
+                 "DELETE FROM tasks WHERE title = 'Draft the agenda';", NULL, NULL, NULL);
+    on_library_refresh_all(lib);
+}
+
+/*
  * test_sidebar — the sidebar's rows (the views, the tags with their
  * emoji, all one flat list as in Tasks), menus and drops (onto a tag or
  * the Trash); the status bar follows the selection; the sidebar fits its
@@ -3749,7 +3866,8 @@ main(void)
         check(app.open_note != NULL && app.live_document != NULL && app.live_edited != NULL &&
               app.live_held != NULL && app.live_save != NULL && app.check_editors != NULL && app.flush_editors != NULL &&
               app.notify_notes_changed != NULL && app.notify_note_saved != NULL &&
-              app.notify_status != NULL, "the modules install the hooks the core calls");
+              app.notify_status != NULL && app.notify_outside_commit != NULL,
+              "the modules install the hooks the core calls");
 
         test_library(lib);
         test_editor();
@@ -3767,6 +3885,7 @@ main(void)
         test_editor_tags(lib);
         test_trash(lib);
         test_sidebar(lib);
+        test_day_planner(lib);
         test_notes_pane(lib);
         test_shell(lib);
         test_secondary_windows(lib);

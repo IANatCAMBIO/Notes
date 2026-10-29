@@ -48,7 +48,8 @@ BOOL on_library_sidebar_refresh(NotesLibrary *lib);
 void on_library_sidebar_refresh_counts(NotesLibrary *lib);
 
 /*
- * on_library_sidebar_note_added — a NEW, empty, untagged note was created:
+ * on_library_sidebar_note_added — a NEW untagged note was created (New
+ * Note's, or a calendar event's, library_planner.h):
  * count it in All Notes, redrawing that row alone (no query, no rebuild).
  * A no-op while counts are hidden.
  *

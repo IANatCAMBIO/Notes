@@ -3588,6 +3588,19 @@ on_note_view_action_reveal(NotesNoteView *view, NSInteger ordinal)
 }
 
 /*
+ * on_note_view_end_reveal — see note_view.h.  A last block that holds no
+ * text (an image, a table) takes the caret at its start.
+ */
+void
+on_note_view_end_reveal(NotesNoteView *view)
+{
+    guint    last = on_document_n_blocks(view.doc) - 1;
+    OnBlock *b    = on_document_block(view.doc, last);
+    OnPos    p    = { last, -1, b->text != NULL ? (gint)b->text->text->len : 0 };
+    reveal_pos(view, p);
+}
+
+/*
  * on_note_view_settings_changed — see note_view.h.
  */
 void

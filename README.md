@@ -72,6 +72,28 @@ always set it, under `dev/`), and `NOTES_DATA_DIR` moves Notes' own
 settings and lock.  While `CAMBIO_SHARED_DB` is set the default cannot be
 changed.
 
+## The day planner
+
+**View → Show Day Planner** (⇧⌘D, or the calendar button in the toolbar)
+slides in the same day planner Tasks has, at the right of the library: the
+hours of a day, with the tasks you have scheduled and your Google Calendar
+meetings.  **Today**, the calendar button and the arrows step through the
+days; a red line marks the time.
+
+Double-click a meeting to take notes on it: Notes makes a note titled
+after the meeting, with an "Attendees:" line and the attendees as a
+bulleted list under it, and opens it with the cursor two lines below the
+list (a blank line sets it apart), ready to write.
+Double-clicking the meeting again opens that same note (a new one is made
+only if you have moved it to the Trash).  Each occurrence of a recurring
+meeting gets its own note.
+
+Notes has no Google sign-in of its own: the meetings are the ones **Tasks**
+syncs into the database the two apps share (Tasks → Settings → Google
+Calendar).  The planner shows what Tasks last pulled, refreshes as soon as
+Tasks writes, and shows no meetings while Tasks is not signed in.
+Sessions are planned in Tasks; here the planner is read-only.
+
 ## Working with Tasks (and agents) at the same time
 
 Both apps — and an AI agent using the shared-data skill — may have the file

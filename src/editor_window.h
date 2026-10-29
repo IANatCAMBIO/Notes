@@ -26,6 +26,9 @@ typedef NS_ENUM(NSInteger, NotesEditorReveal) {
     NotesEditorRevealNone,
     NotesEditorRevealImage,          /* the note's ordinal-th image         */
     NotesEditorRevealAction,         /* its ordinal-th action item          */
+    NotesEditorRevealEnd,            /* the end of its last line (a note
+                                      * made from a meeting: below the
+                                      * attendees)                          */
 };
 
 /*

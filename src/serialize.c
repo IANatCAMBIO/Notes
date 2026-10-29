@@ -292,11 +292,21 @@ on_note_document_save_tags(OnDatabase *db, gint64 id, const OnDocument *doc)
 gint64
 on_note_new_from_text(OnDatabase *db, const gchar *tag, const gchar *text)
 {
+    return on_note_new_from_document(db, tag, on_document_from_text(text));
+}
+
+/*
+ * on_note_new_from_document — see serialize.h.
+ */
+gint64
+on_note_new_from_document(OnDatabase *db, const gchar *tag, OnDocument *doc)
+{
     gboolean own;                    /* this call's transaction?            */
-    if (!on_db_txn_begin(db, &own))
+    if (!on_db_txn_begin(db, &own)) {
+        on_document_free(doc);
         return 0;
+    }
     gint64      id   = on_db_note_create(db);
-    OnDocument *doc  = on_document_from_text(text);
     on_document_add_tag_line(doc);
     gchar      *word = on_document_tag_word(tag);
     if (word != NULL)
@@ -347,7 +357,7 @@ on_note_document_release(OnDatabase *db, OnDocument *doc)
  *
  * Inputs:
  *   doc   — the document
- *   block — the block index of a real action line
+ *   block — the block index of an action line (on_block_is_action)
  *
  * Output: none.
  */
@@ -367,6 +377,97 @@ action_unmark(OnDocument *doc, guint block)
     on_document_delete_text(doc, at, n);
     on_document_end_group(doc);
     b->action_uid = 0;
+}
+
+/* The line above an event note's attendees. */
+static const char event_attendees_head[] = "Attendees:";
+
+/*
+ * event_note_text — the plain text of an event's new note: the title on
+ * the first line, line breaks in it made spaces; then, when it has
+ * attendees, event_attendees_head, one line per attendee
+ * (SHARED_DB_GCAL_ATTENDEE_SEP between them in `attendees`) and an empty
+ * line setting them apart; then one empty line, where the writing starts.
+ *
+ * Inputs:
+ *   title     — the title
+ *   attendees — the cached attendees ("" for none)
+ *
+ * Output: the text (free()), or NULL when memory runs out.
+ */
+static char *
+event_note_text(const char *title, const char *attendees)
+{
+    size_t sep_len = strlen(SHARED_DB_GCAL_ATTENDEE_SEP);
+    size_t t_len   = strlen(title);
+    size_t h_len   = sizeof event_attendees_head - 1;
+    char  *text    = malloc(t_len + 1 + h_len + 1 + strlen(attendees) + 3);  /* lines are no longer
+                                                                             * than the separators
+                                                                             * they replace */
+    if (text == NULL)
+        return NULL;
+    char *at = text;
+    for (size_t i = 0; i < t_len; i++)
+        *at++ = title[i] == '\n' || title[i] == '\r' ? ' ' : title[i];
+    *at++ = '\n';
+    if (*attendees != '\0') {
+        memcpy(at, event_attendees_head, h_len);
+        at   += h_len;
+        *at++ = '\n';
+    }
+    for (const char *name = attendees; *name != '\0';) {
+        const char *end = strstr(name, SHARED_DB_GCAL_ATTENDEE_SEP);
+        size_t      len = end != NULL ? (size_t)(end - name) : strlen(name);
+        memcpy(at, name, len);
+        at  += len;
+        name = end != NULL ? end + sep_len : name + len;
+        *at++ = '\n';
+    }
+    if (*attendees != '\0')
+        *at++ = '\n';
+    *at = '\0';
+    return text;
+}
+
+/*
+ * on_note_for_event — see serialize.h.
+ */
+int64_t
+on_note_for_event(OnDatabase *db, const char *calendar_id, const char *event_id,
+                  const char *title, bool *created)
+{
+    if (created != NULL)
+        *created = false;
+    gboolean own;                    /* this call's transaction?            */
+    if (!on_db_txn_begin(db, &own))
+        return 0;
+    int64_t note_id = on_db_event_note(db, calendar_id, event_id);
+    if (note_id != 0)
+        return on_db_txn_end(db, own, TRUE) ? note_id : 0;
+
+    char *attendees = on_db_event_attendees(db, calendar_id, event_id);
+    char *text      = attendees != NULL ? event_note_text(title, attendees) : NULL;
+    bool  bullets   = attendees != NULL && *attendees != '\0';
+    free(attendees);
+    if (text == NULL) {
+        on_db_txn_end(db, own, FALSE);
+        return 0;
+    }
+
+    OnDocument *doc = on_document_from_text(text);
+    free(text);
+    if (on_block_is_action(on_document_block(doc, 0)))
+        action_unmark(doc, 0);
+    /* Title, head, the attendees, two empty lines: bullets between. */
+    for (guint i = 2; bullets && i + 2 < on_document_n_blocks(doc); i++)
+        on_document_set_kind(doc, i, ON_BLOCK_BULLET);
+    note_id = on_note_new_from_document(db, NULL, doc);
+    bool ok = note_id != 0 && on_db_event_note_bind(db, calendar_id, event_id, note_id);
+    if (!on_db_txn_end(db, own, ok))
+        return 0;
+    if (created != NULL)
+        *created = true;
+    return note_id;
 }
 
 /*

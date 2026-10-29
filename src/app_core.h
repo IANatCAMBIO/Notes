@@ -98,6 +98,12 @@
  *                    bar.  Post through on_app_status().
  *   notify_ai_changed — ai_enabled changed: show or hide the AI control.
  *                    Called by Settings.
+ *   notify_outside_commit — another writer committed to the file (Tasks,
+ *                    its calendar sync, an agent): what Notes shows of
+ *                    Tasks' data that no pull covers — the day planner's
+ *                    scheduled tasks and calendar events — may have
+ *                    changed.  Called by the poll (action_sync.c) after
+ *                    its own work, on every outside commit it sees.
  *   notify_db_state — the health verdict changed (a check started or
  *                    landed) or a backup pass ended: repaint the Settings
  *                    database plate and backup line.  Called by
@@ -187,6 +193,7 @@ typedef struct OnApp {
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);
     void        (*notify_status)(struct OnApp *app, const gchar *message);
     void        (*notify_ai_changed)(struct OnApp *app);
+    void        (*notify_outside_commit)(struct OnApp *app);
     void        (*notify_db_state)(struct OnApp *app);
     void        (*show_notice)(struct OnApp *app, const gchar *title,
                                const gchar *message);

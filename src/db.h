@@ -22,6 +22,10 @@
  *              seen_title, seen_done, seen_due,             uid the note blob carries, and
  *              seen_deleted)                                what the line last agreed with
  *   action_uid_seq (id, next)                            -- uid high-water mark
+ *   gcal_calendar, gcal_event                            -- Tasks' Google Calendar
+ *                                                           cache, read for the
+ *                                                           day planner
+ *   gcal_note (calendar_id, event_id, note_id)           -- the note taken for an event
  *
  * An ACTION ITEM is a TASK ROW: a '!' line in a note is a rendering of its
  * task's title, done state (status DONE) and due date, linked through
@@ -55,6 +59,8 @@
 
 #include <glib.h>
 #include <sqlite3.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #include "shared_db.h"
 
@@ -728,5 +734,85 @@ GHashTable *on_db_tag_count_map(OnDatabase *db);
  *             every note.
  * Destroy with g_hash_table_destroy().                                      */
 GHashTable *on_db_note_tag_names_map(OnDatabase *db, const gint64 *ids, gsize n);
+
+/* --------------------- the calendar (day planner) ----------------------- */
+
+/* One task scheduled on the day planner (tasks.scheduled_start).  Owned
+ * strings; plain C (INTERFACES.md: no new GLib).                           */
+typedef struct {
+    int64_t  task_id;
+    char    *title;                  /* "" when it has none                 */
+    int64_t  start;                  /* unix seconds                        */
+    int      duration;               /* minutes; the schema's default when
+                                      * none is stored                      */
+    bool     done;                   /* status DONE                         */
+} on_cal_task_t;
+
+/* One cached Google Calendar event (Tasks' sync writes the cache). */
+typedef struct {
+    char    *calendar_id;
+    char    *event_id;
+    char    *title;                  /* "" when it has none                 */
+    char    *color;                  /* its calendar's "#rrggbb", or ""     */
+    int64_t  start;                  /* unix seconds                        */
+    int64_t  end;                    /* unix seconds, exclusive             */
+    bool     all_day;
+} on_cal_event_t;
+
+/* What the day planner shows of one day. */
+typedef struct {
+    on_cal_task_t  *tasks;
+    size_t          n_tasks;
+    on_cal_event_t *events;
+    size_t          n_events;
+} on_cal_day_t;
+
+/* ---------------------------------------------------------------------------
+ * on_db_calendar_day() — a day of the planner: the live tasks scheduled in
+ * [lo, hi), by start, and the cached events overlapping it, all-day ones
+ * first, then by start.  The event cache is what Tasks' sync last pulled
+ * (the shown calendars, declined invitations and Tasks' own session
+ * events left out); empty when Tasks is not signed in.
+ *   db  — open database.
+ *   lo  — unix seconds of the day's local midnight.
+ *   hi  — unix seconds of the next local midnight.
+ *   out — filled in; on_db_calendar_day_free() it either way.
+ * Returns true when both were read; false leaves what was read.
+ * ------------------------------------------------------------------------- */
+bool on_db_calendar_day(OnDatabase *db, int64_t lo, int64_t hi, on_cal_day_t *out);
+
+/* on_db_calendar_day_free() — free what on_db_calendar_day filled and zero
+ * it.  NULL-safe.                                                           */
+void on_db_calendar_day_free(on_cal_day_t *day);
+
+/* ---------------------------------------------------------------------------
+ * on_db_event_attendees() — a cached event's attendees, as the cache holds
+ * them (SHARED_DB_GCAL_ATTENDEE_SEP between names, shared_db.h).
+ *   db                    — open database.
+ *   calendar_id, event_id — the event.
+ * Returns a malloc'd string (free()); "" when it has none or is no longer
+ * cached; NULL only when memory runs out.
+ * ------------------------------------------------------------------------- */
+char *on_db_event_attendees(OnDatabase *db, const char *calendar_id, const char *event_id);
+
+/* ---------------------------------------------------------------------------
+ * on_db_event_note() — the note taken for an event (gcal_note), when it
+ * is still out of the Trash.
+ *   db                    — open database.
+ *   calendar_id, event_id — the event.
+ * Returns the note's id, or 0 when there is none or it is in the Trash.
+ * ------------------------------------------------------------------------- */
+int64_t on_db_event_note(OnDatabase *db, const char *calendar_id, const char *event_id);
+
+/* ---------------------------------------------------------------------------
+ * on_db_event_note_bind() — record (or replace) the note taken for an
+ * event.  Joins the caller's transaction like every writer here.
+ *   db                    — open database.
+ *   calendar_id, event_id — the event.
+ *   note_id               — the note.
+ * Returns true when written.
+ * ------------------------------------------------------------------------- */
+bool on_db_event_note_bind(OnDatabase *db, const char *calendar_id, const char *event_id,
+                           int64_t note_id);
 
 #endif /* BLUE_DB_H */

@@ -40,6 +40,8 @@ static const shared_command_t commands[] = {
     { @"toggle-sidebar",   @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar.left",
       @"Show or hide the sidebar" },
     { @"toggle-favorites", @"Hide Favorites Bar",      @"",  0,         app, nil, nil },
+    { @"toggle-day-planner", @"Hide Day Planner",      @"d", cmd_shift, app, @"calendar.badge.clock",
+      @"Show or hide the day planner" },
     { @"toggle-done",      @"Hide Completed",          @"",  0,         app, @"eye.slash",
       @"Show or hide completed action items" },
     { @"media",            @"Media…",                  @"i", cmd_shift, app, @"photo.on.rectangle",

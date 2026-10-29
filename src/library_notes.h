@@ -50,10 +50,10 @@ void on_library_notes_refresh(NotesLibrary *lib);
 void on_library_notes_note_saved(NotesLibrary *lib, gint64 note_id);
 
 /*
- * on_library_notes_note_added — a NEW note was created by the library: add
- * its row to the pane and nothing else.  The note is empty and carries no
- * tag, so the pane lists it in All Notes only, not in a tag's view,
- * Pinned, Trash or Action Items.
+ * on_library_notes_note_added — a NEW note was created by the library (New
+ * Note's, or a calendar event's): add its row to the pane and nothing
+ * else.  The note carries no tag and no action item, so the pane lists it
+ * in All Notes only, not in a tag's view, Pinned, Trash or Action Items.
  *
  * Inputs:
  *   lib     — the library

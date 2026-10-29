@@ -248,6 +248,12 @@ BOOL       on_note_view_image_reveal(NotesNoteView *view, NSInteger ordinal);
 BOOL on_note_view_action_reveal(NotesNoteView *view, NSInteger ordinal);
 
 /*
+ * on_note_view_end_reveal — caret to the end of the note's last line,
+ * scrolled into view.
+ */
+void on_note_view_end_reveal(NotesNoteView *view);
+
+/*
  * on_note_view_settings_changed — re-read the preferences the view renders
  * from (title line, code line numbers, the "copy" word) and the appearance,
  * and apply them now.

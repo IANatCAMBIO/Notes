@@ -1192,17 +1192,19 @@ apply_search:(NSString *)term
 }
 
 /*
- * reveal:ordinal: — scroll to the note's ordinal-th image or action item.
+ * reveal:ordinal: — put the caret on the note's ordinal-th image or action
+ * item, or at its end, scrolled into view.
  *
  * Inputs:
  *   reveal  — what to show
- *   ordinal — which one
+ *   ordinal — which one (ignored for the end)
  */
 - (void)
 reveal:(NotesEditorReveal)reveal ordinal:(NSInteger)ordinal
 {
     if (reveal == NotesEditorRevealImage)  on_note_view_image_reveal(self.note_view, ordinal);
     if (reveal == NotesEditorRevealAction) on_note_view_action_reveal(self.note_view, ordinal);
+    if (reveal == NotesEditorRevealEnd)    on_note_view_end_reveal(self.note_view);
 }
 
 /* ── Saving ─────────────────────────────────────────────────────────────── */

@@ -272,6 +272,9 @@ sync_poll(OnApp *app, gboolean retry)
     } else if (notes) {
         sync_refresh(app);
     }
+    if (changed && app->notify_outside_commit != NULL) {
+        app->notify_outside_commit(app);
+    }
     return pull;
 }
 

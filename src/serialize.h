@@ -138,6 +138,39 @@ gint64 on_note_new_from_text(OnDatabase *db, const gchar *tag,
                              const gchar *text);
 
 /* ---------------------------------------------------------------------------
+ * on_note_new_from_document() — on_note_new_from_text for a document the
+ * caller built (its first block the title, no tag line yet): the tag line
+ * and `tag` are added, and the note is created and saved the same way, in
+ * ONE write transaction (the caller's, when one is open).
+ *   db  — open database.
+ *   tag — a tag put on the tag line, or NULL.
+ *   doc — the content; TAKEN (released with the transaction).
+ * Returns the new note's id, or 0 on failure.
+ * ------------------------------------------------------------------------- */
+gint64 on_note_new_from_document(OnDatabase *db, const gchar *tag, OnDocument *doc);
+
+/* ---------------------------------------------------------------------------
+ * on_note_for_event() — THE note taken for a Google Calendar event (the
+ * day planner's double-click): the one made for it before, while it is
+ * out of the Trash; else a new one — the event's title as its title, then,
+ * when the cache lists attendees (on_db_event_attendees), an "Attendees:"
+ * line, one bulleted line each and an empty line, then an empty line —
+ * where the editor puts the caret (NotesEditorRevealEnd) — bound to the event
+ * (on_db_event_note_bind).  A title starting with '!' is not made an
+ * action item: the '!' prefix is dropped.  One write transaction.
+ *   db          — open database.
+ *   calendar_id — the event's calendar.
+ *   event_id    — the event (an occurrence of a recurring one has its own).
+ *   title       — the title the planner shows (UTF-8; a line break in it
+ *                 becomes a space).
+ *   created     — out: true when a new note was made, false when the
+ *                 event's note was found; may be NULL.
+ * Returns the note's id, or 0 on failure (nothing is written then).
+ * ------------------------------------------------------------------------- */
+int64_t on_note_for_event(OnDatabase *db, const char *calendar_id, const char *event_id,
+                          const char *title, bool *created);
+
+/* ---------------------------------------------------------------------------
  * on_note_document_release() — free a document that a save inside the
  * open write transaction may still refer to (its fresh uids are reset if
  * the transaction does not commit): freed when that transaction ends, or

@@ -2271,3 +2271,181 @@ on_db_note_tag_names_map(OnDatabase *db, const gint64 *ids, gsize n)
     g_free(json);
     return map;
 }
+
+/* =========================================================================
+ * the calendar (day planner)
+ * ========================================================================= */
+
+/*
+ * column_dup — a text column as a malloc'd string.
+ *
+ * Inputs:
+ *   stmt — a statement on a row
+ *   col  — the column
+ *
+ * Output: the string (free()); "" for NULL; NULL only when memory runs out.
+ */
+static char *
+column_dup(sqlite3_stmt *stmt, int col)
+{
+    const unsigned char *text = sqlite3_column_text(stmt, col);
+    return strdup(text != NULL ? (const char *)text : "");
+}
+
+/*
+ * grow — make room for one more element of a malloc'd array.
+ *
+ * Inputs:
+ *   array — the array's pointer (updated)
+ *   n     — the elements it holds
+ *   size  — one element's size
+ *
+ * Output: the new element, zeroed; NULL when memory runs out (the array
+ *         is then unchanged).
+ */
+static void *
+grow(void **array, size_t n, size_t size)
+{
+    char *more = realloc(*array, (n + 1) * size);
+    if (more == NULL)
+        return NULL;
+    *array = more;
+    memset(more + n * size, 0, size);
+    return more + n * size;
+}
+
+/*
+ * on_db_calendar_day — see db.h.
+ */
+bool
+on_db_calendar_day(OnDatabase *db, int64_t lo, int64_t hi, on_cal_day_t *out)
+{
+    memset(out, 0, sizeof *out);
+    sqlite3_stmt *tasks = prepare(db,
+        "SELECT id, title, scheduled_start, scheduled_duration,"
+        "       status = " SHARED_DB_STR(SHARED_DB_TASK_STATUS_DONE)
+        "  FROM tasks WHERE deleted = 0 AND scheduled_start >= ? AND scheduled_start < ?"
+        " ORDER BY scheduled_start");
+    if (tasks == NULL)
+        return false;
+    sqlite3_bind_int64(tasks, 1, lo);
+    sqlite3_bind_int64(tasks, 2, hi);
+    bool ok = true;
+    while (ok && sqlite3_step(tasks) == SQLITE_ROW) {
+        on_cal_task_t *t = grow((void **)&out->tasks, out->n_tasks, sizeof *t);
+        ok = t != NULL;
+        if (!ok)
+            break;
+        out->n_tasks++;
+        t->task_id  = sqlite3_column_int64(tasks, 0);
+        t->title    = column_dup(tasks, 1);
+        t->start    = sqlite3_column_int64(tasks, 2);
+        t->duration = sqlite3_column_int(tasks, 3);
+        if (t->duration <= 0)
+            t->duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
+        t->done     = sqlite3_column_int(tasks, 4) != 0;
+        ok = t->title != NULL;
+    }
+    sqlite3_finalize(tasks);
+
+    sqlite3_stmt *events = ok ? prepare(db,
+        "SELECT e.calendar_id, e.event_id, e.title, COALESCE(c.color, ''),"
+        "       e.start, e.end, e.all_day"
+        "  FROM gcal_event e LEFT JOIN gcal_calendar c ON c.id = e.calendar_id"
+        " WHERE e.start < ? AND e.end > ?"
+        " ORDER BY e.all_day DESC, e.start, e.end DESC") : NULL;
+    if (events == NULL)
+        return false;
+    sqlite3_bind_int64(events, 1, hi);
+    sqlite3_bind_int64(events, 2, lo);
+    while (ok && sqlite3_step(events) == SQLITE_ROW) {
+        on_cal_event_t *e = grow((void **)&out->events, out->n_events, sizeof *e);
+        ok = e != NULL;
+        if (!ok)
+            break;
+        out->n_events++;
+        e->calendar_id = column_dup(events, 0);
+        e->event_id    = column_dup(events, 1);
+        e->title       = column_dup(events, 2);
+        e->color       = column_dup(events, 3);
+        e->start       = sqlite3_column_int64(events, 4);
+        e->end         = sqlite3_column_int64(events, 5);
+        e->all_day     = sqlite3_column_int(events, 6) != 0;
+        ok = e->calendar_id != NULL && e->event_id != NULL && e->title != NULL && e->color != NULL;
+    }
+    sqlite3_finalize(events);
+    return ok;
+}
+
+/*
+ * on_db_calendar_day_free — see db.h.
+ */
+void
+on_db_calendar_day_free(on_cal_day_t *day)
+{
+    if (day == NULL)
+        return;
+    for (size_t i = 0; i < day->n_tasks; i++)
+        free(day->tasks[i].title);
+    for (size_t i = 0; i < day->n_events; i++) {
+        free(day->events[i].calendar_id);
+        free(day->events[i].event_id);
+        free(day->events[i].title);
+        free(day->events[i].color);
+    }
+    free(day->tasks);
+    free(day->events);
+    memset(day, 0, sizeof *day);
+}
+
+/*
+ * on_db_event_attendees — see db.h.
+ */
+char *
+on_db_event_attendees(OnDatabase *db, const char *calendar_id, const char *event_id)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT attendees FROM gcal_event WHERE calendar_id = ? AND event_id = ?");
+    if (stmt == NULL)
+        return strdup("");
+    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
+    char *names = sqlite3_step(stmt) == SQLITE_ROW ? column_dup(stmt, 0) : strdup("");
+    sqlite3_finalize(stmt);
+    return names;
+}
+
+/*
+ * on_db_event_note — see db.h.
+ */
+int64_t
+on_db_event_note(OnDatabase *db, const char *calendar_id, const char *event_id)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT g.note_id FROM gcal_note g JOIN notes n ON n.id = g.note_id"
+        " WHERE g.calendar_id = ? AND g.event_id = ? AND n." SHARED_DB_NOTE_VISIBLE_SQL);
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
+    int64_t note_id = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    return note_id;
+}
+
+/*
+ * on_db_event_note_bind — see db.h.
+ */
+bool
+on_db_event_note_bind(OnDatabase *db, const char *calendar_id, const char *event_id,
+                      int64_t note_id)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "INSERT OR REPLACE INTO gcal_note (calendar_id, event_id, note_id) VALUES (?, ?, ?)");
+    if (stmt == NULL)
+        return false;
+    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, note_id);
+    return stmt_done(db, stmt);
+}

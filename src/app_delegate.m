@@ -597,7 +597,7 @@ build_menu_bar
     NSMenu *view_menu = add_menu(bar, @"View");
     add_commands(view_menu, @[
         @"view-list", @"view-grid", menu_rule,
-        @"toggle-sidebar", @"toggle-favorites", @"toggle-done", menu_rule,
+        @"toggle-sidebar", @"toggle-favorites", @"toggle-day-planner", @"toggle-done", menu_rule,
         @"media", @"ai-summary", menu_rule,
     ]);
     [view_menu addItem:make_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",

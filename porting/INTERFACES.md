@@ -102,6 +102,8 @@ src/                 flat; one module = one .h + one .c or .m
   library_window.[hm]  library_commands.[hm]  ui_util.[hm]       (E; A wrote them)
   library_sidebar.[hm]                                           (F)
   library_notes.[hm]                                             (G)
+  library_planner.[hm]   the day planner's Notes side (the panel is
+                         ../shared_ui's shared_day_planner.[hm])
   settings_window.[hm] search_window.[hm] media_window.[hm] library_ai.[hm]  (H)
 tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
@@ -337,6 +339,7 @@ hand-builds an item for a command or writes a second dispatch scheme.
 | ⌘0 | Library (bring the library window forward) | app | new |
 | ⌘1 / ⌘2 | View as List / as Grid | app | new |
 | ⌃⌘S | Hide/Show Sidebar | app | new (standard) |
+| ⇧⌘D | Hide/Show Day Planner | app | new (as Tasks') |
 | ⇧⌘I | Media… | app | **moved** from ⌘M |
 | ⇧⌘F | Search Notes… | app | new (works from an editor too) |
 | ⌘F | Find… — library: the search window; editor: the find field | window | same |

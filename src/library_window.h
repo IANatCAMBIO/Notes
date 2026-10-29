@@ -4,10 +4,11 @@
 
 /*
  * library_window — the library window's frame: the toolbar, the
- * Favorites bar across the window, the split between the sidebar and the
- * notes pane under it, the AI pane under the notes, and the status bar.
- * The panes themselves come from their own modules (library_favorites.h,
- * library_sidebar.h, library_notes.h, library_ai.h).
+ * Favorites bar across the window, the split between the sidebar, the
+ * notes pane and the day planner under it, the AI pane under the notes,
+ * and the status bar.  The panes themselves come from their own modules
+ * (library_favorites.h, library_sidebar.h, library_notes.h,
+ * library_planner.h, library_ai.h).
  *
  * There is at most one library window.  Closing it does not quit the app
  * while editors are open; it is built again when it is next asked for.
@@ -20,9 +21,10 @@
 
 /*
  * on_library_window_install — set the OnApp hooks the library answers
- * (notify_notes_changed, notify_note_saved, notify_status) and register the
- * window's own commands (toggle-sidebar, toggle-favorites).  Called once at startup by the app
- * delegate.
+ * (notify_notes_changed, notify_note_saved, notify_status,
+ * notify_outside_commit) and register the window's own commands
+ * (toggle-sidebar, toggle-favorites, toggle-day-planner).  Called once at
+ * startup by the app delegate.
  *
  * Inputs:
  *   lib — the library

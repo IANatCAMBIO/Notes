@@ -695,7 +695,7 @@ test_table(void)
 static void
 test_run_merge_across_blocks(void)
 {
-    OnDocument *d = on_document_new();
+    OnDocument *d = on_document_from_text("");   /* one empty PARA */
     on_text_append(on_document_block(d, 0)->text, "a", 1, 0);
     /* Build the second block the way the loader does.                     */
     Blob b;
@@ -848,7 +848,7 @@ test_malformed(void)
 static void
 test_text_ops(void)
 {
-    OnDocument *d = on_document_new();
+    OnDocument *d = on_document_from_text("");   /* one empty PARA */
     OnText *t = on_document_block(d, 0)->text;
 
     on_text_append(t, "hello", 5, 0);
@@ -913,7 +913,7 @@ test_text_ops(void)
 static void
 test_check_catches(void)
 {
-    OnDocument *d = on_document_new();
+    OnDocument *d = on_document_from_text("");   /* one empty PARA */
     OnText *t = on_document_block(d, 0)->text;
     on_text_append(t, "ab", 2, 0);
     assert_valid(d);
@@ -1033,7 +1033,7 @@ static const OnDocumentObserver COUNTING = {
 static void
 test_ops_text(void)
 {
-    OnDocument *d = on_document_new();
+    OnDocument *d = on_document_from_text("");   /* one empty PARA */
     Counts c = { 0, 0, 0 };
     on_document_set_observer(d, &COUNTING, &c);
     GBytes *empty = snapshot(d);
@@ -1257,7 +1257,7 @@ test_ops_table(void)
 static void
 test_ops_groups(void)
 {
-    OnDocument *d = on_document_new();
+    OnDocument *d = on_document_from_text("");   /* one empty PARA */
     GBytes *empty = snapshot(d);
 
     on_document_begin_group(d);
@@ -1594,6 +1594,156 @@ test_from_text(void)
     g_assert_cmpstr(block_text(d, 0), ==, "pay  rent");
     g_assert_cmpstr(block_text(d, 1), ==, "\xef\xbf\xbd end");
     assert_valid(d);
+    on_document_free(d);
+}
+
+/*
+ * tagged_doc — a note document from text with its tag line, and the
+ * #words of `line` styled as tags.
+ *
+ * Inputs:
+ *   text — the note's text, its first line the title
+ *   line — the block whose "#word"s are tags
+ *
+ * Output: the document (on_document_free it).
+ */
+static OnDocument *
+tagged_doc(const gchar *text, guint line)
+{
+    OnDocument *d = on_document_from_text(text);
+    on_document_add_tag_line(d);
+    const gchar *s = block_text(d, line);
+    for (const gchar *h = strchr(s, '#'); h != NULL; h = strchr(h + 1, '#')) {
+        gsize n = 1;
+        while (on_document_tag_char((gunichar)h[n])) n++;
+        on_document_set_flags(d, at(line, (gsize)(h - s)), n, ON_FMT_TAG, TRUE);
+    }
+    return d;
+}
+
+/*
+ * test_tag_line — the tag line: block 0 under ON_FMT_TAGLINE, round-
+ * tripping, the title after it; never split, joined, re-kinded, removed
+ * or displaced, nor the last line; a stray one loads as a PARA; tags go
+ * on it from outside, from a body line (the caret moving with them), all
+ * at once (an emptied body line going), and from a paste into it.
+ */
+static void
+test_tag_line(void)
+{
+    Blob b;
+    blob_begin(&b);
+    blob_text(&b, ON_FMT_TAGLINE | ON_FMT_TAG, "#salt");
+    blob_text(&b, ON_FMT_TAGLINE, "\n");
+    blob_text(&b, 0, "Title\nbody");
+    GBytes     *blob = blob_end(&b);
+    OnDocument *d    = load_clean(blob);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    g_assert_cmpint(on_document_block(d, 0)->kind, ==, ON_BLOCK_TAGS);
+    g_assert_cmpstr(block_text(d, 0), ==, "#salt");
+    assert_roundtrip(d, blob);
+    g_bytes_unref(blob);
+    g_assert_cmpuint(on_document_title_block(d), ==, 1);
+    gchar *title = on_document_title(d, "fallback", 80);
+    g_assert_cmpstr(title, ==, "Title");
+    g_free(title);
+    gchar *plain = on_document_plain_text(d);
+    g_assert_cmpstr(plain, ==, "#salt\nTitle\nbody");
+    g_free(plain);
+
+    /* Refusals: the tag line keeps its place and its kind.                 */
+    g_assert_false(on_document_split_block(d, at(0, 2), 0));
+    g_assert_false(on_document_join_blocks(d, 0));
+    g_assert_false(on_document_set_kind(d, 0, ON_BLOCK_PARA));
+    g_assert_false(on_document_set_kind(d, 1, ON_BLOCK_TAGS));
+    g_assert_false(on_document_remove_block(d, 0));
+    OnBlock *front = on_block_new_text(ON_BLOCK_PARA);
+    g_assert_false(on_document_insert_block(d, 0, front));
+    on_block_free(front);
+    OnBlock *second = on_block_new_text(ON_BLOCK_TAGS);
+    g_assert_false(on_document_insert_block(d, 2, second));
+    on_block_free(second);
+    OnPos out;
+    g_assert_true(on_document_delete_range(d, at(0, 0), at(2, 2), &out));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    g_assert_cmpint(on_document_block(d, 0)->kind, ==, ON_BLOCK_TAGS);
+    g_assert_cmpstr(block_text(d, 0), ==, "");
+    g_assert_cmpstr(block_text(d, 1), ==, "dy");
+    g_assert_false(on_document_remove_block(d, 1));    /* the last line   */
+    assert_valid(d);
+    g_assert_true(on_document_undo(d));
+    g_assert_cmpstr(block_text(d, 0), ==, "#salt");
+    on_document_free(d);
+
+    /* A tag line below the first line is a PARA, counted.                  */
+    blob_begin(&b);
+    blob_text(&b, 0, "Title\n");
+    blob_text(&b, ON_FMT_TAGLINE, "stray");
+    blob = blob_end(&b);
+    OnDocLoadReport rep;
+    d = on_document_from_bnbf(g_bytes_get_data(blob, NULL), g_bytes_get_size(blob), &rep);
+    g_assert_cmpuint(rep.stray_tag_line, ==, 1);
+    g_assert_cmpint(on_document_block(d, 1)->kind, ==, ON_BLOCK_PARA);
+    assert_valid(d);
+    on_document_free(d);
+    g_bytes_unref(blob);
+
+    /* One is added once; tags given from outside go on its end.            */
+    d = on_document_from_text("Title\nbody");
+    on_document_add_tag_line(d);
+    on_document_add_tag_line(d);
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    g_assert_true(on_document_append_tag(d, "Bob"));
+    g_assert_true(on_document_append_tag(d, "salt"));
+    g_assert_false(on_document_append_tag(d, "bob"));
+    g_assert_cmpstr(block_text(d, 0), ==, "#Bob #salt");
+    assert_valid(d);
+    on_document_free(d);
+
+    /* A tag set in a sentence moves up, the sentence closing up and the
+     * caret moving with it; one the line has is only removed.             */
+    d = tagged_doc("Title\nmet #Bob today", 2);
+    OnPos caret = at(2, 9);          /* before "today"                      */
+    g_assert_true(on_document_lift_tag(d, at(2, 5), &caret));
+    g_assert_cmpstr(block_text(d, 0), ==, "#Bob");
+    g_assert_cmpstr(block_text(d, 2), ==, "met today");
+    g_assert_cmpuint(caret.offset, ==, 4);
+    g_assert_false(on_document_lift_tag(d, at(2, 0), NULL));   /* no tag  */
+    g_assert_true(on_document_undo(d));
+    g_assert_cmpstr(block_text(d, 0), ==, "");
+    g_assert_cmpstr(block_text(d, 2), ==, "met #Bob today");
+    assert_valid(d);
+    on_document_free(d);
+    d = tagged_doc("Title\n#Bob", 2);
+    on_document_insert_text(d, at(0, 0), "#bob", 4, ON_FMT_TAG);
+    g_assert_true(on_document_lift_tag(d, at(2, 0), NULL));
+    g_assert_cmpstr(block_text(d, 0), ==, "#bob");
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);           /* stays   */
+    on_document_free(d);
+
+    /* All at once: a line of tags goes, the title never.                   */
+    d = tagged_doc("#Title\nmet #Bob today\n#Salt #Stride", 2);
+    on_document_set_flags(d, at(3, 0), 5, ON_FMT_TAG, TRUE);
+    on_document_set_flags(d, at(3, 6), 7, ON_FMT_TAG, TRUE);
+    on_document_set_flags(d, at(1, 0), 6, ON_FMT_TAG, TRUE);
+    g_assert_true(on_document_gather_tags(d));
+    g_assert_cmpstr(block_text(d, 0), ==, "#Title #Bob #Salt #Stride");
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
+    g_assert_cmpstr(block_text(d, 1), ==, "");
+    g_assert_cmpstr(block_text(d, 2), ==, "met today");
+    g_assert_false(on_document_gather_tags(d));
+    assert_valid(d);
+    on_document_free(d);
+
+    /* A paste into the tag line gives its words as tags.                   */
+    d = tagged_doc("Title", 1);
+    OnDocument *frag = on_document_from_text("one two\n#three");
+    g_assert_true(on_document_insert_fragment(d, at(0, 0), frag, &out));
+    g_assert_cmpstr(block_text(d, 0), ==, "#one #two #three");
+    g_assert_cmpuint(out.offset, ==, strlen("#one #two #three"));
+    g_assert_cmpuint(on_document_n_blocks(d), ==, 2);
+    assert_valid(d);
+    on_document_free(frag);
     on_document_free(d);
 }
 
@@ -2075,6 +2225,7 @@ main(int argc, char **argv)
     g_test_add_func("/derived/title", test_title);
     g_test_add_func("/derived/from-text", test_from_text);
     g_test_add_func("/derived/collect-tags", test_collect_tags);
+    g_test_add_func("/derived/tag-line", test_tag_line);
     g_test_add_func("/derived/action-rewrites", test_action_rewrites);
     g_test_add_func("/action/record", test_action_record);
     g_test_add_func("/action/uid-not-written", test_action_uid_not_written);

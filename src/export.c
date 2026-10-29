@@ -290,6 +290,8 @@ render_note_body(OnExportCtx *ctx, const OnDocument *doc)
     for (guint i = 0; i < on_document_n_blocks(doc); i++) {
         const OnBlock *b = on_document_block(doc, i);
         number_run = on_block_number(number_run, b->kind);
+        if (b->kind == ON_BLOCK_TAGS && b->text->text->len == 0)
+            continue;                /* an empty tag line: nothing to show  */
 
         /* Blocks (lists, code) persist across lines; close the open one
          * when the kind changes.                                           */

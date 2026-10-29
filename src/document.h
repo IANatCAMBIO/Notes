@@ -41,6 +41,9 @@ typedef enum {
                                         blocks are one visual code block     */
     ON_BLOCK_IMAGE,                  /* an image on a line of its own        */
     ON_BLOCK_TABLE,                  /* rows × cols of text cells            */
+    ON_BLOCK_TAGS,                   /* the note's tag line: block 0 only,
+                                        never split, joined, removed or
+                                        re-kinded; the title follows it      */
     ON_N_BLOCK_KINDS
 } OnBlockKind;
 
@@ -202,7 +205,7 @@ void on_block_free(OnBlock *b);
 /* on_block_copy() — a deep copy, uid included.                            */
 OnBlock *on_block_copy(const OnBlock *b);
 
-/* on_block_kind_is_text() — PARA/H1/H2/BULLET/NUMBER/CHECK/CODE.          */
+/* on_block_kind_is_text() — PARA/H1/H2/BULLET/NUMBER/CHECK/CODE/TAGS.     */
 gboolean on_block_kind_is_text(OnBlockKind kind);
 
 /* on_block_kind_is_list() — BULLET/NUMBER/CHECK: a list line.             */
@@ -225,7 +228,8 @@ guint32 on_block_kind_para_flag(OnBlockKind kind);
  * ------------------------------------------------------------------------- */
 typedef struct OnDocument OnDocument;
 
-/* on_document_new() — an empty note: ONE empty PARA block.                */
+/* on_document_new() — an empty note: its empty tag line and ONE empty
+ * PARA block (the title line).                                            */
 OnDocument *on_document_new(void);
 
 /* on_document_new_from_block() — a one-block document; takes `block`.    */
@@ -239,6 +243,8 @@ guint    on_document_n_blocks(const OnDocument *d);
 OnBlock *on_document_block(const OnDocument *d, guint i);
 
 /* on_document_check() — verify every invariant BLOCK_MODEL.md lists.
+ * A TAGS block anywhere but block 0 is a failure; a document without one
+ * (a clipboard fragment) is not.
  * Returns TRUE when they hold; otherwise FALSE with the first failure
  * described in `why` (if given).  Cheap enough for tests to call after
  * every operation (the tests and bnbf-scan do).                           */
@@ -275,6 +281,8 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *   action_stray   — an ACTION record mid-line, doubled, or on a line that
  *                    is not a real action line: kept on the block but not
  *                    written back
+ *   stray_tag_line — a line under ON_FMT_TAGLINE that is not the first:
+ *                    it becomes a PARA line
  *   bad_utf8       — a TEXT record or table cell that was not valid UTF-8:
  *                    each bad sequence becomes U+FFFD (the model's text is
  *                    always UTF-8; the editor, the title and the search
@@ -289,7 +297,7 @@ typedef struct {
     guint split_table, image_inline;
     guint run_split, cr_newlines, old_version;
     guint action_dup, action_stray;
-    guint bad_utf8;
+    guint stray_tag_line, bad_utf8;
     const gchar *error;
 } OnDocLoadReport;
 
@@ -303,6 +311,12 @@ OnDocument *on_document_from_bnbf(const guint8 *data, gsize len,
  * boundaries too — merge into one TEXT record, so the output is the
  * maximal-run form the GtkTextBuffer serializer produces.                 */
 guint8 *on_document_to_bnbf(const OnDocument *d, gsize *out_len);
+
+/* on_document_add_tag_line() — give a note without a tag line (a blob
+ * below version 8, a document from on_document_from_text) an empty one at
+ * block 0; a no-op when it has one.  Like the loader, NOT an operation: no
+ * undo step, no observer call — for a document not yet shown.            */
+void on_document_add_tag_line(OnDocument *d);
 
 /* on_document_load_report_is_clean() — no normalization counted, no
  * error, current version (image_inline does not count).                  */
@@ -353,15 +367,18 @@ gboolean on_document_set_flags(OnDocument *d, OnPos pos, gsize n,
  * continuation and "Enter on an empty item ends the list" are the
  * caller's policy, applied with set_kind afterwards).  The first half's
  * newline takes `eol_flags` (the inline flags the caller has armed); the
- * second keeps the original one.  `pos.cell` must be -1.                  */
+ * second keeps the original one.  `pos.cell` must be -1.  The tag line
+ * is never split: FALSE.                                                  */
 gboolean on_document_split_block(OnDocument *d, OnPos pos,
                                  guint32 eol_flags);
 
 /* on_document_join_blocks() — append text block i+1 to text block i and
- * remove it; block i keeps its kind and takes i+1's newline flags.       */
+ * remove it; block i keeps its kind and takes i+1's newline flags.  The
+ * tag line is never joined, to the title or to anything: FALSE.         */
 gboolean on_document_join_blocks(OnDocument *d, guint i);
 
-/* on_document_set_kind() — change a text block's kind (text kinds only). */
+/* on_document_set_kind() — change a text block's kind (text kinds only;
+ * never the tag line's, and never to TAGS: FALSE).                       */
 gboolean on_document_set_kind(OnDocument *d, guint i, OnBlockKind kind);
 
 /* on_document_set_checked() — a CHECK block's state.                     */
@@ -371,11 +388,14 @@ gboolean on_document_set_checked(OnDocument *d, guint i, gboolean checked);
 gboolean on_document_set_eol_flags(OnDocument *d, guint i, guint32 flags);
 
 /* on_document_insert_block() — put `block` at index i (<= n_blocks);
- * ownership passes to the document.                                       */
+ * ownership passes to the document.  A TAGS block goes only at 0 of a
+ * document without one, and nothing goes in front of the tag line:
+ * FALSE (the block is not taken).                                         */
 gboolean on_document_insert_block(OnDocument *d, guint i, OnBlock *block);
 
 /* on_document_remove_block() — remove block i.  The last remaining block
- * cannot be removed (a document is never empty): FALSE.                  */
+ * (after the tag line) cannot be removed (a document is never empty), nor
+ * the tag line: FALSE.                                                    */
 gboolean on_document_remove_block(OnDocument *d, guint i);
 
 /* ---------------------------------------------------------------------------
@@ -403,9 +423,12 @@ gboolean on_document_delete_range(OnDocument *d, OnPos a, OnPos b,
 /* on_document_insert_fragment() — insert the blocks of `frag` at `pos`
  * as one undo group: a single text block goes INTO the block at pos (runs
  * and inline images kept); more than one splits it and the fragment's
- * blocks land between the halves, keeping their kinds.  `out` (optional)
- * receives the position just after the inserted content.  Only at a text
- * position (a cell takes plain text alone: its lines join with spaces). */
+ * blocks land between the halves, keeping their kinds (a copied tag line
+ * is always the fragment's first block, so it joins the line at pos as
+ * text).  `out` (optional) receives the position just after the
+ * inserted content.  Only at a text position (a cell takes plain text
+ * alone: its lines join with spaces; the tag line takes the fragment's
+ * words as #tags, on_document_append_tag).                               */
 gboolean on_document_insert_fragment(OnDocument *d, OnPos pos,
                                      const OnDocument *frag, OnPos *out);
 
@@ -517,8 +540,15 @@ gboolean on_block_is_action(const OnBlock *b);
 #define ON_TITLE_MAX_CHARS 80
 
 /* ---------------------------------------------------------------------------
- * on_document_title() — the note's title: the first line that holds
- * anything (text, or an image/table), rendered as plain text and
+ * on_document_title_block() — the index of the title line: 1 when block 0
+ * is the tag line, else 0 (a document without one).
+ * ------------------------------------------------------------------------- */
+guint on_document_title_block(const OnDocument *d);
+
+/* ---------------------------------------------------------------------------
+ * on_document_title() — the note's title: the first line after the tag
+ * line that holds anything (text, or an image/table), rendered as plain
+ * text and
  * whitespace-trimmed; `fallback` when that leaves nothing (no such line,
  * an object line, a blank line); cut to `max_chars` characters.  The
  * rule on_buffer_first_line applies to the GtkTextBuffer, so the two
@@ -573,20 +603,41 @@ gchar *on_document_tag_word(const gchar *name);
 
 /* ---------------------------------------------------------------------------
  * on_document_append_tag() — put "#word" (a word as on_document_tag_word
- * makes it) on the note's bottom line, unless a #tag of the note already
- * has that word in any case.  The bottom line takes it when it is a body
- * line other than the first (the title) holding #tags and nothing else;
- * otherwise (an empty line too: it is left for the body) a new line is
- * added for it.  One undo step.
+ * makes it) at the end of the tag line, after a space, unless a #tag of
+ * the note already has that word in any case.  One undo step.  The
+ * document must have a tag line (on_document_add_tag_line).
  * Returns TRUE when the tag was added.
  * ------------------------------------------------------------------------- */
 gboolean on_document_append_tag(OnDocument *d, const gchar *word);
 
 /* ---------------------------------------------------------------------------
+ * on_document_lift_tag() — move the #tag whose span holds `at` (a body
+ * line's text, not the tag line's) to the tag line: the span leaves the
+ * line with the whitespace that set it off (as on_document_remove_tag
+ * takes it) and its word goes on the tag line (on_document_append_tag;
+ * already there in any case, it is only removed).  The line stays even
+ * when nothing else is left on it.  One undo step.
+ *   caret — a position in `d`, moved with the edit (may be NULL).
+ * Returns TRUE when a tag was moved.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_lift_tag(OnDocument *d, OnPos at, OnPos *caret);
+
+/* ---------------------------------------------------------------------------
+ * on_document_gather_tags() — every #tag outside the tag line moved onto
+ * it (on_document_lift_tag), in document order; a body line left with
+ * nothing else on it is removed, as on_document_remove_tag removes one,
+ * the title line never.  What the move to the tag line does to each note
+ * once (on_note_tags_to_tag_line).  One undo step.  The document must
+ * have a tag line.
+ * Returns TRUE when a tag was moved.
+ * ------------------------------------------------------------------------- */
+gboolean on_document_gather_tags(OnDocument *d);
+
+/* ---------------------------------------------------------------------------
  * on_document_remove_tag() — take every #tag whose word is `word` (any
  * case) out of the note's text, with the space that set it off.  A body
- * paragraph left with nothing else on it is removed; the first line (the
- * title) is never.  One undo step.
+ * paragraph left with nothing else on it is removed; the tag line and the
+ * title line never are.  One undo step.
  * Returns TRUE when a tag was removed.
  * ------------------------------------------------------------------------- */
 gboolean on_document_remove_tag(OnDocument *d, const gchar *word);

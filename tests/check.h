@@ -1,6 +1,6 @@
 /* ===========================================================================
- * check.h — the test harness: a failure counter, a run-loop pump and a
- * date helper
+ * check.h — the test harness: a failure counter, a run-loop pump, a
+ * date helper and where a note's text lines land
  *
  * Each tests/<name>_test.c is a plain main() linked against the core.  It
  * calls check() for every expectation and returns check_result() — non-zero
@@ -45,6 +45,21 @@ check(bool ok, const char *what)
     if (!ok) {
         check_failures++;
     }
+}
+
+/*
+ * text_line — the block line `k` of the text a note was made from
+ * (on_note_new_from_text) is: the note's tag line is block 0.
+ *
+ * Inputs:
+ *   k — the line of the text, 0 for its title
+ *
+ * Output: the block index.
+ */
+static inline unsigned
+text_line(unsigned k)
+{
+    return k + 1;
 }
 
 /*

@@ -57,7 +57,7 @@
  * (and "sidebar_width", a number the library window reads itself: the
  * width the sidebar was last dragged to; and "favorites_order", tag ids
  * the Favorites bar reads itself: its buttons as last dragged into order)
- *   first_line_title       "first_line_title"         1  line 0 drawn as title
+ *   first_line_title       "first_line_title"         1  title line drawn as title
  *   compact_editor_toolbar "compact_editor_toolbar"   1  style/list menus
  *   comfortable_list       "list_density_comfortable" 1  title + preview rows
  *   statusbar_db_path      "statusbar_db_path"        0  db path in status bars

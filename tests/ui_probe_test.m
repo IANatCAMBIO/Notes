@@ -9,6 +9,9 @@
  * pasteboard, never the user's clipboard.  The command set is the GTK
  * runner's (the GTK build's tests/ui_probe.c); an unknown command is
  * a failure, and so is every failed expectation — the exit status says.
+ * Each script starts on a document of one empty line, as the GTK runner's
+ * did: the scripts drive the editing itself, and a note's tag line
+ * (block 0 of a real note) is ui_smoke_test's.
  *
  * Script format (see tests/ui/ — each .txt file):
  *   text <string>                — on_note_view_feed_text
@@ -91,6 +94,7 @@ kind_name(OnBlockKind kind)
     case ON_BLOCK_CODE:   return "code";
     case ON_BLOCK_IMAGE:  return "image";
     case ON_BLOCK_TABLE:  return "table";
+    case ON_BLOCK_TAGS:   return "tags";
     case ON_N_BLOCK_KINDS: break;
     }
     return "?";
@@ -115,6 +119,7 @@ parse_kind(const char *s)
     if (!strcmp(s, "code"))   return ON_BLOCK_CODE;
     if (!strcmp(s, "image"))  return ON_BLOCK_IMAGE;
     if (!strcmp(s, "table"))  return ON_BLOCK_TABLE;
+    if (!strcmp(s, "tags"))   return ON_BLOCK_TAGS;
     return ON_BLOCK_PARA;
 }
 
@@ -264,8 +269,8 @@ settle(int ms)
 static void
 run_script(const char *path, NotesNoteView *view)
 {
-    /* Reset to a fresh empty document. */
-    on_note_view_load_document(view, on_document_new());
+    /* Reset to a fresh document of one empty line. */
+    on_note_view_load_document(view, on_document_from_text(""));
 
     FILE *f = fopen(path, "r");
     if (!f) {

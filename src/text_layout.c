@@ -463,7 +463,7 @@ on_text_layout_new(const on_text_content_t *content,
                 double lead = CTFontGetLeading(ef);
                 CFRelease(ef);
                 L->line_y[idx]  = y_top;
-                L->line_x[idx]  = style->centered && style->width > 0 ? style->width / 2.0 : 0.0;
+                L->line_x[idx]  = style->width > 0 ? style->width * style->flush : 0.0;
                 L->line_asc[idx]= asc;
                 L->line_h[idx]  = ceil(asc + desc + lead);
                 L->lines[idx]   = NULL;
@@ -480,10 +480,10 @@ on_text_layout_new(const on_text_content_t *content,
 
         L->lines[idx]  = line;
         L->line_y[idx] = y_top;
-        /* A centred line is drawn, measured and hit at its flush offset
-         * (trailing whitespace hangs outside the centring). */
-        L->line_x[idx] = style->centered && style->width > 0
-            ? (double)CTLineGetPenOffsetForFlush(line, 0.5, style->width) : 0.0;
+        /* A centred or right-aligned line is drawn, measured and hit at
+         * its flush offset (trailing whitespace hangs outside it). */
+        L->line_x[idx] = style->flush > 0 && style->width > 0
+            ? (double)CTLineGetPenOffsetForFlush(line, style->flush, style->width) : 0.0;
         L->line_asc[idx] = (double)asc;
         L->line_h[idx]   = lh;
         L->n_lines++;

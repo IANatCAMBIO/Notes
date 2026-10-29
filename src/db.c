@@ -1239,14 +1239,18 @@ on_db_note_set_text_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 }
 
 /*
- * on_db_field_tag_notes — see db.h.
+ * collect_ids — drain `stmt` (column 0 = a note id) into a list and
+ * finalize it.
+ *
+ * Inputs:
+ *   stmt — a prepared, bound statement, or NULL (an empty list)
+ *
+ * Output: a GArray of gint64; free with g_array_unref().
  */
-GArray *
-on_db_field_tag_notes(OnDatabase *db)
+static GArray *
+collect_ids(sqlite3_stmt *stmt)
 {
-    GArray       *out  = g_array_new(FALSE, FALSE, sizeof(gint64));
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT DISTINCT note_id FROM note_tags WHERE in_field = 1 ORDER BY note_id");
+    GArray *out = g_array_new(FALSE, FALSE, sizeof(gint64));
     if (stmt == NULL)
         return out;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -1258,23 +1262,38 @@ on_db_field_tag_notes(OnDatabase *db)
 }
 
 /*
+ * on_db_field_tag_notes — see db.h.
+ */
+GArray *
+on_db_field_tag_notes(OnDatabase *db)
+{
+    return collect_ids(prepare(db,
+        "SELECT DISTINCT note_id FROM note_tags WHERE in_field = 1 ORDER BY note_id"));
+}
+
+/*
+ * on_db_notes_before_tag_line — see db.h.  The version is the blob's
+ * little-endian u32 after the magic, so its four bytes compare as a blob.
+ */
+GArray *
+on_db_notes_before_tag_line(OnDatabase *db)
+{
+    return collect_ids(prepare(db,
+        "SELECT id FROM notes WHERE content IS NULL OR length(content) < 8"
+        " OR substr(content, 5, 4) < x'08000000' ORDER BY id"));
+}
+
+/*
  * on_db_note_ids_with_tag — see db.h.
  */
 GArray *
 on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id)
 {
-    GArray       *out  = g_array_new(FALSE, FALSE, sizeof(gint64));
     sqlite3_stmt *stmt = prepare(db,
         "SELECT DISTINCT note_id FROM note_tags WHERE tag_id = ? ORDER BY note_id");
-    if (stmt == NULL)
-        return out;
-    sqlite3_bind_int64(stmt, 1, tag_id);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        gint64 id = sqlite3_column_int64(stmt, 0);
-        g_array_append_val(out, id);
-    }
-    sqlite3_finalize(stmt);
-    return out;
+    if (stmt != NULL)
+        sqlite3_bind_int64(stmt, 1, tag_id);
+    return collect_ids(stmt);
 }
 
 /*

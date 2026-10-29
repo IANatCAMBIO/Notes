@@ -116,6 +116,7 @@ on_note_document_load(OnDatabase *db, gint64 id)
         on_document_free(doc);
         return NULL;
     }
+    on_document_add_tag_line(doc);   /* a blob from before the tag line   */
     return doc;
 }
 
@@ -296,6 +297,7 @@ on_note_new_from_text(OnDatabase *db, const gchar *tag, const gchar *text)
         return 0;
     gint64      id   = on_db_note_create(db);
     OnDocument *doc  = on_document_from_text(text);
+    on_document_add_tag_line(doc);
     gchar      *word = on_document_tag_word(tag);
     if (word != NULL)
         on_document_append_tag(doc, word);

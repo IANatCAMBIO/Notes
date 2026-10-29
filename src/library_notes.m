@@ -150,7 +150,8 @@ due_colour(gint64 due)
 
 /*
  * preview_line — the Comfortable preview: the first non-blank line after
- * the title line of a note's body text (GTK notes_preview_line).
+ * the tag line and the title line of a note's body text (GTK
+ * notes_preview_line).
  *
  * Inputs:
  *   body — the cached body text, or NULL
@@ -161,14 +162,14 @@ static NSString *
 preview_line(const gchar *body)
 {
     __block NSString *found = nil;
-    __block BOOL      title = YES;   /* the first line is the title: skipped */
+    __block int       skip  = 2;     /* the tag line and the title: skipped */
     [(body ? @(body) : @"") enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if (!title && trimmed.length > 0) {
+        if (skip == 0 && trimmed.length > 0) {
             found = trimmed;
             *stop = YES;
         }
-        title = NO;
+        if (skip > 0) skip--;
     }];
     return found;
 }
@@ -456,7 +457,7 @@ persist_layout(NSTableView *table, const char *cfg_key)
 
 /*
  * card_body — what a card shows under its image: the note's text after
- * its title line, blank lines dropped at the start, at most
+ * its tag line and its title line, blank lines dropped at the start, at most
  * card_text_chars characters (GTK render_note_thumb).
  *
  * Inputs:
@@ -468,7 +469,8 @@ static NSString *
 card_body(const OnDocument *doc)
 {
     gchar       *text = on_document_plain_text(doc);
-    const gchar *body = text;
+    const gchar *body = strchr(text, '\n');   /* past the tag line        */
+    body = body ? body + 1 : "";
     while (*body == '\n') body++;
     const gchar *nl = strchr(body, '\n');
     body = nl ? nl + 1 : "";
@@ -1304,8 +1306,8 @@ refresh_note:(gint64)note_id
 /*
  * add_note: — a note was just created by this window: put its row in the
  * list or grid without re-reading the other notes.  A new note carries no
- * tag or the selected tag, so only All Notes and that tag's view list it;
- * Pinned, Trash and Action Items do not.
+ * tag, so only All Notes lists it; a tag's view, Pinned, Trash and Action
+ * Items do not.
  *
  * Inputs:
  *   note_id — the new note
@@ -1314,7 +1316,7 @@ refresh_note:(gint64)note_id
 add_note:(gint64)note_id
 {
     NotesLibrary *lib = self.lib;
-    if (lib.sel_kind != on_sb_all && lib.sel_kind != on_sb_tag) return;
+    if (lib.sel_kind != on_sb_all) return;
     OnNoteMeta *m = on_db_note_get(lib.app->db, note_id);
     if (m == NULL) return;
     on_library_view_t mode     = on_library_view(lib);

@@ -98,21 +98,34 @@ open at once (SQLite WAL mode).  Edits flow both ways:
 Notes has no folders: **tags** organise the notes, and they are the same
 tags Tasks uses (one set in the shared file).
 
-- A note's tags are the **#tags in its text**, and the editor's status bar
-  lists them (`#Salt #Stride`).  Typing **#** opens the list of known
-  tags at once; keep typing to narrow it, Return or a click to choose.  A
-  tag's word follows the # with no space; a space straight after the #
-  closes the list and leaves a plain #.
-- A tag given from outside the text goes on the note's **bottom line** as a
-  #tag (on a line of its own under the text, joining a line that holds
-  only #tags; an empty line is left for the body): drop notes on a tag in
-  the sidebar, or New Note in a tag's view.  A new note starts with an
-  empty title line, where the caret is, and an empty body line, then its
-  tag's line.  A name of several words is joined, each word capitalized, and
+- A note's tags are the **#tags in its text**, and they live on its **tag
+  line**: the first line, above the title, small (9 pt) and flush right,
+  always led by a 🏷️ that is part of the line's look, not its text (the
+  caret, a selection and a delete never reach it; search and export never
+  see it).
+  The editor's status bar lists them too (`#Salt #Stride`).
+- Type a tag straight into the tag line: a word gets its # as you start
+  it, and only tags can be typed there; Return goes to the title.
+  Anywhere else, typing **#** opens the list of known tags at once; keep
+  typing to narrow it, Return or a click to choose.  A tag's word follows
+  the # with no space; a space straight after the # closes the list and
+  leaves a plain #.  Once a tag is set in the body — chosen from the list,
+  or a new one ended with a space — it **moves to the tag line**, and the
+  sentence closes up around where it was.
+- A tag given from outside the text goes on the end of the tag line: drop
+  notes on a tag in the sidebar.  New Note never tags the note, even with
+  a tag selected: it starts with an empty tag line, where the caret is,
+  an empty title line and an empty body line, and is listed in All Notes.
+  A note closed with nothing in it but tags is deleted, as an empty one is.
+  A name of several words is joined, each word capitalized, and
   punctuation dropped: Tasks' "Old Projects" becomes #OldProjects — a tag
   of its own.  The tags the move from folders gave (an older Tags field)
-  are written into the notes' text the same way at launch, once, keeping
+  are written onto the tag line the same way at launch, once, keeping
   each note's modified time.
+- Notes from before the tag line are moved once, at the first launch of
+  this build: each gets a tag line, every #tag in its text moves onto it
+  (a line left holding nothing else goes), and its modified time is kept.
+  A build from before the tag line cannot read a note once it is moved.
 - The sidebar lists **All Notes**, **Pinned Notes**, **Action Items**, then
   every tag a note carries (with counts when Settings ▸ Appearance shows
   them), and the **Trash**.  Drop notes on a tag to give them the tag, on

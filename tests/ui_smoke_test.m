@@ -451,9 +451,9 @@ test_editor(void)
         check(app.live_document(&app, note_id + 1000) == NULL, "and NULL for a note not open");
         check(on_action_edit_set_done(&app, uid, TRUE), "an action is completed through the editor");
         gboolean live_done = FALSE, done = FALSE;
-        on_document_block_action(on_note_view_document(weak_view), 1, NULL, NULL, &live_done);
+        on_document_block_action(on_note_view_document(weak_view), text_line(1), NULL, NULL, &live_done);
         OnDocument *stored = on_note_document_load(app.db, note_id);
-        on_document_block_action(stored, 1, NULL, NULL, &done);
+        on_document_block_action(stored, text_line(1), NULL, NULL, &done);
         on_document_free(stored);
         check(live_done && done, "the open document shows it and the editor saved it at once");
 
@@ -498,6 +498,20 @@ test_editor(void)
     pump(0.3);
     OnNoteMeta *gone = on_db_note_get(app.db, blank);
     check(gone == NULL, "an editor closed on a blank note deletes the note");
+
+    /* Tags alone are no content: such a note goes the same way.            */
+    gint64 tag_only = new_note_tagged("OnlyTag", "");
+    @autoreleasepool {
+        on_editor_window_open(&app, tag_only, NotesEditorRevealNone, 0, nil);
+        pump(0.2);
+        on_editor_close_notes(&tag_only, 1);
+    }
+    pump(0.2);
+    gone = on_db_note_get(app.db, tag_only);
+    OnTag *orphan = on_db_tag_find(app.db, "OnlyTag");
+    check(gone == NULL && orphan == NULL,
+          "an editor closed on a note holding only a tag deletes it, and the tag nothing carries");
+    on_db_tag_free(orphan);
 
     /* A note that cannot be read is not a blank note: no editor opens on
      * it (an empty one would delete it on close), and it survives.        */
@@ -719,7 +733,7 @@ test_editor_commands(void)
         OnPos second = on_note_view_caret(view);
         send_command(window, command_item(@"find-previous"));
         OnPos back = on_note_view_caret(view);
-        check(first.block == 1 && second.block == 1 && second.offset > first.offset &&
+        check(first.block == text_line(1) && second.block == text_line(1) && second.offset > first.offset &&
               back.offset == first.offset,
               "typing in the find field selects the first match; Next and Previous step from it");
 
@@ -1033,10 +1047,10 @@ test_strike_snapshot(void)
 {
     gint64      note_id = new_note("Strike note\nsome struck words here\nA struck heading\n! finished item");
     OnDocument *doc     = on_note_document_load(app.db, note_id);
-    on_document_set_kind(doc, 2, ON_BLOCK_H2);
-    on_document_set_flags(doc, (OnPos){ 1, -1, 5 }, strlen("struck words"), ON_FMT_STRIKE, TRUE);
-    on_document_set_flags(doc, (OnPos){ 2, -1, 2 }, strlen("struck"), ON_FMT_STRIKE, TRUE);
-    on_document_set_flags(doc, (OnPos){ 3, -1, 2 }, strlen("finished item"), ON_FMT_STRIKE, TRUE);
+    on_document_set_kind(doc, text_line(2), ON_BLOCK_H2);
+    on_document_set_flags(doc, (OnPos){ text_line(1), -1, 5 }, strlen("struck words"), ON_FMT_STRIKE, TRUE);
+    on_document_set_flags(doc, (OnPos){ text_line(2), -1, 2 }, strlen("struck"), ON_FMT_STRIKE, TRUE);
+    on_document_set_flags(doc, (OnPos){ text_line(3), -1, 2 }, strlen("finished item"), ON_FMT_STRIKE, TRUE);
     on_note_document_save(app.db, note_id, doc, TRUE, NULL);
     on_document_free(doc);
     @autoreleasepool {
@@ -1063,12 +1077,12 @@ test_accessibility(void)
         NotesNoteView *view = (NotesNoteView *)find_view(editor_window_titled(@"Access note").contentView,
                                                          NotesNoteView.class, Nil);
         check(view.isAccessibilityElement && [view.accessibilityRole isEqualToString:NSAccessibilityTextAreaRole] &&
-              [view.accessibilityValue isEqual:@"Access note\nsome body text"],
-              "the note view is a text area holding the note's text");
+              [view.accessibilityValue isEqual:@"\nAccess note\nsome body text"],
+              "the note view is a text area holding the note's text, its tag line first");
         on_note_view_find(view, @"body");
         check([view.accessibilitySelectedText isEqualToString:@"body"] &&
-              view.accessibilitySelectedTextRange.location == strlen("Access note\nsome ") &&
-              view.accessibilityInsertionPointLineNumber == 1,
+              view.accessibilitySelectedTextRange.location == strlen("\nAccess note\nsome ") &&
+              view.accessibilityInsertionPointLineNumber == (NSInteger)text_line(1),
               "and reports the selection and the caret's line");
         on_editor_close_all();
     }
@@ -1086,7 +1100,7 @@ test_inline_image(void)
     NSData     *png     = [NSData dataWithContentsOfURL:sample_image_url()];
     GBytes     *bytes   = g_bytes_new(png.bytes, png.length);
     OnDocument *doc     = on_note_document_load(app.db, note_id);
-    OnText     *line    = on_document_block(doc, 1)->text;
+    OnText     *line    = on_document_block(doc, text_line(1))->text;
     on_text_append(line, ON_OBJ_CHAR, strlen(ON_OBJ_CHAR), 0);
     on_text_add_image(line, strlen("before "), bytes, 0);
     on_text_append(line, " after", strlen(" after"), 0);
@@ -1103,7 +1117,7 @@ test_inline_image(void)
               "an inline image takes its thumbnail's room in the line");
         check(save_snapshots(window, @"inline-image"), "inline image snapshots written");
         const OnInlineObject *shown = &g_array_index(
-            on_document_block(on_note_view_document(view), 1)->text->objects, OnInlineObject, 0);
+            on_document_block(on_note_view_document(view), text_line(1))->text->objects, OnInlineObject, 0);
         int src_w = 0;
         on_image_probe_size(png.bytes, png.length, &src_w, NULL);
         check(shown->pixels != NULL && (int)CGImageGetWidth(shown->pixels) < src_w,
@@ -1243,7 +1257,7 @@ test_file_attachment(void)
     [[NSData dataWithBytes:payload length:sizeof payload] writeToFile:pdf atomically:YES];
     gint64      row = on_db_note_file_add(app.db, note_id, pdf.fileSystemRepresentation, "report.pdf");
     OnDocument *doc  = on_note_document_load(app.db, note_id);
-    OnText     *line = on_document_block(doc, 1)->text;
+    OnText     *line = on_document_block(doc, text_line(1))->text;
     on_text_insert(line, 0, ON_OBJ_CHAR, ON_OBJ_CHAR_LEN, 0);
     on_text_add_file(line, 0, row, "report.pdf");
     on_note_document_save(app.db, note_id, doc, TRUE, NULL);
@@ -1259,10 +1273,10 @@ test_file_attachment(void)
               "an attached file takes its icon's room");
         check(save_snapshots(window, @"file-attachment"), "attachment snapshots written");
 
-        /* The tile starts the second block: select it with a click. */
+        /* The tile starts the body line: select it with a click. */
         OnDocument *shown = on_note_view_document(view);
         select_file_tile(view);
-        check(on_note_view_caret(view).block == 1 &&
+        check(on_note_view_caret(view).block == text_line(1) &&
               on_note_view_caret(view).offset == ON_OBJ_CHAR_LEN &&
               [on_note_view_selected_text(view) isEqual:@"report.pdf"],
               "a click on the tile selects it");
@@ -1281,7 +1295,7 @@ test_file_attachment(void)
         /* Paste of our own copy: from the fragment, a row of its own (the
          * caret goes into the title first: a paste over the selected tile
          * would replace it). */
-        on_note_view_feed_click(view, 300, 20, 1, 0, NO);
+        on_note_view_feed_click(view, 300, 36, 1, 0, NO);   /* the title, under the tag line */
         on_note_view_feed_key(view, on_key_character, 'v', on_mod_command);
         check(count_tiles(shown) == 2 && file_rows(note_id) == 2,
               "Paste brings the attachment back, with a row of its own");
@@ -1359,15 +1373,15 @@ test_drop_last_line(void)
         guint          last   = on_document_n_blocks(doc) - 1;
 
         check(!app.drop_files_last_line, "dropped files go where they are dropped by default");
-        on_note_view_drop_files(view, @[file], NSMakePoint(300, 20));    /* the title line */
-        check(on_document_block(doc, 0)->text->objects->len == 1 &&
+        on_note_view_drop_files(view, @[file], NSMakePoint(300, 36));    /* the title line */
+        check(on_document_block(doc, text_line(0))->text->objects->len == 1 &&
               on_document_block(doc, last)->text->objects->len == 0,
               "a drop lands on the line it was dropped on");
 
         app.drop_files_last_line = TRUE;
-        on_note_view_drop_files(view, @[file], NSMakePoint(300, 20));
+        on_note_view_drop_files(view, @[file], NSMakePoint(300, 36));
         const OnText *end = on_document_block(doc, last)->text;
-        check(on_document_block(doc, 0)->text->objects->len == 1 && end->objects->len == 1 &&
+        check(on_document_block(doc, text_line(0))->text->objects->len == 1 && end->objects->len == 1 &&
               g_array_index(end->objects, OnInlineObject, 0).offset == end->text->len - ON_OBJ_CHAR_LEN,
               "with the setting on, it lands at the end of the last line");
         app.drop_files_last_line = FALSE;
@@ -1405,7 +1419,7 @@ test_pointer(void)
 {
     gint64      note_id = new_note("Pointer note\nbuy milk");
     OnDocument *doc     = on_note_document_load(app.db, note_id);
-    on_document_set_kind(doc, 1, ON_BLOCK_CHECK);
+    on_document_set_kind(doc, text_line(1), ON_BLOCK_CHECK);
     on_note_document_save(app.db, note_id, doc, TRUE, NULL);
     on_document_free(doc);
     @autoreleasepool {
@@ -1413,9 +1427,9 @@ test_pointer(void)
         pump(0.3);
         NSWindow      *window = editor_window_titled(@"Pointer note");
         NotesNoteView *view   = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
-        [view mouseMoved:mouse_moved(view, NSMakePoint(33, 47))];
+        [view mouseMoved:mouse_moved(view, NSMakePoint(33, 60))];  /* under the tag line and title */
         NSCursor *over_box = NSCursor.currentCursor;
-        [view mouseMoved:mouse_moved(view, NSMakePoint(120, 47))];
+        [view mouseMoved:mouse_moved(view, NSMakePoint(120, 60))];
         NSCursor *over_text = NSCursor.currentCursor;
         check(over_box == NSCursor.pointingHandCursor && over_text == NSCursor.IBeamCursor,
               "the pointer is a hand over a task's box and an I-beam over text");
@@ -1429,7 +1443,11 @@ test_pointer(void)
  * as its #word (Tasks' "al fresco" is AlFresco); a space straight after
  * the '#' closes the list and leaves a plain '#'.  Typing "#al" lists the
  * tags that start so, under the caret; Down and Return choose one, which
- * becomes a tag.
+ * becomes a tag and moves to the tag line.  On the tag line a word gets
+ * its '#' as it is typed and only tags can be typed; its 🏷️ is drawn, so
+ * the caret stops after it and Backspace there takes nothing; Return goes
+ * to the title.  A new tag ended with a space in a sentence moves up too, the
+ * sentence closing up.
  */
 static void
 test_tag_suggestions(void)
@@ -1454,7 +1472,7 @@ test_tag_suggestions(void)
         check(list.visible && as_word,
               "a typed # opens the list at once, a tag of several words as its #word");
         on_note_view_feed_text(view, " ");
-        const OnBlock *b = on_document_block(on_note_view_document(view), 1);
+        const OnBlock *b = on_document_block(on_note_view_document(view), text_line(1));
         check(!list.visible && strcmp(b->text->text->str, "# ") == 0 &&
               !(on_text_flags_at(b->text, 0) & ON_FMT_TAG),
               "a space straight after the # closes the list and leaves a plain #");
@@ -1467,10 +1485,38 @@ test_tag_suggestions(void)
         check(list.visible && rows == 3, "typing #al lists the three known tags starting with al");
         on_note_view_feed_key(view, on_key_down, 0, 0);
         on_note_view_feed_key(view, on_key_return, 0, 0);
-        b = on_document_block(on_note_view_document(view), 1);
-        check(!list.visible && strcmp(b->text->text->str, "#alpha ") == 0 &&
-              (on_text_flags_at(b->text, 1) & ON_FMT_TAG),
-              "Down and Return choose #alpha, styled as a tag, and close the list");
+        OnDocument    *doc  = on_note_view_document(view);
+        const OnBlock *tags = on_document_block(doc, 0);
+        b = on_document_block(doc, text_line(1));
+        check(!list.visible && strcmp(tags->text->text->str, "#alpha") == 0 &&
+              (on_text_flags_at(tags->text, 1) & ON_FMT_TAG) && b->text->text->len == 0 &&
+              on_note_view_caret(view).block == text_line(1) && on_note_view_caret(view).offset == 0,
+              "Down and Return choose #alpha, styled as a tag, and move it to the tag line");
+
+        for (int i = 0; i < 3 && on_note_view_caret(view).block != 0; i++)
+            on_note_view_feed_key(view, on_key_up, 0, 0);
+        on_note_view_feed_key(view, on_key_end, 0, 0);
+        on_note_view_feed_text(view, " be.ta ");
+        check(on_note_view_caret(view).block == 0 &&
+              strcmp(tags->text->text->str, "#alpha #beta ") == 0 &&
+              (on_text_flags_at(tags->text, strlen("#alpha #")) & ON_FMT_TAG),
+              "on the tag line a word gets its # and only tags are typed");
+        on_note_view_feed_key(view, on_key_home, 0, 0);
+        on_note_view_feed_key(view, on_key_backspace, 0, 0);
+        on_note_view_feed_key(view, on_key_left, 0, 0);
+        check(on_note_view_caret(view).block == 0 && on_note_view_caret(view).offset == 0 &&
+              strcmp(tags->text->text->str, "#alpha #beta ") == 0,
+              "the tag line's mark is drawn, not text: the caret stops after it, Backspace takes nothing");
+        on_note_view_feed_key(view, on_key_return, 0, 0);
+        check(on_note_view_caret(view).block == text_line(0) && on_document_n_blocks(doc) == 3,
+              "Return on the tag line goes to the title");
+
+        on_note_view_feed_key(view, on_key_down, 0, 0);
+        on_note_view_feed_text(view, "met #gamma today");
+        b = on_document_block(doc, text_line(1));
+        check(strcmp(b->text->text->str, "met today") == 0 &&
+              strcmp(tags->text->text->str, "#alpha #beta #gamma") == 0,
+              "a new tag ended with a space moves to the tag line, the sentence closing up");
         on_editor_close_notes(&note_id, 1);
     }
     pump(0.2);
@@ -1539,12 +1585,12 @@ note_has_tag(gint64 note_id, const char *name)
 }
 
 /*
- * test_editor_tags — the editor has no Tags strip: a note's tags are its
- * #tags, which the status bar lists.  A tag given in the library (a drop
- * on a tag's row) while the note is open goes on its bottom line in the
- * open editor, as a #word ("Added one" is #AddedOne), and is saved.  New
- * Note in a tag's view gives the note an empty title line (the caret on
- * it), an empty body line, then the tag.
+ * test_editor_tags — the editor has no Tags strip: a note's tags are the
+ * #tags on its tag line, which the status bar lists too.  A tag given in
+ * the library (a drop on a tag's row) while the note is open goes on the
+ * open editor's tag line, as a #word ("Added one" is #AddedOne), and is
+ * saved.  New Note in a tag's view gives the note no tag: an empty tag
+ * line (the caret on it), an empty title line and an empty body line.
  *
  * Inputs:
  *   lib — the library (its window on screen)
@@ -1569,10 +1615,10 @@ test_editor_tags(NotesLibrary *lib)
         NotesNoteView *view = (NotesNoteView *)find_view(window.contentView, NotesNoteView.class, Nil);
         OnDocument    *doc  = on_note_view_document(view);
         check(on_document_n_blocks(doc) == 3 &&
-              strcmp(on_document_block(doc, 2)->text->text->str, "#FieldTag #AddedOne") == 0 &&
+              strcmp(on_document_block(doc, 0)->text->text->str, "#FieldTag #AddedOne") == 0 &&
               label_with_text(window.contentView, @"#FieldTag #AddedOne") != nil &&
               note_has_tag(note, "AddedOne"),
-              "it goes on the open editor's tags line as a #word, the status bar shows it, "
+              "it goes on the open editor's tag line as a #word, the status bar shows it, "
               "and it is saved");
         on_editor_close_notes(&note, 1);
     }
@@ -1589,19 +1635,20 @@ test_editor_tags(NotesLibrary *lib)
     gint64 newest = 0;
     for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
     on_db_note_list_free(notes);
-    gchar *body = on_note_text_cached(app.db, newest);
-    check(newest > note && note_has_tag(newest, "FieldTag") && g_strcmp0(body, "\n\n#FieldTag") == 0,
-          "New Note in a tag's view: an empty title line, an empty body line, then the tag");
-    g_free(body);
+    GList *new_tags = on_db_note_tags(app.db, newest);
+    check(newest > note && new_tags == NULL,
+          "New Note in a tag's view makes a note without a tag");
+    on_db_tag_list_free(new_tags);
     NotesNoteView *fresh = nil;
     for (NSWindow *window in NSApp.windows) {
         NSScrollView  *scroll = (NSScrollView *)find_view(window.contentView, NSScrollView.class, Nil);
         NotesNoteView *view   = [scroll.documentView isKindOfClass:NotesNoteView.class] ? scroll.documentView : nil;
         if (window.visible && view != nil && on_document_n_blocks(on_note_view_document(view)) == 3) fresh = view;
     }
-    OnPos caret = fresh != nil ? on_note_view_caret(fresh) : (OnPos){ 1, -1, 0 };
-    check(fresh != nil && caret.block == 0 && caret.offset == 0,
-          "the new note's editor has the caret on its title line");
+    OnPos caret = fresh != nil ? on_note_view_caret(fresh) : (OnPos){ 0, -1, 1 };
+    check(fresh != nil && on_document_block(on_note_view_document(fresh), 0)->kind == ON_BLOCK_TAGS &&
+          caret.block == 0 && caret.offset == 0,
+          "the new note's editor has its tag line, the caret on it");
     on_editor_close_all();
     pump(0.2);
 
@@ -1616,7 +1663,7 @@ test_editor_tags(NotesLibrary *lib)
     newest = 0;
     for (GList *l = notes; l != NULL; l = l->next) newest = MAX(newest, ((OnNoteMeta *)l->data)->id);
     on_db_note_list_free(notes);
-    GList *new_tags = on_db_note_tags(app.db, newest);
+    new_tags = on_db_note_tags(app.db, newest);
     check(on_db_note_count_visible(app.db) == before + 1 && new_tags == NULL,
           "New Note in All Notes makes a note without a tag");
     on_db_tag_list_free(new_tags);
@@ -2079,8 +2126,8 @@ test_sidebar(NotesLibrary *lib)
     gchar *loose_body = on_note_text_cached(app.db, loose);
     check(g_list_length(loose_tags) == 1 && ((OnTag *)loose_tags->data)->in_text &&
           strcmp(((OnTag *)loose_tags->data)->name, "Crate") == 0 &&
-          g_str_has_suffix(loose_body, "\n#Crate"),
-          "and get it as a #tag on their bottom lines");
+          g_str_has_prefix(loose_body, "#Crate\n"),
+          "and get it as a #tag on their tag lines");
     g_free(loose_body);
     on_db_tag_list_free(loose_tags);
     all = sidebar_row(sidebar_table, @"All Notes");
@@ -3435,7 +3482,7 @@ test_outside_changes(void)
                             " (SELECT task_id FROM note_task WHERE uid = ?1)");
     check(on_action_sync_poll(&app), "open note: the poll sees the other app's rename");
     OnDocument *live = on_note_view_document(view);
-    check(strcmp(on_document_block(live, 1)->text->text->str, "! Renamed while open due 2026-11-02") == 0,
+    check(strcmp(on_document_block(live, text_line(1))->text->text->str, "! Renamed while open due 2026-11-02") == 0,
           "open note: the rename is reconciled into the live document");
     gchar *body = on_db_note_body_text(app.db, note);
     check(body != NULL && strstr(body, "Renamed while open") != NULL,
@@ -3447,7 +3494,7 @@ test_outside_changes(void)
           NSEqualPoints(scroll.contentView.bounds.origin, origin),
           "open note: the caret, the selection and the scroll position stay");
     on_note_view_undo(view);
-    check(strcmp(on_document_block(live, 1)->text->text->str, "! Rename me live due 2026-11-02") == 0,
+    check(strcmp(on_document_block(live, text_line(1))->text->text->str, "! Rename me live due 2026-11-02") == 0,
           "open note: the reconcile is one undo step");
     pump(1.8);
     sqlite3_stmt *st = NULL;
@@ -3460,20 +3507,20 @@ test_outside_changes(void)
 
     /* Another writer rewrites the note; no unsaved edits here: reload.     */
     on_action_sync_poll(&app);
-    outside_insert(other, note, 2, "agent: ");
+    outside_insert(other, note, text_line(2), "agent: ");
     on_action_sync_poll(&app);
     live = on_note_view_document(view);
-    check(g_str_has_prefix(on_document_block(live, 2)->text->text->str, "agent: second line"),
+    check(g_str_has_prefix(on_document_block(live, text_line(2))->text->text->str, "agent: second line"),
           "outside rewrite, nothing unsaved: the open editor reloads the note");
 
     /* With unsaved edits: they are kept, and Reload is offered.            */
     on_note_view_feed_key(view, on_key_down, 0, on_mod_command);
     on_note_view_feed_key(view, on_key_end, 0, 0);
     on_note_view_feed_text(view, " mine");
-    outside_insert(other, note, 2, "second agent: ");
+    outside_insert(other, note, text_line(2), "second agent: ");
     on_action_sync_poll(&app);
     live = on_note_view_document(view);
-    check(g_str_has_suffix(on_document_block(live, 3)->text->text->str, " mine") &&
+    check(g_str_has_suffix(on_document_block(live, text_line(3))->text->text->str, " mine") &&
           answer_panel(@"Keep Mine"),
           "outside rewrite, unsaved edits: they stay, and a tool panel offers Reload / Keep Mine");
     pump(1.8);
@@ -3483,13 +3530,13 @@ test_outside_changes(void)
     g_free(body);
 
     on_note_view_feed_text(view, " again");
-    outside_insert(other, note, 2, "third agent: ");
+    outside_insert(other, note, text_line(2), "third agent: ");
     on_action_sync_poll(&app);
     check(answer_panel(@"Reload"), "a second outside rewrite asks again");
     live = on_note_view_document(view);
     body = on_db_note_body_text(app.db, note);
-    check(g_str_has_prefix(on_document_block(live, 2)->text->text->str, "third agent: ") &&
-          !g_str_has_suffix(on_document_block(live, 3)->text->text->str, " again") &&
+    check(g_str_has_prefix(on_document_block(live, text_line(2))->text->text->str, "third agent: ") &&
+          !g_str_has_suffix(on_document_block(live, text_line(3))->text->text->str, " again") &&
           body != NULL && strstr(body, "third agent") != NULL,
           "Reload: the other writer's version is shown and kept");
     g_free(body);
@@ -3581,7 +3628,7 @@ test_open_note_sync(void)
         on_action_sync_poll(&app);
         gchar *title = task_title_of(uid);
         GArray *pending = on_db_action_pending(app.db, 0);
-        check(strcmp(on_document_block(live, 1)->text->text->str, "! Keep this title") == 0 &&
+        check(strcmp(on_document_block(live, text_line(1))->text->text->str, "! Keep this title") == 0 &&
               strcmp(title, "Keep this title") == 0 && pending->len == 0,
               i == 0 ? "open note: a blank title is refused; the line's text goes back to the task at once"
                      : "open note: a title ending in a due date is refused; the line's text goes back");
@@ -3603,8 +3650,8 @@ test_open_note_sync(void)
     on_db_txn_end(app.db, own, FALSE);
     app.check_editors(&app);
     gchar *body = on_db_note_body_text(app.db, note);
-    check(strcmp(on_document_block(live, 1)->text->text->str, "! Renamed, rolled back") == 0 &&
-          g_str_has_suffix(on_document_block(live, 3)->text->text->str, " kept") &&
+    check(strcmp(on_document_block(live, text_line(1))->text->text->str, "! Renamed, rolled back") == 0 &&
+          g_str_has_suffix(on_document_block(live, text_line(3))->text->text->str, " kept") &&
           body != NULL && strstr(body, " kept") == NULL,
           "rolled back: the editor keeps its text (no reload over it); nothing was stored");
     g_free(body);
@@ -3623,7 +3670,7 @@ test_open_note_sync(void)
     OnNoteStamp before;
     on_db_note_stamp(app.db, note, &before);
     OnDocument *theirs = on_note_document_load(other, note);
-    OnPos       at     = { 2, -1, 0 };
+    OnPos       at     = { text_line(2), -1, 0 };
     on_document_delete_text(theirs, at, 1);
     on_document_insert_text(theirs, at, "S", 1, 0);
     on_note_document_save(other, note, theirs, TRUE, NULL);
@@ -3650,13 +3697,13 @@ test_open_note_sync(void)
     on_action_sync_poll(&app);
     GArray *pending = on_db_action_pending(app.db, 0);
     check(app.live_held(&app, note) && pending->len == 1 && !app.pull_failed &&
-          strcmp(on_document_block(live, 1)->text->text->str, "! Renamed, rolled back") == 0,
+          strcmp(on_document_block(live, text_line(1))->text->text->str, "! Renamed, rolled back") == 0,
           "panel up: the pull leaves the note alone, and that is no failure to retry");
     g_array_unref(pending);
     check(answer_panel(@"Keep Mine"), "same-second rewrite: the changed-outside panel asks");
     pending = on_db_action_pending(app.db, 0);
     check(!app.live_held(&app, note) && pending->len == 0 &&
-          strcmp(on_document_block(live, 1)->text->text->str, "! Renamed while asking") == 0,
+          strcmp(on_document_block(live, text_line(1))->text->text->str, "! Renamed while asking") == 0,
           "the answer runs the pull: the rename reaches the kept version");
     g_array_unref(pending);
     pump(1.8);

@@ -39,7 +39,8 @@ typedef struct OnDocLayout OnDocLayout;
 
 /* What the view's settings decide about the look.                          */
 typedef struct {
-    bool title_line;                 /* block 0 centred + heading-sized     */
+    bool title_line;                 /* the title line (the one after the
+                                        tag line) centred + heading-sized   */
     bool code_numbers;               /* line numbers in the code gutter     */
     bool code_copy;                  /* the "copy" word on a code run       */
     bool dark;                       /* dark appearance (look.h colours)    */

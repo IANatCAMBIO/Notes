@@ -42,8 +42,10 @@ gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_load() — note `id`'s stored content as an OnDocument
- * (document.h): the block model, no image decoded.  A note with no
- * content is an empty document.  THE preamble of every consumer: the
+ * (document.h): the block model, no image decoded, its tag line at
+ * block 0 (an empty one for a blob from before it,
+ * on_document_add_tag_line).  A note with no content is an empty
+ * document.  THE preamble of every consumer: the
  * editor, the exporter, the headless action rewrites, the grid
  * thumbnail.  Returns the document (on_document_free()
  * it), or NULL when the note does not exist, the read failed, or its blob
@@ -118,16 +120,17 @@ gboolean on_note_document_save_tags(OnDatabase *db, gint64 id,
                                     const OnDocument *doc);
 
 /* ---------------------------------------------------------------------------
- * on_note_new_from_text() — a new note holding plain text: one PARA block
- * per line (on_document_from_text), the first line its title, every '!'
- * line an action item, `tag` a #tag after it — created and written
+ * on_note_new_from_text() — a new note holding plain text: its tag line,
+ * then one PARA block per line (on_document_from_text), the first its
+ * title, every '!' line an action item, `tag` a #tag on the tag line —
+ * created and written
  * through THE save, in ONE write transaction (the caller's, when one is
  * open): a failed save leaves no note behind.  What New Note, the
  * development seeder and the tests build their notes with (it was the
  * command-line tool's `note new`).
  *   db   — open database.
- *   tag  — a tag (any name) put on a line of its own after the text as a
- *          #tag (on_document_tag_word, on_document_append_tag), or NULL.
+ *   tag  — a tag (any name) put on the tag line as a #tag
+ *          (on_document_tag_word, on_document_append_tag), or NULL.
  *   text — the content, UTF-8 (invalid bytes become U+FFFD).
  * Returns the new note's id, or 0 on failure.
  * ------------------------------------------------------------------------- */

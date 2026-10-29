@@ -423,7 +423,7 @@ test_push_subtasks(OnDatabase *db, OnDatabase *other)
 /* ── The pull ───────────────────────────────────────────────────────────── */
 
 /*
- * first_line — the text of a stored note's block 0 (its title line), and
+ * first_line — the text of a stored note's title line (after its tag line), and
  * whether it is a struck action line.
  *
  * Inputs:
@@ -438,10 +438,10 @@ first_line(OnDatabase *db, gint64 note, gboolean *done)
 {
     OnDocument *doc = on_note_document_load(db, note);
     if (doc == NULL) return g_strdup("");
-    gchar *text = g_strdup(on_document_block(doc, 0)->text->text->str);
+    gchar *text = g_strdup(on_document_block(doc, text_line(0))->text->text->str);
     if (done != NULL) {
         *done = FALSE;
-        on_document_block_action(doc, 0, NULL, NULL, done);
+        on_document_block_action(doc, text_line(0), NULL, NULL, done);
     }
     on_document_free(doc);
     return text;

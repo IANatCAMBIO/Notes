@@ -324,21 +324,18 @@ refresh_counts
 }
 
 /*
- * note_added: — a new, empty note was created: count it in All Notes and,
- * when it carries a tag, in that tag's row, redrawing those rows alone.
- * No other row changes (it is not pinned, trashed or an action item).
- *
- * Inputs:
- *   tag_id — the tag the note carries, or 0 for none
+ * note_added — a new, empty, untagged note was created: count it in All
+ * Notes, redrawing that row alone.  No other row changes (it has no tag,
+ * and is not pinned, trashed or an action item).
  */
 - (void)
-note_added:(gint64)tag_id
+note_added
 {
     NSMutableIndexSet *rows = [NSMutableIndexSet indexSet];
     for (NSUInteger i = 0; i < self.roots.count; i++) {
         SidebarItem *it = self.roots[i];
         if (it.count < 0) continue;                  /* counts hidden */
-        if (it.kind == on_sb_all || (tag_id != 0 && it.kind == on_sb_tag && it.ident == tag_id)) {
+        if (it.kind == on_sb_all) {
             it.count++;
             [rows addIndex:i];
         }
@@ -840,9 +837,9 @@ on_library_sidebar_refresh_counts(NotesLibrary *lib)
  * on_library_sidebar_note_added — see library_sidebar.h.
  */
 void
-on_library_sidebar_note_added(NotesLibrary *lib, gint64 tag_id)
+on_library_sidebar_note_added(NotesLibrary *lib)
 {
-    [sidebar note_added:tag_id];
+    [sidebar note_added];
 }
 
 /*

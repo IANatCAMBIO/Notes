@@ -102,8 +102,8 @@ gboolean on_action_sync_poll(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_note_append_tags() — give a note tags from outside its text (a drop on
- * a sidebar tag, New Note in a tag's view, the old Tags field): each name
- * becomes a #tag on the note's bottom line (on_document_tag_word,
+ * a sidebar tag, the old Tags field): each name
+ * becomes a #tag on the note's tag line (on_document_tag_word,
  * on_document_append_tag; one it has already is skipped), and the note is
  * saved with its text tags, in one write transaction (or the caller's).
  * An open editor's live document takes them as the pull's edits do (see
@@ -143,6 +143,20 @@ gboolean on_note_remove_tags(OnApp *app, gint64 note_id, const gchar *const *nam
                              gsize n);
 
 /* ---------------------------------------------------------------------------
+ * on_note_tags_to_tag_line() — every note stored before the tag line (a
+ * blob below version 8, on_db_notes_before_tag_line): its #tags move onto
+ * its new tag line (on_document_gather_tags) and it is saved, its
+ * updated_at kept, one transaction per note.  Nothing to do once done.
+ * on_action_sync_start runs it, before on_note_field_tags_to_text.
+ *
+ * Inputs:
+ *   app — the application context, its database open, no transaction open
+ *
+ * Output: how many notes were moved (failures are logged and skipped).
+ * ------------------------------------------------------------------------- */
+gint on_note_tags_to_tag_line(OnApp *app);
+
+/* ---------------------------------------------------------------------------
  * on_note_field_tags_to_text() — every note whose old Tags field (the move
  * from folders) has tags: they go into its text (on_note_append_tags) and
  * the field is emptied, its updated_at kept, one transaction per note.
@@ -157,8 +171,9 @@ gint on_note_field_tags_to_text(OnApp *app);
 
 /* ---------------------------------------------------------------------------
  * on_action_sync_start() — a database was just opened (launch, or File >
- * Open Database): write its old Tags fields into the notes' text
- * (on_note_field_tags_to_text), take its revisions as the baseline, hook its commits
+ * Open Database): move its notes' #tags to their tag lines
+ * (on_note_tags_to_tag_line), write its old Tags fields into the notes'
+ * text (on_note_field_tags_to_text), take its revisions as the baseline, hook its commits
  * (the look after each of Notes' own), run the pull once now, and arm
  * the poll timer (app->sync_timer), once.  on_app_shutdown
  * removes it.

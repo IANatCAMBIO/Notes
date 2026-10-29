@@ -452,6 +452,11 @@ gboolean on_db_note_set_text_tags(OnDatabase *db, gint64 note_id,
  * g_array_unref().                                                          */
 GArray *on_db_field_tag_notes(OnDatabase *db);
 
+/* The notes stored before the tag line — content a blob below BNBF
+ * version 8, or none — trashed ones too, by id.  Returns a GArray of
+ * gint64; free with g_array_unref().                                        */
+GArray *on_db_notes_before_tag_line(OnDatabase *db);
+
 /* Every note carrying tag `tag_id`, TRASHED ones too (they keep their tags),
  * by id, oldest first.  Returns a GArray of gint64; free with
  * g_array_unref().                                                          */

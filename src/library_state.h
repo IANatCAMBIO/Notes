@@ -131,15 +131,6 @@ on_library_view_t on_library_view(NotesLibrary *lib);
 BOOL on_library_in_trash_view(NotesLibrary *lib);
 
 /*
- * on_library_current_tag — the tag New Note gives (as a #tag): the
- * selected tag.  A note made in a view has none and is listed in All
- * Notes.
- *
- * Output: the tag's name, or nil when anything else is selected.
- */
-NSString *on_library_current_tag(NotesLibrary *lib);
-
-/*
  * on_library_notes_for_selection — the notes the selection lists, in
  * display order.  THE one mapping from a selection to a note set: the notes
  * pane, the media browser and the AI summary all use it, so they cannot

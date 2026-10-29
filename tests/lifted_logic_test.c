@@ -247,12 +247,12 @@ test_action_edit(OnApp *app)
     on_db_action_item_free(row);
     OnDocument *stored = on_note_document_load(app->db, note);
     gboolean done = FALSE;
-    on_document_block_action(stored, 1, NULL, NULL, &done);
+    on_document_block_action(stored, text_line(1), NULL, NULL, &done);
     check(done, "headless: the stored line is struck");
     on_document_free(stored);
 
     check(on_action_edit_set_due(app, uid, 0), "headless: due is cleared");
-    gchar *line = line_of(app->db, note, 1);
+    gchar *line = line_of(app->db, note, text_line(1));
     check(strcmp(line, "! Call the bank") == 0, "headless: the due suffix is gone");
     g_free(line);
 
@@ -265,14 +265,14 @@ test_action_edit(OnApp *app)
     app->live_document = fake_live_document;
     app->live_edited   = fake_live_edited;
     app->live_save     = fake_live_save;
-    gchar     *before = line_of(app->db, note, 1);
+    gchar     *before = line_of(app->db, note, text_line(1));
     gint64     due    = check_midnight(2027, 3, 3);
     check(on_action_edit_set_due(app, uid, due), "live: a due date is written");
     check(live_edits == 1, "live: the editor is told exactly once");
-    check(strcmp(on_document_block(live_doc, 1)->text->text->str,
+    check(strcmp(on_document_block(live_doc, text_line(1))->text->text->str,
                  "! Call the bank due 2027-03-03") == 0,
           "live: the open document shows the new due date");
-    gchar *after = line_of(app->db, note, 1);
+    gchar *after = line_of(app->db, note, text_line(1));
     check(strcmp(before, after) != 0 && strcmp(after, "! Call the bank due 2027-03-03") == 0 &&
           live_saves == 1, "live: the editor saved it at once, through its own save");
     row = on_db_action_get(app->db, uid);

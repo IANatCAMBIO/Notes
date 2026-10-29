@@ -68,7 +68,8 @@ typedef struct {
     double width;                    /* wrap width; <= 0 = never wrap        */
     bool   mono;                     /* code: the monospaced system font     */
     bool   bold;                     /* headings, header cells               */
-    bool   centered;                 /* the derived title line               */
+    double flush;                    /* 0 flush left, 0.5 centred (the title
+                                        line), 1 flush right (the tag line)  */
     bool   action;                   /* a '!' line: action colour, semibold  */
     bool   plain;                    /* code: run flags and tags not shown   */
     bool   muted;                    /* code line numbers: their grey        */

@@ -235,15 +235,27 @@ copy-as-text only).
 
 ### Derived properties — computed, never stored
 
-- **Title**: block 0, whatever it holds (`first_line_title`).
+- **Tag line** (2026-10-29, BNBF version 8): block 0 of a note is a TAGS
+  block under `ON_FMT_TAGLINE` — the note's #tags, drawn 9 pt and flush
+  right above the title, after a 🏷️ the layout draws (never text).  It is never split, joined, re-kinded or
+  removed, nothing goes in front of it, and a TAGS block anywhere else
+  fails `on_document_check`; a fragment (the clipboard) may lack one, and
+  a pasted one joins the line it is pasted into.  Typing on it gives tags only; a #tag set
+  on a body line moves onto it (`on_document_lift_tag`); a tag given from
+  outside goes on its end (`on_document_append_tag`).  A blob below
+  version 8 is given an empty one when a note is loaded
+  (`on_document_add_tag_line`), and every such note is moved once at
+  launch (`on_note_tags_to_tag_line`: `on_document_gather_tags`).
+- **Title**: the block after the tag line, whatever it holds
+  (`first_line_title`; `on_document_title_block`).
 - **Action item**: a text block of kind PARA/H*/list whose text starts
   with '!' — the format contract `on_note_extract_actions` defines,
   unchanged, because the CLI and the `action_items` mirror depend on it.
   `on_document_actions()` returns the ordered list in O(blocks) with no
   allocation beyond the list.
 - **#tags**: `ON_FMT_TAG` runs, as today.
-- **Empty note**: one PARA block with empty text.  The document is never
-  zero blocks.
+- **Empty note**: an empty tag line and one PARA block with empty text.
+  The document is never zero blocks, nor only its tag line.
 
 Nothing about these is re-derived on edit; the layout reads them when it
 lays the block out, and the block is the only thing invalidated.
@@ -363,7 +375,8 @@ typedef struct {
 
 - **Attributes come from the block**: weight/style/underline/strike from
   runs; `ON_FMT_TAG` → the tag colour; heading scale on H1/H2; monospace
-  on CODE; centred + scaled on block 0 when `first_line_title`; the
+  on CODE; centred + scaled on the title line when `first_line_title`;
+  9 pt and flush right on the tag line; the
   action tint on '!' blocks; `PangoAttrShape` per inline object; search
   hits as a background attr; the macOS emoji letter-spacing (D24 recipe,
   emoji only, `#ifdef __APPLE__`); the IM preedit's attrs on the caret

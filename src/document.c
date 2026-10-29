@@ -299,6 +299,7 @@ on_block_kind_para_flag(OnBlockKind kind)
     case ON_BLOCK_NUMBER: return ON_FMT_LIST_NUMBER;
     case ON_BLOCK_CHECK:  return ON_FMT_LIST_CHECK;
     case ON_BLOCK_CODE:   return ON_FMT_CODEBLOCK;
+    case ON_BLOCK_TAGS:   return ON_FMT_TAGLINE;
     default:              return 0;
     }
 }
@@ -438,6 +439,7 @@ OnDocument *
 on_document_new(void)
 {
     OnDocument *d = doc_alloc();
+    g_ptr_array_add(d->blocks, on_block_new_text(ON_BLOCK_TAGS));
     g_ptr_array_add(d->blocks, on_block_new_text(ON_BLOCK_PARA));
     return d;
 }
@@ -565,6 +567,10 @@ on_document_check(const OnDocument *d, GString *why)
         if (b->kind < 0 || b->kind >= ON_N_BLOCK_KINDS) {
             if (why != NULL)
                 g_string_printf(why, "%s: bad kind %d", where, b->kind);
+            ok = FALSE;
+        } else if (b->kind == ON_BLOCK_TAGS && i > 0) {
+            if (why != NULL)
+                g_string_printf(why, "%s: a tag line below block 0", where);
             ok = FALSE;
         } else if (on_block_kind_is_text(b->kind)) {
             ok = b->text != NULL && text_check(b->text, FALSE, where, why);
@@ -722,6 +728,11 @@ finish_line(Loader *L)
             b->kind = ON_BLOCK_H2;
         } else if (para == ON_FMT_CODEBLOCK) {
             b->kind = ON_BLOCK_CODE;
+        } else if (para == ON_FMT_TAGLINE) {
+            if (L->doc->blocks->len == 0)
+                b->kind = ON_BLOCK_TAGS;
+            else
+                L->rep->stray_tag_line++;    /* stays PARA                  */
         } else if (para == ON_FMT_LIST_BULLET) {
             b->kind = ON_BLOCK_BULLET;
             if (g_str_has_prefix(b->text->text->str, ON_BULLET_PREFIX))
@@ -1105,7 +1116,15 @@ on_document_load_report_is_clean(const OnDocLoadReport *rep)
            rep->split_check == 0 && rep->split_table == 0 &&
            rep->run_split == 0 && rep->cr_newlines == 0 &&
            rep->action_dup == 0 && rep->action_stray == 0 &&
-           rep->bad_utf8 == 0;
+           rep->stray_tag_line == 0 && rep->bad_utf8 == 0;
+}
+
+void
+on_document_add_tag_line(OnDocument *d)
+{
+    const OnBlock *b0 = on_document_block(d, 0);
+    if (b0 == NULL || b0->kind != ON_BLOCK_TAGS)
+        g_ptr_array_insert(d->blocks, 0, on_block_new_text(ON_BLOCK_TAGS));
 }
 
 /* ===========================================================================
@@ -1240,7 +1259,7 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
                                          cell->text->len);
             }
             break;
-        default:                     /* PARA, H1, H2, CODE                  */
+        default:                     /* PARA, H1, H2, CODE, TAGS            */
             sv_runs(&S, b->text, para);
             break;
         }
@@ -1252,7 +1271,7 @@ on_document_to_bnbf(const OnDocument *d, gsize *out_len)
              * EMPTY heading or code line has no run either: an empty
              * TEXT record under the paragraph flag records the kind.
              * (Bullet and number lines write their prefix, a task line
-             * its CHECK record, so only H1/H2/CODE need this.)          */
+             * its CHECK record, so only H1/H2/CODE/TAGS need this.)     */
             sv_flush(&S);
             on_bnbf_write_text(&S.w, para, "", 0);
         }
@@ -1908,12 +1927,20 @@ on_document_set_flags(OnDocument *d, OnPos pos, gsize n, guint32 mask,
     return do_op(d, op);
 }
 
+/* has_tag_line() — does the document start with its tag line?            */
+static gboolean
+has_tag_line(const OnDocument *d)
+{
+    return d->blocks->len > 0 &&
+           ((const OnBlock *)g_ptr_array_index(d->blocks, 0))->kind == ON_BLOCK_TAGS;
+}
+
 gboolean
 on_document_split_block(OnDocument *d, OnPos pos, guint32 eol_flags)
 {
     OnBlock *b = on_document_block(d, pos.block);
     if (b == NULL || pos.cell >= 0 || !on_block_kind_is_text(b->kind) ||
-        pos_ok(d, pos, 0) == NULL)
+        b->kind == ON_BLOCK_TAGS || pos_ok(d, pos, 0) == NULL)
         return FALSE;
     Op *op = op_new(OP_SPLIT);
     op->pos        = pos;
@@ -1928,7 +1955,7 @@ on_document_join_blocks(OnDocument *d, guint i)
     OnBlock *b = on_document_block(d, i);
     OnBlock *c = on_document_block(d, i + 1);
     if (b == NULL || c == NULL || !on_block_kind_is_text(b->kind) ||
-        !on_block_kind_is_text(c->kind))
+        !on_block_kind_is_text(c->kind) || b->kind == ON_BLOCK_TAGS)
         return FALSE;
     Op *op = op_new(OP_JOIN);
     op->pos.block = i;
@@ -1940,7 +1967,8 @@ on_document_set_kind(OnDocument *d, guint i, OnBlockKind kind)
 {
     OnBlock *b = on_document_block(d, i);
     if (b == NULL || !on_block_kind_is_text(b->kind) ||
-        !on_block_kind_is_text(kind))
+        !on_block_kind_is_text(kind) || b->kind == ON_BLOCK_TAGS ||
+        kind == ON_BLOCK_TAGS)
         return FALSE;
     if (b->kind == kind)
         return TRUE;
@@ -1981,7 +2009,9 @@ on_document_set_eol_flags(OnDocument *d, guint i, guint32 flags)
 gboolean
 on_document_insert_block(OnDocument *d, guint i, OnBlock *block)
 {
-    if (block == NULL || i > d->blocks->len)
+    if (block == NULL || i > d->blocks->len ||
+        (i == 0 && has_tag_line(d)) ||
+        (block->kind == ON_BLOCK_TAGS && i != 0))
         return FALSE;
     Op *op = op_new(OP_INSERT_BLOCK);
     op->pos.block = i;
@@ -1992,7 +2022,8 @@ on_document_insert_block(OnDocument *d, guint i, OnBlock *block)
 gboolean
 on_document_remove_block(OnDocument *d, guint i)
 {
-    if (i >= d->blocks->len || d->blocks->len == 1)
+    if (i >= d->blocks->len || d->blocks->len == 1 + (guint)has_tag_line(d) ||
+        ((const OnBlock *)g_ptr_array_index(d->blocks, i))->kind == ON_BLOCK_TAGS)
         return FALSE;
     Op *op = op_new(OP_REMOVE_BLOCK);
     op->pos.block = i;
@@ -2200,12 +2231,12 @@ on_document_copy_range(const OnDocument *d, OnPos a, OnPos b)
 }
 
 /* remove_block_keeping_one() — remove block i, replacing it with an empty
- * PARA when it is the document's last block.                                */
+ * PARA when it is the document's last block (after its tag line).          */
 static void
 remove_block_keeping_one(OnDocument *d, guint i)
 {
-    if (d->blocks->len == 1)
-        on_document_insert_block(d, 1, on_block_new_text(ON_BLOCK_PARA));
+    if (d->blocks->len == 1 + (guint)has_tag_line(d))
+        on_document_insert_block(d, d->blocks->len, on_block_new_text(ON_BLOCK_PARA));
     on_document_remove_block(d, i);
 }
 
@@ -2313,6 +2344,23 @@ on_document_insert_fragment(OnDocument *d, OnPos pos, const OnDocument *frag,
         on_document_insert_text(d, pos, plain, strlen(plain), 0);
         end.offset += strlen(plain);
         g_free(plain);
+        on_document_end_group(d);
+        if (out != NULL)
+            *out = end;
+        return TRUE;
+    }
+    if (host->kind == ON_BLOCK_TAGS) {
+        /* The tag line takes the fragment's words, each as a #tag.       */
+        gchar  *plain = on_document_plain_text(frag);
+        gchar **words = g_strsplit_set(plain, " \t\n", -1);
+        for (gchar **w = words; *w != NULL; w++) {
+            gchar *word = on_document_tag_word(*w);
+            on_document_append_tag(d, word);
+            g_free(word);
+        }
+        g_strfreev(words);
+        g_free(plain);
+        end.offset = t->text->len;
         on_document_end_group(d);
         if (out != NULL)
             *out = end;
@@ -2710,11 +2758,17 @@ on_document_image_nth(const OnDocument *d, gint ord, guint32 *display_width)
     return NULL;
 }
 
+guint
+on_document_title_block(const OnDocument *d)
+{
+    return has_tag_line(d) ? 1 : 0;
+}
+
 gchar *
 on_document_title(const OnDocument *d, const gchar *fallback, glong max_chars)
 {
     gchar *title = NULL;             /* the rendered first line             */
-    for (guint i = 0; i < d->blocks->len && title == NULL; i++) {
+    for (guint i = on_document_title_block(d); i < d->blocks->len && title == NULL; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         if (b->kind == ON_BLOCK_IMAGE || b->kind == ON_BLOCK_TABLE) {
             title = g_strdup("");    /* a line, but no text on it           */
@@ -2869,34 +2923,10 @@ on_document_tag_word(const gchar *name)
     return g_string_free(word, FALSE);
 }
 
-/* ---------------------------------------------------------------------------
- * tags_only() — is a text a line of #tags: at least one #tag run, and
- * nothing else but whitespace?  An empty or blank text is not (it is a
- * line left for the body).
- * ------------------------------------------------------------------------- */
-static gboolean
-tags_only(const OnText *t)
-{
-    gsize    at  = 0;                /* start of run k                      */
-    gboolean tag = FALSE;            /* a #tag run seen                     */
-    for (guint k = 0; k < t->runs->len; k++) {
-        const OnRun *r = &g_array_index(t->runs, OnRun, k);
-        if ((r->flags & ON_FMT_TAG) != 0) {
-            tag = TRUE;
-        } else {
-            for (const gchar *c = t->text->str + at; c < t->text->str + at + r->len;
-                 c = g_utf8_next_char(c))
-                if (!g_unichar_isspace(g_utf8_get_char(c)))
-                    return FALSE;
-        }
-        at += r->len;
-    }
-    return tag;
-}
-
 gboolean
 on_document_append_tag(OnDocument *d, const gchar *word)
 {
+    g_return_val_if_fail(has_tag_line(d), FALSE);
     if (word == NULL || *word == '\0')
         return FALSE;
     gchar   *folded = g_utf8_casefold(word, -1);
@@ -2913,15 +2943,10 @@ on_document_append_tag(OnDocument *d, const gchar *word)
         return FALSE;
 
     on_document_begin_group(d);
-    guint          last = d->blocks->len - 1;
-    const OnBlock *b    = g_ptr_array_index(d->blocks, last);
-    if (last == 0 || b->kind != ON_BLOCK_PARA || !tags_only(b->text)) {
-        on_document_insert_block(d, ++last, on_block_new_text(ON_BLOCK_PARA));
-        b = g_ptr_array_index(d->blocks, last);
-    }
-    OnPos pos = { last, -1, b->text->text->len };
+    const OnText *line = ((const OnBlock *)g_ptr_array_index(d->blocks, 0))->text;
+    OnPos pos = { 0, -1, line->text->len };
     if (pos.offset > 0 && !g_unichar_isspace(g_utf8_get_char(
-            g_utf8_prev_char(b->text->text->str + pos.offset)))) {
+            g_utf8_prev_char(line->text->str + pos.offset)))) {
         on_document_insert_text(d, pos, " ", 1, 0);
         pos.offset++;
     }
@@ -2942,6 +2967,54 @@ text_is_blank(const OnText *t)
         if (!g_unichar_isspace(g_utf8_get_char(c)))
             return FALSE;
     return TRUE;
+}
+
+/*
+ * delete_tag_span — take a #tag out of block i's text with the gap that
+ * set it off: the whitespace before it, or at a line's start the
+ * whitespace after it.
+ *
+ * Inputs:
+ *   d     — the document
+ *   i     — a text block
+ *   span  — the tag's span in its text
+ *   caret — a position in `d`, moved with the deletion (may be NULL)
+ *
+ * Output: TRUE when the text was deleted.
+ */
+static gboolean
+delete_tag_span(OnDocument *d, guint i, tag_span_t span, OnPos *caret)
+{
+    const gchar *str  = ((const OnBlock *)g_ptr_array_index(d->blocks, i))->text->text->str;
+    gsize        from = span.start;
+    gsize        to   = span.end;
+    while (from > 0 && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(str + from))))
+        from = (gsize)(g_utf8_prev_char(str + from) - str);
+    while (from == 0 && str[to] != '\0' && g_unichar_isspace(g_utf8_get_char(str + to)))
+        to = (gsize)(g_utf8_next_char(str + to) - str);
+    if (!on_document_delete_text(d, (OnPos){ i, -1, from }, to - from))
+        return FALSE;
+    if (caret != NULL && caret->block == i && caret->cell < 0 && caret->offset > from)
+        caret->offset = caret->offset >= to ? caret->offset - (to - from) : from;
+    return TRUE;
+}
+
+/*
+ * remove_blank_body_line — remove block i when it is a body paragraph (not
+ * the tag line, not the title line) left with nothing but whitespace.
+ *
+ * Inputs:
+ *   d — the document
+ *   i — the block
+ *
+ * Output: TRUE when the block was removed.
+ */
+static gboolean
+remove_blank_body_line(OnDocument *d, guint i)
+{
+    const OnBlock *b = g_ptr_array_index(d->blocks, i);
+    return i > on_document_title_block(d) && b->kind == ON_BLOCK_PARA &&
+           text_is_blank(b->text) && on_document_remove_block(d, i);
 }
 
 gboolean
@@ -2967,30 +3040,104 @@ on_document_remove_tag(OnDocument *d, const gchar *word)
             gboolean match = f != NULL && strcmp(f, folded) == 0;
             g_free(f);
             g_free(bare);
-            if (!match)
-                continue;
-
-            /* The gap goes with it: the whitespace before the tag, or at a
-             * line's start the whitespace after it.                        */
-            const gchar *str  = b->text->text->str;
-            gsize        from = span.start;
-            gsize        to   = span.end;
-            while (from > 0 && g_unichar_isspace(g_utf8_get_char(g_utf8_prev_char(str + from))))
-                from = (gsize)(g_utf8_prev_char(str + from) - str);
-            while (from == 0 && str[to] != '\0' && g_unichar_isspace(g_utf8_get_char(str + to)))
-                to = (gsize)(g_utf8_next_char(str + to) - str);
-            if (on_document_delete_text(d, (OnPos){ i, -1, from }, to - from))
+            if (match && delete_tag_span(d, i, span, NULL))
                 hit = removed = TRUE;
         }
         g_array_unref(spans);
-        /* A body line that held nothing else goes; the title line stays.   */
-        if (hit && i > 0 && d->blocks->len > 1 && b->kind == ON_BLOCK_PARA &&
-            text_is_blank(b->text))
-            on_document_remove_block(d, i);
+        if (hit)
+            remove_blank_body_line(d, i);
     }
     on_document_end_group(d);
     g_free(folded);
     return removed;
+}
+
+/*
+ * lift_span — move one #tag of a body line to the tag line: its word
+ * (on_document_tag_word of its name) onto the line, its span out of the
+ * body (delete_tag_span).  A span with no word is left alone.
+ *
+ * Inputs:
+ *   d     — the document, with a tag line
+ *   i     — the body block (> 0)
+ *   span  — the tag's span in its text
+ *   caret — a position in `d`, moved with the edit (may be NULL)
+ *
+ * Output: TRUE when the tag was moved.
+ */
+static gboolean
+lift_span(OnDocument *d, guint i, tag_span_t span, OnPos *caret)
+{
+    const OnText *t    = ((const OnBlock *)g_ptr_array_index(d->blocks, i))->text;
+    gchar        *bare = tag_span_name(t, span);
+    gchar        *word = on_document_tag_word(bare);
+    g_free(bare);
+    if (word == NULL)
+        return FALSE;
+    on_document_begin_group(d);
+    gboolean moved = delete_tag_span(d, i, span, caret);
+    if (moved)
+        on_document_append_tag(d, word);
+    on_document_end_group(d);
+    g_free(word);
+    return moved;
+}
+
+gboolean
+on_document_lift_tag(OnDocument *d, OnPos at, OnPos *caret)
+{
+    g_return_val_if_fail(has_tag_line(d), FALSE);
+    const OnBlock *b = on_document_block(d, at.block);
+    if (b == NULL || at.block == 0 || at.cell >= 0 || b->text == NULL)
+        return FALSE;
+    GArray  *spans = tag_spans(b->text);
+    gboolean moved = FALSE;
+    for (guint k = 0; k < spans->len; k++) {
+        tag_span_t span = g_array_index(spans, tag_span_t, k);
+        if (at.offset >= span.start && at.offset < span.end) {
+            moved = lift_span(d, at.block, span, caret);
+            break;
+        }
+    }
+    g_array_unref(spans);
+    return moved;
+}
+
+gboolean
+on_document_gather_tags(OnDocument *d)
+{
+    g_return_val_if_fail(has_tag_line(d), FALSE);
+    gboolean moved = FALSE;
+    on_document_begin_group(d);
+    for (guint i = 1; i < d->blocks->len; i++) {
+        const OnBlock *b = g_ptr_array_index(d->blocks, i);
+        if (b->text == NULL)
+            continue;
+        /* The first tag of the line each time: lifting one shifts the
+         * spans after it.  A span with no word stays, so skip past it.    */
+        gboolean hit  = FALSE;       /* a tag left this block               */
+        gsize    from = 0;           /* where the spans still to look at are */
+        while (TRUE) {
+            GArray    *spans = tag_spans(b->text);
+            tag_span_t span  = { 0, 0 };
+            gboolean   found = FALSE;
+            for (guint k = 0; !found && k < spans->len; k++) {
+                span  = g_array_index(spans, tag_span_t, k);
+                found = span.start >= from;
+            }
+            g_array_unref(spans);
+            if (!found)
+                break;
+            if (lift_span(d, i, span, NULL))
+                hit = moved = TRUE;
+            else
+                from = span.end;
+        }
+        if (hit && remove_blank_body_line(d, i))
+            i--;                     /* the next line is block i now        */
+    }
+    on_document_end_group(d);
+    return moved;
 }
 
 GArray *

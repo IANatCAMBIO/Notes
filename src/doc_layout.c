@@ -257,10 +257,31 @@ file_label_layout(const OnDocLayout *L, const gchar *name)
     on_text_content_t ct = { .text = shown, .len = run.len, .runs = &run, .n_runs = 1 };
     on_text_style_t st = { .font_size = L->font_size, .scale = 1.0,
                            .width = on_look_file_tile_w - 2.0 * on_look_file_pad,
-                           .centered = true, .dark = L->style.dark };
+                           .flush = 0.5, .dark = L->style.dark };
     on_text_layout_t *label = on_text_layout_new(&ct, &st);
     g_free(shown);
     return label;
+}
+
+/* ── tag_mark_layout ────────────────────────────────────────────────────── */
+
+/*
+ * tag_mark_layout — the 🏷️ drawn before the tag line (on_look_tag_line_mark),
+ * at the tag line's size.  It is drawn, not text: the caret, a selection
+ * and a delete never reach it.
+ *
+ * Inputs:
+ *   L — the layout (appearance)
+ *
+ * Output: the layout (on_text_layout_free it).
+ */
+static on_text_layout_t *
+tag_mark_layout(const OnDocLayout *L)
+{
+    OnRun run = { strlen(on_look_tag_line_mark), 0 };
+    on_text_content_t ct = { .text = on_look_tag_line_mark, .len = run.len, .runs = &run, .n_runs = 1 };
+    on_text_style_t st = { .font_size = on_look_tag_line_size, .scale = 1.0, .dark = L->style.dark };
+    return on_text_layout_new(&ct, &st);
 }
 
 /* ── preedit helpers ────────────────────────────────────────────────────── */
@@ -434,18 +455,19 @@ text_style_for(const OnDocLayout *L, const OnBlock *blk, size_t block,
                int cell, double width, bool header_cell, bool no_wrap)
 {
     on_text_style_t st = { 0 };
-    st.font_size = L->font_size;
-    st.dark      = L->style.dark;
     bool is_h1   = blk->kind == ON_BLOCK_H1;
     bool is_h2   = blk->kind == ON_BLOCK_H2;
     bool is_code = blk->kind == ON_BLOCK_CODE;
-    bool title   = L->style.title_line && block == 0 &&
+    bool is_tags = blk->kind == ON_BLOCK_TAGS;
+    bool title   = L->style.title_line && block == on_document_title_block(L->doc) &&
                    cell == -1 && blk->kind == ON_BLOCK_PARA;
+    st.font_size = is_tags ? on_look_tag_line_size : L->font_size;
+    st.dark      = L->style.dark;
     st.scale    = (title || is_h1) ? on_look_h1_scale
                 : is_h2            ? on_look_h2_scale : 1.0;
     st.mono     = is_code;
     st.bold     = title || is_h1 || is_h2 || header_cell;
-    st.centered = title;
+    st.flush    = title ? 0.5 : is_tags ? 1.0 : 0.0;
     st.action   = (cell == -1) && on_block_is_action((OnBlock *)blk);
     st.plain    = is_code;
     st.width    = no_wrap ? 0.0 : width;
@@ -552,10 +574,18 @@ layout_block(OnDocLayout *L, size_t i)
 
     /* Text block. */
     double indent = 0.0;
-    if (on_block_kind_is_list(blk->kind))
+    if (on_block_kind_is_list(blk->kind)) {
         indent = LIST_INDENT;
-    else if (blk->kind == ON_BLOCK_CODE)
+    } else if (blk->kind == ON_BLOCK_CODE) {
         indent = L->style.code_numbers ? CODE_INSET_NUM : CODE_INSET;
+    } else if (blk->kind == ON_BLOCK_TAGS) {
+        /* Room for the mark before a full line of tags.                    */
+        on_text_layout_t *mark = tag_mark_layout(L);
+        double mw, mh;
+        on_text_layout_size(mark, &mw, &mh);
+        on_text_layout_free(mark);
+        indent = mw + on_look_tag_line_mark_gap;
+    }
     b->x = LEFT_MARGIN + indent;
     double tw = cw - indent - (blk->kind == ON_BLOCK_CODE ? CODE_INSET : 0.0);
     b->w = tw < 8.0 ? 8.0 : tw;
@@ -1712,6 +1742,17 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_text_layout_size(nl, &nw, &nh);
             on_text_layout_draw(nl, ctx, b->x - 8.0 - nw, ty);
             on_text_layout_free(nl);
+        } else if (blk->kind == ON_BLOCK_TAGS) {
+            /* The mark, just before the first character (or the caret of
+             * an empty line, at its right end).                            */
+            on_rect_t first;
+            on_text_layout_cursor_rect(b->layout, 0, &first);
+            on_text_layout_t *mark = tag_mark_layout(L);
+            double mw, mh;
+            on_text_layout_size(mark, &mw, &mh);
+            on_text_layout_draw(mark, ctx, b->x + first.x - on_look_tag_line_mark_gap - mw,
+                                ty + first.y + (first.h - mh) / 2.0);
+            on_text_layout_free(mark);
         } else if (blk->kind == ON_BLOCK_CHECK) {
             /* Checkbox: centred on the first line. */
             on_rect_t box;

@@ -47,6 +47,9 @@ static const shared_color_t on_look_selection_dim = { { 0.60, 0.60, 0.60, 0.30 }
 static const shared_color_t on_look_checkbox     = { { 0.200, 0.470, 0.860, 1 }, { 0.208, 0.518, 0.894, 1 } };  /* ticked task box   */
 
 static const double on_look_font_size        = 11.0;   /* body text                              */
+static const double on_look_tag_line_size    = 9.0;    /* the tag line above the title, flush right */
+static const char   on_look_tag_line_mark[]  = "\xf0\x9f\x8f\xb7\xef\xb8\x8f";  /* 🏷️ before the tag line: drawn, never text */
+static const double on_look_tag_line_mark_gap = 3.0;   /* between the mark and the first tag     */
 static const double on_look_h1_scale         = 1.6;    /* heading 1, and the derived title line  */
 static const double on_look_h2_scale         = 1.3;
 static const double on_look_margin_left      = 16.0;

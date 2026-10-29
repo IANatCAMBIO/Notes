@@ -686,8 +686,44 @@ delete_selection(NotesNoteView *v)
 /* ── Editing primitives ──────────────────────────────────────────────────── */
 
 /*
+ * tag_line_text — what typing `n` bytes at the caret puts on the tag line:
+ * spaces, '#' at a word's start and tag characters (on_document_tag_char),
+ * a word begun with a tag character getting its '#'; anything else is
+ * dropped.
+ *
+ * Inputs:
+ *   v    — the view, its caret on the tag line
+ *   text — UTF-8 bytes
+ *   n    — byte count
+ *
+ * Output: a new GString; g_string_free it.
+ */
+static GString *
+tag_line_text(NotesNoteView *v, const char *text, size_t n)
+{
+    OnText  *t    = caret_text(v);
+    gunichar prev = v.caret.offset > 0                  /* the char before  */
+        ? g_utf8_get_char(g_utf8_prev_char(t->text->str + v.caret.offset)) : ' ';
+    GString *out  = g_string_new(NULL);
+    for (const gchar *p = text; p < text + n; p = g_utf8_next_char(p)) {
+        gunichar c = g_utf8_get_char(p);
+        if (c == ' ' || (c == '#' && prev == ' ')) {
+            g_string_append_c(out, (gchar)c);
+        } else if (on_document_tag_char(c)) {
+            if (prev == ' ') g_string_append_c(out, '#');
+            g_string_append_unichar(out, c);
+        } else {
+            continue;
+        }
+        prev = c;
+    }
+    return out;
+}
+
+/*
  * insert_typed — typed text at the caret: replaces a selection, carries
- * the armed inline flags, extends the typing group.
+ * the armed inline flags, extends the typing group.  On the tag line only
+ * tags can be typed (tag_line_text).
  *
  * Inputs:
  *   v    — the view
@@ -703,6 +739,11 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
     typing_begin(v);
     delete_selection(v);
     caret_ensure_text(v);
+    GString *line = caret_block(v)->kind == ON_BLOCK_TAGS ? tag_line_text(v, text, n) : NULL;
+    if (line != NULL) {
+        text = line->str;
+        n    = line->len;
+    }
     OnPos p = v.caret;
     guint32 flags = v.inline_flags;
     /* Extend a #tag span if typing inside one. */
@@ -711,7 +752,7 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
         (on_text_flags_at(t, p.offset - 1) & ON_FMT_TAG) &&
         (p.offset == t->text->len || (on_text_flags_at(t, p.offset) & ON_FMT_TAG)))
         flags |= ON_FMT_TAG;
-    if (on_document_insert_text(v.doc, p, text, n, flags)) {
+    if (n > 0 && on_document_insert_text(v.doc, p, text, n, flags)) {
         OnPos c = v.caret;
         c.offset += n;
         v.caret = c;
@@ -720,6 +761,7 @@ insert_typed(NotesNoteView *v, const char *text, size_t n)
         if (memchr(text, '.', n) || memchr(text, '?', n))
             if (++v.sentences >= max_sentences) typing_end(v);
     }
+    if (line != NULL) g_string_free(line, TRUE);
     v.anchor = v.caret;
     after_edit(v);
 }
@@ -981,7 +1023,8 @@ tab_pressed(NotesNoteView *v, BOOL backward)
 /* ── Insert block ────────────────────────────────────────────────────────── */
 
 /*
- * insert_block_at_caret — insert an object block at the caret position.
+ * insert_block_at_caret — insert an object block at the caret position;
+ * on the tag line, which holds only tags, nothing is inserted.
  *
  * Inputs:
  *   v     — the view
@@ -992,6 +1035,10 @@ tab_pressed(NotesNoteView *v, BOOL backward)
 static void
 insert_block_at_caret(NotesNoteView *v, OnBlock *block)
 {
+    if (caret_block(v)->kind == ON_BLOCK_TAGS) {
+        on_block_free(block);
+        return;
+    }
     typing_end(v);
     on_document_begin_group(v.doc);
     delete_selection(v);
@@ -1456,6 +1503,7 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
  * Return, a click elsewhere, a caret move or the focus leaving END the
  * capture and style the "#word" as a tag; Escape ends it without.  While
  * the list shows, Up/Down move in it and Return/Tab choose (GTK: the same).
+ * A tag set on a body line moves to the tag line (tag_lift).
  */
 
 /*
@@ -1483,8 +1531,28 @@ tag_span(NotesNoteView *v, OnPos *start, OnPos *end)
 }
 
 /*
+ * tag_lift — a #tag was just set at `at`: on a body line it moves to the
+ * tag line (on_document_lift_tag), the caret with it; on the tag line it
+ * stays.
+ *
+ * Inputs:
+ *   v  — the view
+ *   at — a position inside the tag
+ */
+static void
+tag_lift(NotesNoteView *v, OnPos at)
+{
+    if (at.block == 0 || on_document_title_block(v.doc) == 0) return;
+    BOOL  collapsed = pos_eq(v.caret, v.anchor);
+    OnPos caret     = v.caret;
+    if (!on_document_lift_tag(v.doc, at, &caret)) return;
+    v.caret  = caret;
+    v.anchor = collapsed ? caret : clamp_pos(v.doc, v.anchor);
+}
+
+/*
  * tag_capture_end — end a capture: with `apply`, a "#word" of at least one
- * letter is styled as a tag.
+ * letter is styled as a tag, and on a body line moved to the tag line.
  *
  * Inputs:
  *   v     — the view
@@ -1495,8 +1563,10 @@ tag_capture_end(NotesNoteView *v, BOOL apply)
 {
     if (!v.tag_capturing) return;
     OnPos s, e;
-    if (apply && tag_span(v, &s, &e) && e.offset - s.offset >= 2)
+    if (apply && tag_span(v, &s, &e) && e.offset - s.offset >= 2) {
         on_document_set_flags(v.doc, s, e.offset - s.offset, ON_FMT_TAG, TRUE);
+        tag_lift(v, s);
+    }
     v.tag_capturing = NO;
     on_db_tag_list_free(v.tag_choices);
     v.tag_choices = NULL;
@@ -1564,7 +1634,8 @@ tag_popup_update(NotesNoteView *v)
 
 /*
  * tag_choose — a suggestion was chosen: the partial word becomes "#name",
- * styled as a tag, followed by a space; the capture ends.
+ * styled as a tag, followed by a space — on a body line moved to the tag
+ * line (tag_lift); the capture ends.
  *
  * Inputs:
  *   v    — the view (nil does nothing)
@@ -1588,8 +1659,9 @@ tag_choose(NotesNoteView *v, NSString *name)
     after.offset += strlen(u8);
     on_document_insert_text(v.doc, after, " ", 1, 0);
     after.offset++;
-    on_document_end_group(v.doc);
     v.caret = v.anchor = after;
+    tag_lift(v, s);
+    on_document_end_group(v.doc);
     v.tag_capturing = NO;
     on_db_tag_list_free(v.tag_choices);
     v.tag_choices = NULL;
@@ -1881,9 +1953,9 @@ copy_code_run(NotesNoteView *v, guint block)
 static BOOL
 press_at(NotesNoteView *v, double x, double y, NSInteger clicks, unsigned mods)
 {
+    tag_capture_end(v, YES);         /* first: it may move the line's text  */
     OnDocHitResult hit;
     on_doc_layout_hit(v.layout, x, y, &hit);
-    tag_capture_end(v, YES);
     im_reset(v);
     typing_end(v);
     v.dragging = NO;
@@ -3046,14 +3118,19 @@ load_document(NotesNoteView *view, OnDocument *doc, BOOL keep_place)
     on_document_set_observer(doc, &OBSERVER, (__bridge void *)view);
     apply_style(view);
 
-    /* The caret starts on the first line of TEXT: under the first-line-
-     * title setting block 0 is the title, so an existing note opens ready
-     * to be read or added to, not renamed (GTK: load_document).  An empty
-     * title (a new note) is where the caret starts instead. */
-    OnPos          start = { 0, -1, 0 };
-    const OnBlock *title = on_document_block(doc, 0);
-    BOOL           named = title->text == NULL || title->text->text->len > 0;
-    if (view.app->first_line_title && named && on_document_n_blocks(doc) > 1) start.block = 1;
+    /* The caret starts on the title line, after the tag line, or under
+     * the first-line-title setting on the line after the title, so an
+     * existing note opens ready to be read or added to, not renamed (GTK:
+     * load_document).  A note with an empty title (a new note) starts on
+     * its tag line instead, at its end, ready for a tag. */
+    guint          title_at = on_document_title_block(doc);
+    OnPos          start    = { title_at, -1, 0 };
+    const OnBlock *title    = on_document_block(doc, title_at);
+    BOOL           named    = title == NULL || title->text == NULL || title->text->text->len > 0;
+    if (!named && title_at > 0)
+        start = (OnPos){ 0, -1, on_document_block(doc, 0)->text->text->len };
+    else if (view.app->first_line_title && named && on_document_n_blocks(doc) > title_at + 1)
+        start.block = title_at + 1;
     view.caret  = clamp_pos(doc, keep_place ? caret : start);
     view.anchor = clamp_pos(doc, keep_place ? anchor : start);
     on_document_take_tags_modified(doc);

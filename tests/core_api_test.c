@@ -228,24 +228,20 @@ stored_line(OnDatabase *db, gint64 note, guint block, gboolean *done)
 }
 
 /*
- * add_tag_line — append a line of #tag tokens, space-separated, each
- * carrying ON_FMT_TAG (what the editor's tag capture writes).
+ * add_tags — put #tag tokens on a note's tag line, space-separated, each
+ * carrying ON_FMT_TAG (on_document_append_tag: where the editor's tag
+ * capture leaves them).
  *
  * Inputs:
- *   doc   — the document
- *   names — NULL-terminated tag names, without '#'
+ *   doc   — the document, loaded (it has its tag line)
+ *   names — NULL-terminated tag words, without '#'
  */
 static void
-add_tag_line(OnDocument *doc, const char *const *names)
+add_tags(OnDocument *doc, const char *const *names)
 {
-    OnBlock *b = on_block_new_text(ON_BLOCK_PARA);
     for (const char *const *n = names; *n != NULL; n++) {
-        if (n != names) on_text_append(b->text, " ", 1, 0);
-        gchar *token = g_strdup_printf("#%s", *n);
-        on_text_append(b->text, token, strlen(token), ON_FMT_TAG);
-        g_free(token);
+        on_document_append_tag(doc, *n);
     }
-    on_document_insert_block(doc, on_document_n_blocks(doc), b);
 }
 
 /*
@@ -328,10 +324,10 @@ test_notes(OnDatabase *db)
     check(note != 0, "notes: a note is made from plain text");
     check(note_title_is(db, note, "Stride rollout"), "notes: its first line is its title");
     gchar *body = on_note_text_cached(db, note);
-    gchar *want = g_strconcat(text, "\n#NotesTest", NULL);
+    gchar *want = g_strconcat("#NotesTest\n", text, NULL);
     check(body != NULL && strcmp(body, want) == 0,
           "notes: its plain text reads back byte for byte (tabs, quotes, backslash), "
-          "the tag asked for on a line of its own");
+          "the tag asked for on its tag line");
     g_free(want);
     g_free(body);
     gchar *tags = note_tags_are(db, note);
@@ -345,7 +341,8 @@ test_notes(OnDatabase *db)
     /* Replacing the content (`note set`): the old tags and action items
      * go with the old text.                                               */
     OnDocument *doc = on_document_from_text("Old title\n! Old item");
-    add_tag_line(doc, (const char *[]){ "oldtag", NULL });
+    on_document_add_tag_line(doc);
+    add_tags(doc, (const char *[]){ "oldtag", NULL });
     check(save_with_tags(db, note, doc), "set: the old content with a tag and an item is saved");
     on_document_free(doc);
     check(tag_count(db, "oldtag") == 1 && nth_uid(db, note, 0) != 0,
@@ -553,7 +550,7 @@ test_action_edit(OnApp *app)
     check(on_action_edit_set_done(app, uid, TRUE), "done: written");
     gint64 completed = 0;
     gboolean struck  = FALSE;
-    gchar *line = stored_line(db, note, 1, &struck);
+    gchar *line = stored_line(db, note, text_line(1), &struck);
     check(task_status(db, uid, &completed) == SHARED_DB_TASK_STATUS_DONE && completed != 0,
           "done: the task's status is DONE, completed_at stamped");
     check(struck && strcmp(line, "! Call the bank due 2026-11-02") == 0,
@@ -563,25 +560,25 @@ test_action_edit(OnApp *app)
     check(open_after == open_before - 1, "done: one fewer open item");
 
     check(on_action_edit_set_done(app, uid, FALSE), "undone: written");
-    line = stored_line(db, note, 1, &struck);
+    line = stored_line(db, note, text_line(1), &struck);
     check(!struck && task_status(db, uid, NULL) == SHARED_DB_TASK_STATUS_IN_PROGRESS,
           "undone: the line is un-struck, the task back IN PROGRESS");
     g_free(line);
 
     /* Due: set (ISO is what is written), then clear.                       */
     check(on_action_edit_set_due(app, uid, check_midnight(2027, 1, 15)), "due: set");
-    line = stored_line(db, note, 1, NULL);
+    line = stored_line(db, note, text_line(1), NULL);
     check(strcmp(line, "! Call the bank due 2027-01-15") == 0, "due: the suffix is rewritten ISO");
     g_free(line);
     check(on_action_edit_set_due(app, uid, 0), "due: cleared");
-    line = stored_line(db, note, 1, NULL);
+    line = stored_line(db, note, text_line(1), NULL);
     check(strcmp(line, "! Call the bank") == 0, "due: the suffix is gone");
     g_free(line);
 
     /* A done item's due date stays done.                                   */
     on_action_edit_set_done(app, uid, TRUE);
     on_action_edit_set_due(app, uid, check_midnight(2027, 2, 2));
-    line = stored_line(db, note, 1, &struck);
+    line = stored_line(db, note, text_line(1), &struck);
     check(struck && strcmp(line, "! Call the bank due 2027-02-02") == 0,
           "due: a date added to a done item is struck with it");
     g_free(line);
@@ -591,7 +588,7 @@ test_action_edit(OnApp *app)
     check(on_db_action_set(db, uid, ON_ACTION_FIELD_TEXT, "Renamed by uid", row->done, row->due), "text: the row is renamed");
     on_db_action_item_free(row);
     check(on_action_sync_note(app, note), "text: the pull rewrites the line and saves it");
-    line = stored_line(db, note, 1, &struck);
+    line = stored_line(db, note, text_line(1), &struck);
     check(strcmp(line, "! Renamed by uid due 2027-02-02") == 0 && struck,
           "text: the line keeps its '!', its due date and its done state");
     g_free(line);
@@ -646,8 +643,8 @@ word_is(const char *name, const char *want)
 
 /*
  * test_given_tags — tags given from outside the text go on the note's
- * bottom line as #words (on_note_append_tags): CamelCase for a name of
- * several words, once per tag in any case, on a line of their own; the
+ * tag line as #words (on_note_append_tags): CamelCase for a name of
+ * several words, once per tag in any case; the
  * old Tags field is written into the text once, its updated_at kept;
  * emoji and Notes' favorite flag; the two scopes; the per-note names.
  *
@@ -669,17 +666,17 @@ test_given_tags(OnApp *app)
     const char *client[] = { "Big Client" };
     const char *more[]   = { "bigclient", "Salt" };
     check(on_note_append_tags(app, a, client, 1) &&
-          body_is(db, a, "Given one\nbody\n#BigClient"),
-          "append: a line of its own under the text");
+          body_is(db, a, "#BigClient\nGiven one\nbody"),
+          "append: on the tag line, above the title");
     check(on_note_append_tags(app, a, more, 2) &&
-          body_is(db, a, "Given one\nbody\n#BigClient #Salt"),
-          "append: a tag it has is skipped, the next joins the tags' line");
-    check(on_note_append_tags(app, b, client, 1) && body_is(db, b, "Given two\n#BigClient") &&
+          body_is(db, a, "#BigClient #Salt\nGiven one\nbody"),
+          "append: a tag it has is skipped, the next joins the tag line");
+    check(on_note_append_tags(app, b, client, 1) && body_is(db, b, "#BigClient\nGiven two") &&
           note_title_is(db, b, "Given two"),
-          "append: never on the title line");
+          "append: the title stays the title");
     gint64 fresh = on_note_new_from_text(db, "Big Client", "\n");
-    check(body_is(db, fresh, "\n\n#BigClient"),
-          "append: an empty line is left for the body (a new note: title, body, tag)");
+    check(body_is(db, fresh, "#BigClient\n\n"),
+          "append: a new note is its tag line, an empty title and an empty body line");
     on_db_notes_delete(db, &fresh, 1);       /* the counts below are a's and b's */
     gchar *tags = note_tags_are(db, a);
     check(strcmp(tags, "BigClient:-T,Salt:-T") == 0, "append: text tags");
@@ -689,7 +686,7 @@ test_given_tags(OnApp *app)
      * the text has too.                                                    */
     gint64      c   = on_note_new_from_text(db, NULL, "Legacy\nbody");
     OnDocument *doc = on_note_document_load(db, c);
-    add_tag_line(doc, (const char *[]){ "salt", NULL });
+    add_tags(doc, (const char *[]){ "salt", NULL });
     check(save_with_tags(db, c, doc), "field: a note with #salt in its text");
     on_document_free(doc);
     gchar *sql = g_strdup_printf(
@@ -702,8 +699,8 @@ test_given_tags(OnApp *app)
           on_db_note_set_updated_at(db, c, 1790000000), "field: an old Tags field is set up");
     g_free(sql);
     check(on_note_field_tags_to_text(app) == 1 &&
-          body_is(db, c, "Legacy\nbody\n#salt #OldProjects"),
-          "field: its tags go on the bottom line, one the text has is not repeated");
+          body_is(db, c, "#salt #OldProjects\nLegacy\nbody"),
+          "field: its tags go on the tag line, one the text has is not repeated");
     tags = note_tags_are(db, c);
     check(strcmp(tags, "OldProjects:-T,Salt:-T") == 0 && on_db_tag_find(db, "Old Projects") == NULL,
           "field: emptied; the old spelling nothing carries is gone");
@@ -747,6 +744,52 @@ test_given_tags(OnApp *app)
 /* ── Tags ───────────────────────────────────────────────────────────────── */
 
 /*
+ * test_tag_line_move — a note stored before the tag line (a version 7
+ * blob, a tag inside a sentence and a line of tags at the bottom) gets a
+ * tag line at launch (on_note_tags_to_tag_line): every #tag moves onto
+ * it, the line left empty goes, the sentence closes up, its modified
+ * time is kept; the second run has nothing to do.
+ *
+ * Inputs:
+ *   app — the context, database open
+ */
+static void
+test_tag_line_move(OnApp *app)
+{
+    OnDatabase *db  = app->db;
+    gint64      id  = on_db_note_create(db);
+    OnDocument *doc = on_document_from_text("Old note\nmet #Bob today\n#Salt #Stride");
+    on_document_set_flags(doc, (OnPos){ 1, -1, 4 }, 4, ON_FMT_TAG, TRUE);
+    on_document_set_flags(doc, (OnPos){ 2, -1, 0 }, 5, ON_FMT_TAG, TRUE);
+    on_document_set_flags(doc, (OnPos){ 2, -1, 6 }, 7, ON_FMT_TAG, TRUE);
+    gsize   len;
+    guint8 *blob = on_document_to_bnbf(doc, &len);
+    blob[4] = 7;                     /* the version: from before the line   */
+    check(id != 0 && on_db_note_save(db, id, "Old note", blob, len, "old") &&
+          on_db_note_set_updated_at(db, id, 1790000000), "tag line: an old note is stored");
+    g_free(blob);
+    on_document_free(doc);
+    GArray  *old   = on_db_notes_before_tag_line(db);
+    gboolean found = FALSE;          /* the note is listed as old           */
+    for (guint i = 0; i < old->len; i++) found = found || g_array_index(old, gint64, i) == id;
+    g_array_unref(old);
+    check(found, "tag line: it is listed as stored before the tag line");
+
+    check(on_note_tags_to_tag_line(app) >= 1 &&
+          body_is(db, id, "#Bob #Salt #Stride\nOld note\nmet today"),
+          "tag line: its tags move onto it, the emptied line goes, the sentence closes up");
+    gchar *tags = note_tags_are(db, id);
+    check(strcmp(tags, "Bob:-T,Salt:-T,Stride:-T") == 0, "tag line: the note keeps its tags");
+    g_free(tags);
+    OnNoteMeta *meta = on_db_note_get(db, id);
+    check(meta != NULL && meta->updated_at == 1790000000 && strcmp(meta->title, "Old note") == 0,
+          "tag line: its modified time and title are kept");
+    on_db_note_meta_free(meta);
+    check(on_note_tags_to_tag_line(app) == 0, "tag line: nothing to do the second time");
+    on_db_notes_delete(db, &id, 1);
+}
+
+/*
  * test_tags — #tag runs in the text are the note's tags; links are made
  * and pruned by the save.
  *
@@ -759,7 +802,7 @@ test_tags(OnDatabase *db)
     gint64 one = on_note_new_from_text(db, NULL, "Tagged one\nbody");
     gint64 two = on_note_new_from_text(db, NULL, "Tagged two\nbody");
     OnDocument *doc = on_note_document_load(db, one);
-    add_tag_line(doc, (const char *[]){ "salt", "urgent", NULL });
+    add_tags(doc, (const char *[]){ "salt", "urgent", NULL });
     GList *names = on_document_collect_tags(doc);
     check(g_list_length(names) == 2 && strcmp(names->data, "salt") == 0 &&
           strcmp(names->next->data, "urgent") == 0, "tags: collected in document order, no '#'");
@@ -767,21 +810,22 @@ test_tags(OnDatabase *db)
     check(save_with_tags(db, one, doc), "tags: saved with the note");
     on_document_free(doc);
     gchar *body = on_note_text_cached(db, one);
-    check(strcmp(body, "Tagged one\nbody\n#salt #urgent") == 0, "tags: the tokens are in the text");
+    check(strcmp(body, "#salt #urgent\nTagged one\nbody") == 0,
+          "tags: the tokens are in the text, on its first line");
     g_free(body);
     GHashTable *texts = on_db_note_text_map(db, 0, NULL, 0);
-    check(strcmp(g_hash_table_lookup(texts, &one), "Tagged one\nbody\n#salt #urgent") == 0 &&
-          strcmp(g_hash_table_lookup(texts, &two), "Tagged two\nbody") == 0,
+    check(strcmp(g_hash_table_lookup(texts, &one), "#salt #urgent\nTagged one\nbody") == 0 &&
+          strcmp(g_hash_table_lookup(texts, &two), "\nTagged two\nbody") == 0,
           "text map: every note's full text");
     g_hash_table_destroy(texts);
-    texts = on_db_note_text_map(db, 6, &one, 1);
-    check(strcmp(g_hash_table_lookup(texts, &one), "Tagged") == 0 &&
+    texts = on_db_note_text_map(db, 5, &one, 1);
+    check(strcmp(g_hash_table_lookup(texts, &one), "#salt") == 0 &&
           g_hash_table_lookup(texts, &two) == NULL,
           "text map: a leading slice, scoped to the given notes");
     g_hash_table_destroy(texts);
 
     doc = on_note_document_load(db, two);
-    add_tag_line(doc, (const char *[]){ "salt", NULL });
+    add_tags(doc, (const char *[]){ "salt", NULL });
     save_with_tags(db, two, doc);
     on_document_free(doc);
     check(tag_count(db, "salt") == 2 && tag_count(db, "urgent") == 1, "tags: counted per tag");
@@ -799,21 +843,22 @@ test_tags(OnDatabase *db)
 
     /* Untag: the token leaves the text, the link and an orphan tag go.     */
     doc = on_note_document_load(db, one);
-    OnText *t   = on_document_block(doc, 2)->text;
+    OnText *t   = on_document_block(doc, 0)->text;
     const char *at = strstr(t->text->str, " #urgent");
-    on_document_delete_text(doc, (OnPos){ 2, -1, (gsize)(at - t->text->str) }, strlen(" #urgent"));
+    on_document_delete_text(doc, (OnPos){ 0, -1, (gsize)(at - t->text->str) }, strlen(" #urgent"));
     check(save_with_tags(db, one, doc), "untag: saved");
     on_document_free(doc);
     check(tag_count(db, "urgent") == -1 && tag_count(db, "salt") == 2,
           "untag: the tag no note carries is pruned, the other kept");
-    /* Remove a tag: any case, with its gap; a line left empty goes.        */
+    /* Remove a tag: any case, with its gap; a body line left empty goes,
+     * the tag line stays.                                                  */
     doc = on_note_document_load(db, two);
     check(!on_document_remove_tag(doc, "nosuchtag"), "remove tag: a tag the note lacks is skipped");
     check(on_document_remove_tag(doc, "SALT"), "remove tag: found in any case");
     check(save_with_tags(db, two, doc), "remove tag: saved");
     on_document_free(doc);
     gchar *cleared = on_note_text_cached(db, two);
-    check(strcmp(cleared, "Tagged two\nbody") == 0, "remove tag: its line goes with it");
+    check(strcmp(cleared, "\nTagged two\nbody") == 0, "remove tag: the tag line is left empty");
     g_free(cleared);
     check(tag_count(db, "salt") == 1, "remove tag: the other note keeps the tag");
     doc = on_note_document_load(db, one);
@@ -821,17 +866,18 @@ test_tags(OnDatabase *db)
     on_text_append(mid->text, "see ", 4, 0);
     on_text_append(mid->text, "#salt", 5, ON_FMT_TAG);
     on_text_append(mid->text, " here", 5, 0);
-    on_document_insert_block(doc, 1, mid);
+    on_document_insert_block(doc, text_line(1), mid);
     check(on_document_remove_tag(doc, "salt"), "remove tag: removed inside a line");
-    check(strcmp(on_document_block(doc, 1)->text->text->str, "see here") == 0,
+    check(strcmp(on_document_block(doc, text_line(1))->text->text->str, "see here") == 0,
           "remove tag: the gap goes with it");
-    check(on_document_n_blocks(doc) == 3, "remove tag: the line that held the tag too is gone");
+    check(on_document_n_blocks(doc) == 4 && on_document_block(doc, 0)->text->text->len == 0,
+          "remove tag: the tag line that held it too stays, empty");
     check(save_with_tags(db, one, doc), "remove tag: saved");
     on_document_free(doc);
     check(tag_count(db, "salt") == -1, "remove tag: the last carrier gone, the tag is pruned");
     /* A trashed note keeps its tag: it is found, and clearing it frees the tag. */
     doc = on_note_document_load(db, two);
-    add_tag_line(doc, (const char *[]){ "salt", NULL });
+    add_tags(doc, (const char *[]){ "salt", NULL });
     check(save_with_tags(db, two, doc), "trashed tag: saved");
     on_document_free(doc);
     check(on_db_notes_trash(db, &two, 1), "trashed tag: trashed");
@@ -983,7 +1029,7 @@ test_stats(OnDatabase *db)
 
     gint64 note   = on_note_new_from_text(db, "Stats", "Stats note\n! open one\n! done one");
     OnDocument *doc = on_note_document_load(db, note);
-    add_tag_line(doc, (const char *[]){ "statstag", NULL });
+    add_tags(doc, (const char *[]){ "statstag", NULL });
     save_with_tags(db, note, doc);
     on_document_free(doc);
     on_db_note_set_pinned(db, note, TRUE);
@@ -1349,6 +1395,7 @@ main(void)
     test_action_list(app.db);
     test_action_edit(&app);
     test_given_tags(&app);
+    test_tag_line_move(&app);
     test_tags(app.db);
     test_trash(app.db);
     test_search(app.db);

@@ -56,10 +56,11 @@ typedef enum {
 } on_mod_t;
 
 /* ---------------------------------------------------------------------------
- * on_note_edit_is_blank() — does a note hold nothing at all: only
- * whitespace, and no image, table or task box?  A note closed in this
- * state is deleted rather than saved, so a New Note window
- * closed without typing leaves nothing behind.
+ * on_note_edit_is_blank() — does a note hold nothing at all past its tag
+ * line: only whitespace, and no image, table or task box?  Its tags do
+ * not count.  A note closed in this state is deleted rather than saved,
+ * so a New Note window closed without typing (or with only a tag typed)
+ * leaves nothing behind.
  *
  * Inputs:
  *   doc — the note

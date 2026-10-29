@@ -81,15 +81,6 @@ on_library_in_trash_view(NotesLibrary *lib)
 }
 
 /*
- * on_library_current_tag — see library_state.h.
- */
-NSString *
-on_library_current_tag(NotesLibrary *lib)
-{
-    return lib.sel_kind == on_sb_tag ? lib.sel_name : nil;
-}
-
-/*
  * on_library_notes_for_selection — see library_state.h.
  */
 GList *

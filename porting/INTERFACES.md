@@ -15,10 +15,13 @@ that code is the behavioural specification.
 **Tags replace folders (2026-10-15, `../shared_data/PLAN_TAGS.md`).**
 Where the GTK specification has folders, this build has tags shared with
 Tasks: no folder API in `db.h` (notes live in one store; a note's tags
-are the #tags of its text; tags given from outside it — a drop, New Note
-in a tag's view, the move's Tags field — are appended as #words,
-`on_note_append_tags` in `action_sync.h`; a new note is
-`on_note_new_from_text(db, tag, "\n")`: title line, empty body line, tag), no folder commands, no AI modes,
+are the #tags of its text, kept on its TAG LINE — block 0, an
+`ON_BLOCK_TAGS` block, the title after it (`BLOCK_MODEL.md`, BNBF
+version 8); tags given from outside it — a drop, the move's Tags field —
+are appended to the tag line as #words, `on_note_append_tags` in
+`action_sync.h`; New Note's note is `on_note_new_from_text(db, NULL,
+"\n")`: empty tag line, title line, empty body line, never a tag, whatever
+is selected), no folder commands, no AI modes,
 a flat export.  The sidebar (F) lists the views, the tags the notes carry
 and the Trash, as Tasks' does; `library_favorites.[hm]` (the Favorites
 bar) is new, and the editor's status bar lists the note's #tags where the

@@ -12,6 +12,9 @@ on_note_edit_is_blank(const OnDocument *doc)
 {
     for (guint i = 0; i < on_document_n_blocks(doc); i++) {
         const OnBlock *b = on_document_block(doc, i);
+        if (b->kind == ON_BLOCK_TAGS) {
+            continue;                /* tags alone are not content          */
+        }
         /* An image or table block, a task box, an inline image: content.   */
         if (b->text == NULL || b->kind == ON_BLOCK_CHECK ||
             b->text->objects->len > 0) {

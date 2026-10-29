@@ -48,15 +48,14 @@ BOOL on_library_sidebar_refresh(NotesLibrary *lib);
 void on_library_sidebar_refresh_counts(NotesLibrary *lib);
 
 /*
- * on_library_sidebar_note_added — a NEW, empty note was created: count it
- * in All Notes and in its tag's row, redrawing those rows alone (no query,
- * no rebuild).  A no-op while counts are hidden.
+ * on_library_sidebar_note_added — a NEW, empty, untagged note was created:
+ * count it in All Notes, redrawing that row alone (no query, no rebuild).
+ * A no-op while counts are hidden.
  *
  * Inputs:
- *   lib    — the library
- *   tag_id — the tag the note carries, or 0 for none
+ *   lib — the library
  */
-void on_library_sidebar_note_added(NotesLibrary *lib, gint64 tag_id);
+void on_library_sidebar_note_added(NotesLibrary *lib);
 
 /*
  * on_library_sidebar_select — select a row from code (a Favorites bar

@@ -10,7 +10,7 @@
  * BNBF layout (all integers little-endian):
  *
  *   [4 bytes]  magic "BNBF"
- *   [u32]      format version (currently 6; 1–5 are still readable)
+ *   [u32]      format version (currently 8; 1–7 are still readable)
  *   ...records...
  *   [u8 0x00]  end marker
  *
@@ -54,6 +54,11 @@
  * the text; a task line starts with a CHECK record followed by " ".
  * Images, tables and checkboxes occupy a character position on their line.
  * An ACTION record occupies none: it names the line, it is not in it.
+ *
+ * THE TAG LINE (version >= 8).  A note's first line is its tag line, under
+ * ON_FMT_TAGLINE: the note's #tags, and the title is the line after it.
+ * A blob below version 8 has none (the note loader gives it an empty one,
+ * on_document_add_tag_line).
  * =========================================================================== */
 
 #ifndef ON_BNBF_H
@@ -76,9 +81,10 @@ typedef enum {
     ON_FMT_LIST_NUMBER = 1 << 8,   /* numbered list item (paragraph)        */
     ON_FMT_TAG         = 1 << 9,   /* inline #tag token                     */
     ON_FMT_LIST_CHECK  = 1 << 10,  /* task-list item with checkbox (para)   */
+    ON_FMT_TAGLINE     = 1 << 11,  /* the note's tag line, its first (para) */
 } OnFormatFlags;
 
-/* Format-bit groups: the four inline (character) styles, the six mutually
+/* Format-bit groups: the four inline (character) styles, the seven mutually
  * exclusive paragraph styles (whole lines only — at most one PARA bit is
  * ever set on a character), and the RUN mask — every bit that can vary
  * WITHIN a line, i.e. the inline styles plus the #tag marker.             */
@@ -86,7 +92,7 @@ typedef enum {
                             ON_FMT_UNDERLINE | ON_FMT_STRIKE)
 #define ON_FMT_PARA_MASK   (ON_FMT_H1 | ON_FMT_H2 | ON_FMT_CODEBLOCK | \
                             ON_FMT_LIST_BULLET | ON_FMT_LIST_NUMBER | \
-                            ON_FMT_LIST_CHECK)
+                            ON_FMT_LIST_CHECK | ON_FMT_TAGLINE)
 #define ON_FMT_RUN_MASK    (ON_FMT_INLINE_MASK | ON_FMT_TAG)
 
 /* The bullet prefix a bulleted line carries in its text: U+2022 + space.  */
@@ -147,9 +153,10 @@ void on_table_free(OnTable *table);
 /* Current format version the writer emits.  Version 2 added the
  * display_width field to IMAGE records; version 3 added TABLE records;
  * version 4 added the tflags field to TABLE records; version 5 added CHECK
- * records; version 6 added ACTION records; version 7 added FILE records.
+ * records; version 6 added ACTION records; version 7 added FILE records;
+ * version 8 added the tag line (ON_FMT_TAGLINE on a note's first line).
  * All older versions are still readable.                                  */
-#define ON_BNBF_VERSION 7u
+#define ON_BNBF_VERSION 8u
 
 /* Record type bytes.                                                      */
 #define ON_REC_END   0x00            /* end of document                     */

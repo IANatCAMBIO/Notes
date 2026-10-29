@@ -83,6 +83,8 @@ static const double on_look_editor_min_w     = 480.0;  /* an editor window's lea
 static const double on_look_editor_min_h     = 360.0;
 static const double on_look_search_win_w     = 400.0;  /* the search window: its minimum, and */
 static const double on_look_search_win_h     = 260.0;  /* the size it always opens at          */
+static const double on_look_spinner_delay    = 0.2;    /* a wait this long shows a spinner: a fast
+                                                       * search ends before it would flash      */
 static const double on_look_media_w          = 780.0;
 static const double on_look_media_h          = 560.0;
 static const double on_look_settings_max_h   = 600.0;

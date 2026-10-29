@@ -3,12 +3,12 @@
  *
  * Specification: the GTK build's src/search_window.c.
  *
- *   [ query                              ] [Search] (spinner)
+ *   [ query                                       ] [Search]
  *   (•) All Notes  ( ) Selected Tag
  *   [ ] Case sensitive  [ ] Regular expression
  *   ┌ Title ──────────────── Tags ───────── Modified ┐
  *   └────────────────────────────────────────────────┘
- *   3 matches in “#Work”
+ *   3 matches in “#Work”                                  (spinner)
  *
  * A search runs when Return is pressed in the query or Search is clicked,
  * never per keystroke.  The query is parsed on the main thread
@@ -197,11 +197,15 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     self.status.identifier = @"search-status";
     self.status.lineBreakMode = NSLineBreakByTruncatingTail;
 
-    NSStackView *query_row = [NSStackView stackViewWithViews:@[self.query, search, self.spinner]];
+    NSStackView *query_row = [NSStackView stackViewWithViews:@[self.query, search]];
+    /* The status line, the spinner at its right end while a search runs. */
+    [self.status setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                            forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *status_row = [NSStackView stackViewWithViews:@[self.status, self.spinner]];
     NSStackView *scope_row = [NSStackView stackViewWithViews:@[self.scope_all, self.scope_selection]];
     NSStackView *opt_row   = [NSStackView stackViewWithViews:@[self.case_sensitive, self.regex]];
     scope_row.spacing = opt_row.spacing = 12;
-    NSStackView *column = [NSStackView stackViewWithViews:@[query_row, scope_row, opt_row, scroll, self.status]];
+    NSStackView *column = [NSStackView stackViewWithViews:@[query_row, scope_row, opt_row, scroll, status_row]];
     column.orientation = NSUserInterfaceLayoutOrientationVertical;
     column.alignment   = NSLayoutAttributeLeading;
     column.spacing     = 6;
@@ -214,7 +218,7 @@ init_with_lib:(NotesLibrary *)lib scoped:(BOOL)scoped
     [NSLayoutConstraint activateConstraints:@[
         [query_row.widthAnchor   constraintEqualToAnchor:column.widthAnchor constant:-20],
         [scroll.widthAnchor      constraintEqualToAnchor:column.widthAnchor constant:-20],
-        [self.status.widthAnchor constraintEqualToAnchor:column.widthAnchor constant:-20],
+        [status_row.widthAnchor  constraintEqualToAnchor:column.widthAnchor constant:-20],
     ]];
     [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     shared_ui_use_ui_font(content);
@@ -276,10 +280,20 @@ run_search
     if (!scoped) tag_id = 0;
     self.scope_desc = tag_id != 0 ? [NSString stringWithFormat:@" in “%@”", where] : nil;
     self.status.stringValue = @"Searching…";
-    self.spinner.hidden = NO;
-    [self.spinner startAnimation:nil];
     self.job = on_search_job_start(self.lib.app->db->path, parsed, tag_id, search_done,
                                    (__bridge gpointer)self);
+
+    /* The spinner shows only if this search is still running after
+     * on_look_spinner_delay, so a fast one never flashes it. */
+    on_search_job_t         *job = self.job;
+    __weak NotesSearchWindow *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(on_look_spinner_delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        NotesSearchWindow *s = ws;
+        if (s == nil || job == NULL || s.job != job) return;
+        s.spinner.hidden = NO;
+        [s.spinner startAnimation:nil];
+    });
 }
 
 /*

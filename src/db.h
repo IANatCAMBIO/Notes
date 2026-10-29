@@ -35,9 +35,9 @@
  *
  * TAGS, not folders, organise the notes: all notes live in one store.  A
  * note's tags are the #word tags of its text (note_tags.in_text,
- * on_db_note_set_text_tags, from every save).  The move from folders put
- * them in a Tags field (in_field) instead; Notes writes those into the
- * text once (on_note_field_tags_to_text) and empties the field.  The
+ * on_db_note_set_text_tags, from every save).  The schema's other source,
+ * the Tags field the move from folders filled (in_field), is read and
+ * respected but never written: those tags are all in the text now.  The
  * tags are the two apps': a name compares case-insensitively and is never
  * renamed, the emoji is shared, the favorite flag is each app's
  * (favorite_notes here).
@@ -447,26 +447,10 @@ GList *on_db_note_tags(OnDatabase *db, gint64 note_id);
 gboolean on_db_note_set_text_tags(OnDatabase *db, gint64 note_id,
                                   GList *tag_names);
 
-/* The notes with a tag in the old Tags field (note_tags.in_field: the move
- * from folders made them), by id.  Returns a GArray of gint64; free with
- * g_array_unref().                                                          */
-GArray *on_db_field_tag_notes(OnDatabase *db);
-
-/* The notes stored before the tag line — content a blob below BNBF
- * version 8, or none — trashed ones too, by id.  Returns a GArray of
- * gint64; free with g_array_unref().                                        */
-GArray *on_db_notes_before_tag_line(OnDatabase *db);
-
 /* Every note carrying tag `tag_id`, TRASHED ones too (they keep their tags),
  * by id, oldest first.  Returns a GArray of gint64; free with
  * g_array_unref().                                                          */
 GArray *on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id);
-
-/* Empty note `note_id`'s old Tags field: a tag only the field gave goes, a
- * tag its text has too stays as a text tag.  Once its text has them
- * (on_note_field_tags_to_text).  Runs in the caller's transaction when one
- * is open.  Returns TRUE on success.                                        */
-gboolean on_db_note_field_tags_clear(OnDatabase *db, gint64 note_id);
 
 /* List all notes labeled with tag `tag_id`, newest first.
  * Returns a GList of OnNoteMeta*; free with on_db_note_list_free().         */

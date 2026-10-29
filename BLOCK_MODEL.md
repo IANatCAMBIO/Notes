@@ -242,10 +242,9 @@ copy-as-text only).
   fails `on_document_check`; a fragment (the clipboard) may lack one, and
   a pasted one joins the line it is pasted into.  Typing on it gives tags only; a #tag set
   on a body line moves onto it (`on_document_lift_tag`); a tag given from
-  outside goes on its end (`on_document_append_tag`).  A blob below
-  version 8 is given an empty one when a note is loaded
-  (`on_document_add_tag_line`), and every such note is moved once at
-  launch (`on_note_tags_to_tag_line`: `on_document_gather_tags`).
+  outside goes on its end (`on_document_append_tag`).  A note with no
+  content yet is given an empty one when it is loaded
+  (`on_document_add_tag_line`).
 - **Title**: the block after the tag line, whatever it holds
   (`first_line_title`; `on_document_title_block`).
 - **Action item**: a text block of kind PARA/H*/list whose text starts

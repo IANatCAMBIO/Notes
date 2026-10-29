@@ -1239,78 +1239,23 @@ on_db_note_set_text_tags(OnDatabase *db, gint64 note_id, GList *tag_names)
 }
 
 /*
- * collect_ids — drain `stmt` (column 0 = a note id) into a list and
- * finalize it.
- *
- * Inputs:
- *   stmt — a prepared, bound statement, or NULL (an empty list)
- *
- * Output: a GArray of gint64; free with g_array_unref().
+ * on_db_note_ids_with_tag — see db.h.
  */
-static GArray *
-collect_ids(sqlite3_stmt *stmt)
+GArray *
+on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id)
 {
-    GArray *out = g_array_new(FALSE, FALSE, sizeof(gint64));
+    GArray       *out  = g_array_new(FALSE, FALSE, sizeof(gint64));
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT DISTINCT note_id FROM note_tags WHERE tag_id = ? ORDER BY note_id");
     if (stmt == NULL)
         return out;
+    sqlite3_bind_int64(stmt, 1, tag_id);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         gint64 id = sqlite3_column_int64(stmt, 0);
         g_array_append_val(out, id);
     }
     sqlite3_finalize(stmt);
     return out;
-}
-
-/*
- * on_db_field_tag_notes — see db.h.
- */
-GArray *
-on_db_field_tag_notes(OnDatabase *db)
-{
-    return collect_ids(prepare(db,
-        "SELECT DISTINCT note_id FROM note_tags WHERE in_field = 1 ORDER BY note_id"));
-}
-
-/*
- * on_db_notes_before_tag_line — see db.h.  The version is the blob's
- * little-endian u32 after the magic, so its four bytes compare as a blob.
- */
-GArray *
-on_db_notes_before_tag_line(OnDatabase *db)
-{
-    return collect_ids(prepare(db,
-        "SELECT id FROM notes WHERE content IS NULL OR length(content) < 8"
-        " OR substr(content, 5, 4) < x'08000000' ORDER BY id"));
-}
-
-/*
- * on_db_note_ids_with_tag — see db.h.
- */
-GArray *
-on_db_note_ids_with_tag(OnDatabase *db, gint64 tag_id)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT DISTINCT note_id FROM note_tags WHERE tag_id = ? ORDER BY note_id");
-    if (stmt != NULL)
-        sqlite3_bind_int64(stmt, 1, tag_id);
-    return collect_ids(stmt);
-}
-
-/*
- * on_db_note_field_tags_clear — see db.h.
- */
-gboolean
-on_db_note_field_tags_clear(OnDatabase *db, gint64 note_id)
-{
-    gchar *sql = g_strdup_printf(
-        "DELETE FROM note_tags WHERE note_id = %" G_GINT64_FORMAT
-        " AND in_field = 1 AND in_text = 0;"
-        "UPDATE note_tags SET in_field = 0 WHERE note_id = %" G_GINT64_FORMAT
-        " AND in_field = 1",
-        note_id, note_id);
-    gboolean ok = exec_simple(db, sql);
-    g_free(sql);
-    return ok;
 }
 
 /*

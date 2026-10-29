@@ -8,9 +8,7 @@
 #include <stdio.h>                   /* sscanf                              */
 #include <string.h>
 
-/* Magic bytes at the start of every BNBF blob.  (The pre-rename "ONBF"
- * magic was retired 2026-07 after an offline migration verified zero
- * such blobs remained in the database.)                                     */
+/* Magic bytes at the start of every BNBF blob.                              */
 static const guint8 BNBF_MAGIC[4] = { 'B', 'N', 'B', 'F' };
 
 /* TABLE record flag bits (the tflags field).                                */
@@ -211,7 +209,7 @@ on_bnbf_open(OnBnbfReader *r, const guint8 *data, gsize len)
         return FALSE;
     }
     if (!get_u32(data, len, &r->pos, &r->version) ||
-        r->version < 1 || r->version > ON_BNBF_VERSION) {
+        r->version != ON_BNBF_VERSION) {
         r->error = "unsupported BNBF version";
         return FALSE;
     }
@@ -244,12 +242,8 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
         return TRUE;
 
     case ON_REC_IMAGE:
-        if (r->version >= 2 &&
-            !get_u32(r->data, r->len, &r->pos, &rec->display_width)) {
-            r->error = "truncated IMAGE record";
-            return FALSE;
-        }
-        if (!get_u32(r->data, r->len, &r->pos, &rec->n_png) ||
+        if (!get_u32(r->data, r->len, &r->pos, &rec->display_width) ||
+            !get_u32(r->data, r->len, &r->pos, &rec->n_png) ||
             r->pos + rec->n_png > r->len) {
             r->error = "truncated IMAGE record";
             return FALSE;
@@ -259,10 +253,6 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
         return TRUE;
 
     case ON_REC_FILE:
-        if (r->version < 7) {
-            r->error = "FILE record in a pre-v7 blob";
-            return FALSE;
-        }
         {
             guint64 id;              /* the stored row id                   */
             if (!get_u64(r->data, r->len, &r->pos, &id) ||
@@ -291,10 +281,6 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
 
     case ON_REC_ACTION: {
         guint64 uid;                 /* the stored identity                 */
-        if (r->version < 6) {
-            r->error = "ACTION record in a pre-v6 blob";
-            return FALSE;
-        }
         if (!get_u64(r->data, r->len, &r->pos, &uid)) {
             r->error = "truncated ACTION record";
             return FALSE;
@@ -309,8 +295,7 @@ on_bnbf_next(OnBnbfReader *r, OnBnbfRecord *rec)
 
     case ON_REC_TABLE: {
         guint32 tflags = 0, rows, cols;
-        if (r->version >= 4 &&
-            !get_u32(r->data, r->len, &r->pos, &tflags)) {
+        if (!get_u32(r->data, r->len, &r->pos, &tflags)) {
             r->error = "truncated TABLE record";
             return FALSE;
         }

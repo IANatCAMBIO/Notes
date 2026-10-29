@@ -1040,8 +1040,6 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
         OnBnbfReader r;
         OnBnbfRecord rec;
         if (on_bnbf_open(&r, data, len)) {
-            if (r.version < ON_BNBF_VERSION)
-                rep->old_version++;
             gboolean prev_text = FALSE;   /* last record was TEXT …       */
             guint32  prev_flags = 0;      /* … under these flags          */
             while (on_bnbf_next(&r, &rec)) {
@@ -1108,7 +1106,7 @@ on_document_from_bnbf(const guint8 *data, gsize len, OnDocLoadReport *rep)
 gboolean
 on_document_load_report_is_clean(const OnDocLoadReport *rep)
 {
-    return rep->error == NULL && rep->old_version == 0 &&
+    return rep->error == NULL &&
            rep->mixed_para == 0 && rep->unknown_flags == 0 &&
            rep->bullet_no_prefix == 0 && rep->number_renumbered == 0 &&
            rep->styled_prefix == 0 && rep->check_no_space == 0 &&
@@ -3100,43 +3098,6 @@ on_document_lift_tag(OnDocument *d, OnPos at, OnPos *caret)
         }
     }
     g_array_unref(spans);
-    return moved;
-}
-
-gboolean
-on_document_gather_tags(OnDocument *d)
-{
-    g_return_val_if_fail(has_tag_line(d), FALSE);
-    gboolean moved = FALSE;
-    on_document_begin_group(d);
-    for (guint i = 1; i < d->blocks->len; i++) {
-        const OnBlock *b = g_ptr_array_index(d->blocks, i);
-        if (b->text == NULL)
-            continue;
-        /* The first tag of the line each time: lifting one shifts the
-         * spans after it.  A span with no word stays, so skip past it.    */
-        gboolean hit  = FALSE;       /* a tag left this block               */
-        gsize    from = 0;           /* where the spans still to look at are */
-        while (TRUE) {
-            GArray    *spans = tag_spans(b->text);
-            tag_span_t span  = { 0, 0 };
-            gboolean   found = FALSE;
-            for (guint k = 0; !found && k < spans->len; k++) {
-                span  = g_array_index(spans, tag_span_t, k);
-                found = span.start >= from;
-            }
-            g_array_unref(spans);
-            if (!found)
-                break;
-            if (lift_span(d, i, span, NULL))
-                hit = moved = TRUE;
-            else
-                from = span.end;
-        }
-        if (hit && remove_blank_body_line(d, i))
-            i--;                     /* the next line is block i now        */
-    }
-    on_document_end_group(d);
     return moved;
 }
 

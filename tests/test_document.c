@@ -1625,8 +1625,8 @@ tagged_doc(const gchar *text, guint line)
  * test_tag_line — the tag line: block 0 under ON_FMT_TAGLINE, round-
  * tripping, the title after it; never split, joined, re-kinded, removed
  * or displaced, nor the last line; a stray one loads as a PARA; tags go
- * on it from outside, from a body line (the caret moving with them), all
- * at once (an emptied body line going), and from a paste into it.
+ * on it from outside, from a body line (the caret moving with them), and
+ * from a paste into it.
  */
 static void
 test_tag_line(void)
@@ -1719,20 +1719,6 @@ test_tag_line(void)
     g_assert_true(on_document_lift_tag(d, at(2, 0), NULL));
     g_assert_cmpstr(block_text(d, 0), ==, "#bob");
     g_assert_cmpuint(on_document_n_blocks(d), ==, 3);           /* stays   */
-    on_document_free(d);
-
-    /* All at once: a line of tags goes, the title never.                   */
-    d = tagged_doc("#Title\nmet #Bob today\n#Salt #Stride", 2);
-    on_document_set_flags(d, at(3, 0), 5, ON_FMT_TAG, TRUE);
-    on_document_set_flags(d, at(3, 6), 7, ON_FMT_TAG, TRUE);
-    on_document_set_flags(d, at(1, 0), 6, ON_FMT_TAG, TRUE);
-    g_assert_true(on_document_gather_tags(d));
-    g_assert_cmpstr(block_text(d, 0), ==, "#Title #Bob #Salt #Stride");
-    g_assert_cmpuint(on_document_n_blocks(d), ==, 3);
-    g_assert_cmpstr(block_text(d, 1), ==, "");
-    g_assert_cmpstr(block_text(d, 2), ==, "met today");
-    g_assert_false(on_document_gather_tags(d));
-    assert_valid(d);
     on_document_free(d);
 
     /* A paste into the tag line gives its words as tags.                   */
@@ -1865,8 +1851,8 @@ test_action_uid_not_written(void)
     g_bytes_unref(normal);
 }
 
-/* A repeated uid is dropped from the second line; a v5 blob may not carry
- * the record at all.                                                       */
+/* A repeated uid is dropped from the second line; a blob of any version
+ * but the current one is refused whole.                                    */
 static void
 test_action_uid_dup_and_gate(void)
 {
@@ -1887,13 +1873,13 @@ test_action_uid_dup_and_gate(void)
     assert_valid(d);
     on_document_free(d);
 
-    /* Same bytes under a v5 header: the reader refuses the record.        */
-    guint8 *v5 = g_memdup2(data, n);
-    v5[4] = 5;
-    d = on_document_from_bnbf(v5, n, &rep);
-    g_assert_cmpstr(rep.error, ==, "ACTION record in a pre-v6 blob");
+    /* Same bytes under an older header: the reader refuses the blob.      */
+    guint8 *old = g_memdup2(data, n);
+    old[4] = ON_BNBF_VERSION - 1;
+    d = on_document_from_bnbf(old, n, &rep);
+    g_assert_cmpstr(rep.error, ==, "unsupported BNBF version");
     on_document_free(d);
-    g_free(v5);
+    g_free(old);
     g_bytes_unref(blob);
 }
 

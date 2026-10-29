@@ -274,8 +274,6 @@ gboolean on_document_check(const OnDocument *d, GString *why);
  *   run_split      — two consecutive TEXT records carried the same flags
  *                    (builds before 2026-08 wrote the title line as its
  *                    own record); the saver writes the maximal run
- *   old_version    — the blob's version is below ON_BNBF_VERSION (the
- *                    bytes differ in the header alone)
  *   action_dup     — an ACTION record repeated a uid already seen in the
  *                    blob (a copy of a line): dropped, that line has none
  *   action_stray   — an ACTION record mid-line, doubled, or on a line that
@@ -295,7 +293,7 @@ typedef struct {
     guint bullet_no_prefix, number_renumbered, styled_prefix;
     guint check_no_space, check_no_tag, check_no_box, split_check;
     guint split_table, image_inline;
-    guint run_split, cr_newlines, old_version;
+    guint run_split, cr_newlines;
     guint action_dup, action_stray;
     guint stray_tag_line, bad_utf8;
     const gchar *error;
@@ -312,14 +310,14 @@ OnDocument *on_document_from_bnbf(const guint8 *data, gsize len,
  * maximal-run form the GtkTextBuffer serializer produces.                 */
 guint8 *on_document_to_bnbf(const OnDocument *d, gsize *out_len);
 
-/* on_document_add_tag_line() — give a note without a tag line (a blob
- * below version 8, a document from on_document_from_text) an empty one at
- * block 0; a no-op when it has one.  Like the loader, NOT an operation: no
+/* on_document_add_tag_line() — give a note without a tag line (a note
+ * with no content yet, a document from on_document_from_text) an empty
+ * one at block 0; a no-op when it has one.  Like the loader, NOT an operation: no
  * undo step, no observer call — for a document not yet shown.            */
 void on_document_add_tag_line(OnDocument *d);
 
 /* on_document_load_report_is_clean() — no normalization counted, no
- * error, current version (image_inline does not count).                  */
+ * error (image_inline does not count).                  */
 gboolean on_document_load_report_is_clean(const OnDocLoadReport *rep);
 
 /* ---------------------------------------------------------------------------
@@ -622,16 +620,6 @@ gboolean on_document_append_tag(OnDocument *d, const gchar *word);
  * ------------------------------------------------------------------------- */
 gboolean on_document_lift_tag(OnDocument *d, OnPos at, OnPos *caret);
 
-/* ---------------------------------------------------------------------------
- * on_document_gather_tags() — every #tag outside the tag line moved onto
- * it (on_document_lift_tag), in document order; a body line left with
- * nothing else on it is removed, as on_document_remove_tag removes one,
- * the title line never.  What the move to the tag line does to each note
- * once (on_note_tags_to_tag_line).  One undo step.  The document must
- * have a tag line.
- * Returns TRUE when a tag was moved.
- * ------------------------------------------------------------------------- */
-gboolean on_document_gather_tags(OnDocument *d);
 
 /* ---------------------------------------------------------------------------
  * on_document_remove_tag() — take every #tag whose word is `word` (any

@@ -43,7 +43,7 @@ gchar *on_note_text_cached(OnDatabase *db, gint64 id);
 /* ---------------------------------------------------------------------------
  * on_note_document_load() — note `id`'s stored content as an OnDocument
  * (document.h): the block model, no image decoded, its tag line at
- * block 0 (an empty one for a blob from before it,
+ * block 0 (an empty one for a note with no content yet,
  * on_document_add_tag_line).  A note with no content is an empty
  * document.  THE preamble of every consumer: the
  * editor, the exporter, the headless action rewrites, the grid

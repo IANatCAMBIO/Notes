@@ -104,24 +104,24 @@ on_action_sync_note(OnApp *app, gint64 note_id)
 }
 
 /*
- * edit_note — change a note with a document edit, applied to the open
- * editor's document when the note is being edited, else to the stored
- * one, and saved with its tags when it changed, in one transaction.
+ * edit_note_tags — change a note's #tags with a document edit, applied to
+ * the open editor's document when the note is being edited, else to the
+ * stored one, in one transaction.
  *
  * Inputs:
- *   app          — the application context, its database open
- *   note_id      — the note
- *   edit         — the edit; TRUE when the document must be saved
- *   data         — passed to `edit`
- *   sync_actions — on_note_document_save's: push the action lines too
+ *   app     — the application context, its database open
+ *   note_id — the note
+ *   names   — tag names in any spelling (on_document_tag_word)
+ *   n       — how many
+ *   apply   — the edit for one tag word; TRUE when it changed the document
  *
  * Output: TRUE on success (also when nothing needed changing); FALSE when
  *         the note could not be read or saved, or its editor waits for the
  *         "changed outside" panel (nothing written).
  */
 static gboolean
-edit_note(OnApp *app, gint64 note_id, gboolean (*edit)(OnDocument *d, gpointer data),
-          gpointer data, gboolean sync_actions)
+edit_note_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n,
+               gboolean (*apply)(OnDocument *d, const gchar *word))
 {
     OnDatabase *db = app->db;
     if (sync_held(app, note_id)) {
@@ -134,7 +134,14 @@ edit_note(OnApp *app, gint64 note_id, gboolean (*edit)(OnDocument *d, gpointer d
     OnDocument *live = app->live_document != NULL ? app->live_document(app, note_id) : NULL;
     OnDocument *doc  = live != NULL ? live : on_note_document_load(db, note_id);
     gboolean    ok   = doc != NULL;
-    gboolean    edited = ok && edit(doc, data);   /* the document changed */
+    gboolean    edited = FALSE;      /* the document was changed            */
+    for (gsize i = 0; ok && i < n; i++) {
+        gchar *word = on_document_tag_word(names[i]);
+        if (word != NULL && apply(doc, word)) {
+            edited = TRUE;
+        }
+        g_free(word);
+    }
     if (edited && live != NULL) {
         LiveEdit *edit = g_new0(LiveEdit, 1);
         edit->app     = app;
@@ -143,7 +150,7 @@ edit_note(OnApp *app, gint64 note_id, gboolean (*edit)(OnDocument *d, gpointer d
     }
     if (ok && edited) {
         ok = live != NULL ? app->live_save(app, note_id)
-                          : on_note_document_save(db, note_id, doc, sync_actions, NULL) &&
+                          : on_note_document_save(db, note_id, doc, FALSE, NULL) &&
                             on_note_document_save_tags(db, note_id, doc);
     }
     if (live == NULL && doc != NULL) {
@@ -153,48 +160,12 @@ edit_note(OnApp *app, gint64 note_id, gboolean (*edit)(OnDocument *d, gpointer d
 }
 
 /*
- * TagWords — what apply_tag_words is handed: tag names and the edit for
- * one tag word.
- */
-typedef struct {
-    const gchar *const *names;       /* tag names in any spelling           */
-    gsize               n;           /* how many                            */
-    gboolean (*apply)(OnDocument *d, const gchar *word);  /* TRUE: changed */
-} TagWords;
-
-/*
- * apply_tag_words — edit_note's edit for the tag commands: each name as a
- * tag word (on_document_tag_word), applied in turn.
- *
- * Inputs:
- *   d    — the document
- *   data — the TagWords
- *
- * Output: TRUE when any of them changed the document.
- */
-static gboolean
-apply_tag_words(OnDocument *d, gpointer data)
-{
-    const TagWords *tw     = data;
-    gboolean        edited = FALSE;  /* the document was changed            */
-    for (gsize i = 0; i < tw->n; i++) {
-        gchar *word = on_document_tag_word(tw->names[i]);
-        if (word != NULL && tw->apply(d, word)) {
-            edited = TRUE;
-        }
-        g_free(word);
-    }
-    return edited;
-}
-
-/*
  * on_note_append_tags — see action_sync.h.
  */
 gboolean
 on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
 {
-    TagWords tw = { names, n, on_document_append_tag };
-    return edit_note(app, note_id, apply_tag_words, &tw, FALSE);
+    return edit_note_tags(app, note_id, names, n, on_document_append_tag);
 }
 
 /*
@@ -203,116 +174,7 @@ on_note_append_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize
 gboolean
 on_note_remove_tags(OnApp *app, gint64 note_id, const gchar *const *names, gsize n)
 {
-    TagWords tw = { names, n, on_document_remove_tag };
-    return edit_note(app, note_id, apply_tag_words, &tw, FALSE);
-}
-
-/*
- * gather_to_tag_line — edit_note's edit for the move to the tag line: the
- * note's #tags onto its tag line (on_document_gather_tags).  The note is
- * saved either way: its blob gains the tag line.
- *
- * Inputs:
- *   d    — the document (loaded: it has its tag line)
- *   data — unused
- *
- * Output: TRUE.
- */
-static gboolean
-gather_to_tag_line(OnDocument *d, gpointer data)
-{
-    (void)data;
-    on_document_gather_tags(d);
-    return TRUE;
-}
-
-/*
- * on_note_tags_to_tag_line — see action_sync.h.
- */
-gint
-on_note_tags_to_tag_line(OnApp *app)
-{
-    GArray *notes = on_db_notes_before_tag_line(app->db);
-    gint    done  = 0;
-    for (guint i = 0; i < notes->len; i++) {
-        gint64      note_id = g_array_index(notes, gint64, i);
-        OnNoteStamp stamp;           /* updated_at before the rewrite       */
-        gboolean    own;             /* this note's transaction?            */
-        if (!on_db_txn_begin(app->db, &own)) {
-            continue;
-        }
-        gboolean ok = on_db_note_stamp(app->db, note_id, &stamp) &&
-                      edit_note(app, note_id, gather_to_tag_line, NULL, TRUE) &&
-                      on_db_note_set_updated_at(app->db, note_id, stamp.updated_at);
-        if (!ok) {
-            g_warning("tags: note %" G_GINT64_FORMAT " could not be moved to the tag line",
-                      note_id);
-        }
-        if (on_db_txn_end(app->db, own, ok) && ok) {
-            done++;
-        }
-    }
-    g_array_unref(notes);
-    return done;
-}
-
-/*
- * field_tags_to_text — one note's old Tags field written into its text
- * (on_note_append_tags) and emptied, keeping its updated_at, in one
- * transaction.
- *
- * Inputs:
- *   app     — the application context, no transaction open
- *   note_id — a note with field tags (on_db_field_tag_notes)
- *
- * Output: TRUE on success; FALSE when nothing was written (logged).
- */
-static gboolean
-field_tags_to_text(OnApp *app, gint64 note_id)
-{
-    OnDatabase *db = app->db;
-    gboolean    own;                 /* this call's transaction?            */
-    if (!on_db_txn_begin(db, &own)) {
-        return FALSE;
-    }
-    OnNoteStamp stamp;               /* updated_at before the rewrite       */
-    GList      *tags  = on_db_note_tags(db, note_id);
-    GPtrArray  *names = g_ptr_array_new();
-    for (GList *l = tags; l != NULL; l = l->next) {
-        const OnTag *t = l->data;
-        if (t->in_field) {
-            g_ptr_array_add(names, t->name);
-        }
-    }
-    gboolean ok = on_db_note_stamp(db, note_id, &stamp) &&
-                  on_note_append_tags(app, note_id, (const gchar *const *)names->pdata,
-                                      names->len) &&
-                  on_db_note_field_tags_clear(db, note_id) &&
-                  on_db_note_set_updated_at(db, note_id, stamp.updated_at);
-    g_ptr_array_free(names, TRUE);
-    on_db_tag_list_free(tags);
-    if (!ok) {
-        g_warning("tags: note %" G_GINT64_FORMAT "'s Tags field could not go into its text",
-                  note_id);
-    }
-    return on_db_txn_end(db, own, ok);
-}
-
-/*
- * on_note_field_tags_to_text — see action_sync.h.
- */
-gint
-on_note_field_tags_to_text(OnApp *app)
-{
-    GArray *notes = on_db_field_tag_notes(app->db);
-    gint    done  = 0;
-    for (guint i = 0; i < notes->len; i++) {
-        if (field_tags_to_text(app, g_array_index(notes, gint64, i))) {
-            done++;
-        }
-    }
-    g_array_unref(notes);
-    return done;
+    return edit_note_tags(app, note_id, names, n, on_document_remove_tag);
 }
 
 /*
@@ -484,8 +346,6 @@ on_action_sync_start(OnApp *app, gboolean refresh)
 {
     int      changed;                /* unused: everything is new here      */
     int64_t  rev_tasks = 0, rev_notes = 0;
-    on_note_tags_to_tag_line(app);   /* first: the field's tags join the line */
-    on_note_field_tags_to_text(app);
     shared_db_poll(app->db->shared, &changed, &rev_tasks, &rev_notes, NULL);
     app->rev_tasks = rev_tasks;
     app->rev_notes = rev_notes;

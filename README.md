@@ -119,13 +119,7 @@ tags Tasks uses (one set in the shared file).
   A note closed with nothing in it but tags is deleted, as an empty one is.
   A name of several words is joined, each word capitalized, and
   punctuation dropped: Tasks' "Old Projects" becomes #OldProjects — a tag
-  of its own.  The tags the move from folders gave (an older Tags field)
-  are written onto the tag line the same way at launch, once, keeping
-  each note's modified time.
-- Notes from before the tag line are moved once, at the first launch of
-  this build: each gets a tag line, every #tag in its text moves onto it
-  (a line left holding nothing else goes), and its modified time is kept.
-  A build from before the tag line cannot read a note once it is moved.
+  of its own.
 - The sidebar lists **All Notes**, **Pinned Notes**, **Action Items**, then
   every tag a note carries (with counts when Settings ▸ Appearance shows
   them), and the **Trash**.  Drop notes on a tag to give them the tag, on

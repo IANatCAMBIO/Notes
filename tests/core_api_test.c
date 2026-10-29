@@ -644,8 +644,7 @@ word_is(const char *name, const char *want)
 /*
  * test_given_tags — tags given from outside the text go on the note's
  * tag line as #words (on_note_append_tags): CamelCase for a name of
- * several words, once per tag in any case; the
- * old Tags field is written into the text once, its updated_at kept;
+ * several words, once per tag in any case;
  * emoji and Notes' favorite flag; the two scopes; the per-note names.
  *
  * Inputs:
@@ -682,34 +681,6 @@ test_given_tags(OnApp *app)
     check(strcmp(tags, "BigClient:-T,Salt:-T") == 0, "append: text tags");
     g_free(tags);
 
-    /* The old Tags field (the move from folders): a field-only tag and one
-     * the text has too.                                                    */
-    gint64      c   = on_note_new_from_text(db, NULL, "Legacy\nbody");
-    OnDocument *doc = on_note_document_load(db, c);
-    add_tags(doc, (const char *[]){ "salt", NULL });
-    check(save_with_tags(db, c, doc), "field: a note with #salt in its text");
-    on_document_free(doc);
-    gchar *sql = g_strdup_printf(
-        "INSERT INTO tags (name) VALUES ('Old Projects');"
-        "INSERT INTO note_tags (note_id, tag_id, in_field)"
-        " SELECT %1$" G_GINT64_FORMAT ", id, 1 FROM tags WHERE name = 'Old Projects';"
-        "UPDATE note_tags SET in_field = 1 WHERE note_id = %1$" G_GINT64_FORMAT ";",
-        c);
-    check(sqlite3_exec(db->handle, sql, NULL, NULL, NULL) == SQLITE_OK &&
-          on_db_note_set_updated_at(db, c, 1790000000), "field: an old Tags field is set up");
-    g_free(sql);
-    check(on_note_field_tags_to_text(app) == 1 &&
-          body_is(db, c, "#salt #OldProjects\nLegacy\nbody"),
-          "field: its tags go on the tag line, one the text has is not repeated");
-    tags = note_tags_are(db, c);
-    check(strcmp(tags, "OldProjects:-T,Salt:-T") == 0 && on_db_tag_find(db, "Old Projects") == NULL,
-          "field: emptied; the old spelling nothing carries is gone");
-    g_free(tags);
-    OnNoteMeta *meta = on_db_note_get(db, c);
-    check(meta != NULL && meta->updated_at == 1790000000, "field: the note's modified time is kept");
-    on_db_note_meta_free(meta);
-    check(on_note_field_tags_to_text(app) == 0, "field: nothing to do the second time");
-
     /* Emoji and the favorite flag; the scopes.                             */
     OnTag *big = on_db_tag_find(db, "bigclient");
     check(big != NULL && on_db_tag_set_emoji(db, big->id, " \xf0\x9f\x8f\xa2 ") &&
@@ -735,59 +706,13 @@ test_given_tags(OnApp *app)
           g_hash_table_lookup(names, &b) == NULL,
           "names: scoped to given notes, the others are absent");
     g_hash_table_destroy(names);
-    gint64 gone[] = { a, b, c };
-    check(on_db_notes_delete(db, gone, 3) && on_db_tag_find(db, "BigClient") == NULL,
+    gint64 gone[] = { a, b };
+    check(on_db_notes_delete(db, gone, 2) && on_db_tag_find(db, "BigClient") == NULL,
           "delete: deleting the last notes takes their tags");
     on_db_tag_free(big);
 }
 
 /* ── Tags ───────────────────────────────────────────────────────────────── */
-
-/*
- * test_tag_line_move — a note stored before the tag line (a version 7
- * blob, a tag inside a sentence and a line of tags at the bottom) gets a
- * tag line at launch (on_note_tags_to_tag_line): every #tag moves onto
- * it, the line left empty goes, the sentence closes up, its modified
- * time is kept; the second run has nothing to do.
- *
- * Inputs:
- *   app — the context, database open
- */
-static void
-test_tag_line_move(OnApp *app)
-{
-    OnDatabase *db  = app->db;
-    gint64      id  = on_db_note_create(db);
-    OnDocument *doc = on_document_from_text("Old note\nmet #Bob today\n#Salt #Stride");
-    on_document_set_flags(doc, (OnPos){ 1, -1, 4 }, 4, ON_FMT_TAG, TRUE);
-    on_document_set_flags(doc, (OnPos){ 2, -1, 0 }, 5, ON_FMT_TAG, TRUE);
-    on_document_set_flags(doc, (OnPos){ 2, -1, 6 }, 7, ON_FMT_TAG, TRUE);
-    gsize   len;
-    guint8 *blob = on_document_to_bnbf(doc, &len);
-    blob[4] = 7;                     /* the version: from before the line   */
-    check(id != 0 && on_db_note_save(db, id, "Old note", blob, len, "old") &&
-          on_db_note_set_updated_at(db, id, 1790000000), "tag line: an old note is stored");
-    g_free(blob);
-    on_document_free(doc);
-    GArray  *old   = on_db_notes_before_tag_line(db);
-    gboolean found = FALSE;          /* the note is listed as old           */
-    for (guint i = 0; i < old->len; i++) found = found || g_array_index(old, gint64, i) == id;
-    g_array_unref(old);
-    check(found, "tag line: it is listed as stored before the tag line");
-
-    check(on_note_tags_to_tag_line(app) >= 1 &&
-          body_is(db, id, "#Bob #Salt #Stride\nOld note\nmet today"),
-          "tag line: its tags move onto it, the emptied line goes, the sentence closes up");
-    gchar *tags = note_tags_are(db, id);
-    check(strcmp(tags, "Bob:-T,Salt:-T,Stride:-T") == 0, "tag line: the note keeps its tags");
-    g_free(tags);
-    OnNoteMeta *meta = on_db_note_get(db, id);
-    check(meta != NULL && meta->updated_at == 1790000000 && strcmp(meta->title, "Old note") == 0,
-          "tag line: its modified time and title are kept");
-    on_db_note_meta_free(meta);
-    check(on_note_tags_to_tag_line(app) == 0, "tag line: nothing to do the second time");
-    on_db_notes_delete(db, &id, 1);
-}
 
 /*
  * test_tags — #tag runs in the text are the note's tags; links are made
@@ -1395,7 +1320,6 @@ main(void)
     test_action_list(app.db);
     test_action_edit(&app);
     test_given_tags(&app);
-    test_tag_line_move(&app);
     test_tags(app.db);
     test_trash(app.db);
     test_search(app.db);

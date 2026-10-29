@@ -10,26 +10,25 @@
  * BNBF layout (all integers little-endian):
  *
  *   [4 bytes]  magic "BNBF"
- *   [u32]      format version (currently 8; 1–7 are still readable)
+ *   [u32]      format version (8; no other is read)
  *   ...records...
  *   [u8 0x00]  end marker
  *
  * Record types:
  *   [u8 0x01]  TEXT  : [u32 flags] [u32 byte_len] [byte_len UTF-8 bytes]
- *   [u8 0x02]  IMAGE : [u32 display_width]            (version >= 2 only)
+ *   [u8 0x02]  IMAGE : [u32 display_width]
  *                      [u32 png_len] [png_len bytes of PNG data]
- *   [u8 0x03]  TABLE : [u32 tflags]                   (version >= 4 only;
- *                                                      bit 0 = header row)
- *                      [u32 rows] [u32 cols]          (version >= 3)
+ *   [u8 0x03]  TABLE : [u32 tflags]                   (bit 0 = header row)
+ *                      [u32 rows] [u32 cols]
  *                      rows*cols x ([u32 len] [len UTF-8 bytes]) row-major
- *   [u8 0x04]  CHECK : [u8 state]                     (version >= 5)
+ *   [u8 0x04]  CHECK : [u8 state]
  *                      a task-list checkbox (0 = unchecked, 1 = checked)
- *   [u8 0x05]  ACTION: [i64 uid]                      (version >= 6)
+ *   [u8 0x05]  ACTION: [i64 uid]
  *                      the stable identity of the '!' action line that
  *                      starts here — the note_task.uid of its task row.
  *                      Sits immediately before the line's first TEXT
  *                      record, like CHECK; never inside a line.
- *   [u8 0x06]  FILE  : [i64 id]                       (version >= 7)
+ *   [u8 0x06]  FILE  : [i64 id]
  *                      [u32 name_len] [name_len UTF-8 bytes]
  *                      an attached file: the id of its note_file row (the
  *                      bytes live in the database, not in the blob) and its
@@ -39,8 +38,7 @@
  *
  * IMAGE records always hold the image at its ORIGINAL resolution; the
  * display_width field records how wide the user chose to show it in the
- * editor (0 = default thumbnail sizing).  Version 1 blobs lack the
- * display_width field.
+ * editor (0 = default thumbnail sizing).
  *
  * A TEXT record holds one "run": a maximal span of characters that all
  * share the same formatting flags.  Formatting is a bitmask (ON_FMT_*) so
@@ -55,10 +53,8 @@
  * Images, tables and checkboxes occupy a character position on their line.
  * An ACTION record occupies none: it names the line, it is not in it.
  *
- * THE TAG LINE (version >= 8).  A note's first line is its tag line, under
+ * THE TAG LINE.  A note's first line is its tag line, under
  * ON_FMT_TAGLINE: the note's #tags, and the title is the line after it.
- * A blob below version 8 has none (the note loader gives it an empty one,
- * on_document_add_tag_line).
  * =========================================================================== */
 
 #ifndef ON_BNBF_H
@@ -150,12 +146,8 @@ void on_table_free(OnTable *table);
  * the caller decide (the deserializer reports, the extractor stops quietly).
  * ------------------------------------------------------------------------- */
 
-/* Current format version the writer emits.  Version 2 added the
- * display_width field to IMAGE records; version 3 added TABLE records;
- * version 4 added the tflags field to TABLE records; version 5 added CHECK
- * records; version 6 added ACTION records; version 7 added FILE records;
- * version 8 added the tag line (ON_FMT_TAGLINE on a note's first line).
- * All older versions are still readable.                                  */
+/* The format version the writer emits and the reader accepts (8: every
+ * stored note has been moved to it; earlier ones are no longer read).     */
 #define ON_BNBF_VERSION 8u
 
 /* Record type bytes.                                                      */

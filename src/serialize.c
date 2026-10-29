@@ -116,7 +116,7 @@ on_note_document_load(OnDatabase *db, gint64 id)
         on_document_free(doc);
         return NULL;
     }
-    on_document_add_tag_line(doc);   /* a blob from before the tag line   */
+    on_document_add_tag_line(doc);   /* a note with no content yet        */
     return doc;
 }
 

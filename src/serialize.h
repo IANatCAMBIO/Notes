@@ -150,25 +150,30 @@ gint64 on_note_new_from_text(OnDatabase *db, const gchar *tag,
 gint64 on_note_new_from_document(OnDatabase *db, const gchar *tag, OnDocument *doc);
 
 /* ---------------------------------------------------------------------------
- * on_note_for_event() — THE note taken for a Google Calendar event (the
- * day planner's double-click): the one made for it before, while it is
- * out of the Trash; else a new one — the event's title as its title, then,
- * when the cache lists attendees (on_db_event_attendees), an "Attendees:"
- * line, one bulleted line each and an empty line, then an empty line —
- * where the editor puts the caret (NotesEditorRevealEnd) — bound to the event
+ * on_note_for_event() — THE note taken for an occurrence of a calendar
+ * event (the day planner's double-click): the one made for it before,
+ * while it is out of the Trash; else a new one — the event's title as its
+ * title, then, when it has attendees, an "Attendees:" line, one bulleted
+ * line each and an empty line, then an empty line, where the editor puts
+ * the caret (NotesEditorRevealEnd) — bound to the occurrence
  * (on_db_event_note_bind).  A title starting with '!' is not made an
  * action item: the '!' prefix is dropped.  One write transaction.
  *   db          — open database.
- *   calendar_id — the event's calendar.
- *   event_id    — the event (an occurrence of a recurring one has its own).
- *   title       — the title the planner shows (UTF-8; a line break in it
- *                 becomes a space).
+ *   event_id    — the event's EventKit identifier.
+ *   occurrence  — the occurrence's start, unix seconds (a recurring
+ *                 event's occurrences share the identifier).
+ *   title       — the title the planner shows (UTF-8).
+ *   attendees   — the attendees' names (UTF-8), as the calendar lists
+ *                 them; a line break in a name or the title becomes a
+ *                 space.
+ *   n_attendees — how many.
  *   created     — out: true when a new note was made, false when the
- *                 event's note was found; may be NULL.
+ *                 occurrence's note was found; may be NULL.
  * Returns the note's id, or 0 on failure (nothing is written then).
  * ------------------------------------------------------------------------- */
-int64_t on_note_for_event(OnDatabase *db, const char *calendar_id, const char *event_id,
-                          const char *title, bool *created);
+int64_t on_note_for_event(OnDatabase *db, const char *event_id, int64_t occurrence,
+                          const char *title, const char *const *attendees,
+                          size_t n_attendees, bool *created);
 
 /* ---------------------------------------------------------------------------
  * on_note_document_release() — free a document that a save inside the

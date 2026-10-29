@@ -76,8 +76,8 @@ changed.
 
 **View → Show Day Planner** (⇧⌘D, or the calendar button in the toolbar)
 slides in the same day planner Tasks has, at the right of the library: the
-hours of a day, with the tasks you have scheduled and your Google Calendar
-meetings.  **Today**, the calendar button and the arrows step through the
+hours of a day, with the tasks you have scheduled and your meetings from
+the macOS Calendar.  **Today**, the calendar button and the arrows step through the
 days; a red line marks the time.
 
 Double-click a meeting to take notes on it: Notes makes a note titled
@@ -88,11 +88,13 @@ Double-clicking the meeting again opens that same note (a new one is made
 only if you have moved it to the Trash).  Each occurrence of a recurring
 meeting gets its own note.
 
-Notes has no Google sign-in of its own: the meetings are the ones **Tasks**
-syncs into the database the two apps share (Tasks → Settings → Google
-Calendar).  The planner shows what Tasks last pulled, refreshes as soon as
-Tasks writes, and shows no meetings while Tasks is not signed in.
-Sessions are planned in Tasks; here the planner is read-only.
+The meetings are the macOS Calendar's, so every account set up in the
+Calendar app — Google, iCloud, Exchange — shows, kept in sync by Calendar;
+Notes has no sign-in of its own and does not need Tasks.  Turn it on in
+**Settings → Calendar** (macOS asks once for access to your calendars) and
+choose the calendars to show.  Tasks' Settings has the same section: the
+two apps share the setting.  The planner redraws as soon as the calendar
+changes.  Sessions are planned in Tasks; here the planner is read-only.
 
 ## Working with Tasks (and agents) at the same time
 

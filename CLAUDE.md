@@ -68,8 +68,10 @@ make seed && make run   # the app on dev/data
   `shared_day_planner.h`; compiled in from `SHARED_UI_DIR`): change them
   there, for both apps.
 - `src/library_planner.[hm]` — the day planner's Notes side: reads the
-  calendar cache Tasks' sync writes; a double-click on an event is
-  `serialize.c` `on_note_for_event`.
+  macOS Calendar through `../shared_ui`'s `shared_calendar.h` (settings
+  shared with Tasks); a double-click on an event is `serialize.c`
+  `on_note_for_event`.  Tests never switch the calendar on: it is the
+  owner's real calendar.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written

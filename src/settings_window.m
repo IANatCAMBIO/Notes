@@ -19,7 +19,9 @@
 
 #import "editor_window.h"
 #import "shared_hotkey.h"
+#import "library_planner.h"
 #import "library_sidebar.h"
+#import "library_window.h"
 #import "look.h"
 #import "ui_util.h"
 
@@ -292,6 +294,7 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
 @property (nonatomic, strong) NSStackView  *backup_buttons;
+@property (nonatomic, strong) SharedCalendarSection *calendar; /* shared with Tasks' Settings */
 - (void)refresh_db;
 - (void)refresh_backup;
 - (void)show_sha:(NSString *)full;
@@ -349,6 +352,8 @@ init_with_lib:(NotesLibrary *)lib
     [headings addObject:[self add_database:rows]];
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_ai:rows]];
+    [ends addObject:rows.lastObject];
+    [headings addObject:[self add_calendar:rows]];
 
     NSStackView *stack = [NSStackView stackViewWithViews:rows];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -677,6 +682,29 @@ add_ai:(NSMutableArray<NSView *> *)rows
     self.ai_sub.spacing     = 4;
     self.ai_sub.edgeInsets  = NSEdgeInsetsMake(0, sub_inset, 0, 0);
     [rows addObject:self.ai_sub];
+    return head;
+}
+
+/*
+ * add_calendar: — the Calendar section (shared_calendar.h), the one Tasks'
+ * Settings shows too, without the calendar for Tasks' sessions.  A change
+ * redraws the library's day planner.
+ *
+ * Inputs:
+ *   rows — the column to append to
+ *
+ * Output: the section's heading.
+ */
+- (NSView *)
+add_calendar:(NSMutableArray<NSView *> *)rows
+{
+    NotesLibrary *lib  = self.lib;
+    NSTextField  *head = shared_ui_heading(@"Calendar");
+    [rows addObject:head];
+    self.calendar = [[SharedCalendarSection alloc]
+        init_with_settings:on_calendar_settings(lib) tasks:NO width:text_w - indent
+                   changed:^{ on_library_window_planner_changed(lib); }];
+    [rows addObject:indented(self.calendar.view, indent)];
     return head;
 }
 
@@ -1072,6 +1100,7 @@ ai_toggled:(NSButton *)sender
 windowWillClose:(NSNotification *)note
 {
     if (self.lib.app->notify_db_state == settings_notify_db_state) self.lib.app->notify_db_state = NULL;
+    [self.calendar shut_down];
     settings_window = nil;
 }
 

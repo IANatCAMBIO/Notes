@@ -11,6 +11,8 @@
     <string>APPL</string>
     <key>CFBundleSignature</key>
     <string>????</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Notes shows the events of the calendars you choose in its day planner, and makes a note of a meeting you double-click.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>

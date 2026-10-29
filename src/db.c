@@ -2348,30 +2348,17 @@ on_db_calendar_day(OnDatabase *db, int64_t lo, int64_t hi, on_cal_day_t *out)
     }
     sqlite3_finalize(tasks);
 
-    sqlite3_stmt *events = ok ? prepare(db,
-        "SELECT e.calendar_id, e.event_id, e.title, COALESCE(c.color, ''),"
-        "       e.start, e.end, e.all_day"
-        "  FROM gcal_event e LEFT JOIN gcal_calendar c ON c.id = e.calendar_id"
-        " WHERE e.start < ? AND e.end > ?"
-        " ORDER BY e.all_day DESC, e.start, e.end DESC") : NULL;
+    sqlite3_stmt *events = ok ? prepare(db, "SELECT event_id FROM cal_task") : NULL;
     if (events == NULL)
         return false;
-    sqlite3_bind_int64(events, 1, hi);
-    sqlite3_bind_int64(events, 2, lo);
     while (ok && sqlite3_step(events) == SQLITE_ROW) {
-        on_cal_event_t *e = grow((void **)&out->events, out->n_events, sizeof *e);
+        char **e = grow((void **)&out->session_events, out->n_session_events, sizeof *e);
         ok = e != NULL;
         if (!ok)
             break;
-        out->n_events++;
-        e->calendar_id = column_dup(events, 0);
-        e->event_id    = column_dup(events, 1);
-        e->title       = column_dup(events, 2);
-        e->color       = column_dup(events, 3);
-        e->start       = sqlite3_column_int64(events, 4);
-        e->end         = sqlite3_column_int64(events, 5);
-        e->all_day     = sqlite3_column_int(events, 6) != 0;
-        ok = e->calendar_id != NULL && e->event_id != NULL && e->title != NULL && e->color != NULL;
+        out->n_session_events++;
+        *e = column_dup(events, 0);
+        ok = *e != NULL;
     }
     sqlite3_finalize(events);
     return ok;
@@ -2387,47 +2374,26 @@ on_db_calendar_day_free(on_cal_day_t *day)
         return;
     for (size_t i = 0; i < day->n_tasks; i++)
         free(day->tasks[i].title);
-    for (size_t i = 0; i < day->n_events; i++) {
-        free(day->events[i].calendar_id);
-        free(day->events[i].event_id);
-        free(day->events[i].title);
-        free(day->events[i].color);
-    }
+    for (size_t i = 0; i < day->n_session_events; i++)
+        free(day->session_events[i]);
     free(day->tasks);
-    free(day->events);
+    free(day->session_events);
     memset(day, 0, sizeof *day);
-}
-
-/*
- * on_db_event_attendees — see db.h.
- */
-char *
-on_db_event_attendees(OnDatabase *db, const char *calendar_id, const char *event_id)
-{
-    sqlite3_stmt *stmt = prepare(db,
-        "SELECT attendees FROM gcal_event WHERE calendar_id = ? AND event_id = ?");
-    if (stmt == NULL)
-        return strdup("");
-    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
-    char *names = sqlite3_step(stmt) == SQLITE_ROW ? column_dup(stmt, 0) : strdup("");
-    sqlite3_finalize(stmt);
-    return names;
 }
 
 /*
  * on_db_event_note — see db.h.
  */
 int64_t
-on_db_event_note(OnDatabase *db, const char *calendar_id, const char *event_id)
+on_db_event_note(OnDatabase *db, const char *event_id, int64_t occurrence)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "SELECT g.note_id FROM gcal_note g JOIN notes n ON n.id = g.note_id"
-        " WHERE g.calendar_id = ? AND g.event_id = ? AND n." SHARED_DB_NOTE_VISIBLE_SQL);
+        "SELECT c.note_id FROM cal_note c JOIN notes n ON n.id = c.note_id"
+        " WHERE c.event_id = ? AND c.occurrence = ? AND n." SHARED_DB_NOTE_VISIBLE_SQL);
     if (stmt == NULL)
         return 0;
-    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 1, event_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, occurrence);
     int64_t note_id = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0;
     sqlite3_finalize(stmt);
     return note_id;
@@ -2437,15 +2403,14 @@ on_db_event_note(OnDatabase *db, const char *calendar_id, const char *event_id)
  * on_db_event_note_bind — see db.h.
  */
 bool
-on_db_event_note_bind(OnDatabase *db, const char *calendar_id, const char *event_id,
-                      int64_t note_id)
+on_db_event_note_bind(OnDatabase *db, const char *event_id, int64_t occurrence, int64_t note_id)
 {
     sqlite3_stmt *stmt = prepare(db,
-        "INSERT OR REPLACE INTO gcal_note (calendar_id, event_id, note_id) VALUES (?, ?, ?)");
+        "INSERT OR REPLACE INTO cal_note (event_id, occurrence, note_id) VALUES (?, ?, ?)");
     if (stmt == NULL)
         return false;
-    sqlite3_bind_text(stmt, 1, calendar_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, event_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 1, event_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, occurrence);
     sqlite3_bind_int64(stmt, 3, note_id);
     return stmt_done(db, stmt);
 }

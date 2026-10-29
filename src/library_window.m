@@ -518,7 +518,7 @@ windowWillClose:(NSNotification *)note
     }
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
-    [self.planner_host.view shut_down];
+    [self.planner_host shut_down];
     on_library_notes_closed();
     library_window    = nil;         /* may release self: last */
 }
@@ -728,6 +728,15 @@ on_library_window_ai_changed(NotesLibrary *lib)
         [toolbar removeItemAtIndex:(NSInteger)at];
         [toolbar removeItemAtIndex:(NSInteger)at - 1];              /* its space */
     }
+}
+
+/*
+ * on_library_window_planner_changed — see library_window.h.
+ */
+void
+on_library_window_planner_changed(NotesLibrary *lib)
+{
+    [library_window reload_planner];
 }
 
 /*

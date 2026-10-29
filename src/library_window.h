@@ -61,3 +61,13 @@ void on_library_window_location_changed(NotesLibrary *lib);
  *   lib — the library
  */
 void on_library_window_ai_changed(NotesLibrary *lib);
+
+/*
+ * on_library_window_planner_changed — the calendar settings changed
+ * (Settings' Calendar section): the day planner reads its day again,
+ * while it shows.
+ *
+ * Inputs:
+ *   lib — the library (unused: there is one window)
+ */
+void on_library_window_planner_changed(NotesLibrary *lib);

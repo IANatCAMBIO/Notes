@@ -1326,11 +1326,14 @@ block_is(OnDocument *doc, guint i, OnBlockKind kind, const char *text)
 }
 
 /*
- * test_calendar — the day planner's reads (on_db_calendar_day) and the
- * note taken for an event (on_note_for_event): made once, with the
- * event's title, an Attendees: line and its attendees as bullets, and two
- * empty lines; found again; made afresh
- * when the first one is in the Trash; a '!' title is no action item.
+ * test_calendar — the day planner's reads (on_db_calendar_day: the
+ * scheduled tasks and Tasks' session events) and the note taken for an
+ * occurrence of an event (on_note_for_event): made once, with the event's
+ * title, an Attendees: line and its attendees as bullets, and two empty
+ * lines; found again; another occurrence of the same event gets its own;
+ * made afresh when the first one is in the Trash; a '!' title is no
+ * action item.  The calendar's events themselves are the macOS Calendar's
+ * (shared_calendar.h), never read here.
  *
  * Inputs:
  *   db — the test database
@@ -1341,21 +1344,15 @@ static void
 test_calendar(OnDatabase *db)
 {
     const int64_t lo = 1791518400, hi = lo + 86400;   /* any 24 hours */
-    char sql[1024];
+    char sql[512];
     snprintf(sql, sizeof sql,
-             "INSERT INTO gcal_calendar (id, summary, color) VALUES ('cal', 'Work', '#336699');"
-             "INSERT INTO gcal_event (calendar_id, event_id, title, start, end, all_day, attendees)"
-             " VALUES ('cal', 'ev1', 'Design review', %lld, %lld, 0,"
-             "         'Ann Lee' || char(10) || 'bo@x.com'),"
-             "        ('cal', 'ev2', 'Offsite', %lld, %lld, 1, ''),"
-             "        ('cal', 'ev3', '! Urgent sync', %lld, %lld, 0, ''),"
-             "        ('cal', 'ev4', 'Tomorrow', %lld, %lld, 0, '');"
-             "INSERT INTO tasks (title, scheduled_start, scheduled_duration, status)"
-             " VALUES ('Write the plan', %lld, 90, 0), ('Done one', %lld, 0, %d);",
-             (long long)(lo + 36000), (long long)(lo + 39600), (long long)lo, (long long)hi,
-             (long long)(lo + 50400), (long long)(lo + 52200), (long long)(hi + 3600),
-             (long long)(hi + 7200), (long long)(lo + 32400), (long long)(lo + 43200),
-             SHARED_DB_TASK_STATUS_DONE);
+             "INSERT INTO tasks (id, title, scheduled_start, scheduled_duration, status)"
+             " VALUES (9001, 'Write the plan', %lld, 90, 0), (9002, 'Done one', %lld, 0, %d),"
+             "        (9003, 'Tomorrow', %lld, 30, 0);"
+             "INSERT INTO cal_task (task_id, calendar_id, event_id, pushed_start, pushed_duration)"
+             " VALUES (9001, 'work', 'session-1', %lld, 90);",
+             (long long)(lo + 32400), (long long)(lo + 43200), SHARED_DB_TASK_STATUS_DONE,
+             (long long)(hi + 3600), (long long)(lo + 32400));
     check(sqlite3_exec(db->handle, sql, NULL, NULL, NULL) == SQLITE_OK, "calendar: seeded");
 
     on_cal_day_t day;
@@ -1366,15 +1363,17 @@ test_calendar(OnDatabase *db)
     check(day.n_tasks == 2 && day.tasks[1].done &&
           day.tasks[1].duration == SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT,
           "calendar: a done task, and the default length when none is stored");
-    check(day.n_events == 3 && day.events[0].all_day &&
-          strcmp(day.events[1].event_id, "ev1") == 0 &&
-          strcmp(day.events[1].color, "#336699") == 0,
-          "calendar: the day's events, all-day first, with their calendar's colour");
+    check(day.n_session_events == 1 && strcmp(day.session_events[0], "session-1") == 0,
+          "calendar: the sessions' events, to leave out of the calendar's");
     on_db_calendar_day_free(&day);
     check(day.n_tasks == 0 && day.tasks == NULL, "calendar: freeing zeroes the day");
+    sqlite3_exec(db->handle, "DELETE FROM cal_task; DELETE FROM tasks WHERE id > 9000;",
+                 NULL, NULL, NULL);
 
+    const char *const people[] = { "Ann Lee", "bo@x.com" };
+    const int64_t     at       = lo + 36000;
     bool    created = false;
-    gint64  note    = on_note_for_event(db, "cal", "ev1", "Design review", &created);
+    gint64  note    = on_note_for_event(db, "ev1", at, "Design review", people, 2, &created);
     check(note != 0 && created, "event note: made on the first double-click");
     OnNoteMeta *m = on_db_note_get(db, note);
     check(m != NULL && strcmp(m->title, "Design review") == 0, "event note: titled by the event");
@@ -1390,26 +1389,34 @@ test_calendar(OnDatabase *db)
           "event note: an Attendees: line, one bullet each, then two empty lines");
     on_document_free(doc);
 
-    check(on_note_for_event(db, "cal", "ev1", "Design review", &created) == note && !created,
-          "event note: found again, not made twice");
+    check(on_note_for_event(db, "ev1", at, "Design review", people, 2, &created) == note &&
+          !created, "event note: found again, not made twice");
+    int64_t next_week = on_note_for_event(db, "ev1", at + 7 * 86400, "Design review", people, 2,
+                                          &created);
+    check(next_week != 0 && next_week != note && created,
+          "event note: another occurrence of the event gets its own note");
     check(on_db_notes_trash(db, &note, 1), "event note: trashed");
-    int64_t again = on_note_for_event(db, "cal", "ev1", "Design review", &created);
+    int64_t again = on_note_for_event(db, "ev1", at, "Design review", people, 2, &created);
     check(again != 0 && again != note && created, "event note: made afresh over a trashed one");
 
-    int64_t urgent = on_note_for_event(db, "cal", "ev3", "! Urgent sync", &created);
+    const char *const broken[] = { "Cy\nDee" };
+    int64_t urgent = on_note_for_event(db, "ev3", at, "! Urgent sync", broken, 1, &created);
     doc = urgent != 0 ? on_note_document_load(db, urgent) : NULL;
-    check(doc != NULL && on_document_n_blocks(doc) == 3 &&
-          block_is(doc, 1, ON_BLOCK_PARA, "Urgent sync") &&
-          block_is(doc, 2, ON_BLOCK_PARA, ""),
-          "event note: a '!' title is no action item; no attendees, an empty body line");
+    check(doc != NULL && block_is(doc, 1, ON_BLOCK_PARA, "Urgent sync") &&
+          block_is(doc, 3, ON_BLOCK_BULLET, "Cy Dee"),
+          "event note: a '!' title is no action item; a line break in a name is a space");
     on_document_free(doc);
 
-    int64_t gone = on_note_for_event(db, "cal", "not-cached", "Left the cache", &created);
-    check(gone != 0 && created, "event note: an event no longer cached still gets its note");
+    int64_t alone = on_note_for_event(db, "ev4", at, "Focus time", NULL, 0, &created);
+    doc = alone != 0 ? on_note_document_load(db, alone) : NULL;
+    check(doc != NULL && on_document_n_blocks(doc) == 3 &&
+          block_is(doc, 2, ON_BLOCK_PARA, ""),
+          "event note: no attendees, no Attendees: line, an empty body line");
+    on_document_free(doc);
 
-    gint64  ids[] = { note, again, urgent, gone };
-    on_db_notes_delete(db, ids, 4);
-    check(on_db_event_note(db, "cal", "ev1") == 0, "event note: deleting the note unbinds it");
+    gint64  ids[] = { note, next_week, again, urgent, alone };
+    on_db_notes_delete(db, ids, 5);
+    check(on_db_event_note(db, "ev1", at) == 0, "event note: deleting the note unbinds it");
 }
 
 int

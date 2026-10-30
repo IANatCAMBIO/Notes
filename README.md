@@ -96,6 +96,29 @@ choose the calendars to show.  Tasks' Settings has the same section: the
 two apps share the setting.  The planner redraws as soon as the calendar
 changes.  Sessions are planned in Tasks; here the planner is read-only.
 
+## Summarizing the last meeting
+
+A weekly meeting leaves one note per occurrence, all with the same title
+and different dates.  While you write this week's note, the **clock in the
+editor's toolbar** summarizes the last one: Notes takes the most recent
+earlier note with the same title, sends it to an AI command, and shows the
+answer in a small panel titled after the meeting and its date.  The text is
+selectable, so ⌘C copies it; Close (or Escape) dismisses the panel and
+stops a summary still being written.  The same thing is in **View →
+Summarize Last Meeting**.
+
+The series is found by title, not by the calendar: a note you titled by
+hand counts as an occurrence too, and a rescheduled meeting still finds its
+predecessor.  A note with no earlier namesake says so and runs nothing.
+
+Turn it on in **Settings → AI Features**: *Enable AI features* is the master
+switch for this and the library's AI Summary, and *Offer a summary of the
+last meeting in the editor* shows or hides the clock.  The command defaults
+to `claude -p` — the local Claude Code, read from stdin, written to stdout —
+and the usual install directories are searched, so no full path is needed.
+Name any other agent in *Meeting command* to use it instead; emptying the
+field puts the default back.
+
 ## Working with Tasks (and agents) at the same time
 
 Both apps — and an AI agent using the shared-data skill — may have the file

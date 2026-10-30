@@ -598,7 +598,7 @@ build_menu_bar
     add_commands(view_menu, @[
         @"view-list", @"view-grid", menu_rule,
         @"toggle-sidebar", @"toggle-favorites", @"toggle-day-planner", @"toggle-done", menu_rule,
-        @"media", @"ai-summary", menu_rule,
+        @"media", @"ai-summary", @"meeting-summary", menu_rule,
     ]);
     [view_menu addItem:make_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
                                  cmd | NSEventModifierFlagControl)];

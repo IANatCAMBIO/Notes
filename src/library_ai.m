@@ -7,12 +7,13 @@
  *
  * The AI Summary command summarises the SELECTED notes: their text and
  * action items go, after a short request, to the configured command's
- * stdin, and what it writes to stdout (and stderr) is shown in the pane.
- * The command line is run by /bin/sh, so it is quoted as in a shell (the
- * GTK build split it with the same rules).  The command runs off the main
- * thread; while it does, the status bar shows a throbber and a second
- * request is ignored.  The pane sits under the notes in a split the user
- * can resize, with Copy and ✕ in its header.
+ * stdin, and what it writes to stdout — or to stderr, when stdout stays
+ * empty — is shown in the pane.
+ * The prompt and the command are ai_run.h's, which the editor's
+ * last-meeting summary shares.  The command runs off the main thread;
+ * while it does, the status bar shows a throbber and a second request is
+ * ignored.  The pane sits under the notes in a split the user can resize,
+ * with Copy and ✕ in its header.
  */
 
 #import "library_ai.h"
@@ -22,14 +23,10 @@
 #import "look.h"
 #import "ui_util.h"
 
+#include "ai_run.h"
 #include "app_core.h"
 #include "commands.h"
 #include "db.h"
-#include "serialize.h"
-
-#include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 
 /* How often the status-bar throbber moves (seconds). */
 static const double throbber_s = 0.12;
@@ -38,51 +35,7 @@ static const double throbber_s = 0.12;
 static const CGFloat first_pane_h = 220.0;
 
 /* The prompt's opening (GTK run_ai_summary's Normal mode). */
-static NSString * const prompt_normal  = @"Provide me a brief summary of these notes.\n\n";
-static NSString * const prompt_plain   = @"Respond in plain text only. Do not use markdown formatting such as headers, "
-                                          "bold, italics, or bullet symbols.\n\n";
-
-/*
- * build_prompt — the text sent to the AI command: the request, the
- * plain-text instruction, then each note with its date, body and action
- * items.
- *
- * Inputs:
- *   db  — the database
- *   ids — the notes, in order
- *
- * Output: the prompt, or nil when none of the notes exists.
- */
-static NSString *
-build_prompt(OnDatabase *db, NSArray<NSNumber *> *ids)
-{
-    NSMutableString *p = [NSMutableString string];
-    [p appendString:prompt_normal];
-    [p appendString:prompt_plain];
-    [p appendString:@"=== Notes ===\n\n"];
-    NSUInteger found = 0;
-    for (NSNumber *n in ids) {
-        OnNoteMeta *m = on_db_note_get(db, n.longLongValue);
-        if (m == NULL) continue;
-        found++;
-        [p appendFormat:@"--- %@ (modified %@) ---\n", m->title ? @(m->title) : @"(untitled)", shared_ui_format_date(m->updated_at, shared_ui_date_iso)];
-        on_db_note_meta_free(m);
-        gchar *body = on_note_text_cached(db, n.longLongValue);   /* fills an empty cache */
-        [p appendString:body && *body ? [@(body) stringByAppendingString:@"\n"] : @"(empty note)\n"];
-        g_free(body);
-        GList *items = on_db_action_list_for_note(db, n.longLongValue);
-        if (items) [p appendString:@"\nAction items:\n"];
-        for (GList *l = items; l != NULL; l = l->next) {
-            const OnActionItem *it = l->data;
-            [p appendFormat:@"  %@ %@", it->done ? @"[done]" : @"[    ]", @(it->text ? it->text : "")];
-            if (it->due) [p appendFormat:@" (due %@)", shared_ui_format_date(it->due, shared_ui_date_iso)];
-            [p appendString:@"\n"];
-        }
-        on_db_action_list_free(items);
-        [p appendString:@"\n"];
-    }
-    return found ? p : nil;
-}
+static NSString * const prompt_normal = @"Provide me a brief summary of these notes.\n\n";
 
 /* ── The pane ───────────────────────────────────────────────────────────── */
 
@@ -96,41 +49,6 @@ build_prompt(OnDatabase *db, NSArray<NSNumber *> *ids)
 
 /* The pane of the (one) library window. */
 static __weak NotesAIPane *ai_pane;
-
-/*
- * read_until_exit — a command's output: everything it writes until the end
- * of the stream, or, once it has exited, whatever is still buffered (a
- * child it left in the background may hold the pipe open, and the end
- * would never come).
- *
- * Inputs:
- *   fd   — the read end of the command's stdout/stderr pipe
- *   task — the command
- *
- * Output: the bytes.
- */
-static NSData *
-read_until_exit(int fd, NSTask *task)
-{
-    NSMutableData *out = [NSMutableData data];
-    char           buf[16384];
-    for (;;) {
-        struct pollfd p = { fd, POLLIN, 0 };
-        int ready = poll(&p, 1, 200);
-        if (ready > 0) {
-            ssize_t n = read(fd, buf, sizeof buf);
-            if (n > 0) {
-                [out appendBytes:buf length:(NSUInteger)n];
-                continue;
-            }
-            if (n < 0 && errno == EINTR) continue;
-            break;                   /* the end of the stream, or an error   */
-        }
-        if (ready < 0 && errno != EINTR) break;
-        if (ready == 0 && !task.isRunning) break;   /* exited, nothing left */
-    }
-    return out;
-}
 
 @implementation NotesAIPane
 
@@ -277,69 +195,37 @@ summarise
         [self fail:@"Select one or more notes to summarize."];
         return;
     }
-    NSString *prompt = build_prompt(app->db, ids);
+    NSString *prompt = on_ai_prompt(prompt_normal, app->db, ids);
     if (prompt == nil) {
         [self fail:@"No notes to summarize."];
         return;
     }
-    [self run_command:@(app->ai_command) input:prompt];
-}
-
-/*
- * run_command:input: — run the command with the prompt on its stdin, off
- * the main thread; its output lands in the pane.
- *
- * Inputs:
- *   command — the command line (run by /bin/sh)
- *   input   — the prompt
- */
-- (void)
-run_command:(NSString *)command input:(NSString *)input
-{
-    NSTask *task = [[NSTask alloc] init];
-    task.executableURL  = [NSURL fileURLWithPath:@"/bin/sh"];
-    task.arguments      = @[@"-c", command];
-    NSPipe *in = [NSPipe pipe], *out = [NSPipe pipe];
-    task.standardInput  = in;
-    task.standardOutput = out;
-    task.standardError  = out;
-    NSError *error = nil;
-    if (![task launchAndReturnError:&error]) {
-        [self fail:[NSString stringWithFormat:@"Failed to start AI command: %@", error.localizedDescription]];
-        return;
-    }
-    self.task = task;
-    fcntl(in.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1);   /* a command that ignores stdin */
-    NSData *bytes = [input dataUsingEncoding:NSUTF8StringEncoding];
     __weak NotesAIPane *ws = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            [in.fileHandleForWriting writeData:bytes error:NULL];   /* while stdout drains */
-            [in.fileHandleForWriting closeFile];
-        });
-        NSData *result = read_until_exit(out.fileHandleForReading.fileDescriptor, task);
-        [task waitUntilExit];
-        dispatch_async(dispatch_get_main_queue(), ^{ [ws finished:task output:result]; });
+    NSError *error = nil;
+    self.task = on_ai_run(@(app->ai_command), prompt, &error, ^(NSTask *task, NSString *output) {
+        [ws finished:task output:output];
     });
+    if (self.task == nil)
+        [self fail:[NSString stringWithFormat:@"Failed to start AI command: %@", error.localizedDescription]];
 }
 
 /*
  * finished:output: — the command exited: show what it wrote, from the
- * top.  A pane whose window closed meanwhile drops the result.
+ * top.  A pane whose window closed meanwhile, or whose summary was
+ * replaced by a later one, drops the result.
  *
  * Inputs:
  *   task   — the finished command
- *   output — its stdout and stderr
+ *   output — its answer (ai_run.h), or nil when it wrote nothing
  */
 - (void)
-finished:(NSTask *)task output:(NSData *)output
+finished:(NSTask *)task output:(NSString *)output
 {
     if (task != self.task) return;
     self.task = nil;
     [self stop_throbber];
     on_app_status(self.lib.app, "Summary generation complete");
-    NSString *text = output.length ? [[NSString alloc] initWithData:output encoding:NSUTF8StringEncoding] : nil;
-    self.text.string = text ?: @"(no output)";
+    self.text.string = output ?: @"(no output)";
     [self.text scrollRangeToVisible:NSMakeRange(0, 0)];
 }
 

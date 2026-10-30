@@ -3,8 +3,10 @@
  *
  * Specification: the GTK build's src/settings_window.c.  One column,
  * as the GTK window and the Files app's Preferences have it: Appearance,
- * Editor, Database (the health plate and the rotating backups) and AI
- * Features, scrolling once it is taller than on_look_settings_max_h.
+ * Editor, Database (the health plate and the rotating backups), AI
+ * Features (the master switch, the AI Summary's command and the editor's
+ * last-meeting summary) and Calendar, scrolling once it is taller than
+ * on_look_settings_max_h.
  *
  * Every control writes through at once — on_app_config_set, then
  * on_app_prefs_load so OnApp (the one reader of a preference) follows,
@@ -44,6 +46,9 @@ static const CGFloat sub_inset = 24.0;
 
 /* How much wider than its content the window opens, for breathing room. */
 static const CGFloat extra_w = 20.0;
+
+/* The AI section's command fields, both at one width. */
+static const CGFloat field_w = text_w - sub_inset - 90.0;
 
 /* How much of the 64-character digest is shown (GTK SHA_HEAD / SHA_TAIL). */
 static const NSUInteger sha_head = 8;
@@ -90,6 +95,10 @@ static const bool_setting_t editor_settings[] = {
     { "New Note (\u2303\u2325\u2318N) works from any app",             "new_note_hotkey",        apply_hotkey  },
 };
 
+static const bool_setting_t ai_settings[] = {
+    { "Offer a summary of the last meeting in the editor", "meeting_summary", apply_editors },
+};
+
 /*
  * setting_on — a checkbox setting's current value, read from OnApp (its
  * one reader, which knows each key's default).
@@ -115,6 +124,7 @@ setting_on(const OnApp *app, const char *key)
         { "compact_editor_toolbar", offsetof(OnApp, compact_editor_toolbar) },
         { "statusbar_note_id",      offsetof(OnApp, statusbar_note_id)      },
         { "drop_files_last_line",   offsetof(OnApp, drop_files_last_line)   },
+        { "meeting_summary",        offsetof(OnApp, meeting_summary)        },
         { "new_note_hotkey",        offsetof(OnApp, new_note_hotkey)        },
     };
     for (size_t i = 0; i < sizeof fields / sizeof *fields; i++)
@@ -290,6 +300,8 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSButton     *backup_now;
 @property (nonatomic, strong) NSTextField  *viewer;
 @property (nonatomic, strong) NSTextField  *ai_command;
+@property (nonatomic, strong) NSButton     *meeting_on;
+@property (nonatomic, strong) NSTextField  *meeting_command;
 @property (nonatomic, strong) NSStackView  *ai_sub;
 @property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
@@ -643,7 +655,9 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
 }
 
 /*
- * add_ai: — the AI master switch and, enabled with it, the command.
+ * add_ai: — the AI master switch and, enabled with it, the command the AI
+ * Summary runs, then the editor's last-meeting summary with its own
+ * command (meeting_summary.h), which has a working default.
  *
  * Inputs:
  *   rows — the column to append to
@@ -657,8 +671,9 @@ add_ai:(NSMutableArray<NSView *> *)rows
     NSTextField *head = shared_ui_heading(@"AI Features");
     [rows addObject:head];
     [rows addObject:indented(shared_ui_note(@"The AI button in the library toolbar generates a summary of the selected "
-                                        "notes using an external AI command. This switch is a master kill "
-                                        "switch: disabling it hides the button and prevents all AI commands "
+                                        "notes, and the clock in an editor's toolbar a summary of the last "
+                                        "meeting, using external AI commands. This switch is a master kill "
+                                        "switch: disabling it hides both buttons and prevents all AI commands "
                                         "from running.", text_w), indent)];
     NSButton *enable = [NSButton checkboxWithTitle:@"Enable AI features" target:self action:@selector(ai_toggled:)];
     enable.state = app->ai_enabled ? NSControlStateValueOn : NSControlStateValueOff;
@@ -666,16 +681,34 @@ add_ai:(NSMutableArray<NSView *> *)rows
 
     self.ai_command = [NSTextField textFieldWithString:app->ai_command ? @(app->ai_command) : @""];
     self.ai_command.identifier        = @"ai-command";
-    self.ai_command.placeholderString = @"e.g. /usr/local/bin/claude";
+    self.ai_command.placeholderString = @"e.g. claude -p";
     self.ai_command.delegate          = self;
-    [self.ai_command.widthAnchor constraintEqualToConstant:text_w - sub_inset - 90].active = YES;
+    [self.ai_command.widthAnchor constraintEqualToConstant:field_w].active = YES;
 
-    NSTextField *cmd_hint = shared_ui_note(@"Run “which claude” in a terminal to find your Claude Code command path. "
-                                       "The command must read the prompt from stdin and write the response to "
-                                       "stdout.", text_w);
+    NSTextField *cmd_hint = shared_ui_note(@"The command must read the prompt from stdin and write the response to "
+                                       "stdout. A bare “claude -p” is found in the usual places; run “which "
+                                       "claude” in a terminal for the full path of another tool.", text_w);
     cmd_hint.preferredMaxLayoutWidth = text_w - sub_inset;
+
+    self.meeting_on = [self check_for:&ai_settings[0]];
+    self.meeting_on.toolTip = @"A clock in the editor's toolbar summarizes the most recent earlier note "
+                               "with the same title — the last meeting of a weekly series";
+
+    self.meeting_command = [NSTextField textFieldWithString:app->meeting_command ? @(app->meeting_command) : @""];
+    self.meeting_command.identifier        = @"meeting-command";
+    self.meeting_command.placeholderString = @ON_MEETING_COMMAND_DEFAULT;
+    self.meeting_command.delegate          = self;
+    [self.meeting_command.widthAnchor constraintEqualToConstant:field_w].active = YES;
+
+    NSTextField *meeting_hint = shared_ui_note(@"Emptying it puts back “" ON_MEETING_COMMAND_DEFAULT "”, the local "
+                                           "Claude Code command; name another agent here to use it instead.",
+                                           text_w);
+    meeting_hint.preferredMaxLayoutWidth = text_w - sub_inset;
+
     self.ai_sub = [NSStackView stackViewWithViews:@[
         row(@[[NSTextField labelWithString:@"AI command:"], self.ai_command]), cmd_hint,
+        self.meeting_on,
+        row(@[[NSTextField labelWithString:@"Meeting command:"], self.meeting_command]), meeting_hint,
     ]];
     self.ai_sub.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.ai_sub.alignment   = NSLayoutAttributeLeading;
@@ -838,12 +871,17 @@ refresh_backup
 }
 
 /*
- * refresh_ai — the command is usable only while AI is on.
+ * refresh_ai — the commands and the last-meeting switch are usable only
+ * while AI is on: it is the master switch, and with it off no AI command
+ * runs anywhere.
  */
 - (void)
 refresh_ai
 {
-    self.ai_command.enabled = self.lib.app->ai_enabled;
+    BOOL on = self.lib.app->ai_enabled;
+    self.ai_command.enabled      = on;
+    self.meeting_on.enabled      = on;
+    self.meeting_command.enabled = on;
 }
 
 /* ── Actions ──────────────────────────────────────────────────────────── */
@@ -921,8 +959,9 @@ grid_group_changed:(NSPopUpButton *)sender
 }
 
 /*
- * controlTextDidChange: — the image viewer or AI command, written as it is
- * typed; empty clears the setting.
+ * controlTextDidChange: — the image viewer or one of the AI commands,
+ * written as it is typed; empty clears the setting (and the meeting
+ * command falls back to its default).
  *
  * Inputs:
  *   note — the notification (its object is the field)
@@ -932,8 +971,9 @@ controlTextDidChange:(NSNotification *)note
 {
     NSTextField *field = note.object;
     const char  *value = field.stringValue.length ? field.stringValue.UTF8String : NULL;
-    if (field == self.viewer)          [self write_setting:"image_viewer" value:value];
-    else if (field == self.ai_command) [self write_setting:"ai_command" value:value];
+    if (field == self.viewer)               [self write_setting:"image_viewer" value:value];
+    else if (field == self.ai_command)      [self write_setting:"ai_command" value:value];
+    else if (field == self.meeting_command) [self write_setting:"meeting_command" value:value];
 }
 
 /*
@@ -1076,7 +1116,7 @@ backup_now:(id)sender
 
 /*
  * ai_toggled: — the AI master switch: write it, enable the rest with it,
- * and let the library show or hide its AI control.
+ * let the library show or hide its AI control and every editor its clock.
  *
  * Inputs:
  *   sender — the checkbox
@@ -1088,6 +1128,7 @@ ai_toggled:(NSButton *)sender
     [self refresh_ai];
     OnApp *app = self.lib.app;
     if (app->notify_ai_changed) app->notify_ai_changed(app);
+    on_editor_settings_changed();
 }
 
 /*

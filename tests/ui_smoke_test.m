@@ -1701,6 +1701,113 @@ drag_right(NSButton *btn, CGFloat dx)
 }
 
 /*
+ * meeting_panel — the last-meeting summary's tool panel on screen, by the
+ * start of its title.
+ *
+ * Inputs:
+ *   prefix — what its title bar starts with
+ *
+ * Output: the panel's window, or nil.
+ */
+static NSWindow *
+meeting_panel(NSString *prefix)
+{
+    for (NSWindow *w in NSApp.windows) {
+        if (w.visible && [w isKindOfClass:NSPanel.class] && [w.title hasPrefix:prefix]) return w;
+    }
+    return nil;
+}
+
+/*
+ * test_meeting_summary — the editor's clock (meeting_summary.h): the note
+ * before this one in its series — the most recent note with the same
+ * title — goes to the configured command, and what the command writes
+ * fills a tool panel titled after the meeting and its date.  The clock is
+ * there only while AI and the setting are on, and a note with no earlier
+ * namesake says so instead of running anything.
+ */
+static void
+test_meeting_summary(void)
+{
+    NSString *last_week = @"last week we agreed to ship on Friday";
+    gchar    *older     = g_strdup_printf("Weekly Sync\n%s", last_week.UTF8String);
+    new_note(older);                     /* its id is not needed: it is found by title */
+    g_free(older);
+    gint64 fresh = new_note("Weekly Sync\n");
+    gint64 lone  = new_note("A meeting of its own\nbody");
+
+    gboolean ai_was      = app.ai_enabled;
+    gboolean meeting_was = app.meeting_summary;
+    gchar   *command_was = app.meeting_command;
+    app.meeting_command  = g_strdup("/bin/cat");       /* writes the prompt back out */
+
+    __weak NSWindow *weak_panel = nil;
+    @autoreleasepool {
+        on_editor_window_open(&app, fresh, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow *window = editor_window_titled(@"Weekly Sync");
+        NSWindowController<NSUserInterfaceValidations> *ed = (id)window.windowController;
+        NSMenuItem *clock = command_item(@"meeting-summary");
+
+        app.ai_enabled      = FALSE;
+        app.meeting_summary = TRUE;
+        on_editor_settings_changed();
+        check(window != nil && view_with_identifier(window.contentView, @"meeting-summary") == nil &&
+              ![ed validateUserInterfaceItem:clock],
+              "with AI off the editor has no clock and will not summarise");
+        app.ai_enabled      = TRUE;
+        app.meeting_summary = FALSE;
+        on_editor_settings_changed();
+        check(view_with_identifier(window.contentView, @"meeting-summary") == nil,
+              "nor with the last-meeting setting off");
+        app.meeting_summary = TRUE;
+        on_editor_settings_changed();
+        NSButton *button = (NSButton *)view_with_identifier(window.contentView, @"meeting-summary");
+        check(button != nil && button.image != nil && [ed validateUserInterfaceItem:clock],
+              "with both on, the format bar carries the clock and the command is enabled");
+
+        send_command(window, clock);
+        pump(0.3);
+        NSString *today = shared_ui_format_date((gint64)NSDate.date.timeIntervalSince1970, shared_ui_date_day);
+        NSWindow *panel = meeting_panel(@"Weekly Sync — ");
+        NSTextView *text = (NSTextView *)view_with_identifier(panel.contentView, @"meeting-summary-text");
+        check(panel != nil && text != nil && window.attachedSheet == nil &&
+              [panel.title isEqualToString:[NSString stringWithFormat:@"Weekly Sync — %@ — Summary", today]],
+              "the summary opens in a tool panel titled after the meeting and its date");
+        for (int i = 0; i < 80 && ![text.string containsString:last_week]; i++) pump(0.05);
+        check([text.string containsString:@"=== Notes ===\n\n--- Weekly Sync ("] &&
+              [text.string containsString:last_week] && !text.editable,
+              "the command is given the previous note and its output fills the panel");
+        check([text.string containsString:@"previous meeting in a recurring series"],
+              "with a request that asks for the last meeting's summary");
+        check(save_snapshots(panel, @"meeting-summary"), "meeting summary snapshots written, light and dark");
+        weak_panel = panel;
+        check(answer_panel(@"Close"), "Close is its one button");
+        [window close];
+    }
+    pump(0.3);
+    check(weak_panel == nil, "the closed panel is deallocated");
+
+    @autoreleasepool {
+        on_editor_window_open(&app, lone, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow *window = editor_window_titled(@"A meeting of its own");
+        send_command(window, command_item(@"meeting-summary"));
+        pump(0.3);
+        check(meeting_panel(@"A meeting of its own") == nil && answer_panel(@"OK"),
+              "a note with no earlier namesake says so and runs nothing");
+        [window close];
+    }
+    pump(0.3);
+
+    g_free(app.meeting_command);
+    app.meeting_command = command_was;
+    app.ai_enabled      = ai_was;
+    app.meeting_summary = meeting_was;
+    on_editor_settings_changed();
+}
+
+/*
  * test_edit_tag — Edit Tag asks in the app's own tool panel, never a
  * native alert or sheet: the tag's name is shown, not editable; OK stores
  * the emoji and Notes' favorite flag, and the favorite gets a button in
@@ -3878,6 +3985,7 @@ main(void)
         test_outside_changes();
         test_open_note_sync();
         test_editor_commands();
+        test_meeting_summary();
         test_inline_image();
         test_file_attachment();
         test_drop_last_line();

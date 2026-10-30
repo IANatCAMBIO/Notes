@@ -22,6 +22,7 @@
 #import "editor_window.h"
 #import "commands.h"
 #import "image_viewer.h"
+#import "meeting_summary.h"
 #import "library_state.h"
 #import "note_view.h"
 #import "ui_util.h"
@@ -605,6 +606,41 @@ validate_keep_on_top(id target, id item, SharedCommandState *state)
     return YES;
 }
 
+/*
+ * run_meeting_summary — "meeting-summary" (the format bar's clock): the
+ * summary of the previous meeting of this note's series, in a tool panel
+ * (meeting_summary.h).
+ *
+ * Inputs:
+ *   target — the editor
+ *   sender — the item (unused)
+ */
+static void
+run_meeting_summary(id target, id sender)
+{
+    NotesEditorWindow *ed = target;
+    on_meeting_summary_show(ed.app, ed.note_id, ed.window.title, ed.window);
+}
+
+/*
+ * validate_meeting_summary — usable while the feature is on and the note
+ * has a title to find its series by (meeting_summary.h); the window title
+ * is the note's live title.
+ *
+ * Inputs:
+ *   target — the editor
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES when the summary may run.
+ */
+static BOOL
+validate_meeting_summary(id target, id item, SharedCommandState *state)
+{
+    NotesEditorWindow *ed = target;
+    return on_meeting_summary_can_run(ed.app, ed.window.title);
+}
+
 /* Every command an editor runs. */
 static const shared_command_handler_t editor_commands[] = {
     { @"find",             run_find,           NULL                    },
@@ -627,6 +663,7 @@ static const shared_command_handler_t editor_commands[] = {
     { @"insert-emoji",     run_insert_emoji,   validate_editing        },
     { @"insert-date",      run_insert_date,    validate_editing        },
     { @"keep-on-top",      run_keep_on_top,    validate_keep_on_top    },
+    { @"meeting-summary",  run_meeting_summary, validate_meeting_summary },
 };
 #define EDITOR_COMMAND_COUNT (sizeof editor_commands / sizeof *editor_commands)
 
@@ -872,8 +909,10 @@ build_format_bar
 /*
  * rebuild_format_groups — (re)make the style groups for the current
  * compact_editor_toolbar setting: in compact mode the heading/body buttons
- * become one "Aa" menu and the three list buttons one "≡" menu.  The find
- * field is not touched, so a search survives.
+ * become one "Aa" menu and the three list buttons one "≡" menu.  The
+ * clock that summarises the last meeting follows them while that feature
+ * is on (meeting_summary.h).  The find field is not touched, so a search
+ * survives.
  */
 - (void)
 rebuild_format_groups
@@ -907,6 +946,10 @@ rebuild_format_groups
     [views addObject:group_separator()];
     [views addObject:format_menu(@"+", on_look_format_icon, @"Insert an image, a table, an emoji, or today's date at the cursor",
                                  @[@"insert-image", @"insert-table", @"insert-emoji", @"insert-date"])];
+    if (on_meeting_summary_enabled(self.app)) {
+        [views addObject:group_separator()];
+        [views addObject:format_button(@"clock.arrow.circlepath", @"", @"meeting-summary", NO)];
+    }
 
     NSStackView *groups = [NSStackView stackViewWithViews:views];
     groups.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -1475,8 +1518,8 @@ windowWillClose:(NSNotification *)note
 
 /*
  * on_settings_changed — re-read preferences: the view's (title line, code
- * line numbers, …), the format bar's compact mode, the status bar's path
- * and note id.
+ * line numbers, …), the format bar's compact mode and its clock, the
+ * status bar's path and note id.
  */
 - (void)
 on_settings_changed

@@ -88,6 +88,8 @@ static const double on_look_spinner_delay    = 0.2;    /* a wait this long shows
 static const double on_look_media_w          = 780.0;
 static const double on_look_media_h          = 560.0;
 static const double on_look_settings_max_h   = 600.0;
+static const double on_look_summary_w        = 420.0;  /* the last-meeting summary panel's text, */
+static const double on_look_summary_h        = 260.0;  /* which sizes the panel (it never resizes) */
 
 
 /* ── Library ──────────────────────────────────────────────────────────────── */

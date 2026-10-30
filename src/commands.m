@@ -94,6 +94,8 @@ static const shared_command_t commands[] = {
     { @"insert-date",      @"Date",                    @"d", cmd,       win, nil, nil },
     { @"keep-on-top",      @"Keep on Top",             @"",  0,         win, nil,
       @"Keep this window on top" },
+    { @"meeting-summary",  @"Summarize Last Meeting",  @"",  0,         win, @"clock.arrow.circlepath",
+      @"Summarize the previous meeting: the most recent earlier note with this title" },
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 

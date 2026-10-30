@@ -72,6 +72,12 @@ make seed && make run   # the app on dev/data
   shared with Tasks); a double-click on an event is `serialize.c`
   `on_note_for_event`.  Tests never switch the calendar on: it is the
   owner's real calendar.
+- `src/ai_run.[hm]` — THE launcher of an AI command (the prompt on its
+  stdin, its output back on the main thread) and THE builder of its
+  prompt; `src/library_ai.[hm]` is the library's AI Summary pane,
+  `src/meeting_summary.[hm]` the editor's clock: the previous note with
+  this note's title — the last meeting of a series — summarised in a tool
+  panel.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written

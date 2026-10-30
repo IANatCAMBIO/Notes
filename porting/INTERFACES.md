@@ -105,6 +105,10 @@ src/                 flat; one module = one .h + one .c or .m
   library_planner.[hm]   the day planner's Notes side (the panel is
                          ../shared_ui's shared_day_planner.[hm])
   settings_window.[hm] search_window.[hm] media_window.[hm] library_ai.[hm]  (H)
+  ai_run.[hm]            THE launcher of an AI command and the builder of
+                         its prompt (library_ai and meeting_summary share it)
+  meeting_summary.[hm]   the editor's clock: the previous note with this
+                         note's title, summarised in a tool panel
 tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
 resources/           Info.plist

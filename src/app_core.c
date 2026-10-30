@@ -37,6 +37,7 @@ static const bool_pref_t bool_prefs[] = {
     { "bold_list_titles",         TRUE,  offsetof(OnApp, bold_list_titles)       },
     { "drop_files_last_line",     FALSE, offsetof(OnApp, drop_files_last_line)   },
     { "ai_enabled",               FALSE, offsetof(OnApp, ai_enabled)             },
+    { "meeting_summary",          TRUE,  offsetof(OnApp, meeting_summary)        },
     { "new_note_hotkey",          TRUE,  offsetof(OnApp, new_note_hotkey)        },
 };
 
@@ -52,6 +53,14 @@ on_app_prefs_load(OnApp *app)
     }
     g_free(app->ai_command);
     app->ai_command = on_app_config_get("ai_command");
+    /* The meeting command always holds one: an unset or emptied key means
+     * the built-in default, so the clock button works out of the box.     */
+    g_free(app->meeting_command);
+    app->meeting_command = on_app_config_get("meeting_command");
+    if (app->meeting_command == NULL || app->meeting_command[0] == '\0') {
+        g_free(app->meeting_command);
+        app->meeting_command = g_strdup(ON_MEETING_COMMAND_DEFAULT);
+    }
 
     static const struct {
         const gchar     *name;

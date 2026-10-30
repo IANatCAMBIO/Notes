@@ -37,6 +37,12 @@
 #define ON_VERSION "dev"
 #endif
 
+/* The command the last-meeting summary runs when the meeting_command
+ * preference is unset: Claude Code in print mode, reading the prompt from
+ * its stdin.  ai_run.h extends the child's PATH with the directories such
+ * a tool is installed in, so no full path is needed.                       */
+#define ON_MEETING_COMMAND_DEFAULT "claude -p"
+
 /* ---------------------------------------------------------------------------
  * OnApp — the application context.
  *
@@ -65,9 +71,16 @@
  *   show_done_actions      "show_done_actions"        1  list completed items
  *   bold_list_titles       "bold_list_titles"         1  bold comfortable titles
  *   ai_enabled             "ai_enabled"               0  AI summary available
+ *   meeting_summary        "meeting_summary"          1  the editor's clock button
+ *                                                        summarises the last meeting
+ *                                                        (needs ai_enabled too)
  *   new_note_hotkey        "new_note_hotkey"          1  New Note works from any app
  *   ai_command             "ai_command"       command run for a summary
  *                                             (owned; NULL when unset)
+ *   meeting_command        "meeting_command"  command run for the last-meeting
+ *                                             summary (owned; never NULL —
+ *                                             ON_MEETING_COMMAND_DEFAULT when
+ *                                             the key is unset or empty)
  *   grid_group             "grid_group"       "none" (default), "day", "week",
  *                                             "month" or "year": the grid's cards in
  *                                             sections by the date the list
@@ -177,8 +190,10 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    drop_files_last_line;
     gboolean    ai_enabled;
+    gboolean    meeting_summary;
     gboolean    new_note_hotkey;
     gchar      *ai_command;
+    gchar      *meeting_command;
     on_grid_group_t grid_group;
 
     gboolean    backup_running;

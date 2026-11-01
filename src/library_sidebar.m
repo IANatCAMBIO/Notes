@@ -115,18 +115,18 @@ row_font(on_sb_kind_t kind)
 }
 
 /*
- * section_label — a section row's text: its emoji, two spaces, its name.
+ * fixed_item — a fixed row's item: its emoji and name as the Favorites bar
+ * shows them too (on_library_sb_row_label).
  *
  * Inputs:
- *   emoji — the emoji
- *   name  — the name
+ *   kind — the row's kind
  *
- * Output: the text.
+ * Output: the item.
  */
-static NSString *
-section_label(NSString *emoji, NSString *name)
+static SidebarItem *
+fixed_item(on_sb_kind_t kind)
 {
-    return [NSString stringWithFormat:@"%@  %@", emoji, name];
+    return item_new(kind, 0, on_library_sb_row_label(kind), on_library_sb_row_name(kind));
 }
 
 /*
@@ -252,26 +252,22 @@ build_roots
     OnDatabase *db = self.lib.app->db;
     NSMutableArray<SidebarItem *> *roots = [NSMutableArray array];
 
-    [roots addObject:item_new(on_sb_all, 0, section_label(@"🔮", @"All Notes"), @"All Notes")];
-    if (on_db_note_count_pinned(db) > 0)
-        [roots addObject:item_new(on_sb_pinned, 0, section_label(@"📌", @"Pinned Notes"),
-                                  @"Pinned Notes")];
-    gint n_actions = 0, n_open = 0;
-    on_db_action_counts(db, &n_actions, &n_open);
-    if (n_actions > 0)
-        [roots addObject:item_new(on_sb_actions, 0, section_label(@"❗", @"Action Items"),
-                                  @"Action Items")];
+    [roots addObject:fixed_item(on_sb_all)];
+    if (on_library_sb_row_shown(self.lib, on_sb_pinned))
+        [roots addObject:fixed_item(on_sb_pinned)];
+    if (on_library_sb_row_shown(self.lib, on_sb_actions))
+        [roots addObject:fixed_item(on_sb_actions)];
 
     GList *tags = on_db_tag_list(db, ON_TAGS_CARRIED);
     if (tags != NULL) {
-        [roots addObject:item_new(on_sb_tags_header, 0, @"Tags", @"Tags")];
+        [roots addObject:fixed_item(on_sb_tags_header)];
         for (GList *l = tags; l != NULL; l = l->next)
             [roots addObject:tag_item(l->data)];
     }
     on_db_tag_list_free(tags);
 
-    if (on_db_trash_count(db) > 0)
-        [roots addObject:item_new(on_sb_trash, 0, section_label(@"🗑️", @"Trash"), @"Trash")];
+    if (on_library_sb_row_shown(self.lib, on_sb_trash))
+        [roots addObject:fixed_item(on_sb_trash)];
 
     self.roots = roots;
     [self read_counts];
@@ -475,8 +471,10 @@ command_item(NSString *ident, NSString *title)
  * menuNeedsUpdate: — the table's menu is about to open on the row under
  * the pointer (clickedRow; the selection is left alone): the Trash
  * empties; a tag is edited (its emoji and Notes' favorite flag), made a
- * favorite (a favorite is removed from the Favorites bar's own menu) or
- * cleared from every note;
+ * favorite or cleared from every note; a view (All Notes, Pinned Notes,
+ * Action Items) is made a favorite too, which gives it a button in the
+ * Favorites bar beside the tags' (a favorite is removed from the bar's own
+ * menu);
  * every row but the Trash searches within itself.  The items are commands, run
  * by the library through the responder chain, each carrying its row.
  * Nothing for empty space or the Tags header.
@@ -500,6 +498,9 @@ menuNeedsUpdate:(NSMenu *)menu
         [menu addItem:command_item(@"edit-tag", nil)];
         [menu addItem:command_item(@"add-favorite", nil)];
         [menu addItem:command_item(@"clear-tag", nil)];
+        [menu addItem:NSMenuItem.separatorItem];
+    } else if (on_library_sb_fav_id((on_sb_ref_t){ it.kind, it.ident }) != 0) {
+        [menu addItem:command_item(@"add-favorite", nil)];
         [menu addItem:NSMenuItem.separatorItem];
     }
     [menu addItem:command_item(@"search-here", nil)];

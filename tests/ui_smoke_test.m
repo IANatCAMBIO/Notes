@@ -38,6 +38,7 @@
 #import "image_viewer.h"
 #import "library_ai.h"
 #import "library_commands.h"
+#import "library_favorites.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
 #import "library_state.h"
@@ -1811,7 +1812,8 @@ test_meeting_summary(void)
  * test_edit_tag — Edit Tag asks in the app's own tool panel, never a
  * native alert or sheet: the tag's name is shown, not editable; OK stores
  * the emoji and Notes' favorite flag, and the favorite gets a button in
- * the Favorites bar, which selects the tag.
+ * the Favorites bar, which selects the tag.  Then the bar's order, and a
+ * VIEW in the bar (All Notes, Pinned Notes) beside the tags.
  *
  * Inputs:
  *   lib — the library (must have a window on screen)
@@ -1943,6 +1945,56 @@ test_edit_tag(NotesLibrary *lib)
     pump(0.2);
     check(button_titled(lib.window.contentView, @"🧪  SmokeTag") == nil,
           "a tag no longer a favorite leaves the bar");
+
+    /* A VIEW goes in the bar like a tag: Add to Favorites on the row the
+     * item names (the sidebar's menu) gives All Notes a button, which
+     * selects it; Add again changes nothing, and Remove from Favorites
+     * (the bar's own menu) takes it off.  The choice is a setting, not a
+     * tag flag. */
+    NSMenuItem *add_view = shared_command_menu_item(@"add-favorite",
+                                                    on_library_sb_ref_value(on_sb_all, 0));
+    check(on_library_validate_command(lib, add_view), "All Notes can be added to the Favorites bar");
+    on_library_run_command(lib, add_view);
+    pump(0.3);
+    on_library_sidebar_select(lib, on_sb_tag, tag_id);
+    pump(0.2);
+    NSButton *all_button = button_titled(lib.window.contentView, @"🔮  All Notes");
+    check(all_button != nil && on_app_config_get_bool("favorite_all_notes", FALSE) &&
+          all_button.state == NSControlStateValueOff,
+          "All Notes has a button, saved as a setting, unlit while a tag is selected");
+    [all_button performClick:nil];
+    pump(0.2);
+    all_button = button_titled(lib.window.contentView, @"🔮  All Notes");
+    check(lib.sel_kind == on_sb_all && all_button.state == NSControlStateValueOn,
+          "clicking it selects All Notes, and the button is lit");
+    check(!on_library_validate_command(lib, add_view) &&
+          on_library_validate_command(lib, shared_command_menu_item(@"remove-favorite",
+                                          on_library_sb_ref_value(on_sb_all, 0))),
+          "a view in the bar can be removed, not added again");
+
+    /* A favorite view leaves the bar with its row, as a favorite tag
+     * leaves it with its last note: Pinned Notes is listed only while a
+     * note is pinned. */
+    gint64 pin_note = new_note("Pinned for the bar\nbody");
+    on_library_favorite_row_set(on_sb_pinned, YES);
+    on_db_note_set_pinned(app.db, pin_note, TRUE);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(button_titled(lib.window.contentView, @"📌  Pinned Notes") != nil,
+          "a favorite view has its button while the sidebar lists the row");
+    on_db_note_set_pinned(app.db, pin_note, FALSE);
+    on_library_refresh_all(lib);
+    pump(0.2);
+    check(on_db_note_count_pinned(app.db) == 0 &&
+          button_titled(lib.window.contentView, @"📌  Pinned Notes") == nil,
+          "and loses it with the row, the setting still on");
+    on_library_favorite_row_set(on_sb_pinned, NO);
+    on_library_run_command(lib, shared_command_menu_item(@"remove-favorite",
+                                   on_library_sb_ref_value(on_sb_all, 0)));
+    pump(0.3);
+    check(button_titled(lib.window.contentView, @"🔮  All Notes") == nil &&
+          !on_app_config_get_bool("favorite_all_notes", FALSE),
+          "Remove from Favorites takes a view's button away and clears its setting");
 
     /* View ▸ Hide Favorites Bar: the bar slides away, the setting is kept,
      * and Show brings it back; the menu item says what a click will do.  */
@@ -2277,8 +2329,9 @@ test_sidebar(NotesLibrary *lib)
     /* Menus, per kind of row: a right click leaves the selection alone and
      * its items carry the row. */
     NSInteger all = sidebar_row(sidebar_table, @"All Notes");
-    check([menu_titles(open_menu(right_click(sidebar_table, all))) isEqualToArray:@[@"Search Here…"]],
-          "All Notes offers Search Here");
+    check([menu_titles(open_menu(right_click(sidebar_table, all)))
+              isEqualToArray:@[@"Add to Favorites", @"Search Here…"]],
+          "All Notes offers Add to Favorites and Search Here");
     NSInteger crate_row = sidebar_row(sidebar_table, @"Crate");
     NSMenu   *tag_menu  = open_menu(right_click(sidebar_table, crate_row));
     on_sb_ref_t ref;

@@ -2,11 +2,15 @@
  * library_favorites.m — the library's Favorites bar (library_favorites.h).
  *
  * A horizontal scroll view holding a strip of SharedFavoriteButtons, one
- * per favorite tag; a vertical wheel gesture pans the strip, as Tasks' bar
- * does.  The buttons are rebuilt from one tag query when the tags change
- * (with the sidebar's rows), in the order the user dragged them into (the
- * favorites_order setting), new favorites at the end by name; a change of
- * selection only relights them.
+ * per favorite row — the favorite views, then the favorite tags; a
+ * vertical wheel gesture pans the strip, as Tasks' bar does.  The buttons
+ * are rebuilt from one tag query when the rows change (with the sidebar's),
+ * in the order the user dragged them into (the favorites_order setting),
+ * new favorites at the end; a change of selection only relights them.
+ *
+ * A button carries its row's favorite id (on_library_sb_fav_id): a tag's
+ * id, or a negative number standing for a view, so one strip and one saved
+ * order hold both.
  */
 
 #import "library_favorites.h"
@@ -20,12 +24,13 @@
 #include "db.h"
 #include "shared_order.h"
 
-/* The setting holding the bar's order: tag ids, comma separated. */
+/* The setting holding the bar's order: row ids (on_library_sb_fav_id),
+ * comma separated. */
 static const char * const order_key = "favorites_order";
 
-/* What the bar says while no tag is a favorite. */
+/* What the bar says while nothing is a favorite. */
 static NSString * const empty_hint =
-    @"No favorites yet — right-click a tag in the sidebar and choose Add to Favorites";
+    @"No favorites yet — right-click a tag or a view in the sidebar and choose Add to Favorites";
 
 /* ── The scroll view ─────────────────────────────────────────────────── */
 
@@ -99,7 +104,7 @@ layout
 }
 
 /*
- * clicked: — a favorite was clicked: its tag becomes the selection.
+ * clicked: — a favorite was clicked: its row becomes the selection.
  *
  * Inputs:
  *   sender — the button
@@ -108,7 +113,9 @@ layout
 clicked:(SharedFavoriteButton *)sender
 {
     NotesLibrary *lib = self.lib;
-    if (lib != nil) on_library_sidebar_select(lib, on_sb_tag, sender.tag_id);
+    if (lib == nil) return;
+    on_sb_ref_t ref = on_library_sb_fav_ref(sender.tag_id);
+    on_library_sidebar_select(lib, ref.kind, ref.ident);
 }
 
 /*
@@ -126,8 +133,9 @@ edit_tag:(NSMenuItem *)sender
 }
 
 /*
- * menu_for: — a right-click on a favorite: Edit Tag… for its tag, and
- * Remove from Favorites (the remove-favorite command, carrying the tag).
+ * menu_for: — a right-click on a favorite: Edit Tag… when it stands for a
+ * tag (a view has nothing to edit), and Remove from Favorites (the
+ * remove-favorite command, carrying the row).
  *
  * Inputs:
  *   button — the button
@@ -137,12 +145,16 @@ edit_tag:(NSMenuItem *)sender
 - (NSMenu *)
 menu_for:(SharedFavoriteButton *)button
 {
+    on_sb_ref_t ref  = on_library_sb_fav_ref(button.tag_id);
     NSMenu     *menu = [[NSMenu alloc] initWithTitle:@""];
-    NSMenuItem *item = [menu addItemWithTitle:@"Edit Tag…" action:@selector(edit_tag:) keyEquivalent:@""];
-    item.target            = self;
-    item.representedObject = @(button.tag_id);
+    if (ref.kind == on_sb_tag) {
+        NSMenuItem *item = [menu addItemWithTitle:@"Edit Tag…" action:@selector(edit_tag:)
+                                    keyEquivalent:@""];
+        item.target            = self;
+        item.representedObject = @(ref.ident);
+    }
     [menu addItem:shared_command_menu_item(@"remove-favorite",
-                                           on_library_sb_ref_value(on_sb_tag, button.tag_id))];
+                                           on_library_sb_ref_value(ref.kind, ref.ident))];
     return menu;
 }
 
@@ -165,21 +177,45 @@ save_order:(NSArray<SharedFavoriteButton *> *)order
 }
 
 /*
- * update_selection — light the selected tag's button.
+ * update_selection — light the selected row's button.
  */
 - (void)
 update_selection
 {
     NotesLibrary *lib = self.lib;
-    gint64 selected = lib.sel_kind == on_sb_tag ? lib.sel_id : 0;
+    if (lib == nil) return;
+    on_sb_ref_t ref      = { lib.sel_kind, lib.sel_id };
+    gint64      selected = on_library_sb_fav_id(ref);
     for (SharedFavoriteButton *btn in self.strip.subviews) {
         btn.state = btn.tag_id == selected ? NSControlStateValueOn : NSControlStateValueOff;
     }
 }
 
 /*
- * reload — the buttons from the database, in the saved order, the
- * selected tag's lit.
+ * button_for:title: — one button of the strip: the row's favorite id, its
+ * label, and the bar's click, drag and menu behaviour.
+ *
+ * Inputs:
+ *   fav_id — the row's id in the bar (on_library_sb_fav_id)
+ *   title  — the row's label
+ *
+ * Output: the button, not yet placed or lit.
+ */
+- (SharedFavoriteButton *)
+button_for:(gint64)fav_id title:(NSString *)title
+{
+    __weak NotesFavoritesBar *ws = self;
+    SharedFavoriteButton *btn = [[SharedFavoriteButton alloc] init_with_title:title tag_id:fav_id];
+    btn.target       = self;
+    btn.action       = @selector(clicked:);
+    btn.reordered    = ^(NSArray<SharedFavoriteButton *> *order) { [ws save_order:order]; };
+    btn.context_menu = ^NSMenu *(SharedFavoriteButton *button) { return [ws menu_for:button]; };
+    return btn;
+}
+
+/*
+ * reload — the buttons from the settings and the database, in the saved
+ * order, the selected row's lit.
  */
 - (void)
 reload
@@ -188,28 +224,30 @@ reload
     if (lib == nil || lib.app->db == NULL) return;
     for (NSView *v in self.strip.subviews.copy) [v removeFromSuperview];
 
-    __weak NotesFavoritesBar *ws = self;
     NSMutableArray<SharedFavoriteButton *> *buttons = [NSMutableArray array];
-    /* The tags Notes shows (the sidebar's): a favorite no note carries,
-     * Tasks' alone or gone, has no button here.                         */
+    /* The views the user put in the bar, in the sidebar's order: one the
+     * sidebar is not listing (no pinned note, no action item) has no
+     * button here, as a favorite tag no note carries has none.          */
+    for (size_t i = 0; i < ON_SB_FAV_ROWS; i++) {
+        on_sb_ref_t ref = { on_library_sb_fav_rows[i], 0 };
+        if (!on_library_favorite_row(ref.kind) || !on_library_sb_row_shown(lib, ref.kind)) continue;
+        [buttons addObject:[self button_for:on_library_sb_fav_id(ref)
+                                      title:on_library_sb_row_label(ref.kind)]];
+    }
+    /* Then the tags Notes shows (the sidebar's): a favorite no note
+     * carries, Tasks' alone or gone, has no button here.                */
     GList *tags = on_db_tag_list(lib.app->db, ON_TAGS_CARRIED);
     for (GList *l = tags; l != NULL; l = l->next) {
         const OnTag *t = l->data;
         if (!t->favorite) continue;
-        SharedFavoriteButton *btn = [[SharedFavoriteButton alloc]
-                                       init_with_title:shared_ui_tag_label(@(t->emoji), @(t->name))
-                                                tag_id:t->id];
-        btn.target       = self;
-        btn.action       = @selector(clicked:);
-        btn.reordered    = ^(NSArray<SharedFavoriteButton *> *order) { [ws save_order:order]; };
-        btn.context_menu = ^NSMenu *(SharedFavoriteButton *button) { return [ws menu_for:button]; };
-        btn.state        = lib.sel_kind == on_sb_tag && lib.sel_id == t->id ? NSControlStateValueOn
-                                                                            : NSControlStateValueOff;
-        [buttons addObject:btn];
+        on_sb_ref_t ref = { on_sb_tag, t->id };
+        [buttons addObject:[self button_for:on_library_sb_fav_id(ref)
+                                      title:shared_ui_tag_label(@(t->emoji), @(t->name))]];
     }
     on_db_tag_list_free(tags);
 
-    /* By name from the database; the saved order first, the rest after. */
+    /* The views, then the tags by name from the database; the saved order
+     * first, the rest after.                                            */
     int64_t *ids = g_new(int64_t, buttons.count + 1);
     for (NSUInteger i = 0; i < buttons.count; i++) ids[i] = buttons[i].tag_id;
     gchar *saved = on_app_config_get(order_key);
@@ -227,9 +265,53 @@ reload
     self.hint.hidden = buttons.count > 0;
     self.strip.frame = NSMakeRect(0, 0, MAX(self.content_w, NSWidth(self.scroll.bounds)),
                                   shared_look_favorites_bar_h);
+    [self update_selection];
 }
 
 @end
+
+/* ── The favorite views ──────────────────────────────────────────────── */
+
+/*
+ * fixed_row_key — the setting holding whether a fixed row is in the bar.
+ *
+ * Inputs:
+ *   kind — the row's kind
+ *
+ * Output: the key, or NULL for a row that cannot be a favorite.
+ */
+static const char *
+fixed_row_key(on_sb_kind_t kind)
+{
+    switch (kind) {
+    case on_sb_all:         return "favorite_all_notes";
+    case on_sb_pinned:      return "favorite_pinned_notes";
+    case on_sb_actions:     return "favorite_action_items";
+    case on_sb_tag:                          /* the database's flag        */
+    case on_sb_tags_header:
+    case on_sb_trash:       return NULL;
+    }
+}
+
+/*
+ * on_library_favorite_row — see library_favorites.h.
+ */
+BOOL
+on_library_favorite_row(on_sb_kind_t kind)
+{
+    const char *key = fixed_row_key(kind);
+    return key != NULL && on_app_config_get_bool(key, FALSE);
+}
+
+/*
+ * on_library_favorite_row_set — see library_favorites.h.
+ */
+void
+on_library_favorite_row_set(on_sb_kind_t kind, BOOL favorite)
+{
+    const char *key = fixed_row_key(kind);
+    if (key != NULL) on_app_config_set(key, favorite ? "1" : "0");
+}
 
 /* The bar of the (one) library window; its window owns it. */
 static __weak NotesFavoritesBar *favorites_bar;

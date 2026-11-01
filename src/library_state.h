@@ -162,6 +162,79 @@ NSString *on_library_location_text(NotesLibrary *lib);
  */
 NSString *on_library_search_scope(NotesLibrary *lib, gint64 *tag_id);
 
+/* ── The sidebar's rows (library_state.m) ───────────────────────────────── */
+
+/*
+ * on_library_sb_row_name — a fixed row's bare name ("All Notes", "Pinned
+ * Notes", "Action Items", "Tags", "Trash"), defined ONCE here for the
+ * sidebar's rows, the Favorites bar's buttons and the first selection.
+ *
+ * Inputs:
+ *   kind — the row's kind
+ *
+ * Output: the name, or nil for a tag (a tag's name is its own).
+ */
+NSString *on_library_sb_row_name(on_sb_kind_t kind);
+
+/*
+ * on_library_sb_row_label — a fixed row as the sidebar and the Favorites
+ * bar show it: its emoji, two spaces and its name
+ * (shared_ui_tag_label), the name alone for the Tags header.
+ *
+ * Inputs:
+ *   kind — the row's kind
+ *
+ * Output: the label, or nil for a tag.
+ */
+NSString *on_library_sb_row_label(on_sb_kind_t kind);
+
+/*
+ * on_library_sb_row_shown — does the sidebar list this fixed row now?
+ * All Notes always; Pinned Notes with a pinned note, Action Items with an
+ * action item, the Trash with a trashed note.  The sidebar builds its rows
+ * with this, and the Favorites bar leaves out the button of a row the
+ * sidebar is not listing, as it leaves out a favorite tag no note carries.
+ *
+ * Inputs:
+ *   lib  — the library, its database open
+ *   kind — the row's kind
+ *
+ * Output: YES while the row is listed; NO for a tag or the Tags header,
+ *         which follow the tags the notes carry (on_db_tag_list).
+ */
+BOOL on_library_sb_row_shown(NotesLibrary *lib, on_sb_kind_t kind);
+
+/* The fixed rows that can be favorites — go in the Favorites bar beside
+ * the tags — in the sidebar's order. */
+#define ON_SB_FAV_ROWS 3
+extern const on_sb_kind_t on_library_sb_fav_rows[ON_SB_FAV_ROWS];
+
+/*
+ * on_library_sb_fav_id — the id a Favorites bar button carries for a row:
+ * a tag's own id, or a NEGATIVE number standing for one of the fixed rows
+ * above, so a view and a tag can never collide in the bar's order (the
+ * favorites_order setting).
+ *
+ * Inputs:
+ *   ref — the row
+ *
+ * Output: the id, or 0 for a row that cannot be a favorite (the Tags
+ *         header, the Trash).
+ */
+gint64 on_library_sb_fav_id(on_sb_ref_t ref);
+
+/*
+ * on_library_sb_fav_ref — the row a Favorites bar button's id stands for:
+ * on_library_sb_fav_id read back.
+ *
+ * Inputs:
+ *   fav_id — the button's id
+ *
+ * Output: the row; a positive id is a tag's, whether or not that tag
+ *         still exists.
+ */
+on_sb_ref_t on_library_sb_fav_ref(gint64 fav_id);
+
 /* ── Refreshing (library_state.m, calling the panes) ────────────────────── */
 
 /*

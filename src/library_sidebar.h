@@ -7,8 +7,9 @@
  * Notes, Action Items), then the tags the notes carry, and the Trash —
  * the design of the Tasks app's sidebar.  A right-click on a tag offers
  * Edit Tag… (its emoji and Notes' favorite flag; a tag's name never
- * changes); a right click leaves the selection alone, the menu's items
- * carry the row (on_sb_ref_t).
+ * changes); on a tag or a view, Add to Favorites — the Favorites bar
+ * holds both (library_favorites.h).  A right click leaves the selection
+ * alone, the menu's items carry the row (on_sb_ref_t).
  *
  * It owns the selection: when the user selects a row it writes
  * lib.sel_kind / sel_id / sel_name and calls on_library_notes_refresh and

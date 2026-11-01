@@ -179,6 +179,11 @@ tags Tasks uses (one set in the shared file).
   Favorites**.  Drag a button along the bar to put the favorites in your
   order (new ones join at the end, by name).  Favorites are each app's
   own.  A tag's name never changes.
+- **All Notes**, **Pinned Notes** and **Action Items** go in the bar the
+  same way: right-click the row, **Add to Favorites**.  They start before
+  the tags and drag anywhere among them; a view's button goes while its
+  row does (nothing pinned, no action item), as a tag's goes with its last
+  note.
 - Right-click a tag, **Clear Tag from All Notes**: after a confirmation
   ("Are you sure you want to remove the tag … from N notes?") its #word is taken out
   of the text of every note that carries it, trashed ones too (the gap

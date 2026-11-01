@@ -33,7 +33,7 @@ init_with_app:(OnApp *)app
     if (!self) return nil;
     _app      = app;
     _sel_kind = on_sb_all;
-    _sel_name = @"All Notes";
+    _sel_name = on_library_sb_row_name(on_sb_all);
     return self;
 }
 
@@ -125,6 +125,107 @@ on_library_search_scope(NotesLibrary *lib, gint64 *tag_id)
     *tag_id = tag ? lib.sel_id : 0;
     return tag ? [@"#" stringByAppendingString:lib.sel_name ?: @""] : @"All Notes";
 }
+
+/* ── The sidebar's rows ─────────────────────────────────────────────────── */
+
+/* The fixed rows that can be favorites, in the sidebar's order. */
+const on_sb_kind_t on_library_sb_fav_rows[ON_SB_FAV_ROWS] = {
+    on_sb_all, on_sb_pinned, on_sb_actions,
+};
+
+/*
+ * on_library_sb_row_name — see library_state.h.
+ */
+NSString *
+on_library_sb_row_name(on_sb_kind_t kind)
+{
+    switch (kind) {
+    case on_sb_all:         return @"All Notes";
+    case on_sb_pinned:      return @"Pinned Notes";
+    case on_sb_actions:     return @"Action Items";
+    case on_sb_tags_header: return @"Tags";
+    case on_sb_trash:       return @"Trash";
+    case on_sb_tag:         return nil;      /* the tag's own name          */
+    }
+}
+
+/*
+ * on_library_sb_row_label — see library_state.h.
+ */
+NSString *
+on_library_sb_row_label(on_sb_kind_t kind)
+{
+    NSString *emoji = nil;
+    switch (kind) {
+    case on_sb_all:         emoji = @"🔮";  break;
+    case on_sb_pinned:      emoji = @"📌";  break;
+    case on_sb_actions:     emoji = @"❗";  break;
+    case on_sb_trash:       emoji = @"🗑️"; break;
+    case on_sb_tags_header:                  /* a heading: no emoji        */
+    case on_sb_tag:         break;
+    }
+    NSString *name = on_library_sb_row_name(kind);
+    return name == nil ? nil : shared_ui_tag_label(emoji, name);
+}
+
+/*
+ * on_library_sb_row_shown — see library_state.h.
+ */
+BOOL
+on_library_sb_row_shown(NotesLibrary *lib, on_sb_kind_t kind)
+{
+    OnDatabase *db = lib.app->db;
+    gint        n_actions = 0, n_open = 0;
+    switch (kind) {
+    case on_sb_all:
+        return YES;
+    case on_sb_pinned:
+        return on_db_note_count_pinned(db) > 0;
+    case on_sb_actions:
+        on_db_action_counts(db, &n_actions, &n_open);
+        return n_actions > 0;
+    case on_sb_trash:
+        return on_db_trash_count(db) > 0;
+    case on_sb_tags_header:
+    case on_sb_tag:
+        return NO;
+    }
+}
+
+/*
+ * on_library_sb_fav_id — see library_state.h.
+ */
+gint64
+on_library_sb_fav_id(on_sb_ref_t ref)
+{
+    switch (ref.kind) {
+    case on_sb_all:
+    case on_sb_pinned:
+    case on_sb_actions:
+        return -(gint64)ref.kind - 1;        /* -1, -2, -3: never a tag's  */
+    case on_sb_tag:
+        return ref.ident;
+    case on_sb_tags_header:
+    case on_sb_trash:
+        return 0;
+    }
+}
+
+/*
+ * on_library_sb_fav_ref — see library_state.h.
+ */
+on_sb_ref_t
+on_library_sb_fav_ref(gint64 fav_id)
+{
+    for (size_t i = 0; i < ON_SB_FAV_ROWS; i++) {
+        on_sb_ref_t row = { on_library_sb_fav_rows[i], 0 };
+        if (on_library_sb_fav_id(row) == fav_id) return row;
+    }
+    on_sb_ref_t tag = { on_sb_tag, fav_id };
+    return tag;
+}
+
+/* ── Refreshing ─────────────────────────────────────────────────────────── */
 
 /*
  * on_library_refresh_all — see library_state.h.

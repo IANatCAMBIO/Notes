@@ -1,5 +1,6 @@
 #import "library_commands.h"
 #import "editor_window.h"
+#import "library_favorites.h"
 #import "library_notes.h"
 #import "library_sidebar.h"
 #import "ui_util.h"
@@ -222,11 +223,14 @@ run_clear_tag(id target, id sender)
 }
 
 /*
- * run_set_favorite — "add-favorite" / "remove-favorite": set the favorite
- * flag (Notes' own, as the Edit Tag panel's box does) of the tag the item
- * names, else the selected tag, and refresh.  Adding a favorite again
- * changes nothing: a favorite is removed only by its own command (the
- * Favorites bar's menu, the File menu).
+ * run_set_favorite — "add-favorite" / "remove-favorite": put the row the
+ * item names, else the selected row, in the Favorites bar or take it out,
+ * and refresh.  A tag's flag is Notes' own, in the database, as the Edit
+ * Tag panel's box sets it; a view (All Notes, Pinned Notes, Action Items)
+ * has no tag, so the bar's own setting holds it
+ * (on_library_favorite_row_set).  Adding a favorite again changes
+ * nothing: a favorite is removed only by its own command (the Favorites
+ * bar's menu, the File menu).
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -238,31 +242,40 @@ run_set_favorite(id target, id sender)
     NotesLibrary *lib = target;
     on_sb_ref_t   ref = { lib.sel_kind, lib.sel_id };
     on_library_sb_ref(sender, &ref);
-    if (ref.kind != on_sb_tag) return;
+    if (on_library_sb_fav_id(ref) == 0) return;
     BOOL favorite = [shared_command_ident(sender) isEqualToString:@"add-favorite"];
-    if (!on_db_tag_set_favorite(lib.app->db, ref.ident, favorite)) {
-        on_app_status(lib.app, "The tag could not be changed");
+    if (ref.kind == on_sb_tag) {
+        if (!on_db_tag_set_favorite(lib.app->db, ref.ident, favorite)) {
+            on_app_status(lib.app, "The tag could not be changed");
+        }
+    } else {
+        on_library_favorite_row_set(ref.kind, favorite);
     }
     on_library_refresh_all(lib);
 }
 
 /*
- * tag_is_favorite — whether the tag an item names (else the selected
- * tag) is a favorite.
+ * row_is_favorite — whether the row an item names (else the selected row)
+ * is in the Favorites bar.
  *
  * Inputs:
  *   lib      — the library
- *   item     — the item, or nil for the selected tag
+ *   item     — the item, or nil for the selected row
  *   favorite — receives the flag
  *
- * Output: NO when there is no such tag.
+ * Output: NO when the row cannot be a favorite (the Tags header, the
+ *         Trash) or its tag is gone.
  */
 static BOOL
-tag_is_favorite(NotesLibrary *lib, id item, BOOL *favorite)
+row_is_favorite(NotesLibrary *lib, id item, BOOL *favorite)
 {
     on_sb_ref_t ref = { lib.sel_kind, lib.sel_id };
     on_library_sb_ref(item, &ref);
-    if (ref.kind != on_sb_tag) return NO;
+    if (on_library_sb_fav_id(ref) == 0) return NO;
+    if (ref.kind != on_sb_tag) {
+        *favorite = on_library_favorite_row(ref.kind);
+        return YES;
+    }
     OnTag *tag = on_db_tag_get(lib.app->db, ref.ident);
     if (tag == NULL) return NO;
     *favorite = tag->favorite != FALSE;
@@ -271,7 +284,7 @@ tag_is_favorite(NotesLibrary *lib, id item, BOOL *favorite)
 }
 
 /*
- * validate_add_favorite — a tag that is not yet a favorite.
+ * validate_add_favorite — a row that is not yet a favorite.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -284,11 +297,11 @@ static BOOL
 validate_add_favorite(id target, id item, SharedCommandState *state)
 {
     BOOL favorite = NO;
-    return tag_is_favorite(target, item, &favorite) && !favorite;
+    return row_is_favorite(target, item, &favorite) && !favorite;
 }
 
 /*
- * validate_remove_favorite — a tag that is a favorite.
+ * validate_remove_favorite — a row that is a favorite.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -301,7 +314,7 @@ static BOOL
 validate_remove_favorite(id target, id item, SharedCommandState *state)
 {
     BOOL favorite = NO;
-    return tag_is_favorite(target, item, &favorite) && favorite;
+    return row_is_favorite(target, item, &favorite) && favorite;
 }
 
 /*

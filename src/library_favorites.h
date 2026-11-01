@@ -5,20 +5,47 @@
 /*
  * library_favorites — the library's Favorites bar: a strip across the whole
  * window under the toolbar (the sidebar and the notes start below it) with
- * one button per tag a note outside the Trash carries (the sidebar's
- * tags) that is a favorite in Notes (tags.favorite_notes;
- * SharedFavoriteButton) in the order the user dragged them into (the
- * favorites_order setting), new favorites at the end by name: the design
- * of the Tasks app's bar.  View ▸ Hide Favorites Bar slides it away
- * (library_window.m; the favorites_bar_visible setting).  Clicking a
- * button selects its tag in the sidebar; the button of the selected tag is
- * lit.  Dragging a button along the bar reorders it.  A right-click on a
- * button offers Edit Tag… (on_library_edit_tag) and Remove from Favorites.
- * With no favorite the bar says how to make one.
+ * one button per favorite row of the sidebar (SharedFavoriteButton) —
+ * a tag a note outside the Trash carries that is a favorite in Notes
+ * (tags.favorite_notes), and the fixed views the user put there
+ * (on_library_sb_fav_rows: All Notes, Pinned Notes, Action Items; the
+ * settings below) — in the order the user dragged them into (the
+ * favorites_order setting), new favorites at the end, the views before the
+ * tags: the design of the Tasks app's bar.  View ▸ Hide Favorites Bar
+ * slides it away (library_window.m; the favorites_bar_visible setting).
+ * Clicking a button selects its row in the sidebar; the button of the
+ * selected row is lit.  Dragging a button along the bar reorders it.  A
+ * right-click on a button offers Edit Tag… (on_library_edit_tag, a tag's
+ * only) and Remove from Favorites.  With no favorite the bar says how to
+ * make one.
  *
  * It owns neither the selection (the sidebar's) nor the tags (the
- * database's).
+ * database's) — only which VIEWS are in the bar, which no tag flag can
+ * hold.
  */
+
+/*
+ * on_library_favorite_row — is a fixed sidebar row in the Favorites bar?
+ * A tag's favorite flag is the database's; a view has no tag, so the bar
+ * keeps its own setting per row.
+ *
+ * Inputs:
+ *   kind — the row's kind
+ *
+ * Output: YES when it is a favorite; NO for a row that cannot be one.
+ */
+BOOL on_library_favorite_row(on_sb_kind_t kind);
+
+/*
+ * on_library_favorite_row_set — put a fixed sidebar row in the Favorites
+ * bar, or take it out (the add-favorite / remove-favorite commands,
+ * library_commands.m).  The caller refreshes the library.
+ *
+ * Inputs:
+ *   kind     — the row's kind; a row that cannot be a favorite is ignored
+ *   favorite — YES to put it in the bar
+ */
+void on_library_favorite_row_set(on_sb_kind_t kind, BOOL favorite);
 
 /*
  * on_library_favorites_new — build the bar for the library window.  Called

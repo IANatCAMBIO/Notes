@@ -1,6 +1,6 @@
 # Notes
 
-![Notes, the library and search](images/screenshot.png)
+![Notes: the library, the day planner and a search](images/screenshot.png)
 
 Notes is a note-taking app that replaces Notes on macOS — a native AppKit
 app with its own block document model, rich text with images, tables and

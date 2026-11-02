@@ -3,7 +3,7 @@
  *
  * `make seed` (tools/seed-dev.sh) builds dev/data/shared_data.db (the file
  * $CAMBIO_SHARED_DB names) with this tool:
- * #tags on notes' bottom lines (a deployment's notes carry Salt,
+ * #tags on notes' bottom lines (a deployment's notes carry Work,
  * Deployments and its own, as the move from folders gave them; some tags
  * with an emoji, two Notes favorites), pinned notes, three trashed notes (one
  * with tags of its own), a note with every
@@ -110,9 +110,9 @@ static void
 add_table(OnDocument *doc)
 {
     static const char *const cells[3][3] = {
-        { "Collector",   "Status",       "Owner"  },
-        { "Kong",        "Deployed",     "Ian"    },
-        { "Apigee",      "In review\nsecond line", "Priya" },
+        { "Service",     "Status",       "Owner"  },
+        { "Gateway",     "Deployed",     "Alex"   },
+        { "Indexer",     "In review\nsecond line", "Sam" },
     };
     OnBlock *t = on_block_new_table(3, 3);
     t->header = TRUE;
@@ -313,9 +313,9 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     /* The folder tags, as the move from folders made them (every folder on
      * a note's path became a tag of it) and Notes then wrote them into the
      * text.                                                                */
-    const char *const stride_f[] = { "Salt", "Deployments", "Stride", NULL };
-    const char *const apollo_f[] = { "Salt", "Deployments", "Apollo", NULL };
-    const char *const meet_f[]   = { "Salt", "Meetings", NULL };
+    const char *const atlas_f[]  = { "Work", "Deployments", "Atlas", NULL };
+    const char *const orion_f[]  = { "Work", "Deployments", "Orion", NULL };
+    const char *const meet_f[]   = { "Work", "Meetings", NULL };
     const char *const kitchen[]  = { "Home", "Kitchen", NULL };
     const char *const garden_f[] = { "Home", "Garden", NULL };
     const char *const home[]     = { "Home", NULL };
@@ -328,24 +328,24 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     ok = ok && rich != 0 && seed_rich(db, rich, image);
 
     gchar *text = g_strdup_printf(
-        "Stride rollout plan\n\nSensor rollout for the Stride tenant.\n"
-        "! Rerun the traffic reports due %s\n! Confirm the collector version due %s\n"
-        "! Send the summary to Priya due %s\n! Archive the old dashboards\n"
+        "Atlas rollout plan\n\nStaged rollout for the Atlas release.\n"
+        "! Rerun the load tests due %s\n! Confirm the build version due %s\n"
+        "! Send the summary to Sam due %s\n! Archive the old dashboards\n"
         "Notes from the kickoff call.", d_3, d0, d5);
-    gint64 stride = note(db, stride_f, text, (const char *[]){ "salt", "urgent", NULL }, NULL);
+    gint64 atlas = note(db, atlas_f, text, (const char *[]){ "work", "urgent", NULL }, NULL);
     g_free(text);
-    ok = ok && stride != 0 && done(app, stride, 3);
+    ok = ok && atlas != 0 && done(app, atlas, 3);
 
-    text = g_strdup_printf("Apollo PoV checklist\n\n! Book the validation call due %s\n"
-                           "! Collect sample traffic due %s\nKong plugin deployed in staging.",
+    text = g_strdup_printf("Orion pilot checklist\n\n! Book the validation call due %s\n"
+                           "! Collect sample data due %s\nGateway plugin deployed in staging.",
                            d2, d9);
-    ok = ok && note(db, apollo_f, text, (const char *[]){ "salt", NULL }, NULL) != 0;
+    ok = ok && note(db, orion_f, text, (const char *[]){ "work", NULL }, NULL) != 0;
     g_free(text);
 
-    text = g_strdup_printf("Weekly sync\n\nAttendees: Ian, Priya, Sam.\n"
+    text = g_strdup_printf("Weekly sync\n\nAttendees: Alex, Jo, Sam.\n"
                            "! Circulate the minutes due %s\n"
-                           "Decisions: ship the hybrid upgrade next sprint.", d1);
-    gint64 meeting = note(db, meet_f, text, (const char *[]){ "salt", "meetings", NULL }, NULL);
+                           "Decisions: ship the search upgrade next sprint.", d1);
+    gint64 meeting = note(db, meet_f, text, (const char *[]){ "work", "meetings", NULL }, NULL);
     g_free(text);
     ok = ok && meeting != 0 && done(app, meeting, 0);
 
@@ -373,7 +373,7 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
     ok = ok && note(db, reading, lines->str, NULL, NULL) != 0;
     g_string_free(lines, TRUE);
 
-    ok = ok && on_db_note_set_pinned(db, stride, TRUE) &&
+    ok = ok && on_db_note_set_pinned(db, atlas, TRUE) &&
          on_db_note_set_pinned(db, groceries, TRUE);
 
     /* Emoji on three tags (Tasks shows them too), and two Notes favorites. */
@@ -382,7 +382,7 @@ seed(OnApp *app, GBytes *image, GBytes *photo)
         const char *emoji;
         gboolean    favorite;
     } looks[] = {
-        { "Salt",    "\xf0\x9f\xa7\x82", TRUE  },
+        { "Work",    "\xf0\x9f\x92\xbc", TRUE  },
         { "Home",    "\xf0\x9f\x8f\xa1", TRUE  },
         { "Reading", "\xf0\x9f\x93\x9a", FALSE },
     };

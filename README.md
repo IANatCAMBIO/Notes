@@ -1,8 +1,6 @@
 # Notes
 
-<!-- Screenshot: save a capture of the library window as images/screenshot.png
-     and replace this comment with:
-     ![Notes, the library](images/screenshot.png) -->
+![Notes, the library and search](images/screenshot.png)
 
 Notes is a note-taking app that replaces Notes on macOS — a native AppKit
 app with its own block document model, rich text with images, tables and

@@ -284,11 +284,10 @@ on_text_layout_new(const on_text_content_t *content,
         action_from = (CFIndex)on_utf16_from_utf8(content->text, at);
     }
     if (action_from < cf_len) {
-        CFRange r = { action_from, cf_len - action_from };
         shared_rgba_t ac = shared_look_pick(on_look_action, style->dark);
-        set_color_attr(ms, ac, r.location, r.length);
+        set_color_attr(ms, ac, action_from, cf_len);
         CTFontRef sf = get_font(style->font_size, style->scale, false, true);
-        CFAttributedStringSetAttribute(ms, r, kCTFontAttributeName, sf);
+        set_attr(ms, kCTFontAttributeName, sf, action_from, cf_len);
         CFRelease(sf);
     }
 

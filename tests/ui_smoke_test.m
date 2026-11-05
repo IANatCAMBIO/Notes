@@ -52,6 +52,7 @@
 
 #include "action_edit.h"
 #include "action_sync.h"
+#include "doc_layout.h"
 #include "look.h"
 #include "app_lifecycle.h"
 #include "backup.h"
@@ -1063,6 +1064,156 @@ test_strike_snapshot(void)
         on_editor_close_all();
     }
     pump(0.2);
+}
+
+/* ── The action look ────────────────────────────────────────────────────── */
+
+/*
+ * draw_layout — lay a document out at `width` points and draw it the way
+ * the note view does: a white page, then on_doc_layout_draw into a FLIPPED
+ * context, one pixel to the point.
+ *
+ * Inputs:
+ *   doc   — the document; the caller keeps it
+ *   width — the view width, points
+ *   out   — receives the layout (the caller frees it: the caret boxes are
+ *           read from it after the drawing)
+ *
+ * Output: the bitmap, its row 0 the top of the content.
+ */
+static NSBitmapImageRep *
+draw_layout(OnDocument *doc, double width, OnDocLayout **out)
+{
+    OnDocLayout *L = on_doc_layout_new(doc, on_look_font_size);
+    on_doc_layout_set_width(L, width);
+    OnDocLayoutStyle style = { .title_line = true };
+    on_doc_layout_set_style(L, &style);
+    double h = on_doc_layout_height(L);
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL
+                      pixelsWide:(NSInteger)ceil(width)
+                      pixelsHigh:(NSInteger)ceil(h)
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSDeviceRGBColorSpace
+                     bytesPerRow:0
+                    bitsPerPixel:0];
+    NSGraphicsContext *gc =
+        [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    CGContextRef ctx = gc.CGContext;
+    CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
+    CGContextFillRect(ctx, CGRectMake(0, 0, width, h));
+    CGContextTranslateCTM(ctx, 0, h);        /* y down, as a flipped view   */
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    OnDocPaint paint = { .clip = { 0, 0, width, h } };
+    on_doc_layout_draw(L, ctx, &paint);
+    CGContextFlush(ctx);
+    *out = L;
+    return rep;
+}
+
+/*
+ * glyph_box — the box the character at bytes [off, next) of a text block
+ * fills, taken from the caret boxes on either side of it.
+ *
+ * Inputs:
+ *   L           — the layout
+ *   block       — the block
+ *   off, next   — the character's byte span
+ *
+ * Output: that box, in content coordinates.
+ */
+static on_rect_t
+glyph_box(OnDocLayout *L, guint block, gsize off, gsize next)
+{
+    on_rect_t a, b;
+    on_doc_layout_caret_rect(L, (OnPos){ block, -1, off }, &a);
+    on_doc_layout_caret_rect(L, (OnPos){ block, -1, next }, &b);
+    return (on_rect_t){ a.x, a.y, b.x - a.x, a.h };
+}
+
+/*
+ * ink_color — the colour of the darkest pixel inside `box`: the core of
+ * whatever glyph was drawn there.
+ *
+ * Inputs:
+ *   rep — the bitmap
+ *   box — where to look, in content coordinates (= pixels here)
+ *
+ * Output: that colour in sRGB; white when the box holds no ink.
+ */
+static NSColor *
+ink_color(NSBitmapImageRep *rep, on_rect_t box)
+{
+    NSColor *darkest = NSColor.whiteColor;
+    CGFloat  least   = 3.0;          /* its r + g + b                       */
+    NSInteger x0 = MAX((NSInteger)floor(box.x), 0);
+    NSInteger x1 = MIN((NSInteger)ceil(box.x + box.w), rep.pixelsWide);
+    NSInteger y0 = MAX((NSInteger)floor(box.y), 0);
+    NSInteger y1 = MIN((NSInteger)ceil(box.y + box.h), rep.pixelsHigh);
+    for (NSInteger y = y0; y < y1; y++) {
+        for (NSInteger x = x0; x < x1; x++) {
+            NSColor *c = [[rep colorAtX:x y:y]
+                          colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            CGFloat sum = c.redComponent + c.greenComponent + c.blueComponent;
+            if (sum < least) { least = sum; darkest = c; }
+        }
+    }
+    return darkest;
+}
+
+/* is_ink — darker than the page: a glyph was drawn here at all.            */
+static BOOL
+is_ink(NSColor *c)
+{
+    return c.redComponent + c.greenComponent + c.blueComponent < 2.4;
+}
+
+/* in_action_color — drawn in the action colour (blue) rather than the text
+ * colour (black in the light appearance).                                  */
+static BOOL
+in_action_color(NSColor *c)
+{
+    return c.blueComponent - c.redComponent > 0.15;
+}
+
+/*
+ * test_action_colour — the action look covers the item and nothing else:
+ * from the '!' to the LAST character of the line, with the words before a
+ * mid-line '!' left in the text colour.  Drawn and sampled rather than
+ * eyeballed, because the colour range is arithmetic on byte offsets: a '!'
+ * past the line's start once cut the blue short by as many characters as
+ * stood before it, which left the last character of a tab-indented item
+ * black.
+ */
+static void
+test_action_colour(void)
+{
+    OnDocument *doc = on_document_from_text(
+        "Colour note\n\t! Call the vet\nasked Ann !send the quote");
+    OnDocLayout      *L   = NULL;
+    NSBitmapImageRep *rep = draw_layout(doc, 400.0, &L);
+
+    /* "\t! Call the vet": the '!' is byte 1, the last 't' byte 14.         */
+    NSColor *bang = ink_color(rep, glyph_box(L, 1, 1, 2));
+    NSColor *last = ink_color(rep, glyph_box(L, 1, 14, 15));
+    /* "asked Ann !send the quote": 'a' is byte 0, the last 'e' byte 24.    */
+    NSColor *before = ink_color(rep, glyph_box(L, 2, 0, 1));
+    NSColor *tail   = ink_color(rep, glyph_box(L, 2, 24, 25));
+
+    check(is_ink(bang) && in_action_color(bang),
+          "the action look starts at the '!' of a tab-indented item");
+    check(is_ink(last) && in_action_color(last),
+          "and reaches the last character of its line");
+    check(is_ink(before) && !in_action_color(before),
+          "the words before a mid-line '!' keep the text colour");
+    check(is_ink(tail) && in_action_color(tail),
+          "and that item is blue to the end of its line");
+
+    on_doc_layout_free(L);
+    on_document_free(doc);
 }
 
 /*
@@ -4044,6 +4195,7 @@ main(void)
         test_drop_last_line();
         test_accessibility();
         test_strike_snapshot();
+        test_action_colour();
         test_tag_suggestions();
         test_pointer();
         test_edit_tag(lib);

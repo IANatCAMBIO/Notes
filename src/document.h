@@ -527,10 +527,27 @@ gboolean on_document_take_actions_modified(OnDocument *d);
  * DERIVED READS — computed from the blocks, nothing stored.
  * ------------------------------------------------------------------------- */
 
-/* on_block_is_action() — a PARA/H1/H2 block whose text starts with '!'.
- * THE action-line contract: list and task lines start with their prefix,
- * code lines never count.  on_note_document_save (serialize.c) derives
- * the note's task rows through this same test.                           */
+/* on_block_action_mark() — the byte offset of the '!' that opens the
+ * block's action item, or -1 when the block holds none.  THE action-line
+ * contract, in one place:
+ *   - the kind must be PARA, H1 or H2: in a bullet, numbered or task line
+ *     the first character is the prefix, and a code line is never an item;
+ *   - the '!' must begin a word — the start of the line, or whitespace
+ *     before it — so the one in "shipped it!" is prose;
+ *   - with nothing but whitespace before it the '!' may be followed by
+ *     anything, so a line of its own is an item however deeply indented
+ *     under a heading ("\t! Call the vet"); further along the line a
+ *     LETTER OR DIGIT must follow it at once ("asked Ann !send the
+ *     quote") — the same thing a #tag asks of its '#' — which is what
+ *     leaves "we shipped ! and went home" and "great work !!!"
+ *     sentences;
+ *   - the first '!' that qualifies is the mark, and the rest of the line
+ *     after it is the item.
+ * on_note_document_save (serialize.c) derives the note's task rows
+ * through this same test.                                                */
+gssize on_block_action_mark(const OnBlock *b);
+
+/* on_block_is_action() — whether the block carries an action mark.       */
 gboolean on_block_is_action(const OnBlock *b);
 
 /* Titles derived from a note's first line are cut to this many characters
@@ -632,10 +649,11 @@ gboolean on_document_remove_tag(OnDocument *d, const gchar *word);
 
 /* ---------------------------------------------------------------------------
  * ACTION ITEMS BY ORDINAL — the note's REAL action lines numbered in
- * document order: a non-CODE text block whose text starts with '!' and
- * whose rest is more than whitespace and a "due <date>" (bare "!" lines
- * and lines that are only a due date do not count — the extractor's
- * numbering, so ord n here is ord n in the action_items table).  Each
+ * document order: a block carrying an action mark (on_block_action_mark)
+ * whose rest of line is more than whitespace and a "due <date>" (bare
+ * "!" lines and lines that are only a due date do not count — the
+ * extractor's numbering, so ord n here is ord n in the action_items
+ * table).  Each
  * rewrite is one undo group and returns FALSE when there is no such item.
  * ------------------------------------------------------------------------- */
 

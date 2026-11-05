@@ -349,32 +349,45 @@ on_note_document_release(OnDatabase *db, OnDocument *doc)
 
 /*
  * action_unmark — turn the real action line in `block` into a plain line:
- * delete the leading '!' and the whitespace after it, again while the line
- * still starts with '!' (so "!! x" does not stay an item), as one undo
- * group; the rest — text, a "due <date>" suffix, its formatting — stays.
+ * delete the line's '!' (wherever on the line it is — on_block_action_mark)
+ * and the whitespace after it, again while a '!' follows (so "!! x" does
+ * not stay an item), as one undo group; the rest — whatever stood before
+ * the mark, the text, a "due <date>" suffix, its formatting — stays.
  * The block's uid is cleared, so the line is no longer that item (an undo
  * brings the '!' back as a NEW item, the deleted task staying deleted).
+ *
+ * `mark` goes where the '!' was (serialize.h: ON_ACTION_DONE_MARK for a
+ * task completed before it went, ON_ACTION_DROPPED_MARK for one given up
+ * on), so that the line says how its work ended rather than reading as an
+ * ordinary sentence someone once wrote.  It is inserted with NO inline
+ * flags, so it stays upright beside the struck text of a line Tasks had
+ * already ticked.  NULL leaves the line bare, which is what a line that
+ * never stood for a task of the user's wants (on_note_for_event).
  *
  * Inputs:
  *   doc   — the document
  *   block — the block index of an action line (on_block_is_action)
+ *   mark  — the text to put in the '!'s place, or NULL for none
  *
  * Output: none.
  */
 static void
-action_unmark(OnDocument *doc, guint block)
+action_unmark(OnDocument *doc, guint block, const gchar *mark)
 {
     OnBlock     *b    = on_document_block(doc, block);
     const gchar *text = b->text->text->str;
-    gsize        n    = 0;           /* bytes of the prefix to delete       */
+    gsize        mark_at = (gsize)on_block_action_mark(b);
+    gsize        n       = mark_at;  /* end of the mark run to delete       */
     while (text[n] == '!') {
         n++;
         while (text[n] != '\0' && g_ascii_isspace((guchar)text[n]))
             n++;
     }
-    OnPos at = { block, -1, 0 };
+    OnPos at = { block, -1, mark_at };
     on_document_begin_group(doc);
-    on_document_delete_text(doc, at, n);
+    on_document_delete_text(doc, at, n - mark_at);
+    if (mark != NULL)
+        on_document_insert_text(doc, at, mark, strlen(mark), 0);
     on_document_end_group(doc);
     b->action_uid = 0;
 }
@@ -458,7 +471,7 @@ on_note_for_event(OnDatabase *db, const char *event_id, int64_t occurrence, cons
     OnDocument *doc = on_document_from_text(text);
     free(text);
     if (on_block_is_action(on_document_block(doc, 0)))
-        action_unmark(doc, 0);
+        action_unmark(doc, 0, NULL);    /* a generated title, never a task */
     /* Title, head, the attendees, two empty lines: bullets between. */
     for (guint i = 2; n_attendees > 0 && i + 2 < on_document_n_blocks(doc); i++)
         on_document_set_kind(doc, i, ON_BLOCK_BULLET);
@@ -486,10 +499,13 @@ on_note_document_reconcile(OnDatabase *db, gint64 id, OnDocument *doc,
         OnActionLink *row = &g_array_index(rows, OnActionLink, r);
         gint ord = on_document_action_ord(doc, row->uid);
         if (row->deleted && !row->seen_deleted) {
-            /* Deleted elsewhere: the line becomes plain text, the link goes. */
+            /* Deleted elsewhere: the line becomes plain text, marked for
+             * how its work ended — `row->done` is the TASK's status, which
+             * a tombstone keeps — and the link goes. */
             if (ord >= 0) {
                 GArray *blocks = on_document_action_blocks(doc);
-                action_unmark(doc, g_array_index(blocks, guint, ord));
+                action_unmark(doc, g_array_index(blocks, guint, ord),
+                              row->done ? ON_ACTION_DONE_MARK : ON_ACTION_DROPPED_MARK);
                 g_array_unref(blocks);
                 edited = TRUE;
             }

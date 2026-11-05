@@ -19,6 +19,26 @@
 #include "db.h"                      /* OnDatabase, OnActionItem            */
 
 /* ---------------------------------------------------------------------------
+ * ON_ACTION_DONE_MARK / ON_ACTION_DROPPED_MARK — what a '!' line keeps in
+ * place of its mark when the task it had become is deleted in Tasks (by
+ * hand, or by Tasks' cleanup of old completed tasks): "\u2705 " when the
+ * task was COMPLETED first, "\U0001FAA6 " when it was still open.
+ *
+ * The line stops being an action item — it is ordinary text again, with
+ * the words the user typed untouched — and the mark says how it ended:
+ * the work was finished, or it was given up on.  Two marks rather than one
+ * and nothing, because an unmarked line says neither: a reader coming back
+ * to a note cannot tell a sentence that was never an item from one whose
+ * task somebody dropped.
+ *
+ * Both are ORDINARY TEXT, deliberately: nothing parses them, the user may
+ * delete them like any other character, and typing one by hand means
+ * nothing.  Written only by on_note_document_reconcile.
+ * ------------------------------------------------------------------------- */
+#define ON_ACTION_DONE_MARK    "\xe2\x9c\x85 "
+#define ON_ACTION_DROPPED_MARK "\xf0\x9f\xaa\xa6 "
+
+/* ---------------------------------------------------------------------------
  * on_note_extract_text() — the searchable plain text of a BNBF blob
  * (on_document_plain_text: one line per block, list prefixes rendered,
  * table cells space-separated).  No image is decoded — the model carries
@@ -156,8 +176,8 @@ gint64 on_note_new_from_document(OnDatabase *db, const gchar *tag, OnDocument *d
  * title, then, when it has attendees, an "Attendees:" line, one bulleted
  * line each and an empty line, then an empty line, where the editor puts
  * the caret (NotesEditorRevealEnd) — bound to the occurrence
- * (on_db_event_note_bind).  A title starting with '!' is not made an
- * action item: the '!' prefix is dropped.  One write transaction.
+ * (on_db_event_note_bind).  An event title that would read as an action
+ * item is not made one: its '!' is dropped.  One write transaction.
  *   db          — open database.
  *   event_id    — the event's EventKit identifier.
  *   occurrence  — the occurrence's start, unix seconds (a recurring
@@ -193,19 +213,24 @@ void on_note_document_release(OnDatabase *db, OnDocument *doc);
  * document when this asks for it, so the line, the baseline and the task
  * always move together.  For each note_task row of the note:
  *   - task deleted with seen_deleted = 0 (deleted elsewhere): its line, if
- *     the document has it, is UNMARKED — the leading '!' and the
- *     whitespace after it are deleted, repeatedly while the line still
- *     starts with '!'; the rest (text, a due suffix, its formatting) stays
+ *     the document has it, is UNMARKED — the line's '!' (wherever on the
+ *     line it stands: on_block_action_mark) and the whitespace after it are
+ *     deleted, repeatedly while a '!' follows; the rest (whatever stood
+ *     before the mark, the text, a due suffix, its formatting) stays
  *     as a plain line and the block's uid is cleared — and the note_task
- *     row is deleted (its tombstone trigger finds the task deleted already);
+ *     row is deleted (its tombstone trigger finds the task deleted
+ *     already).  Where the '!' was goes ON_ACTION_DONE_MARK when the task
+ *     was DONE as it went, ON_ACTION_DROPPED_MARK when it was still open,
+ *     so the line says how its work ended;
  *   - task deleted with seen_deleted = 1, or live with seen_deleted = 1:
  *     nothing (Notes' own tombstone; a task restored elsewhere whose line
  *     is gone);
  *   - otherwise, in the order text, strike, due: where the task's value
  *     differs from seen_* (title vs seen_title byte for byte; status DONE vs
  *     seen_done; due vs seen_due), the line is rewritten to the task's
- *     value if it differs (on_document_action_text / _strike / _due: the
- *     '!', spacing, due suffix and strike of the line are kept; a due date
+ *     value if it differs (on_document_action_text / _strike / _due: what
+ *     stands before the '!', the '!' itself, the spacing, the due suffix
+ *     and the strike of the line are kept; a due date
  *     is written " due YYYY-MM-DD"), and seen_* := the task's value (every
  *     byte of the title).  A title the line cannot take — empty; holding a
  *     line break (on_document_text_has_line_break: "\n", "\r", U+2029),

@@ -70,7 +70,9 @@ typedef struct {
     bool   bold;                     /* headings, header cells               */
     double flush;                    /* 0 flush left, 0.5 centred (the title
                                         line), 1 flush right (the tag line)  */
-    bool   action;                   /* a '!' line: action colour, semibold  */
+    bool   action;                   /* an action line: the action colour and
+                                        semibold, from action_at on          */
+    size_t action_at;                /* byte offset of that line's '!'       */
     bool   plain;                    /* code: run flags and tags not shown   */
     bool   muted;                    /* code line numbers: their grey        */
     bool   dark;                     /* dark appearance (look.h colours)     */

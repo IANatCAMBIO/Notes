@@ -1438,18 +1438,43 @@ runs_carry(const GArray *runs, guint32 bit)
     return FALSE;
 }
 
-gboolean
-on_block_is_action(const OnBlock *b)
+gssize
+on_block_action_mark(const OnBlock *b)
 {
     /* Only the kinds with NO line prefix: in a bullet, numbered or task
      * line the first character is the prefix, so a '!' after it is text;
      * a code line is never an item.  THE definition — the task rows are
      * synced through this very test (serialize.c), so the ord the table
      * names is the ord the model rewrites.                               */
-    return b->text != NULL &&
-           (b->kind == ON_BLOCK_PARA || b->kind == ON_BLOCK_H1 ||
-            b->kind == ON_BLOCK_H2) &&
-           b->text->text->len > 0 && b->text->text->str[0] == '!';
+    if (b->text == NULL ||
+        (b->kind != ON_BLOCK_PARA && b->kind != ON_BLOCK_H1 &&
+         b->kind != ON_BLOCK_H2))
+        return -1;
+    const gchar *s      = b->text->text->str;
+    gboolean     word   = TRUE;      /* does p start a word?               */
+    gboolean     indent = TRUE;      /* is all before p whitespace?        */
+    for (const gchar *p = s; *p != '\0'; p = g_utf8_next_char(p)) {
+        gunichar c = g_utf8_get_char(p);
+        if (c == '!' && word) {
+            /* On its own line (indentation aside) anything may follow;
+             * inside a line a letter or a digit must follow at once — as
+             * one must follow a #tag's '#' — so an exclamation between
+             * words stays prose, "great work !!!" included.              */
+            const gchar *rest = p + 1;         /* '!' is one byte          */
+            if (indent || (*rest != '\0' &&
+                           g_unichar_isalnum(g_utf8_get_char(rest))))
+                return (gssize)(p - s);
+        }
+        word   = g_unichar_isspace(c);
+        indent = indent && word;
+    }
+    return -1;
+}
+
+gboolean
+on_block_is_action(const OnBlock *b)
+{
+    return on_block_action_mark(b) >= 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1480,7 +1505,9 @@ action_rest_real(const gchar *rest)
 static gboolean
 block_is_real_action(const OnBlock *b)
 {
-    return on_block_is_action(b) && action_rest_real(b->text->text->str + 1);
+    gssize mark = on_block_action_mark(b);
+    return mark >= 0 &&
+           action_rest_real(b->text->text->str + mark + 1);
 }
 
 OnText *
@@ -3128,29 +3155,32 @@ on_document_action_ord(const OnDocument *d, gint64 uid)
 }
 
 /* action_block() — the block index of the `ord`-th real action line, or
- * G_MAXUINT.                                                                */
+ * G_MAXUINT, and in `mark` the offset of that line's '!' (untouched when
+ * there is no such line).                                                   */
 static guint
-action_block(const OnDocument *d, gint ord)
+action_block(const OnDocument *d, gint ord, gsize *mark)
 {
     GArray *blocks = on_document_action_blocks(d);
     guint i = (ord >= 0 && (guint)ord < blocks->len)
               ? g_array_index(blocks, guint, ord) : G_MAXUINT;
     g_array_unref(blocks);
+    if (i != G_MAXUINT)
+        *mark = (gsize)on_block_action_mark(on_document_block(d, i));
     return i;
 }
 
 /* ---------------------------------------------------------------------------
  * action_text_span() — the byte span of the item TEXT inside a line: after
- * the '!' and its leading whitespace, up to an existing "due <date>" (or
- * the line end) less trailing whitespace.  The derivation the extractor
- * uses to produce OnActionItem.text, so a rewrite of exactly this span
- * re-extracts to the new text.  Returns whether that text ends struck —
- * the done state a rewrite must carry over.
+ * the '!' at `mark` and its leading whitespace, up to an existing
+ * "due <date>" (or the line end) less trailing whitespace.  The derivation
+ * the extractor uses to produce OnActionItem.text, so a rewrite of exactly
+ * this span re-extracts to the new text.  Returns whether that text ends
+ * struck — the done state a rewrite must carry over.
  * ------------------------------------------------------------------------- */
 static gboolean
-action_text_span(const OnText *t, gsize *start, gsize *end)
+action_text_span(const OnText *t, gsize mark, gsize *start, gsize *end)
 {
-    const gchar *rest = t->text->str + 1;
+    const gchar *rest = t->text->str + mark + 1;
     gsize  text_bytes;               /* end of the item text in `rest`      */
     gsize  due_start;
     gint64 due;
@@ -3161,8 +3191,8 @@ action_text_span(const OnText *t, gsize *start, gsize *end)
     gsize lead = 0;                  /* whitespace right after the '!'      */
     while (lead < text_bytes && g_ascii_isspace((guchar)rest[lead]))
         lead++;
-    *start = 1 + lead;
-    *end   = 1 + text_bytes;
+    *start = mark + 1 + lead;
+    *end   = mark + 1 + text_bytes;
     if (*end <= *start)
         return FALSE;
     const gchar *last = g_utf8_prev_char(t->text->str + *end);
@@ -3174,25 +3204,25 @@ gboolean
 on_document_block_action(const OnDocument *d, guint block, gchar **text,
                          gint64 *due, gboolean *done)
 {
-    const OnBlock *b = on_document_block(d, block);
-    if (b == NULL || !on_block_is_action(b) ||
-        !action_rest_real(b->text->text->str + 1))
+    const OnBlock *b    = on_document_block(d, block);
+    gssize         mark = b != NULL ? on_block_action_mark(b) : -1;
+    if (mark < 0 || !action_rest_real(b->text->text->str + mark + 1))
         return FALSE;
     const OnText *t = b->text;
     gsize start, end;                /* the item text's byte span           */
-    action_text_span(t, &start, &end);
+    action_text_span(t, (gsize)mark, &start, &end);
     if (text != NULL)
         *text = g_strndup(t->text->str + start, end - start);
     if (due != NULL) {
         gsize due_start;
-        if (!on_action_split_due(t->text->str + 1, &due_start, due))
+        if (!on_action_split_due(t->text->str + mark + 1, &due_start, due))
             *due = 0;
     }
     if (done != NULL) {
         /* Done = every non-space character after the '!' struck, the due
          * date included — an un-struck due suffix is an open item.      */
         gboolean struck = TRUE;
-        for (const gchar *p = t->text->str + 1; *p != '\0';
+        for (const gchar *p = t->text->str + mark + 1; *p != '\0';
              p = g_utf8_next_char(p)) {
             if (g_ascii_isspace((guchar)*p))
                 continue;
@@ -3210,14 +3240,16 @@ on_document_block_action(const OnDocument *d, guint block, gchar **text,
 gboolean
 on_document_action_strike(OnDocument *d, gint ord, gboolean done)
 {
-    guint i = action_block(d, ord);
+    gsize mark = 0;
+    guint i    = action_block(d, ord, &mark);
     if (i == G_MAXUINT)
         return FALSE;
     OnText *t = on_document_block(d, i)->text;
-    OnPos pos = { i, -1, 1 };
-    if (t->text->len > 1) {
+    OnPos pos = { i, -1, mark + 1 };
+    if (t->text->len > mark + 1) {
         on_document_begin_group(d);
-        on_document_set_flags(d, pos, t->text->len - 1, ON_FMT_STRIKE, done);
+        on_document_set_flags(d, pos, t->text->len - (mark + 1),
+                              ON_FMT_STRIKE, done);
         on_document_end_group(d);
     }
     return TRUE;
@@ -3226,12 +3258,13 @@ on_document_action_strike(OnDocument *d, gint ord, gboolean done)
 gboolean
 on_document_action_due(OnDocument *d, gint ord, gint64 due)
 {
-    guint i = action_block(d, ord);
+    gsize mark = 0;
+    guint i    = action_block(d, ord, &mark);
     if (i == G_MAXUINT)
         return FALSE;
     OnText *t = on_document_block(d, i)->text;
     gsize start, end;                /* the item text                       */
-    gboolean struck = action_text_span(t, &start, &end);
+    gboolean struck = action_text_span(t, mark, &start, &end);
     gchar *suffix = NULL;            /* the new " due …", none for 0        */
     if (due != 0) {
         /* A time GLib cannot represent (a row written by another program)
@@ -3259,14 +3292,15 @@ on_document_action_due(OnDocument *d, gint ord, gint64 due)
 gboolean
 on_document_action_text(OnDocument *d, gint ord, const gchar *text)
 {
-    guint i = action_block(d, ord);
-    gsize n = text != NULL ? strlen(text) : 0;
+    gsize mark = 0;
+    guint i    = action_block(d, ord, &mark);
+    gsize n    = text != NULL ? strlen(text) : 0;
     if (i == G_MAXUINT || n == 0 || !g_utf8_validate_len(text, (gssize)n, NULL) ||
         on_document_text_has_line_break(text, n) || strstr(text, ON_OBJ_CHAR) != NULL)
         return FALSE;
     OnText *t = on_document_block(d, i)->text;
     gsize start, end;                /* the item text                       */
-    gboolean struck = action_text_span(t, &start, &end);
+    gboolean struck = action_text_span(t, mark, &start, &end);
     if (g_strstr_len(t->text->str + start, (gssize)(end - start), ON_OBJ_CHAR) != NULL)
         return FALSE;                /* an inline image would be deleted    */
 
@@ -3280,11 +3314,11 @@ on_document_action_text(OnDocument *d, gint ord, const gchar *text)
     on_text_append(line, text, n, 0);
     on_text_append(line, t->text->str + end, t->text->len - end, 0);
     gsize s2, e2;                    /* the new line's item text            */
-    action_text_span(line, &s2, &e2);
+    action_text_span(line, mark, &s2, &e2);
     gsize lead = 0, tail = n;        /* `text` without its outer spaces     */
     while (lead < tail && g_ascii_isspace((guchar)text[lead])) lead++;
     while (tail > lead && g_ascii_isspace((guchar)text[tail - 1])) tail--;
-    gboolean same = action_rest_real(line->text->str + 1) && tail > lead &&
+    gboolean same = action_rest_real(line->text->str + mark + 1) && tail > lead &&
                     e2 - s2 == tail - lead &&
                     memcmp(line->text->str + s2, text + lead, tail - lead) == 0;
     on_text_free(line);

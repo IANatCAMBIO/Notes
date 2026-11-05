@@ -6,7 +6,11 @@
  * skill).  A '!' line's task can be renamed, completed, re-dated or
  * deleted by any of them; this module brings those changes into the notes
  * that carry the lines, eagerly, so note text, titles and search stay right
- * without the note being opened.  (The other direction — a line edited in
+ * without the note being opened.  A DELETED task never takes the writing
+ * with it: its line becomes ordinary text, marked for how its work ended
+ * (serialize.h: ON_ACTION_DONE_MARK when the task was completed before it
+ * went — what Tasks' cleanup of old completed tasks leaves behind —
+ * ON_ACTION_DROPPED_MARK when it was given up on).  (The other direction — a line edited in
  * Notes — is the push of every save: serialize.h, on_db_note_save_actions.)
  *
  * WHEN: at launch and when a database is opened (on_action_sync_start),

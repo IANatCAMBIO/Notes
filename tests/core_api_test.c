@@ -475,6 +475,96 @@ test_action_lines(OnDatabase *db)
 }
 
 /*
+ * test_action_marks — WHERE the '!' may stand (on_block_action_mark): on a
+ * line of its own however deeply indented, or inside a line when a
+ * non-space character follows it at once; and every rewrite landing after
+ * that mark, with whatever stands before it untouched.
+ *
+ * Inputs:
+ *   app — the context, database open, no hooks (headless)
+ */
+static void
+test_action_marks(OnApp *app)
+{
+    OnDatabase *db   = app->db;
+    gint64      note = on_note_new_from_text(db, 0,
+        "Where a mark may stand\n\n"
+        "\t! Indented under a heading\n"
+        "    ! Spaces indent too due 2026-12-01\n"
+        "asked Ann !send the quote\n"
+        "\t!first mark wins !second is text\n"
+        "we shipped ! and went home\n"
+        "shipped it!\n"
+        "not ! an item\n"
+        "great work !!!\n"
+        "see you !?\n"
+        "pick up !3 boxes");
+    GList *items = items_of(db, note);
+    check(g_list_length(items) == 5, "marks: five of the ten lines holding a '!' are items");
+    if (g_list_length(items) == 5) {
+        OnActionItem *a = g_list_nth_data(items, 0);
+        OnActionItem *b = g_list_nth_data(items, 1);
+        OnActionItem *c = g_list_nth_data(items, 2);
+        OnActionItem *d = g_list_nth_data(items, 3);
+        OnActionItem *e = g_list_nth_data(items, 4);
+        check(strcmp(a->text, "Indented under a heading") == 0,
+              "marks: a tab before the '!' is indentation, and the line is still an item");
+        check(strcmp(b->text, "Spaces indent too") == 0 && b->due == check_midnight(2026, 12, 1),
+              "marks: so are spaces, and a due suffix still splits off");
+        check(strcmp(c->text, "send the quote") == 0,
+              "marks: inside a line the item is what follows the '!'");
+        check(strcmp(d->text, "first mark wins !second is text") == 0,
+              "marks: the first mark wins, a later '!' is text");
+        check(strcmp(e->text, "3 boxes") == 0,
+              "marks: a digit opens an item as well as a letter");
+    }
+    on_db_action_list_free(items);
+    /* The five lines left out: "we shipped ! and went home" and
+     * "not ! an item" (a space follows the '!' mid-line), "shipped it!"
+     * (the '!' does not begin a word), "great work !!!" and "see you !?"
+     * (punctuation follows it, not a letter or a digit).                 */
+
+    /* Done, due and a rename from the row, on the tab-indented item.      */
+    gint64   uid   = nth_uid(db, note, 0);
+    gboolean done  = FALSE;
+    check(on_action_edit_set_done(app, uid, TRUE), "marks: the indented item is completed");
+    gchar *line = stored_line(db, note, text_line(2), &done);
+    check(done && strcmp(line, "\t! Indented under a heading") == 0,
+          "marks: it is struck from its '!' on, its indentation kept");
+    g_free(line);
+    check(on_action_edit_set_due(app, uid, check_midnight(2027, 3, 4)), "marks: and dated");
+    line = stored_line(db, note, text_line(2), &done);
+    check(done && strcmp(line, "\t! Indented under a heading due 2027-03-04") == 0,
+          "marks: the due suffix follows the text, the done state kept");
+    g_free(line);
+
+    OnActionItem *row = on_db_action_get(db, uid);
+    check(row != NULL && on_db_action_set(db, uid, ON_ACTION_FIELD_TEXT,
+                                          "Renamed in Tasks", row->done, row->due),
+          "marks: Tasks renames the indented item");
+    on_db_action_item_free(row);
+    check(on_action_sync_note(app, note), "marks: the pull rewrites its line");
+    line = stored_line(db, note, text_line(2), &done);
+    check(done && strcmp(line, "\t! Renamed in Tasks due 2027-03-04") == 0,
+          "marks: the rename keeps the indentation, the '!' and the due date");
+    g_free(line);
+
+    /* A mid-line mark: the words before it are nobody's business but the
+     * writer's — a rename rewrites only what follows the '!'.             */
+    gint64 mid = nth_uid(db, note, 2);
+    row = on_db_action_get(db, mid);
+    check(row != NULL && on_db_action_set(db, mid, ON_ACTION_FIELD_TEXT,
+                                          "send the contract", row->done, row->due),
+          "marks: Tasks renames the mid-line item");
+    on_db_action_item_free(row);
+    check(on_action_sync_note(app, note), "marks: the pull rewrites that line too");
+    line = stored_line(db, note, text_line(4), NULL);
+    check(strcmp(line, "asked Ann !send the contract") == 0,
+          "marks: only the text after the '!' is replaced, the words before it stand");
+    g_free(line);
+}
+
+/*
  * test_action_list — the cross-note listing: newest note first, line order
  * within a note, trashed notes left out; uids survive renumbering.
  *
@@ -1430,6 +1520,7 @@ main(void)
     check(on_app_open_db(&app, NULL), "the test database opens");
     test_notes(app.db);
     test_action_lines(app.db);
+    test_action_marks(&app);
     test_action_list(app.db);
     test_action_edit(&app);
     test_given_tags(&app);

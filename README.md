@@ -105,9 +105,15 @@ writes the GTK app's database or settings. But both bundles are called
 Compared with Apple Notes:
 
 - **Action items that are real tasks** — write `! Call the vet due
-  2026-12-01` and it appears in Tasks tagged ❗ Action Items. Strike it
+  2026-12-01` and it appears in Tasks tagged ❗ Action Items. The `!` may
+  open the line, indented as deeply as you like under a heading, or stand
+  inside it with the item's first letter straight after it (`asked Ann
+  !send the quote`).
+  Strike it
   through here and it completes there; complete it there and the line is
-  struck through here, even in notes that are not open
+  struck through here, even in notes that are not open. Delete the task in
+  Tasks and the line keeps its words, marked ✅ when it was finished or 🪦
+  when it was dropped
 - **Tags instead of folders** — a note's tags are the `#tags` in its text,
   living on a tag line above the title. Type `#` anywhere to pick from the
   known tags, and the tag moves itself up to that line. The same tag set

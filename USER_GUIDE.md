@@ -70,6 +70,16 @@ tags Tasks uses (one set in the shared file).
 Both apps — and an AI agent using the shared-data skill — may have the
 file open at once (SQLite WAL mode). Edits flow both ways:
 
+- **What makes a line an action item** is a `!` that begins a word. It may
+  open the line — with any amount of indentation before it, so items sit
+  one tab in under a heading — or stand further along the line with the
+  item's first letter or digit straight after it (`asked Ann !send the
+  quote`), and then the words before it stay ordinary text, in their own
+  colour. Anything else after a mid-line `!` leaves it punctuation, so
+  `we shipped ! and went home`, `great work !!!` and `shipped it!` are all
+  sentences. The first `!` that qualifies opens the item; everything after
+  it is the item, a later `!` included. Bullet, numbered, task-box and
+  code lines are never items.
 - **In Notes**: a line's text, its strike-through and its `due <date>`
   are the task's title, done state and due date. A save writes to the task
   only the fields you changed in Notes, so a priority, note, tag or due
@@ -80,8 +90,12 @@ file open at once (SQLite WAL mode). Edits flow both ways:
   notes that are not open, so note text, titles and search stay right. In
   an open note the change is an ordinary edit you can undo; your caret
   stays where it was. A task completed in Tasks is struck through; one
-  deleted in Tasks turns its line back into plain text (the `!` goes, the
-  words stay).
+  deleted in Tasks turns its line back into plain text — the words stay,
+  and the `!` is replaced by **✅** when the task had been completed
+  before it went, or **🪦** when it was given up on while still open. So a
+  note tells you afterwards which of its items were finished and which
+  were dropped, and a completed action item Tasks deletes for age (its
+  Cleanup setting) leaves the sentence you wrote, marked as done.
 - **A note changed by another program while it is open**: an editor with
   no unsaved edits shows the new version; one with unsaved edits keeps
   yours and offers to reload.

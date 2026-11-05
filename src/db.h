@@ -570,8 +570,9 @@ GArray *on_db_action_links(OnDatabase *db, gint64 note_id);
 gboolean on_db_action_link_update(OnDatabase *db, const OnActionLink *row);
 
 /* on_db_action_link_delete() — delete one note_task row (the pull, when
- * the task was deleted elsewhere and its line has been unmarked; the
- * tombstone trigger does nothing to an already deleted task).             */
+ * the task was deleted elsewhere and its line has been unmarked, marked
+ * for how its work ended; the tombstone trigger does nothing to an already
+ * deleted task).                                                          */
 gboolean on_db_action_link_delete(OnDatabase *db, gint64 uid);
 
 /* on_db_action_link_clear() — free a row's strings (NULL-safe fields).    */

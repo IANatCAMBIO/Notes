@@ -276,13 +276,19 @@ on_text_layout_new(const on_text_content_t *content,
     if (cf_len > 0)
         set_color_attr(ms, text_color, 0, cf_len);
 
-    /* Action colour + semibold over entire string. */
-    if (style->action && cf_len > 0) {
+    /* Action colour + semibold from the line's '!' to its end. */
+    CFIndex action_from = cf_len;    /* nothing, unless this is an item     */
+    if (style->action) {
+        size_t at = style->action_at < content->len ? style->action_at
+                                                    : content->len;
+        action_from = (CFIndex)on_utf16_from_utf8(content->text, at);
+    }
+    if (action_from < cf_len) {
+        CFRange r = { action_from, cf_len - action_from };
         shared_rgba_t ac = shared_look_pick(on_look_action, style->dark);
-        set_color_attr(ms, ac, 0, cf_len);
+        set_color_attr(ms, ac, r.location, r.length);
         CTFontRef sf = get_font(style->font_size, style->scale, false, true);
-        CFAttributedStringSetAttribute(ms, CFRangeMake(0, cf_len),
-                                       kCTFontAttributeName, sf);
+        CFAttributedStringSetAttribute(ms, r, kCTFontAttributeName, sf);
         CFRelease(sf);
     }
 
@@ -391,16 +397,17 @@ on_text_layout_new(const on_text_content_t *content,
         L->strikes = malloc((cap + 1) * sizeof *L->strikes);
         at = 0;
         shared_rgba_t tc = shared_look_pick(on_look_text, style->dark);
-        if (style->action) tc = shared_look_pick(on_look_action, style->dark);
+        shared_rgba_t ac = shared_look_pick(on_look_action, style->dark);
         for (size_t k = 0; k < content->n_runs; k++) {
             const OnRun *r = &content->runs[k];
             if ((r->flags & ON_FMT_STRIKE) && r->len > 0) {
-                L->strikes[cnt].cf_start = (CFIndex)on_utf16_from_utf8(
-                    content->text, at);
+                CFIndex cs = (CFIndex)on_utf16_from_utf8(content->text, at);
+                L->strikes[cnt].cf_start = cs;
                 L->strikes[cnt].cf_end   = (CFIndex)on_utf16_from_utf8(
                     content->text, at + r->len);
                 shared_rgba_t sc = (r->flags & ON_FMT_TAG)
-                    ? shared_look_pick(on_look_tag, style->dark) : tc;
+                    ? shared_look_pick(on_look_tag, style->dark)
+                    : cs >= action_from ? ac : tc;
                 L->strikes[cnt].color = sc;
                 cnt++;
             }

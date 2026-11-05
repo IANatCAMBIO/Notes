@@ -3582,7 +3582,8 @@ on_note_view_action_reveal(NotesNoteView *view, NSInteger ordinal)
     }
     guint block_idx = g_array_index(blocks, guint, ordinal);
     g_array_free(blocks, TRUE);
-    OnPos p = { block_idx, -1, 1 };          /* just after the '!' */
+    gssize mark = on_block_action_mark(on_document_block(view.doc, block_idx));
+    OnPos p = { block_idx, -1, mark + 1 };   /* just after the '!' */
     reveal_pos(view, p);
     return YES;
 }

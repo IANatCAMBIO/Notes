@@ -468,7 +468,16 @@ text_style_for(const OnDocLayout *L, const OnBlock *blk, size_t block,
     st.mono     = is_code;
     st.bold     = title || is_h1 || is_h2 || header_cell;
     st.flush    = title ? 0.5 : is_tags ? 1.0 : 0.0;
-    st.action   = (cell == -1) && on_block_is_action((OnBlock *)blk);
+    /* The action look runs from the line's '!' to its end, so the words
+     * before a mid-line mark stay ordinary text.  An input method's
+     * preedit is spliced into the text the layout sees (make_content), so
+     * a composition at or before the mark moves it.                       */
+    gssize mark = (cell == -1) ? on_block_action_mark((OnBlock *)blk) : -1;
+    if (mark > 0 && L->pre_on && (size_t)L->pre_pos.block == block &&
+        L->pre_pos.cell == cell && (gssize)L->pre_pos.offset <= mark)
+        mark += (gssize)strlen(L->pre_text);
+    st.action   = mark >= 0;
+    st.action_at = st.action ? (size_t)mark : 0;
     st.plain    = is_code;
     st.width    = no_wrap ? 0.0 : width;
     return st;

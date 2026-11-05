@@ -609,9 +609,12 @@ check_pulled(OnDatabase *db, const gint64 notes[4], const gint64 uids[4], const 
     pane = pane_text(db, uids[3]);
     OnActionLink row;
     snprintf(what, sizeof what, "pull (%s): a deleted task UNMARKS its line (every leading '!' "
-             "and its spaces go, the text and due suffix stay), its link goes", how);
-    check(strcmp(line, "Delete me due 2026-11-04") == 0 && !link_of(db, uids[3], notes[3], &row) &&
-          strcmp(pane, "") == 0 && note_title_is(db, notes[3], "Delete me due 2026-11-04") &&
+             "and its spaces go, the text and due suffix stay, a task given up on leaves a "
+             "headstone), its link goes", how);
+    check(strcmp(line, ON_ACTION_DROPPED_MARK "Delete me due 2026-11-04") == 0 &&
+          !link_of(db, uids[3], notes[3], &row) &&
+          strcmp(pane, "") == 0 &&
+          note_title_is(db, notes[3], ON_ACTION_DROPPED_MARK "Delete me due 2026-11-04") &&
           nth_uid(db, notes[3], 0) == 0, what);
     g_free(line);
     g_free(pane);
@@ -801,6 +804,93 @@ test_concurrent(OnApp *app, OnDatabase *other)
           task_int(app->db, uid, "priority") == 2 && pending_count(app->db) == 0,
           "concurrent: a pulled due date and a later Notes title both survive");
     g_free(title);
+}
+
+/*
+ * test_deleted_done — a task deleted in Tasks (by hand, or by Tasks'
+ * cleanup of old completed tasks) leaves its line marked for how its work
+ * ended: ON_ACTION_DONE_MARK when it was COMPLETED first,
+ * ON_ACTION_DROPPED_MARK when it was still open.  The words stay exactly
+ * as typed either way, and the line stops being an item.
+ *
+ * Inputs:
+ *   app   — headless context
+ *   other — a second connection, standing in for Tasks
+ */
+static void
+test_deleted_done(OnApp *app, OnDatabase *other)
+{
+    /* The '!' lines are the note's first three, so the first is also its
+     * title and the mark has to reach that too; the third is indented, so
+     * its mark goes where its '!' is rather than at the line's start. */
+    gint64 note = on_note_new_from_text(app->db,
+        NULL, "! Chase the invoice due 2026-11-04\n! Book the room\n"
+              "\t! Tidy the slides\nbody");
+    gint64 done_uid = nth_uid(app->db, note, 0);
+    gint64 open_uid = nth_uid(app->db, note, 1);
+    gint64 deep_uid = nth_uid(app->db, note, 2);
+
+    /* The real sequence behind a cleanup: Tasks completed the task long
+     * ago — which a pull has already struck the line for — and only then
+     * deletes it. */
+    gboolean struck = FALSE;
+    exec_uid(other, done_uid, "UPDATE tasks SET status = "
+             SHARED_DB_STR(SHARED_DB_TASK_STATUS_DONE) ", completed_at = 1 WHERE id = ?1");
+    on_action_sync_poll(app);
+    gchar *line = first_line(app->db, note, &struck);
+    check(struck && strcmp(line, "! Chase the invoice due 2026-11-04") == 0,
+          "deleted done: the completion strikes the line first");
+    g_free(line);
+
+    exec_uid(other, done_uid, "UPDATE tasks SET deleted = 1 WHERE id = ?1");
+    exec_uid(other, open_uid, "UPDATE tasks SET deleted = 1 WHERE id = ?1");
+    exec_uid(other, deep_uid, "UPDATE tasks SET deleted = 1 WHERE id = ?1");
+    check(on_action_sync_poll(app), "deleted done: the poll sees the outside commit");
+
+    OnDocument *doc = on_note_document_load(app->db, note);
+    OnText *text = on_document_block(doc, text_line(0))->text;
+    gchar *marked = g_strdup(text->text->str);
+    gchar *plain  = g_strdup(on_document_block(doc, text_line(1))->text->text->str);
+    gchar *deep   = g_strdup(on_document_block(doc, text_line(2))->text->text->str);
+    gboolean mark_plain = (on_text_flags_at(text, 0) & ON_FMT_STRIKE) == 0;
+    gboolean words_cut  = (on_text_flags_at(text, strlen(ON_ACTION_DONE_MARK)) &
+                           ON_FMT_STRIKE) != 0;
+    GArray *blocks = on_document_action_blocks(doc);
+    check(blocks->len == 0, "deleted done: not one of the lines is an action item any more");
+    g_array_unref(blocks);
+    on_document_free(doc);
+
+    check(mark_plain && words_cut,
+          "deleted done: the mark stands upright beside the struck words it belongs to");
+
+    check(strcmp(marked, ON_ACTION_DONE_MARK "Chase the invoice due 2026-11-04") == 0 &&
+          note_title_is(app->db, note, ON_ACTION_DONE_MARK "Chase the invoice due 2026-11-04"),
+          "deleted done: a completed task's line, and the title it is, keep their words "
+          "behind a check mark");
+    check(strcmp(plain, ON_ACTION_DROPPED_MARK "Book the room") == 0,
+          "deleted done: a task deleted while open leaves a headstone instead");
+    check(strcmp(deep, "\t" ON_ACTION_DROPPED_MARK "Tidy the slides") == 0,
+          "deleted done: an indented line keeps its indentation, the mark standing "
+          "where its '!' did");
+    g_free(marked);
+    g_free(plain);
+    g_free(deep);
+
+    OnActionLink row;
+    check(!link_of(app->db, done_uid, note, &row) && !link_of(app->db, open_uid, note, &row) &&
+          !link_of(app->db, deep_uid, note, &row) && pending_count(app->db) == 0,
+          "deleted done: every link goes and nothing is left pending");
+    check(body_has(app->db, note, "Chase the invoice"),
+          "deleted done: the words are still searchable");
+
+    /* The mark is ordinary text: a later save writes no task back for
+     * either line, and the note keeps them as they stand. */
+    edit_note(app->db, note, 0, NULL, -1, NULL);   /* a save, nothing edited */
+    gchar *after = first_line(app->db, note, NULL);
+    check(strcmp(after, ON_ACTION_DONE_MARK "Chase the invoice due 2026-11-04") == 0 &&
+          pending_count(app->db) == 0,
+          "deleted done: a later save makes no new task of the marked line");
+    g_free(after);
 }
 
 /*
@@ -1152,7 +1242,7 @@ test_migrated_tombstone(OnDatabase *db, OnDatabase *other)
     check_pump(NULL, 0.1);           /* the look after the pull's commit    */
     OnActionLink row;
     gchar *line = first_line(launch.db, note, NULL);
-    check(strcmp(line, "Deleted before migration due 2026-11-05") == 0 &&
+    check(strcmp(line, ON_ACTION_DROPPED_MARK "Deleted before migration due 2026-11-05") == 0 &&
           !link_of(launch.db, uid, note, &row) && pending_count(launch.db) == 0,
           "migrated: the pull at launch unmarks the line and drops the link");
     g_free(line);
@@ -1184,6 +1274,7 @@ main(void)
     test_pull_refused(&app, other);
     test_concurrent(&app, other);
     test_restored_elsewhere(&app, other);
+    test_deleted_done(&app, other);
     test_failed_save_uids(db);
     test_new_from_text_atomic(db, other);
     test_poll_revs(&app, other);

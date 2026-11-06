@@ -37,6 +37,10 @@
  * files.  Set once by the host, before the user can drop anything. */
 @property (nonatomic, assign) gint64 note_id;
 
+/* The note's creation time (UNIX), shown as a small date line under its
+ * tag line; 0 shows none.  Set once by the host, after note_id. */
+@property (nonatomic, assign) gint64 created_at;
+
 /* The pasteboard Cut, Copy and Paste use: the general one, unless a test
  * gives the view a private one so it never touches the user's clipboard. */
 @property (nonatomic, strong) NSPasteboard *pasteboard;

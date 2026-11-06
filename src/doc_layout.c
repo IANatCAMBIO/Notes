@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Page geometry (points) ─────────────────────────────────────────────── */
 
@@ -281,6 +282,37 @@ tag_mark_layout(const OnDocLayout *L)
     OnRun run = { strlen(on_look_tag_line_mark), 0 };
     on_text_content_t ct = { .text = on_look_tag_line_mark, .len = run.len, .runs = &run, .n_runs = 1 };
     on_text_style_t st = { .font_size = on_look_tag_line_size, .scale = 1.0, .dark = L->style.dark };
+    return on_text_layout_new(&ct, &st);
+}
+
+/* ── created_layout ─────────────────────────────────────────────────────── */
+
+/*
+ * created_layout — the line under the tag line that shows the note's
+ * creation date (YYYY-MM-DD, local time): the tag line's size, flush
+ * right like it, bold, in the muted grey.  It is drawn, not text: the caret,
+ * a selection and a delete never reach it.
+ *
+ * Inputs:
+ *   L — the layout (appearance, width, creation time)
+ *
+ * Output: the layout (on_text_layout_free it), or NULL when the style has
+ *         no creation time.
+ */
+static on_text_layout_t *
+created_layout(const OnDocLayout *L)
+{
+    if (L->style.created_at <= 0) return NULL;
+    time_t t = (time_t)L->style.created_at;
+    struct tm tm;
+    char text[16];
+    if (localtime_r(&t, &tm) == NULL || strftime(text, sizeof text, "%Y-%m-%d", &tm) == 0)
+        return NULL;
+    OnRun run = { strlen(text), 0 };
+    on_text_content_t ct = { .text = text, .len = run.len, .runs = &run, .n_runs = 1 };
+    on_text_style_t st = { .font_size = on_look_tag_line_size, .scale = 1.0,
+                           .width = content_width(L), .flush = 1.0,
+                           .bold = true, .muted = true, .dark = L->style.dark };
     return on_text_layout_new(&ct, &st);
 }
 
@@ -612,6 +644,15 @@ layout_block(OnDocLayout *L, size_t i)
     double pw, ph;
     on_text_layout_size(b->layout, &pw, &ph);
     b->h = ph + BLOCK_GAP;
+    if (blk->kind == ON_BLOCK_TAGS) {
+        on_text_layout_t *created = created_layout(L);
+        if (created) {
+            double cw2, ch;
+            on_text_layout_size(created, &cw2, &ch);
+            on_text_layout_free(created);
+            b->h += ch;
+        }
+    }
     if (blk->kind == ON_BLOCK_CODE) {
         if (code_run_starts(L, i))
             b->h += CODE_PAD;
@@ -1762,6 +1803,13 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_text_layout_draw(mark, ctx, b->x + first.x - on_look_tag_line_mark_gap - mw,
                                 ty + first.y + (first.h - mh) / 2.0);
             on_text_layout_free(mark);
+            on_text_layout_t *created = created_layout(L);
+            if (created) {
+                double pw, ph;
+                on_text_layout_size(b->layout, &pw, &ph);
+                on_text_layout_draw(created, ctx, LEFT_MARGIN, ty + ph);
+                on_text_layout_free(created);
+            }
         } else if (blk->kind == ON_BLOCK_CHECK) {
             /* Checkbox: centred on the first line. */
             on_rect_t box;

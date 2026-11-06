@@ -792,6 +792,11 @@ build_note_view
     view.autoresizingMask = NSViewWidthSizable;   /* the text wraps at the window's width;
                                                    * the view sets its own height */
     view.note_id = self.note_id;
+    OnNoteMeta *meta = on_db_note_get(self.app->db, self.note_id);
+    if (meta != NULL) {
+        view.created_at = meta->created_at;
+        on_db_note_meta_free(meta);
+    }
     self.note_view = view;
 
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];

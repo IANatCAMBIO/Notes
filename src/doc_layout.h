@@ -44,6 +44,9 @@ typedef struct {
     bool code_numbers;               /* line numbers in the code gutter     */
     bool code_copy;                  /* the "copy" word on a code run       */
     bool dark;                       /* dark appearance (look.h colours)    */
+    gint64 created_at;               /* the note's creation, UNIX time: a
+                                        line with its date under the tag
+                                        line; 0 = no line                   */
 } OnDocLayoutStyle;
 
 /* ---------------------------------------------------------------------------

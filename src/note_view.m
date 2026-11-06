@@ -318,6 +318,7 @@ current_style(NotesNoteView *v)
         .code_numbers = v.app->code_line_numbers,
         .code_copy    = v.app->code_copy_buttons,
         .dark         = shared_ui_is_dark(v),
+        .created_at   = v.created_at,
     };
     return s;
 }

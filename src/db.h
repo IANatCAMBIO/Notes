@@ -173,7 +173,20 @@ typedef enum {
  *             blob (BNBF ACTION record), note_task maps it to the task.
  *             Allocated once from action_uid_seq when a line is first
  *             saved, never reused once retired.
+ *   context — the note's lines up to and including the item's own (the
+ *             ON_ACTION_CONTEXT_BEFORE before it, as plain text, one per
+ *             line) that become the task's notes when the task is created;
+ *             set only on the items a save hands in, NULL from the
+ *             listings (owned).
+ *   held    — the user is still writing this line (the caret is on it):
+ *             if it has no task yet, the push leaves it without one until
+ *             a later save hands it in with `held` clear.  Set only on
+ *             the items a save hands in.
  * ------------------------------------------------------------------------- */
+
+/* How many lines before an action line the task created for it copies.    */
+#define ON_ACTION_CONTEXT_BEFORE 4
+
 typedef struct {
     gint64   note_id;
     gint     ord;
@@ -181,6 +194,8 @@ typedef struct {
     gboolean done;
     gint64   due;
     gint64   uid;
+    gchar   *context;
+    gboolean held;
 } OnActionItem;
 
 /* --------------------------- lifecycle ---------------------------------- */
@@ -514,6 +529,7 @@ typedef struct {
  * the uid its line carries — never 0: the caller allocates first, since the
  * blob must hold the uid before it is written).  Joins the caller's
  * transaction (on_db_txn_begin) or runs in its own.  Per line:
+ *   - no note_task row for the uid and the item `held`: nothing yet;
  *   - no note_task row for the uid: a new task in the managed list (title,
  *     due, done → status DONE + completed_at now, else NEW; every other
  *     column the schema's default) and its row, seen_* = the line;

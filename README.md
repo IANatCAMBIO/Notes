@@ -105,7 +105,7 @@ writes the GTK app's database or settings. But both bundles are called
 Compared with Apple Notes:
 
 - **Action items that are real tasks** — write `! Call the vet due
-  2026-12-01` and it appears in Tasks tagged ❗ Action Items. The `!` may
+  2026-12-01` and it appears in Tasks tagged ❗ Action Items and with the note's tags. The `!` may
   open the line, indented as deeply as you like under a heading, or stand
   inside it with the item's first letter straight after it (`asked Ann
   !send the quote`).

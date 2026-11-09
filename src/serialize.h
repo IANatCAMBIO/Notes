@@ -114,6 +114,21 @@ gboolean on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                                gboolean sync_actions, gboolean *changed);
 
 /* ---------------------------------------------------------------------------
+ * on_note_document_save_holding() — on_note_document_save for an editor
+ * whose user is still typing: the action line in block `hold_block` (none
+ * when it is not an action line, or G_MAXUINT) that has no task yet gets
+ * its uid and its text saved, but no task — the editor holds it back until
+ * the user leaves the line, stops typing, or closes the note, then saves
+ * again with no hold (OnActionItem.held).  Every other line is pushed as
+ * on_note_document_save does.
+ *   hold_block — block index to hold back, or G_MAXUINT for none.
+ * Returns TRUE on success.
+ * ------------------------------------------------------------------------- */
+gboolean on_note_document_save_holding(OnDatabase *db, gint64 id, OnDocument *doc,
+                                       gboolean sync_actions, guint hold_block,
+                                       gboolean *changed);
+
+/* ---------------------------------------------------------------------------
  * on_note_files_sweep() — delete the note_file rows that a note's STORED
  * content does not name: the safety net behind the saves, for the files an
  * editor discarded or a crash left (run at launch, and when an editor

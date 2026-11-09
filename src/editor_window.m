@@ -298,6 +298,16 @@ separator(void)
 @property (nonatomic, assign) BOOL    sync_tags;      /* tag links to write  */
 @property (nonatomic, strong) NSTimer *autosave_timer;/* nil = none          */
 
+/* A new action line is held back from becoming a task while the user is
+ * still writing it (see hold_check): the uid of the line held, 0 = none;
+ * the timer that ends the hold after on_look_action_hold of no typing; the
+ * uid of a line whose hold that timer ended (it is not held again while the
+ * caret stays on it); and whether the note is being saved to close.       */
+@property (nonatomic, assign) gint64   held_uid;
+@property (nonatomic, strong) NSTimer *hold_timer;
+@property (nonatomic, assign) gint64   expired_uid;
+@property (nonatomic, assign) BOOL     closing;
+
 /* The note row as this editor last loaded or saved it (on_db_note_stamp:
  * updated_at, blob size, blob hash): a different stamp means another
  * writer rewrote the note, and a save then writes nothing.               */
@@ -305,9 +315,14 @@ separator(void)
 @property (nonatomic, assign) BOOL    outside_notice; /* the Reload panel is up */
 
 - (BOOL)save;
-- (void)save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh;
+- (void)save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
+             held:(gint64)held;
 - (void)show_outside_notice;
 - (void)queue_autosave;
+- (BOOL)save_for_close;
+- (void)hold_check;
+- (void)hold_arm;
+- (void)hold_release;
 - (BOOL)close_saved;
 - (void)update_status;
 @end
@@ -815,6 +830,9 @@ build_note_view
     view.inline_flags_handler = ^{
         [ws sync_format_buttons];
     };
+    view.caret_moved_handler = ^{
+        [ws hold_check];
+    };
     view.image_activated_handler = ^(NSInteger ordinal) {
         NotesEditorWindow *s = ws;
         if (s) on_image_viewer_open(s.image_viewer, ordinal);
@@ -1058,6 +1076,7 @@ reload_from_row
     [self.autosave_timer invalidate];
     self.autosave_timer = nil;
     self.dirty          = NO;
+    [self hold_release];
     on_note_view_reload_document(self.note_view, doc);
     [self record_stamp];
     gchar *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
@@ -1265,6 +1284,8 @@ queue_autosave
 {
     self.dirty = YES;
     [self update_status];
+    [self hold_check];
+    if (self.held_uid != 0) [self hold_arm];
     [self.autosave_timer invalidate];
     __weak NotesEditorWindow *ws = self;
     self.autosave_timer =
@@ -1278,6 +1299,94 @@ queue_autosave
          * for the user's answer, which queues the next save itself.       */
         if (![s save] && !s.outside_notice) [s queue_autosave];
     }];
+}
+
+/*
+ * caret_action_block — the block the caret is in, when it is a real action
+ * line.
+ *
+ * Inputs:
+ *   doc   — the note
+ *   caret — the caret position
+ *
+ * Output: the block index, or G_MAXUINT when the caret is not on an action
+ *         line.
+ */
+static guint
+caret_action_block(OnDocument *doc, OnPos caret)
+{
+    GArray *blocks = on_document_action_blocks(doc);
+    guint   found  = G_MAXUINT;
+    for (guint i = 0; i < blocks->len; i++) {
+        if (g_array_index(blocks, guint, i) == caret.block) found = caret.block;
+    }
+    g_array_unref(blocks);
+    return found;
+}
+
+/*
+ * hold_check — a new action line is still being written: the task for it
+ * waits until the caret leaves the line (or the note is edited so it is no
+ * longer an action line), which ends the hold and queues the save that
+ * creates it.  Ends nothing while the caret stays on the held line.
+ */
+- (void)
+hold_check
+{
+    if (self.held_uid == 0) return;
+    OnDocument *doc = on_note_view_document(self.note_view);
+    guint       b   = caret_action_block(doc, on_note_view_caret(self.note_view));
+    if (b != G_MAXUINT && on_document_block(doc, b)->action_uid == self.held_uid) return;
+    [self hold_release];
+    [self queue_autosave];
+}
+
+/*
+ * hold_arm — (re)start the timer that ends the hold after on_look_action_hold
+ * seconds without typing: the held line is then saved as a task even
+ * though the caret is still on it, and is not held again.
+ */
+- (void)
+hold_arm
+{
+    [self.hold_timer invalidate];
+    __weak NotesEditorWindow *ws = self;
+    self.hold_timer = [NSTimer scheduledTimerWithTimeInterval:on_look_action_hold
+                                                      repeats:NO
+                                                        block:^(NSTimer *t) {
+        NotesEditorWindow *s = ws;
+        if (!s) return;
+        s.expired_uid = s.held_uid;
+        [s hold_release];
+        [s queue_autosave];
+    }];
+}
+
+/*
+ * hold_release — forget the held line and stop the hold timer (the next
+ * save pushes it).
+ */
+- (void)
+hold_release
+{
+    [self.hold_timer invalidate];
+    self.hold_timer = nil;
+    self.held_uid   = 0;
+}
+
+/*
+ * save_for_close — save with no line held back: the note is closing, and
+ * the line the user was writing becomes its task now.
+ *
+ * Output: as save.
+ */
+- (BOOL)
+save_for_close
+{
+    self.closing = YES;
+    BOOL saved = [self save];
+    self.closing = NO;
+    return saved;
 }
 
 /*
@@ -1335,16 +1444,27 @@ save
 
     gboolean    actions_changed = FALSE;
     BOOL        tags            = self.sync_tags;
+    /* The line the user is writing waits for its task (hold_check) —
+     * unless the note is closing, or the hold on this very line ran out. */
+    guint       hold = G_MAXUINT;
+    if (!self.closing) {
+        hold = caret_action_block(doc, on_note_view_caret(self.note_view));
+        if (hold != G_MAXUINT && on_document_block(doc, hold)->action_uid != 0 &&
+            on_document_block(doc, hold)->action_uid == self.expired_uid)
+            hold = G_MAXUINT;
+    }
     OnNoteStamp saved;               /* the row as this save leaves it      */
-    gboolean    ok = on_note_document_save(db, self.note_id, doc, self.sync_actions,
-                                           &actions_changed) &&
-                     (!tags || on_note_document_save_tags(db, self.note_id, doc)) &&
+    /* Tags first: an action item new in this save takes the note's tags. */
+    gboolean    ok = (!tags || on_note_document_save_tags(db, self.note_id, doc)) &&
+                     on_note_document_save_holding(db, self.note_id, doc, self.sync_actions,
+                                                   hold, &actions_changed) &&
                      on_db_note_stamp(db, self.note_id, &saved);
     if (ok) {
         __weak NotesEditorWindow *ws = self;
-        BOOL refresh = tags || actions_changed;
+        BOOL    refresh = tags || actions_changed;
+        gint64  held    = hold != G_MAXUINT ? on_document_block(doc, hold)->action_uid : 0;
         void (^ended)(BOOL) = ^(BOOL committed) {
-            [ws save_ended:committed stamp:saved refresh:refresh];
+            [ws save_ended:committed stamp:saved refresh:refresh held:held];
         };
         on_db_txn_on_end(db, save_end_hook, (__bridge_retained void *)ended);
     }
@@ -1356,7 +1476,7 @@ save
 }
 
 /*
- * save_ended:stamp:refresh: — the transaction a save wrote in has ended.
+ * save_ended:stamp:refresh:held: — the transaction a save wrote in has ended.
  * Committed: the editor is saved — the new stamp adopted, the pending
  * action and tag flags cleared, any queued autosave dropped, the title and
  * status bar updated, and the library told (after the commit, so no
@@ -1372,9 +1492,13 @@ save
  *   committed — whether the transaction committed
  *   saved     — the note's stamp as the save left it (inside it)
  *   refresh   — a tag or a task row changed
+ *   held      — the uid of the action line the save held back from becoming
+ *               a task (0 = none): it stays to be pushed, the hold timer
+ *               runs
  */
 - (void)
 save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
+             held:(gint64)held
 {
     OnApp *app = self.app;
     if (!committed) {
@@ -1383,8 +1507,10 @@ save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
         return;
     }
     self.stamp        = saved;
-    self.sync_actions = NO;
+    self.held_uid     = held;
+    self.sync_actions = held != 0;
     self.sync_tags    = NO;
+    if (held != 0) [self hold_arm];
     [self.autosave_timer invalidate];
     self.autosave_timer = nil;
     self.dirty          = NO;
@@ -1445,7 +1571,7 @@ update_status
 - (BOOL)
 windowShouldClose:(NSWindow *)sender
 {
-    if (!self.dirty || self.discard || [self save]) return YES;
+    if ((!self.dirty && self.held_uid == 0) || self.discard || [self save_for_close]) return YES;
     if (self.outside_notice) return NO;     /* its panel asks first */
     __weak NotesEditorWindow *ws = self;
     shared_ui_confirm(self.window, [NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title], @"Your changes are still in the window. Closing it now loses them.", @"Close Without Saving", YES, ^(BOOL confirmed) {
@@ -1467,10 +1593,10 @@ windowShouldClose:(NSWindow *)sender
 - (BOOL)
 close_saved
 {
-    if (self.dirty && !self.discard) {
+    if ((self.dirty || self.held_uid != 0) && !self.discard) {
         [self.autosave_timer invalidate];
         self.autosave_timer = nil;
-        if (![self save]) {
+        if (![self save_for_close]) {
             [self queue_autosave];
             return NO;
         }
@@ -1493,6 +1619,8 @@ windowWillClose:(NSNotification *)note
 
     [self.autosave_timer invalidate];
     self.autosave_timer                    = nil;
+    [self hold_release];
+    self.note_view.caret_moved_handler     = nil;
     self.note_view.edited_handler          = nil;
     self.note_view.inline_flags_handler    = nil;
     self.note_view.image_activated_handler = nil;
@@ -1513,8 +1641,8 @@ windowWillClose:(NSNotification *)note
          * no longer come back: the save (or, when nothing is unsaved, the
          * sweep) frees it. */
         on_document_clear_undo(doc);
-        if (self.dirty)
-            [self save];
+        if (self.dirty || self.held_uid != 0)
+            [self save_for_close];
         else
             on_note_files_sweep(app->db, self.note_id);
     }

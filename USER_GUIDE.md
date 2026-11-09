@@ -151,7 +151,13 @@ instead; emptying the field puts the default back.
 
 Notes keeps its notes in **one database file it shares with the Tasks
 app**: a Notes action item (a `!` line) *is* a task in that file, tagged
-"Action Items" ❗ in Tasks.
+"Action Items" ❗ in Tasks, and with the note's tags as they are when the
+item is created, and with the item's line and the four lines above it
+as the task's notes, so the task keeps its context. The task is made
+once you have finished writing the line — when the caret leaves it, you
+stop typing for 5 seconds, or you close the note — not on the first
+keystroke. Changing the note's
+tags or lines later does not change the task's.
 
 | What | Where |
 |---|---|

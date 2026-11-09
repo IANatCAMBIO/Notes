@@ -2694,14 +2694,16 @@ append_text_line(GString *out, const OnText *t)
 }
 
 gchar *
-on_document_plain_text(const OnDocument *d)
+on_document_plain_range(const OnDocument *d, guint first, guint last)
 {
     GString *out = g_string_new(NULL);
     gint number_run = 0;
-    for (guint i = 0; i < d->blocks->len; i++) {
+    for (guint i = 0; i < d->blocks->len && i <= last; i++) {
         const OnBlock *b = g_ptr_array_index(d->blocks, i);
         number_run = on_block_number(number_run, b->kind);
-        if (i > 0)
+        if (i < first)
+            continue;
+        if (i > first)
             g_string_append_c(out, '\n');
         switch (b->kind) {
         case ON_BLOCK_BULLET:
@@ -2728,6 +2730,12 @@ on_document_plain_text(const OnDocument *d)
         }
     }
     return g_string_free(out, FALSE);
+}
+
+gchar *
+on_document_plain_text(const OnDocument *d)
+{
+    return on_document_plain_range(d, 0, G_MAXUINT);
 }
 
 /* text_image_count() — how many of a text's inline objects are images.     */

@@ -167,6 +167,17 @@ gboolean
 on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
                       gboolean sync_actions, gboolean *changed)
 {
+    return on_note_document_save_holding(db, id, doc, sync_actions, G_MAXUINT, changed);
+}
+
+/*
+ * on_note_document_save_holding — see serialize.h.
+ */
+gboolean
+on_note_document_save_holding(OnDatabase *db, gint64 id, OnDocument *doc,
+                              gboolean sync_actions, guint hold_block,
+                              gboolean *changed)
+{
     if (changed != NULL)
         *changed = FALSE;
     gboolean own;                    /* this call's transaction?            */
@@ -195,8 +206,11 @@ on_note_document_save(OnDatabase *db, gint64 id, OnDocument *doc,
         }
         g_hash_table_add(seen, &b->action_uid);
         OnActionItem *it = g_new0(OnActionItem, 1);
-        on_document_block_action(doc, g_array_index(blocks, guint, i),
-                                 &it->text, &it->due, &it->done);
+        guint block = g_array_index(blocks, guint, i);
+        on_document_block_action(doc, block, &it->text, &it->due, &it->done);
+        it->context = on_document_plain_range(
+            doc, block > ON_ACTION_CONTEXT_BEFORE ? block - ON_ACTION_CONTEXT_BEFORE : 0, block);
+        it->held    = block == hold_block;
         it->uid     = b->action_uid;
         it->ord     = (gint)i;
         it->note_id = id;

@@ -1445,7 +1445,11 @@ task_revive(OnDatabase *db, gint64 task_id)
  * and done state (status DONE and completed_at now, else New) and every
  * other column at the schema's default; then its note_task link, the
  * seen_* baseline set to the line's values, which tags it "Action Items"
- * (the schema's note_task_action_tag trigger).
+ * (the schema's note_task_action_tag trigger); last, the task takes the
+ * note's tags as they are now.  The task's notes start as the line's
+ * context (the lines before it and the line itself).  Both are one-time
+ * copies: a later change to the note's tags or lines leaves the task's
+ * alone.
  * Returns TRUE on success.
  * ------------------------------------------------------------------------- */
 static gboolean
@@ -1454,10 +1458,10 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
     gint64 now = task_now();
     sqlite3_stmt *stmt = prepare(db,
         "INSERT INTO tasks (parent_id, title, due, status,"
-        "                   completed_at, position, updated_at, created_at)"
+        "                   completed_at, position, updated_at, created_at, notes)"
         " VALUES (NULL, ?1, ?2, ?3, ?4,"
         "   (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks"
-        "     WHERE parent_id IS NULL), ?5, ?5)");
+        "     WHERE parent_id IS NULL), ?5, ?5, ?6)");
     if (stmt == NULL)
         return FALSE;
     sqlite3_bind_text(stmt, 1, it->text, -1, SQLITE_TRANSIENT);
@@ -1465,6 +1469,7 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
     sqlite3_bind_int(stmt, 3, it->done ? SHARED_DB_TASK_STATUS_DONE : SHARED_DB_TASK_STATUS_NEW);
     sqlite3_bind_int64(stmt, 4, it->done ? now : 0);
     sqlite3_bind_int64(stmt, 5, now);
+    sqlite3_bind_text(stmt, 6, it->context != NULL ? it->context : "", -1, SQLITE_TRANSIENT);
     if (!stmt_done(db, stmt))
         return FALSE;
     gint64 task_id = sqlite3_last_insert_rowid(db->handle);
@@ -1482,6 +1487,16 @@ task_create(OnDatabase *db, const OnActionItem *it, gint64 note_id, gint ord)
     sqlite3_bind_text(stmt, 5, it->text, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 6, it->done ? 1 : 0);
     sqlite3_bind_int64(stmt, 7, it->due);
+    if (!stmt_done(db, stmt))
+        return FALSE;
+
+    stmt = prepare(db,
+        "INSERT OR IGNORE INTO task_tags (task_id, tag_id)"
+        " SELECT ?1, tag_id FROM note_tags WHERE note_id = ?2");
+    if (stmt == NULL)
+        return FALSE;
+    sqlite3_bind_int64(stmt, 1, task_id);
+    sqlite3_bind_int64(stmt, 2, note_id);
     return stmt_done(db, stmt);
 }
 
@@ -1734,6 +1749,8 @@ on_db_note_save_actions(OnDatabase *db, gint64 note_id, GList *items,
         g_hash_table_add(kept, &it->uid);
         OnActionLink row = { 0 };
         if (!link_get(db, it->uid, &row)) {
+            if (it->held)
+                continue;            /* still being written: no task yet    */
             ok = task_create(db, it, note_id, ord);
             *changed = TRUE;
             continue;
@@ -1985,6 +2002,7 @@ void
 on_db_action_item_free(OnActionItem *it)
 {
     g_free(it->text);
+    g_free(it->context);
     g_free(it);
 }
 

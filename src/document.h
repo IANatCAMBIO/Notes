@@ -703,6 +703,12 @@ gboolean on_document_action_text(OnDocument *d, gint ord,
  * on the table's line.  Returns a new string.                             */
 gchar *on_document_plain_text(const OnDocument *d);
 
+/* on_document_plain_range() — blocks `first` to `last` (inclusive; `last`
+ * is clamped to the final block) as plain text, one line per block, each
+ * rendered exactly as on_document_plain_text() renders it (numbered lines
+ * keep the number of the run they belong to).  Returns a new string.      */
+gchar *on_document_plain_range(const OnDocument *d, guint first, guint last);
+
 /* on_document_image_count() — every image, block and inline, in document
  * order: the ordinal the media browser addresses images by.              */
 gint on_document_image_count(const OnDocument *d);

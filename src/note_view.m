@@ -622,6 +622,7 @@ set_caret(NotesNoteView *v, OnPos p, BOOL extend)
     scroll_to_caret(v);
     im_sync_location(v);
     NSAccessibilityPostNotification(v, NSAccessibilitySelectedTextChangedNotification);
+    if (v.caret_moved_handler) v.caret_moved_handler();
 }
 
 /*

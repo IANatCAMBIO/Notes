@@ -46,24 +46,27 @@ task_int(OnDatabase *db, gint64 uid, const char *column)
 }
 
 /*
- * task_title — the title of the task behind a uid.
+ * task_text — a text column of the task behind a uid.
  *
  * Inputs:
- *   db  — a connection
- *   uid — the item
+ *   db     — a connection
+ *   uid    — the item
+ *   column — the tasks column (a literal from this file)
  *
  * Output: a new string ("" when there is no task); g_free it.
  */
 static gchar *
-task_title(OnDatabase *db, gint64 uid)
+task_text(OnDatabase *db, gint64 uid, const char *column)
 {
-    sqlite3_stmt *st = NULL;
-    gchar        *t  = NULL;
-    sqlite3_prepare_v2(db->handle, "SELECT t.title FROM tasks t JOIN note_task n"
-                       " ON n.task_id = t.id WHERE n.uid = ?", -1, &st, NULL);
+    gchar        *sql = g_strdup_printf("SELECT t.%s FROM tasks t JOIN note_task n"
+                                        " ON n.task_id = t.id WHERE n.uid = ?", column);
+    sqlite3_stmt *st  = NULL;
+    gchar        *t   = NULL;
+    sqlite3_prepare_v2(db->handle, sql, -1, &st, NULL);
     sqlite3_bind_int64(st, 1, uid);
     if (sqlite3_step(st) == SQLITE_ROW) t = g_strdup((const char *)sqlite3_column_text(st, 0));
     sqlite3_finalize(st);
+    g_free(sql);
     return t != NULL ? t : g_strdup("");
 }
 
@@ -252,6 +255,70 @@ test_push_new(OnDatabase *db)
 }
 
 /*
+ * test_push_context — a new task's notes are the line's context: the four
+ * lines before it and the line itself; fewer near the top of the note.  A
+ * one-time copy: editing the note afterwards leaves the task's notes alone.
+ *
+ * Inputs:
+ *   db — the database
+ */
+static void
+test_push_context(OnDatabase *db)
+{
+    gint64 note = on_note_new_from_text(db, NULL,
+        "Context\none\ntwo\nthree\nfour\nfive\n! Send the report\nafter");
+    gint64 uid  = nth_uid(db, note, 0);
+    gchar *notes = task_text(db, uid, "notes");
+    check(strcmp(notes, "two\nthree\nfour\nfive\n! Send the report") == 0,
+          "context: the notes are the four lines before the item and the item");
+    g_free(notes);
+
+    gint64 top  = on_note_new_from_text(db, NULL, "Top\n! Early");
+    notes = task_text(db, nth_uid(db, top, 0), "notes");
+    check(strcmp(notes, "Top\n! Early") == 0, "context: near the top, fewer lines are copied");
+    g_free(notes);
+
+    check(edit_note(db, note, 0, "Send it", -1, NULL), "context: the item is renamed");
+    notes = task_text(db, uid, "notes");
+    check(strstr(notes, "! Send the report") != NULL, "context: a later edit leaves the notes alone");
+    g_free(notes);
+}
+
+/*
+ * test_push_held — the line the user is still writing gets its uid and its
+ * text saved but no task; the next save with no hold creates the task, its
+ * notes the whole line as it is by then.
+ *
+ * Inputs:
+ *   db — the database
+ */
+static void
+test_push_held(OnDatabase *db)
+{
+    gint64      note = on_note_new_from_text(db, NULL, "Held\nbefore");
+    OnDocument *doc  = on_note_document_load(db, note);
+    check(note > 0 && doc != NULL, "held: a note with no action line");
+    const char *typed = "! also, do a bunch of chores";
+    OnPos       at    = { 2, -1, 0 };
+    check(on_document_insert_block(doc, 2, on_block_new_text(ON_BLOCK_PARA)) &&
+          on_document_insert_text(doc, at, typed, strlen(typed), 0),
+          "held: the action line is typed");
+    check(on_note_document_save_holding(db, note, doc, TRUE, 2, NULL),
+          "held: a save with the caret on the line");
+    gint64 uid = nth_uid(db, note, 0);
+    check(uid != 0 && task_int(db, uid, "status") == -1,
+          "held: the line has its uid but no task while it is written");
+    check(on_note_document_save_holding(db, note, doc, TRUE, G_MAXUINT, NULL),
+          "held: the save after the caret left");
+    gchar *notes = task_text(db, uid, "notes");
+    check(task_int(db, uid, "status") == SHARED_DB_TASK_STATUS_NEW &&
+          strcmp(notes, "Held\nbefore\n! also, do a bunch of chores") == 0,
+          "held: the task exists, its notes the whole line");
+    g_free(notes);
+    on_note_document_release(db, doc);
+}
+
+/*
  * test_push_fields — only the fields that changed on Notes' side reach the
  * task: a due date and a priority Tasks set survive a Notes rename; the
  * status rules of a done-only source.
@@ -273,7 +340,7 @@ test_push_fields(OnDatabase *db, OnDatabase *other)
     exec_uid(other, uid, set_due);
     g_free(set_due);
     check(edit_note(db, note, 0, "Write the final report", -1, NULL), "fields: Notes renames the line");
-    gchar *title = task_title(db, uid);
+    gchar *title = task_text(db, uid, "title");
     check(strcmp(title, "Write the final report") == 0, "fields: the title is pushed");
     g_free(title);
     check(task_int(db, uid, "due") == tasks_due && task_int(db, uid, "priority") == 3,
@@ -621,7 +688,7 @@ check_pulled(OnDatabase *db, const gint64 notes[4], const gint64 uids[4], const 
 
     for (int i = 0; i < 3; i++) {
         link_of(db, uids[i], notes[i], &row);
-        gchar *title = task_title(db, uids[i]);
+        gchar *title = task_text(db, uids[i], "title");
         gboolean agreed = strcmp(row.seen_title, title) == 0 &&
                           row.seen_done == (task_int(db, uids[i], "status") == SHARED_DB_TASK_STATUS_DONE) &&
                           row.seen_due == task_int(db, uids[i], "due");
@@ -711,7 +778,7 @@ test_pull_refused(OnApp *app, OnDatabase *other)
     exec_uid(other, a, "UPDATE tasks SET title = '' WHERE id = ?1");
     exec_uid(other, b, "UPDATE tasks SET title = 'Looks dated due 2026-01-01' WHERE id = ?1");
     on_action_sync_poll(app);
-    gchar *ta = task_title(app->db, a), *tb = task_title(app->db, b);
+    gchar *ta = task_text(app->db, a, "title"), *tb = task_text(app->db, b, "title");
     check(strcmp(ta, "Keep my text") == 0 && strcmp(tb, "Mine too") == 0 && pending_count(app->db) == 0,
           "pull: a title the line refuses is written back from the line; nothing stays pending");
     g_free(ta);
@@ -735,7 +802,7 @@ test_pull_refused(OnApp *app, OnDatabase *other)
         on_action_sync_poll(app);
         gchar *line = first_line(app->db, dated, NULL);
         gchar *body = on_note_text_cached(app->db, dated);
-        gchar *task = task_title(app->db, uid);
+        gchar *task = task_text(app->db, uid, "title");
         gint64 len  = -1;
         uid_sql(app->db, uid, "SELECT length(CAST(title AS BLOB)) FROM tasks WHERE id = ?1", &len);
         char msg[160];
@@ -775,7 +842,7 @@ test_concurrent(OnApp *app, OnDatabase *other)
     check(edit_note(app->db, note, 0, "Plan the whole trip", -1, NULL),
           "concurrent: Notes saves a title edit made before it pulled");
     on_action_sync_poll(app);
-    gchar *title = task_title(app->db, uid);
+    gchar *title = task_text(app->db, uid, "title");
     gchar *line  = first_line(app->db, note, NULL);
     OnDocument *doc = on_note_document_load(app->db, note);
     gchar *text = NULL;
@@ -798,7 +865,7 @@ test_concurrent(OnApp *app, OnDatabase *other)
     g_free(sql);
     on_action_sync_poll(app);
     edit_note(app->db, note, 0, "Plan the trip, finally", -1, NULL);
-    title = task_title(app->db, uid);
+    title = task_text(app->db, uid, "title");
     check(strcmp(title, "Plan the trip, finally") == 0 &&
           task_int(app->db, uid, "due") == check_midnight(2027, 1, 2) &&
           task_int(app->db, uid, "priority") == 2 && pending_count(app->db) == 0,
@@ -960,7 +1027,7 @@ test_failed_save_uids(OnDatabase *db)
     check(on_note_document_save(db, note, doc, TRUE, NULL) && first_uid(doc) != 0 &&
           first_uid(doc) != nth_uid(db, other, 0),
           "failed save: the retry allocates anew; no two notes share a uid");
-    gchar *mine = task_title(db, first_uid(doc)), *theirs = task_title(db, nth_uid(db, other, 0));
+    gchar *mine = task_text(db, first_uid(doc), "title"), *theirs = task_text(db, nth_uid(db, other, 0), "title");
     check(strcmp(mine, "A line that was never saved") == 0 &&
           strcmp(theirs, "Somebody else's line") == 0, "failed save: each note keeps its own task");
     g_free(mine);
@@ -1263,6 +1330,8 @@ main(void)
     OnDatabase *other = on_db_open(NULL, NULL);
     check(db != NULL && other != NULL, "two connections to the scratch file");
     test_push_new(db);
+    test_push_context(db);
+    test_push_held(db);
     test_push_fields(db, other);
     test_push_delete(db, other);
     test_push_subtasks(db, other);

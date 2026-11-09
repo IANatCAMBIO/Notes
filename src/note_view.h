@@ -28,6 +28,11 @@
  * buttons mirror it).  Main thread. */
 @property (nonatomic, copy) void (^inline_flags_handler)(void);
 
+/* The caret moved (a click, an arrow key, a jump): the host may care which
+ * line it is on now.  Typing reports through edited_handler instead.  Main
+ * thread. */
+@property (nonatomic, copy) void (^caret_moved_handler)(void);
+
 /* An image in the note was clicked; the argument is its ordinal.  Main
  * thread. */
 @property (nonatomic, copy) void (^image_activated_handler)(NSInteger ordinal);

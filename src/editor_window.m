@@ -313,6 +313,9 @@ separator(void)
  * writer rewrote the note, and a save then writes nothing.               */
 @property (nonatomic, assign) OnNoteStamp stamp;
 @property (nonatomic, assign) BOOL    outside_notice; /* the Reload panel is up */
+@property (nonatomic, assign) BOOL    tags_offered;   /* the closing tag
+                                                         suggestions were
+                                                         answered           */
 
 - (BOOL)save;
 - (void)save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
@@ -324,6 +327,7 @@ separator(void)
 - (void)hold_arm;
 - (void)hold_release;
 - (BOOL)close_saved;
+- (BOOL)offer_tags;
 - (void)update_status;
 @end
 
@@ -767,27 +771,28 @@ init_with_app:(OnApp *)app
 
 /*
  * place_window — put a new editor at the bottom-right of the library's
- * screen (its own when there is no library), shared_look_screen_margin
- * clear of the work area's edges, its title bar always on screen
- * (shared_ui_place_lower_right, where Tasks puts a Quick Task too).  An
- * editor already at that spot (several notes opened at once) pushes the
- * new one a step up and left, the step the title bar's height, so the
- * editors cascade with every title bar in view; the cascade stops at the
- * work area's edges.  The window is laid out first: its format bar can
- * make it wider than its configured size, and a window placed before
- * that grows past the screen's edge.
+ * screen (its own when there is no library), on_look_editor_edge_right and
+ * on_look_editor_edge_bottom clear of the work area's edges, its title bar always
+ * on screen.  (Not shared_ui_place_lower_right: its small margin is also
+ * Tasks' Quick Task's.)  An editor already at that spot (several notes
+ * opened at once) pushes the new one a step up and left, the step the
+ * title bar's height, so the editors cascade with every title bar in view;
+ * the cascade stops at the work area's edges.  The window is laid out
+ * first: its format bar can make it wider than its configured size, and a
+ * window placed before that grows past the screen's edge.
  */
 - (void)
 place_window
 {
     NSScreen *screen = on_library().window.screen ?: NSScreen.mainScreen;
     [self.window layoutIfNeeded];
-    shared_ui_place_lower_right(self.window, screen);
     if (screen == nil) return;
     NSRect  area   = screen.visibleFrame;
     NSRect  frame  = self.window.frame;
     CGFloat step   = NSHeight(frame) - NSHeight(self.window.contentView.frame);
-    NSPoint origin = frame.origin;
+    NSPoint origin = NSMakePoint(
+        MAX(NSMaxX(area) - NSWidth(frame) - on_look_editor_edge_right, NSMinX(area)),
+        MIN(NSMinY(area) + on_look_editor_edge_bottom, NSMaxY(area) - NSHeight(frame)));
     while (editor_at(origin) && origin.x - step >= NSMinX(area) &&
            origin.y + step + NSHeight(frame) <= NSMaxY(area)) {
         origin.x -= step;
@@ -1555,6 +1560,32 @@ update_status
     [self.status_bar update_path:path note_id:note_id dirty:self.dirty];
 }
 
+/*
+ * tag_suggestions — the existing tags a note's title matches by substring
+ * (shared_ui_title_tag_matches), by name.  The body is not scanned: too
+ * many of its words are only passing mentions.
+ *
+ * Inputs:
+ *   db  — the database
+ *   doc — the note's document
+ *
+ * Output: the tag names; empty for none.
+ */
+static NSArray<NSString *> *
+tag_suggestions(OnDatabase *db, const OnDocument *doc)
+{
+    gchar *title = on_document_title(doc, "", ON_TITLE_MAX_CHARS);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    GList *tags = on_db_tag_list(db, ON_TAGS_ALL);
+    for (GList *l = tags; l != NULL; l = l->next)
+        [names addObject:[NSString stringWithUTF8String:((const OnTag *)l->data)->name]];
+    on_db_tag_list_free(tags);
+    NSArray<NSString *> *found =
+        shared_ui_title_tag_matches([NSString stringWithUTF8String:title], names);
+    g_free(title);
+    return found;
+}
+
 /* ── NSWindowDelegate ───────────────────────────────────────────────────── */
 
 /*
@@ -1562,6 +1593,8 @@ update_status
  * first, and a save that fails keeps the window open, with a tool panel
  * offering to close without saving — or, when the save found the note
  * rewritten by another writer, the "changed outside" panel asking first.
+ * A saved note with no tags whose title matches existing tags is offered
+ * them first (offer_tags) and stays open until that is answered.
  *
  * Inputs:
  *   sender — the window
@@ -1571,7 +1604,8 @@ update_status
 - (BOOL)
 windowShouldClose:(NSWindow *)sender
 {
-    if ((!self.dirty && self.held_uid == 0) || self.discard || [self save_for_close]) return YES;
+    if ((!self.dirty && self.held_uid == 0) || self.discard || [self save_for_close])
+        return ![self offer_tags];
     if (self.outside_notice) return NO;     /* its panel asks first */
     __weak NotesEditorWindow *ws = self;
     shared_ui_confirm(self.window, [NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title], @"Your changes are still in the window. Closing it now loses them.", @"Close Without Saving", YES, ^(BOOL confirmed) {
@@ -1581,6 +1615,55 @@ windowShouldClose:(NSWindow *)sender
         [s.window close];
     });
     return NO;
+}
+
+/*
+ * offer_tags — the failsafe for a note closed with no tags: when its title
+ * matches an existing tag by substring (either way round), a tool panel
+ * recommends those tags, each a checkbox (all ticked).  "Add Tags" puts the ticked
+ * ones on the tag line and saves; "Close Without Tags" closes as it is.
+ * Escape or the close box leaves the window open.  Asked once per window,
+ * once answered; never for a note that has a tag or is blank (deleted on
+ * close).
+ *
+ * Output: YES when the panel was shown (the window must stay open until it
+ * is answered); NO when there is nothing to offer and the window may close.
+ */
+- (BOOL)
+offer_tags
+{
+    OnApp      *app = self.app;
+    OnDocument *doc = on_note_view_document(self.note_view);
+    if (self.tags_offered || self.discard || on_note_edit_is_blank(doc)) return NO;
+
+    GList *have = on_document_collect_tags(doc);
+    BOOL   none = have == NULL;
+    g_list_free_full(have, g_free);
+    if (!none) return NO;
+
+    NSArray<NSString *> *names = tag_suggestions(app->db, doc);
+    if (names.count == 0) return NO;
+
+    __weak NotesEditorWindow *ws = self;
+    shared_ui_offer_tags(self.window, names, ^(NSArray<NSString *> *chosen) {
+        NotesEditorWindow *s = ws;
+        if (!s) return;
+        s.tags_offered = YES;
+        if (chosen.count > 0) {
+            OnDocument *d = on_note_view_document(s.note_view);
+            on_document_add_tag_line(d);
+            for (NSString *name in chosen) {
+                gchar *word = on_document_tag_word(name.UTF8String);
+                on_document_append_tag(d, word);
+                g_free(word);
+            }
+            s.dirty = YES;
+            [s close_saved];
+        } else {
+            [s.window close];
+        }
+    });
+    return YES;
 }
 
 /*

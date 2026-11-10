@@ -804,7 +804,8 @@ test_editor_commands(void)
         on_image_viewer_close(viewer);
 
         NSRect area = window.screen.visibleFrame;
-        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - shared_look_screen_margin)) < 1.0,
+        check(fabs(NSMaxX(window.frame) - (NSMaxX(area) - on_look_editor_edge_right)) < 1.0 &&
+              fabs(NSMinY(window.frame) - (NSMinY(area) + on_look_editor_edge_bottom)) < 1.0,
               "a new editor opens at the bottom-right of the screen");
 
         /* A second editor, with the first still in the corner, cascades

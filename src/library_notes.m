@@ -13,7 +13,7 @@
  *                 columns; the layout persists in "list_columns"; Tags,
  *                 Modified and Created fit their content and Title takes
  *                 the rest (fit_columns:full:, as in Tasks).  Compact
- *                 or Comfortable density (bold title, a dimmed preview).
+ *                 or Comfortable density (bold title, its tags with emojis dimmed under it).
  *   Grid          square cards rendered as GTK renders them — a card, the
  *                 first image, the body text — on the main thread in short
  *                 slices, only while the grid shows; the bold title under
@@ -53,9 +53,6 @@
 
 /* ── Sizes and limits ───────────────────────────────────────────────────── */
 
-/* Body text the Comfortable preview line is cut from (GTK NL_PREVIEW_CHARS). */
-static const gint preview_chars = 200;
-
 /* Column fitting is shared_ui_fit_columns (as Tasks' list); these are the
  * columns' floors. */
 static const CGFloat fill_col_min_w   = 120.0;   /* Title, Action: the floor        */
@@ -80,7 +77,7 @@ static const CGFloat card_title_h = 34.0;
 @property (nonatomic, copy)   NSString *tags;       /* "Salt, Stride"; "" for none */
 @property (nonatomic, copy)   NSString *modified;
 @property (nonatomic, copy)   NSString *created;
-@property (nonatomic, copy)   NSString *preview;    /* nil = none */
+@property (nonatomic, copy)   NSString *tag_line;   /* tags with emojis, as Tasks' rows; "" = none */
 @property (nonatomic, assign) gint64    updated_at;
 @property (nonatomic, assign) gint64    created_at;
 @end
@@ -149,29 +146,44 @@ due_colour(gint64 due)
 }
 
 /*
- * preview_line — the Comfortable preview: the first non-blank line after
- * the tag line and the title line of a note's body text (GTK
- * notes_preview_line).
+ * tag_emojis — the emoji of every tag, for the tag line under a title.
  *
  * Inputs:
- *   body — the cached body text, or NULL
+ *   db — the database
  *
- * Output: the line, or nil.
+ * Output: lower-cased tag name → emoji, for the tags that have one.
+ */
+static NSDictionary<NSString *, NSString *> *
+tag_emojis(OnDatabase *db)
+{
+    NSMutableDictionary<NSString *, NSString *> *emojis = [NSMutableDictionary dictionary];
+    GList *all = on_db_tag_list(db, ON_TAGS_CARRIED);
+    for (GList *l = all; l != NULL; l = l->next) {
+        const OnTag *t = l->data;
+        if (t->emoji != NULL && t->emoji[0] != '\0') emojis[@(t->name).lowercaseString] = @(t->emoji);
+    }
+    on_db_tag_list_free(all);
+    return emojis;
+}
+
+/*
+ * tag_line — a note's tags as its list row shows them under the title:
+ * each tag's emoji and name (shared_ui_tag_label), side by side.
+ *
+ * Inputs:
+ *   tags   — the note's tag names, "Salt, Stride"; "" for none
+ *   emojis — tag_emojis' map
+ *
+ * Output: the line; "" for none.
  */
 static NSString *
-preview_line(const gchar *body)
+tag_line(NSString *tags, NSDictionary<NSString *, NSString *> *emojis)
 {
-    __block NSString *found = nil;
-    __block int       skip  = 2;     /* the tag line and the title: skipped */
-    [(body ? @(body) : @"") enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
-        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if (skip == 0 && trimmed.length > 0) {
-            found = trimmed;
-            *stop = YES;
-        }
-        if (skip > 0) skip--;
-    }];
-    return found;
+    NSMutableArray<NSString *> *labels = [NSMutableArray array];
+    for (NSString *name in [tags componentsSeparatedByString:@", "]) {
+        if (name.length > 0) [labels addObject:shared_ui_tag_label(emojis[name.lowercaseString], name)];
+    }
+    return [labels componentsJoinedByString:@"    "];
 }
 
 /*
@@ -180,12 +192,12 @@ preview_line(const gchar *body)
  * Inputs:
  *   m       — the note's metadata
  *   tags    — its tag names, comma-separated, or NULL for none
- *   preview — its Comfortable preview line, or nil for none
+ *   emojis  — tag_emojis' map
  *
  * Output: the new record.
  */
 static NotesNoteRecord *
-note_record(const OnNoteMeta *m, const gchar *tags, NSString *preview)
+note_record(const OnNoteMeta *m, const gchar *tags, NSDictionary<NSString *, NSString *> *emojis)
 {
     NotesNoteRecord *r = [[NotesNoteRecord alloc] init];
     r.note_id    = m->id;
@@ -195,7 +207,7 @@ note_record(const OnNoteMeta *m, const gchar *tags, NSString *preview)
     r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
     r.created    = shared_ui_format_date(m->created_at, shared_ui_date_list);
     r.tags       = tags != NULL ? @(tags) : @"";
-    r.preview    = preview;
+    r.tag_line   = tag_line(r.tags, emojis);
     return r;
 }
 
@@ -1080,32 +1092,26 @@ sort_actions
 }
 
 /*
- * load_records: — the notes of the selection, as rows: tags from one
- * query, preview lines from one text query (only in the Comfortable
- * list), both for the listed notes alone.
- *
- * Inputs:
- *   previews — YES to fetch the preview lines
+ * load_records — the notes of the selection, as rows: tags from one query
+ * for the listed notes alone.
  */
 - (void)
-load_records:(BOOL)previews
+load_records
 {
     OnDatabase *db    = self.lib.app->db;
     GList      *notes = on_library_notes_for_selection(self.lib);
     gsize       n     = 0;
     gint64     *ids   = on_db_note_list_ids(notes, &n);
     GHashTable *tags  = on_db_note_tag_names_map(db, ids, n);
-    GHashTable *texts = previews ? on_db_note_text_map(db, preview_chars, ids, n) : NULL;
+    NSDictionary<NSString *, NSString *> *emojis = tag_emojis(db);
     g_free(ids);
     NSMutableArray<NotesNoteRecord *> *records = [NSMutableArray array];
     for (GList *l = notes; l != NULL; l = l->next) {
         const OnNoteMeta *m = l->data;
-        [records addObject:note_record(m, g_hash_table_lookup(tags, &m->id),
-                                       texts ? preview_line(g_hash_table_lookup(texts, &m->id)) : nil)];
+        [records addObject:note_record(m, g_hash_table_lookup(tags, &m->id), emojis)];
     }
     on_db_note_list_free(notes);
     g_hash_table_destroy(tags);
-    if (texts) g_hash_table_destroy(texts);
     self.records = records;
     [self regroup];
     [self sort_records];
@@ -1235,7 +1241,7 @@ refresh
         self.lib.populating--;
     } else {
         if (!keep) [self.selected removeAllObjects];
-        [self load_records:mode == on_library_view_list && lib.app->comfortable_list];
+        [self load_records];
         self.list.rowHeight = lib.app->comfortable_list ? on_look_row_comfortable_h : on_look_row_h;
         [self reload_notes];
         if (mode == on_library_view_grid) [self queue_cards];
@@ -1260,7 +1266,7 @@ refresh
 
 /*
  * refresh_note: — one note was saved (GTK library_notify_note_saved): its
- * row's title, time and preview are updated in place and it re-sorts; the
+ * row's title and time are updated in place and it re-sorts; the
  * grid re-renders its card.  Action Items take the full refresh (a save
  * can add, drop or reorder items).
  *
@@ -1283,11 +1289,6 @@ refresh_note:(gint64)note_id
     r.updated_at = m->updated_at;
     r.modified   = shared_ui_format_date(m->updated_at, shared_ui_date_list);
     on_db_note_meta_free(m);
-    if (mode == on_library_view_list && self.lib.app->comfortable_list) {
-        gchar *body = on_db_note_body_text(self.lib.app->db, note_id);
-        r.preview = preview_line(body);
-        g_free(body);
-    }
     [self sort_records];
     if ([self index_of_note:note_id] != i) {
         [self reload_notes];               /* it moved: the order changed */
@@ -1319,15 +1320,8 @@ add_note:(gint64)note_id
     if (lib.sel_kind != on_sb_all) return;
     OnNoteMeta *m = on_db_note_get(lib.app->db, note_id);
     if (m == NULL) return;
-    on_library_view_t mode     = on_library_view(lib);
-    BOOL              previews = mode == on_library_view_list && lib.app->comfortable_list;
-    gint64            ids[1]   = { note_id };
-    GHashTable       *tags     = on_db_note_tag_names_map(lib.app->db, ids, 1);
-    gchar            *body     = previews ? on_db_note_body_text(lib.app->db, note_id) : NULL;
-    NotesNoteRecord  *r        = note_record(m, g_hash_table_lookup(tags, &m->id),
-                                             previews ? preview_line(body) : nil);
-    g_free(body);
-    g_hash_table_destroy(tags);
+    on_library_view_t mode   = on_library_view(lib);
+    NotesNoteRecord  *r      = note_record(m, NULL, nil);       /* a new note carries no tag */
     on_db_note_meta_free(m);
 
     self.records = [self.records arrayByAddingObject:r];
@@ -1721,7 +1715,7 @@ numberOfRowsInTableView:(NSTableView *)table
 /*
  * title_cell: — the list's Title cell: the title and, in Comfortable
  * density, the title (bold when that setting is on, "Untitled" when
- * empty) over a small dimmed preview.
+ * empty) over its tags, each with its emoji, small and dimmed.
  *
  * Inputs:
  *   r — the note
@@ -1736,16 +1730,16 @@ title_cell:(NotesNoteRecord *)r
         cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = @"title";
         NSTextField *title   = [NSTextField labelWithString:@""];
-        NSTextField *preview = [NSTextField labelWithString:@""];
-        preview.identifier = @"preview";
-        preview.font       = [NSFont systemFontOfSize:shared_look_ui_font];
-        preview.alphaValue = on_look_preview_alpha;
-        for (NSTextField *l in @[title, preview]) {
+        NSTextField *tags = [NSTextField labelWithString:@""];
+        tags.identifier = @"tag-line";
+        tags.font       = [NSFont systemFontOfSize:shared_look_ui_font];
+        tags.alphaValue = on_look_tag_line_alpha;
+        for (NSTextField *l in @[title, tags]) {
             l.lineBreakMode = NSLineBreakByTruncatingTail;
             [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
         }
-        NSStackView *stack = [NSStackView stackViewWithViews:@[title, preview]];
+        NSStackView *stack = [NSStackView stackViewWithViews:@[title, tags]];
         stack.orientation = NSUserInterfaceLayoutOrientationVertical;
         stack.alignment   = NSLayoutAttributeLeading;
         stack.spacing     = 0;
@@ -1758,14 +1752,14 @@ title_cell:(NotesNoteRecord *)r
             [stack.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
-    NSTextField *preview = (NSTextField *)cell.textField.superview.subviews.lastObject;
+    NSTextField *tags = (NSTextField *)cell.textField.superview.subviews.lastObject;
     BOOL comfy = self.lib.app->comfortable_list;
     cell.textField.stringValue = r.title.length ? r.title : comfy ? @"Untitled" : @"";
     cell.textField.font = comfy && self.lib.app->bold_list_titles
                         ? [NSFont boldSystemFontOfSize:shared_look_ui_font]
                         : [NSFont systemFontOfSize:shared_look_ui_font];
-    preview.stringValue = r.preview ?: @"";
-    preview.hidden      = !(comfy && r.preview.length);
+    tags.stringValue = r.tag_line;
+    tags.hidden      = !(comfy && r.tag_line.length);
     return cell;
 }
 

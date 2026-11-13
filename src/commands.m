@@ -48,8 +48,6 @@ static const shared_command_t commands[] = {
       @"Show every image in the listed notes as thumbnails" },
     { @"search",           @"Search Notes…",           @"f", cmd_shift, app, @"magnifyingglass",
       @"Open search window" },
-    { @"ai-summary",       @"AI Summary",              @"",  0,         app, @"cpu",
-      @"Summarize notes with AI" },
     { @"show-library",     @"Library",                 @"0", cmd,       app, nil, nil },
 
     /* ── Window scope, library ── */
@@ -85,8 +83,8 @@ static const shared_command_t commands[] = {
       @"Plain body text" },
     { @"para-bullet",      @"Bulleted List",           @"",  0,         win, nil, nil },
     { @"para-number",      @"Numbered List",           @"",  0,         win, nil, nil },
-    { @"para-check",       @"Task List",               @"",  0,         win, nil,
-      @"Task list with checkboxes (click a box to toggle)" },
+    { @"para-check",       @"Check List",              @"",  0,         win, nil,
+      @"Check list with checkboxes (click a box to toggle)" },
     { @"para-code",        @"Code Block",              @"m", cmd_shift, win, nil, nil },
     { @"insert-image",     @"Image…",                  @"",  0,         win, nil, nil },
     { @"insert-table",     @"Table",                   @"t", cmd_opt,   win, nil, nil },
@@ -94,8 +92,8 @@ static const shared_command_t commands[] = {
     { @"insert-date",      @"Date",                    @"d", cmd,       win, nil, nil },
     { @"keep-on-top",      @"Keep on Top",             @"",  0,         win, nil,
       @"Keep this window on top" },
-    { @"meeting-summary",  @"Summarize Last Meeting",  @"",  0,         win, @"clock.arrow.circlepath",
-      @"Summarize the previous meeting: the most recent earlier note with this title" },
+    { @"previous-meeting", @"Open Previous Meeting",   @"",  0,         win, @"clock.arrow.circlepath",
+      @"Open the previous meeting's note: the most recent earlier note with this title" },
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 

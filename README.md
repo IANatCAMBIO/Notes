@@ -74,12 +74,6 @@ other synced folder.
 Settings → Calendar. It is off until you do, and the day planner is the
 only thing that uses it.
 
-**AI features** are off until you turn them on in Settings → AI Features.
-The command defaults to `claude -p` — the local Claude Code, read from
-stdin, written to stdout — and the usual install directories are searched,
-so no full path is needed. Name any other agent in *Meeting command* to
-use it instead.
-
 **It replaces a GTK copy.** This is a separate application from the GTK
 Notes, with its own bundle identifier (`com.cambio.notes`), its own
 settings folder and the database it shares with Tasks; it never reads or
@@ -125,14 +119,11 @@ Compared with Apple Notes:
   meetings beside your notes. Double-click a meeting and Notes makes a
   note titled after it, with the attendees as a bulleted list, ready to
   write. Double-click it again and you get that same note back
-- **Summarize the last meeting** — the clock in the editor's toolbar finds
-  the most recent earlier note with the same title, sends it to a local AI
-  command and shows the answer in a panel. Your choice of agent; nothing
-  leaves the machine unless the agent sends it
-- **An AI summary of a whole tag or view** in the library, from the same
-  local command
+- **The previous meeting** — a note made from a calendar meeting gets a
+  clock in the editor's toolbar when an earlier note with the same title
+  exists; one click opens it
 - **Rich text that is a real document model** — images, tables, code
-  blocks and task lists, with its own layout and rendering rather than a
+  blocks and check lists, with its own layout and rendering rather than a
   text view with attributes bolted on
 - **A media browser** across every note's images and attachments, and
   search across all notes
@@ -141,8 +132,8 @@ Compared with Apple Notes:
 - **Export writes one file per note**, Markdown or HTML, each starting
   with its tags
 
-Everything in detail — the tag model, the Tasks sync, the day planner, the
-AI settings and where the data lives — is in
+Everything in detail — the tag model, the Tasks sync, the day planner and
+where the data lives — is in
 [USER_GUIDE.md](USER_GUIDE.md).
 
 ## License

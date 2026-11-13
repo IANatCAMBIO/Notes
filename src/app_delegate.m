@@ -1,7 +1,6 @@
 #import "app_delegate.h"
 #import "commands.h"
 #import "editor_window.h"
-#import "library_ai.h"
 #import "library_commands.h"
 #import "library_notes.h"
 #import "library_state.h"
@@ -293,7 +292,6 @@ open_database_and_start
     on_settings_install(self.lib);
     on_search_install(self.lib);
     on_media_install(self.lib);
-    on_library_ai_install(self.lib);
 
     on_library_window_show(self.lib);
 
@@ -598,7 +596,7 @@ build_menu_bar
     add_commands(view_menu, @[
         @"view-list", @"view-grid", menu_rule,
         @"toggle-sidebar", @"toggle-favorites", @"toggle-day-planner", @"toggle-done", menu_rule,
-        @"media", @"ai-summary", @"meeting-summary", menu_rule,
+        @"media", @"previous-meeting", menu_rule,
     ]);
     [view_menu addItem:make_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
                                  cmd | NSEventModifierFlagControl)];

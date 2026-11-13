@@ -6,7 +6,7 @@ The full reference for Notes. See [README.md](README.md) to install it and
 - [Tags](#tags)
 - [Working with Tasks (and agents) at the same time](#working-with-tasks-and-agents-at-the-same-time)
 - [The day planner](#the-day-planner)
-- [Summarizing the last meeting](#summarizing-the-last-meeting)
+- [The previous meeting](#the-previous-meeting)
 - [Where your data is](#where-your-data-is)
 - [Backups](#backups)
 - [Development](#development)
@@ -124,28 +124,20 @@ choose the calendars to show. Tasks' Settings has the same section: the
 two apps share the setting. The planner redraws as soon as the calendar
 changes. Sessions are planned in Tasks; here the planner is read-only.
 
-## Summarizing the last meeting
+## The previous meeting
 
 A weekly meeting leaves one note per occurrence, all with the same title
-and different dates. While you write this week's note, the **clock in the
-editor's toolbar** summarizes the last one: Notes takes the most recent
-earlier note with the same title, sends it to an AI command, and shows the
-answer in a small panel titled after the meeting and its date. The text is
-selectable, so ⌘C copies it; Close (or Escape) dismisses the panel and
-stops a summary still being written. The same thing is in **View →
-Summarize Last Meeting**.
+and different dates. When you open a meeting's note from the day planner
+and an earlier note with the same title exists, a **clock button** appears
+in the editor's toolbar, just left of the find field. Click it (or choose
+**View → Open Previous Meeting**) to open that earlier note, and click the
+clock there to keep walking back through the series.
 
-The series is found by title, not by the calendar: a note you titled by
-hand counts as an occurrence too, and a rescheduled meeting still finds
-its predecessor. A note with no earlier namesake says so and runs nothing.
-
-Turn it on in **Settings → AI Features**: *Enable AI features* is the
-master switch for this and the library's AI Summary, and *Offer a summary
-of the last meeting in the editor* shows or hides the clock. The command
-defaults to `claude -p` — the local Claude Code, read from stdin, written
-to stdout — and the usual install directories are searched, so no full
-path is needed. Name any other agent in *Meeting command* to use it
-instead; emptying the field puts the default back.
+The clock is a promise: it is shown only for a note made from the calendar
+and only when there is a previous note to open, so no clock means there is
+nothing earlier. The series is found by title, not by the calendar: a note
+you titled by hand counts as an earlier occurrence, and a rescheduled
+meeting still finds its predecessor.
 
 ## Where your data is
 
@@ -204,6 +196,6 @@ last GTK commit, `51ec5a4`.
 
 The whole app is native AppKit: the library (sidebar, list, grid and
 Action Items), the note editor with its own layout and rendering,
-Settings, Search, the media browser and the AI summary. The document
+Settings, Search, the media browser. The document
 model is the GTK build's; the database is the one shared with Tasks.
 There is no command-line tool.

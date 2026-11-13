@@ -40,7 +40,7 @@ void on_library_notes_refresh(NotesLibrary *lib);
 
 /*
  * on_library_notes_note_saved — ONE note's content was saved by its editor:
- * update that row (title, modified time, preview, thumbnail) and nothing
+ * update that row (title, modified time, thumbnail) and nothing
  * else.  The OnApp.notify_note_saved hook lands here.
  *
  * Inputs:

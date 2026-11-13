@@ -2418,6 +2418,21 @@ on_db_event_note(OnDatabase *db, const char *event_id, int64_t occurrence)
 }
 
 /*
+ * on_db_note_is_event_note — see db.h.
+ */
+bool
+on_db_note_is_event_note(OnDatabase *db, int64_t note_id)
+{
+    sqlite3_stmt *stmt = prepare(db, "SELECT 1 FROM cal_note WHERE note_id = ?");
+    if (stmt == NULL)
+        return false;
+    sqlite3_bind_int64(stmt, 1, note_id);
+    bool bound = sqlite3_step(stmt) == SQLITE_ROW;
+    sqlite3_finalize(stmt);
+    return bound;
+}
+
+/*
  * on_db_event_note_bind — see db.h.
  */
 bool

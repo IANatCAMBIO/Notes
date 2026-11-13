@@ -9,7 +9,7 @@
  *
  * The library window is built by several modules:
  * the window frame and its commands, the sidebar, the notes pane with the
- * Action Items list, the AI pane, and the secondary windows that ask the
+ * Action Items list, and the secondary windows that ask the
  * library what is selected.  They never reach into each other.  What they
  * share is ONE NotesLibrary object — the sidebar selection and the view
  * mode — and the functions below, each implemented in exactly one module
@@ -133,7 +133,7 @@ BOOL on_library_in_trash_view(NotesLibrary *lib);
 /*
  * on_library_notes_for_selection — the notes the selection lists, in
  * display order.  THE one mapping from a selection to a note set: the notes
- * pane, the media browser and the AI summary all use it, so they cannot
+ * pane and the media browser both use it, so they cannot
  * disagree about what "this tag" means.
  *
  * Output: a GList of OnNoteMeta *; free with on_db_note_list_free.

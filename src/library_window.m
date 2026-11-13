@@ -1,5 +1,4 @@
 #import "library_window.h"
-#import "library_ai.h"
 #import "library_favorites.h"
 #import "library_notes.h"
 #import "library_planner.h"
@@ -15,26 +14,19 @@ static NSToolbarItemIdentifier const search_item_ident = @"notes.search-field";
 
 /*
  * toolbar_idents — the toolbar, left to right: command identifiers
- * (commands.h), spaces and the search field.  AI Summary, and the space
- * that sets it apart, are there only while AI features are enabled (GTK:
- * the button is hidden, not just disabled).
- *
- * Inputs:
- *   ai — YES to include AI Summary
+ * (commands.h), spaces and the search field.
  *
  * Output: the item identifiers.
  */
 static NSArray<NSToolbarItemIdentifier> *
-toolbar_idents(BOOL ai)
+toolbar_idents(void)
 {
-    NSArray<NSToolbarItemIdentifier> *head = @[
+    return @[
         @"toggle-sidebar", NSToolbarSpaceItemIdentifier,
         @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
         @"toggle-view", @"toggle-done", @"search", @"media", @"toggle-day-planner",
+        NSToolbarFlexibleSpaceItemIdentifier, search_item_ident,
     ];
-    NSArray<NSToolbarItemIdentifier> *tail = @[NSToolbarFlexibleSpaceItemIdentifier, search_item_ident];
-    return [[head arrayByAddingObjectsFromArray:ai ? @[NSToolbarSpaceItemIdentifier, @"ai-summary"] : @[]]
-               arrayByAddingObjectsFromArray:tail];
 }
 
 /* The settings the sidebar's width and visibility are kept in, as Tasks
@@ -155,21 +147,11 @@ init_with_library:(NotesLibrary *)lib
 
 /*
  * build_content — the Favorites bar across the window, the split view
- * (sidebar | notes over the AI pane | day planner) under it, above the
- * status bar.
+ * (sidebar | notes | day planner) under it, above the status bar.
  */
 - (void)
 build_content
 {
-    /* The notes over the AI pane, with a divider between them; the AI pane
-     * is hidden — collapsed — until a summary is asked for. */
-    NSSplitView *main_pane = [[NSSplitView alloc] initWithFrame:NSZeroRect];
-    main_pane.vertical     = NO;
-    main_pane.dividerStyle = NSSplitViewDividerStyleThin;
-    [main_pane addArrangedSubview:on_library_notes_new(self.lib)];
-    [main_pane addArrangedSubview:on_library_ai_pane_new(self.lib)];
-    [main_pane setHoldingPriority:NSLayoutPriorityDefaultLow - 1 forSubviewAtIndex:0];
-
     SharedSplitController *split = [[SharedSplitController alloc] init];
     split.width_changed = ^(NSInteger index, NSInteger width) {
         on_app_config_set_int(index == 0 ? sidebar_width_key : planner_width_key, (gint)width);
@@ -180,7 +162,7 @@ build_content
     self.sidebar_item.collapsed       = !self.lib.app->sidebar_visible;  /* as it was left */
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;  /* notes absorb resizes */
     [self.split addSplitViewItem:self.sidebar_item];
-    [self.split addSplitViewItem:shared_ui_pane_item(main_pane, on_look_pane_min_w)];
+    [self.split addSplitViewItem:shared_ui_pane_item(on_library_notes_new(self.lib), on_look_pane_min_w)];
     self.planner_host = [[NotesPlannerHost alloc] init_with_library:self.lib];
     self.planner_item = shared_ui_pane_item(self.planner_host.view, shared_look_day_planner_min_w);
     self.planner_item.canCollapse     = YES;
@@ -447,7 +429,7 @@ validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 - (NSArray<NSToolbarItemIdentifier> *)
 toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
 {
-    return toolbar_idents(YES);
+    return toolbar_idents();
 }
 
 /*
@@ -461,7 +443,7 @@ toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar
 - (NSArray<NSToolbarItemIdentifier> *)
 toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar
 {
-    return toolbar_idents(self.lib.app->ai_enabled);
+    return toolbar_idents();
 }
 
 /*
@@ -706,28 +688,6 @@ on_library_window_show(NotesLibrary *lib)
 {
     if (!library_window) library_window = [[NotesLibraryWindow alloc] init_with_library:lib];
     [library_window showWindow:nil];
-}
-
-/*
- * on_library_window_ai_changed — see library_window.h.  The toolbar gains
- * or loses AI Summary and its space, at the place toolbar_idents gives
- * them.
- */
-void
-on_library_window_ai_changed(NotesLibrary *lib)
-{
-    NSToolbar *toolbar = library_window.window.toolbar;
-    if (toolbar == nil) return;
-    NSArray<NSString *> *idents = [toolbar.items valueForKey:@"itemIdentifier"];
-    NSUInteger at = [idents indexOfObject:@"ai-summary"];
-    if (lib.app->ai_enabled && at == NSNotFound) {
-        NSInteger flex = (NSInteger)[idents indexOfObject:NSToolbarFlexibleSpaceItemIdentifier];
-        [toolbar insertItemWithItemIdentifier:NSToolbarSpaceItemIdentifier atIndex:flex];
-        [toolbar insertItemWithItemIdentifier:@"ai-summary" atIndex:flex + 1];
-    } else if (!lib.app->ai_enabled && at != NSNotFound) {
-        [toolbar removeItemAtIndex:(NSInteger)at];
-        [toolbar removeItemAtIndex:(NSInteger)at - 1];              /* its space */
-    }
 }
 
 /*

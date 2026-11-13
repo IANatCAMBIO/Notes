@@ -5,7 +5,7 @@
 /*
  * settings_window — the Settings window: every preference in notes.ini
  * (table-driven checkboxes that write through at once), the database health
- * plate, the rotating-backup controls and the AI settings.
+ * plate, the rotating-backup controls.
  *
  * The module registers its own commands with the library, so the menus and
  * the toolbar reach it without any other module naming it; until it does,

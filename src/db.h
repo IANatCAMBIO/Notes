@@ -802,6 +802,15 @@ void on_db_calendar_day_free(on_cal_day_t *day);
 int64_t on_db_event_note(OnDatabase *db, const char *event_id, int64_t occurrence);
 
 /* ---------------------------------------------------------------------------
+ * on_db_note_is_event_note() — was the note taken for an occurrence of a
+ * calendar event (a cal_note binding)?
+ *   db      — open database.
+ *   note_id — the note.
+ * Returns true when it is bound to one.
+ * ------------------------------------------------------------------------- */
+bool on_db_note_is_event_note(OnDatabase *db, int64_t note_id);
+
+/* ---------------------------------------------------------------------------
  * on_db_event_note_bind() — record (or replace) the note taken for an
  * occurrence of an event.  Joins the caller's transaction like every
  * writer here.

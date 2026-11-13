@@ -5,10 +5,9 @@
 /*
  * library_window — the library window's frame: the toolbar, the
  * Favorites bar across the window, the split between the sidebar, the
- * notes pane and the day planner under it, the AI pane under the notes,
- * and the status bar.  The panes themselves come from their own modules
+ * notes pane and the day planner under it, and the status bar.  The panes themselves come from their own modules
  * (library_favorites.h, library_sidebar.h, library_notes.h,
- * library_planner.h, library_ai.h).
+ * library_planner.h).
  *
  * There is at most one library window.  Closing it does not quit the app
  * while editors are open; it is built again when it is next asked for.
@@ -51,16 +50,6 @@ void on_library_window_show(NotesLibrary *lib);
  *   lib — the library
  */
 void on_library_window_location_changed(NotesLibrary *lib);
-
-/*
- * on_library_window_ai_changed — AI features were turned on or off: the
- * toolbar shows AI Summary only while they are on.  Called by the AI
- * module's OnApp.notify_ai_changed hook.
- *
- * Inputs:
- *   lib — the library
- */
-void on_library_window_ai_changed(NotesLibrary *lib);
 
 /*
  * on_library_window_planner_changed — the calendar settings changed

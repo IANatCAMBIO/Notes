@@ -8,7 +8,7 @@
 #include <string.h>
 
 /* How many modules may register library commands (window frame, commands,
- * sidebar, notes, settings, search, media, AI — with room to spare). */
+ * sidebar, notes, settings, search, media — with room to spare). */
 #define MAX_COMMAND_TABLES 12
 
 /* The key of the property list a note drag carries. */
@@ -255,8 +255,7 @@ on_library_add_commands(const shared_command_handler_t *table, size_t n)
 /*
  * acts_on_library — does a command act on what the library window shows,
  * so that from the menu bar with the window closed it must open it first?
- * (The view and sidebar toggles, Media and AI Summary act on the window
- * itself.)
+ * (The view and sidebar toggles and Media act on the window itself.)
  *
  * Inputs:
  *   sender — the menu or toolbar item
@@ -269,8 +268,7 @@ acts_on_library(id sender)
     static NSSet<NSString *> *idents;
     if (idents == nil)
         idents = [NSSet setWithArray:@[@"view-list", @"view-grid", @"toggle-view",
-                                       @"toggle-sidebar", @"toggle-favorites", @"toggle-done", @"media",
-                                       @"ai-summary"]];
+                                       @"toggle-sidebar", @"toggle-favorites", @"toggle-done", @"media"]];
     NSString *ident = shared_command_ident(sender);
     return ident != nil && [idents containsObject:ident];
 }

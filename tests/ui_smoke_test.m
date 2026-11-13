@@ -36,7 +36,6 @@
 #import "activation.h"
 #import "editor_window.h"
 #import "image_viewer.h"
-#import "library_ai.h"
 #import "library_commands.h"
 #import "library_favorites.h"
 #import "library_notes.h"
@@ -1854,110 +1853,70 @@ drag_right(NSButton *btn, CGFloat dx)
 }
 
 /*
- * meeting_panel — the last-meeting summary's tool panel on screen, by the
- * start of its title.
- *
- * Inputs:
- *   prefix — what its title bar starts with
- *
- * Output: the panel's window, or nil.
- */
-static NSWindow *
-meeting_panel(NSString *prefix)
-{
-    for (NSWindow *w in NSApp.windows) {
-        if (w.visible && [w isKindOfClass:NSPanel.class] && [w.title hasPrefix:prefix]) return w;
-    }
-    return nil;
-}
-
-/*
- * test_meeting_summary — the editor's clock (meeting_summary.h): the note
- * before this one in its series — the most recent note with the same
- * title — goes to the configured command, and what the command writes
- * fills a tool panel titled after the meeting and its date.  The clock is
- * there only while AI and the setting are on, and a note with no earlier
- * namesake says so instead of running anything.
+ * test_previous_meeting — the editor's clock (previous_meeting.h): shown
+ * only on a note made from a calendar event that has an earlier note with
+ * the same title, and a click opens that earlier note.  A note typed by
+ * hand, an event note with no predecessor and the first of a series have
+ * no clock.
  */
 static void
-test_meeting_summary(void)
+test_previous_meeting(void)
 {
-    NSString *last_week = @"last week we agreed to ship on Friday";
-    gchar    *older     = g_strdup_printf("Weekly Sync\n%s", last_week.UTF8String);
-    new_note(older);                     /* its id is not needed: it is found by title */
-    g_free(older);
-    gint64 fresh = new_note("Weekly Sync\n");
-    gint64 lone  = new_note("A meeting of its own\nbody");
+    bool    created = false;
+    int64_t older   = on_note_for_event(app.db, "ev-weekly", 1000, "Weekly Sync", NULL, 0, &created);
+    int64_t fresh   = on_note_for_event(app.db, "ev-weekly", 2000, "Weekly Sync", NULL, 0, &created);
+    int64_t lone    = on_note_for_event(app.db, "ev-lone",   1000, "A meeting of its own", NULL, 0, &created);
+    gint64  typed   = new_note("Weekly Sync\n");          /* same title, not from the calendar */
 
-    gboolean ai_was      = app.ai_enabled;
-    gboolean meeting_was = app.meeting_summary;
-    gchar   *command_was = app.meeting_command;
-    app.meeting_command  = g_strdup("/bin/cat");       /* writes the prompt back out */
-
-    __weak NSWindow *weak_panel = nil;
     @autoreleasepool {
         on_editor_window_open(&app, fresh, NotesEditorRevealNone, 0, nil);
         pump(0.3);
         NSWindow *window = editor_window_titled(@"Weekly Sync");
         NSWindowController<NSUserInterfaceValidations> *ed = (id)window.windowController;
-        NSMenuItem *clock = command_item(@"meeting-summary");
+        NSButton *button = (NSButton *)view_with_identifier(window.contentView, @"previous-meeting");
+        check(button != nil && button.image != nil && [ed validateUserInterfaceItem:command_item(@"previous-meeting")],
+              "an event note with an earlier namesake has the clock, and the command is enabled");
+        NSArray<NSView *> *row = ((NSStackView *)button.superview).arrangedSubviews;
+        check([button.superview isKindOfClass:NSStackView.class] && row.count > 2 && row[0] == button &&
+              [row[1] isKindOfClass:NSBox.class] && [row[2] isKindOfClass:NSSearchField.class],
+              "it sits just left of the find field, set apart from it by a rule");
 
-        app.ai_enabled      = FALSE;
-        app.meeting_summary = TRUE;
-        on_editor_settings_changed();
-        check(window != nil && view_with_identifier(window.contentView, @"meeting-summary") == nil &&
-              ![ed validateUserInterfaceItem:clock],
-              "with AI off the editor has no clock and will not summarise");
-        app.ai_enabled      = TRUE;
-        app.meeting_summary = FALSE;
-        on_editor_settings_changed();
-        check(view_with_identifier(window.contentView, @"meeting-summary") == nil,
-              "nor with the last-meeting setting off");
-        app.meeting_summary = TRUE;
-        on_editor_settings_changed();
-        NSButton *button = (NSButton *)view_with_identifier(window.contentView, @"meeting-summary");
-        check(button != nil && button.image != nil && [ed validateUserInterfaceItem:clock],
-              "with both on, the format bar carries the clock and the command is enabled");
-
-        send_command(window, clock);
+        send_command(window, command_item(@"previous-meeting"));
         pump(0.3);
-        NSString *today = shared_ui_format_date((gint64)NSDate.date.timeIntervalSince1970, shared_ui_date_day);
-        NSWindow *panel = meeting_panel(@"Weekly Sync — ");
-        NSTextView *text = (NSTextView *)view_with_identifier(panel.contentView, @"meeting-summary-text");
-        check(panel != nil && text != nil && window.attachedSheet == nil &&
-              [panel.title isEqualToString:[NSString stringWithFormat:@"Weekly Sync — %@ — Summary", today]],
-              "the summary opens in a tool panel titled after the meeting and its date");
-        for (int i = 0; i < 80 && ![text.string containsString:last_week]; i++) pump(0.05);
-        check([text.string containsString:@"=== Notes ===\n\n--- Weekly Sync ("] &&
-              [text.string containsString:last_week] && !text.editable,
-              "the command is given the previous note and its output fills the panel");
-        check([text.string containsString:@"previous meeting in a recurring series"],
-              "with a request that asks for the last meeting's summary");
-        check(save_snapshots(panel, @"meeting-summary"), "meeting summary snapshots written, light and dark");
-        weak_panel = panel;
-        check(answer_panel(@"Close"), "Close is its one button");
-        [window close];
+        int shown = 0;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"Weekly Sync"]) shown++;
+        }
+        check(shown == 2, "clicking it opens the earlier note in its own editor");
+        for (NSWindow *w in [NSApp.windows copy]) {
+            if (w.visible && [w.title isEqualToString:@"Weekly Sync"]) [w close];
+        }
     }
     pump(0.3);
-    check(weak_panel == nil, "the closed panel is deallocated");
 
     @autoreleasepool {
+        on_editor_window_open(&app, older, NotesEditorRevealNone, 0, nil);
+        pump(0.3);
+        NSWindow *window = editor_window_titled(@"Weekly Sync");
+        check(view_with_identifier(window.contentView, @"previous-meeting") == nil,
+              "the first note of a series has no clock");
+        [window close];
+
         on_editor_window_open(&app, lone, NotesEditorRevealNone, 0, nil);
         pump(0.3);
-        NSWindow *window = editor_window_titled(@"A meeting of its own");
-        send_command(window, command_item(@"meeting-summary"));
+        window = editor_window_titled(@"A meeting of its own");
+        check(view_with_identifier(window.contentView, @"previous-meeting") == nil,
+              "an event note with no earlier namesake has no clock");
+        [window close];
+
+        on_editor_window_open(&app, typed, NotesEditorRevealNone, 0, nil);
         pump(0.3);
-        check(meeting_panel(@"A meeting of its own") == nil && answer_panel(@"OK"),
-              "a note with no earlier namesake says so and runs nothing");
+        window = editor_window_titled(@"Weekly Sync");
+        check(view_with_identifier(window.contentView, @"previous-meeting") == nil,
+              "a note typed by hand has no clock, whatever its title");
         [window close];
     }
     pump(0.3);
-
-    g_free(app.meeting_command);
-    app.meeting_command = command_was;
-    app.ai_enabled      = ai_was;
-    app.meeting_summary = meeting_was;
-    on_editor_settings_changed();
 }
 
 /*
@@ -3075,16 +3034,21 @@ test_notes_pane(NotesLibrary *lib)
     check(on_library_notes_selected_ids(lib).count == 0, "selecting another sidebar row starts with nothing selected");
 
     /* Comfortable density. */
+    on_db_tag_set_emoji(app.db, pane_id, "🧪");
     app.comfortable_list = TRUE;
+    on_library_refresh_all(lib);
     on_library_sidebar_select(lib, on_sb_tag, pane_id);
     pump(0.1);
     table = pane_table(lib);
     NSInteger arow = row_with_text(table, @"title", @"alpha");
+    NSView *title_cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:arow makeIfNecessary:YES];
     check(table.rowHeight == on_look_row_comfortable_h &&
-          label_with_text([table viewAtColumn:[table columnWithIdentifier:@"title"] row:arow makeIfNecessary:YES],
-                          @"the preview line") != nil,
-          "Comfortable rows show the first line after the title, dimmed under it");
+          label_with_text(title_cell, @"🧪  Pane") != nil &&
+          label_with_text(title_cell, @"the preview line") == nil,
+          "Comfortable rows show the note's tags with their emojis under the title, dimmed");
+    on_db_tag_set_emoji(app.db, pane_id, "");
     app.comfortable_list = FALSE;
+    on_library_refresh_all(lib);
 
     /* Trash: the menu, and Restore. */
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)arow] byExtendingSelection:NO];
@@ -3236,29 +3200,6 @@ test_shell(NotesLibrary *lib)
     check([media.toolTip isEqualToString:@"Show every image in the listed notes as thumbnails"],
           "toolbar buttons have GTK's tooltips");
 
-    /* AI Summary is in the toolbar only while AI features are on. */
-    NSArray<NSString *> *(^idents)(void) = ^NSArray<NSString *> *{
-        return [lib.window.toolbar.items valueForKey:@"itemIdentifier"];
-    };
-    gboolean ai_was = app.ai_enabled;
-    app.ai_enabled = FALSE;
-    app.notify_ai_changed(&app);
-    NSArray<NSString *> *off = idents();
-    check(![off containsObject:@"ai-summary"], "with AI off, the toolbar has no AI Summary button");
-    app.ai_enabled = TRUE;
-    app.notify_ai_changed(&app);
-    NSArray<NSString *> *on = idents();
-    NSUInteger ai_at = [on indexOfObject:@"ai-summary"];
-    check(ai_at != NSNotFound && on.count == off.count + 2 &&
-          [on[ai_at - 1] isEqualToString:NSToolbarSpaceItemIdentifier] &&
-          [on[ai_at + 1] isEqualToString:NSToolbarFlexibleSpaceItemIdentifier],
-          "turning AI on puts AI Summary back, set apart after Settings");
-    app.ai_enabled = FALSE;
-    app.notify_ai_changed(&app);
-    check([idents() isEqualToArray:off], "and turning it off again removes it and its space");
-    app.ai_enabled = ai_was;
-    app.notify_ai_changed(&app);
-
     gboolean shown = app.show_done_actions;
     [lib.window close];
     pump(0.3);
@@ -3374,8 +3315,9 @@ test_secondary_windows(NotesLibrary *lib)
               "Settings is a standard window");
         NSView *root = settings_win.contentView;
         check(label_with_text(root, @"Appearance") && label_with_text(root, @"Editor") &&
-              label_with_text(root, @"Database") && label_with_text(root, @"AI Features"),
-              "it has the GTK sections: Appearance, Editor, Database, AI Features");
+              label_with_text(root, @"Database") && label_with_text(root, @"Calendar") &&
+              !label_with_text(root, @"AI Features"),
+              "it has the sections Appearance, Editor, Database and Calendar, and no AI Features");
         check(save_snapshots(settings_win, @"settings"), "settings snapshots written");
         NSBox  *plate = (NSBox *)find_view(root, NSBox.class, Nil);
         NSView *path  = label_with_text(root, @(app.db->path));
@@ -3441,24 +3383,6 @@ test_secondary_windows(NotesLibrary *lib)
               "and says why the last backup failed (backup_last_error)");
         shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
         test_backup_pruning_failed(root);
-
-        NSButton    *ai     = button_titled(root, @"Enable AI features");
-        NSTextField *ai_cmd = (NSTextField *)view_with_identifier(root, @"ai-command");
-        gboolean     ai_was = app.ai_enabled;
-        check(ai_cmd.enabled == ai_was, "the AI command is usable only while AI is on");
-        [ai performClick:nil];
-        check(app.ai_enabled == !ai_was && ai_cmd.enabled == !ai_was, "Enable AI features turns AI on");
-        ai_cmd.stringValue = @"/bin/cat";
-        [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
-            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
-        check(g_strcmp0(app.ai_command, "/bin/cat") == 0 && view_with_identifier(root, @"ai-prompt") == nil,
-              "the AI command is written as it is typed (there is no custom prompt: no AI modes)");
-        ai_cmd.stringValue = @"";
-        [(id<NSTextFieldDelegate>)ai_cmd.delegate controlTextDidChange:
-            [NSNotification notificationWithName:NSControlTextDidChangeNotification object:ai_cmd]];
-        [ai performClick:nil];
-        check(app.ai_command == NULL && app.ai_enabled == ai_was,
-              "and clearing it clears the setting");
 
         weak_settings = settings_win;
         [settings_win close];
@@ -3699,57 +3623,6 @@ test_secondary_windows(NotesLibrary *lib)
     on_app_config_get_size("media_win_w", "media_win_h", &media_w, &media_h);
     check(weak_media == nil && media_w == 640 && media_h == 480,
           "closed media window is deallocated and its size kept");
-
-    /* AI summary ──────────────────────────────────────────────────────── */
-    @autoreleasepool {
-        NSTextView *ai_text = (NSTextView *)view_with_identifier(lib.window.contentView, @"ai-text");
-        NSView     *ai_pane = ai_text.enclosingScrollView.superview;
-        check(ai_text != nil && ai_pane.hidden && [ai_pane.superview isKindOfClass:NSSplitView.class],
-              "the AI pane sits hidden under the notes, in a split");
-        gboolean ai_was = app.ai_enabled;
-        app.ai_enabled = FALSE;
-        check(!on_library_validate_command(lib, command_item(@"ai-summary")), "AI Summary is off while AI is");
-        app.ai_enabled = TRUE;
-        g_free(app.ai_command);
-        app.ai_command = NULL;
-        on_library_run_command(lib, command_item(@"ai-summary"));
-        check(!ai_pane.hidden && [ai_text.string hasPrefix:@"No AI command configured."],
-              "with no command it says where to set one");
-
-        app.ai_command = g_strdup("/bin/cat");
-        OnTag *pane_tag = on_db_tag_find(app.db, "Pane");
-        on_library_sidebar_select(lib, on_sb_tag, pane_tag != NULL ? pane_tag->id : 0);
-        on_db_tag_free(pane_tag);
-        pump(0.1);
-        on_library_run_command(lib, command_item(@"ai-summary"));
-        check([ai_text.string isEqualToString:@"Select one or more notes to summarize."],
-              "it summarises the selected notes, and asks for some");
-        NSTableView *list = (NSTableView *)find_view(lib.window.contentView, NSTableView.class, sidebar_class());
-        [list selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)] byExtendingSelection:NO];
-        on_library_run_command(lib, command_item(@"ai-summary"));
-        on_library_run_command(lib, command_item(@"ai-summary"));    /* ignored while running */
-        for (int i = 0; i < 60 && ai_text.string.length == 0; i++) pump(0.05);
-        NSString *summary = ai_text.string;
-        check([summary hasPrefix:@"Provide me a brief summary of these notes.\n\nRespond in plain text only."] &&
-              [summary containsString:@"=== Notes ===\n\n--- "] && [summary containsString:@"(modified "] &&
-              label_with_text(lib.window.contentView, @"Summary generation complete") != nil,
-              "the command gets the prompt and the notes on stdin, and its output fills the pane");
-        NSRange first = [summary rangeOfString:@"=== Notes ==="];
-        check(first.location != NSNotFound &&
-              [summary rangeOfString:@"=== Notes ===" options:0
-                               range:NSMakeRange(NSMaxRange(first), summary.length - NSMaxRange(first))].location == NSNotFound,
-              "a second request while one runs is ignored");
-        [button_titled(ai_pane, @"Copy") performClick:nil];
-        check([[NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString] isEqualToString:summary],
-              "Copy puts the summary on the clipboard");
-        check(save_snapshots(lib.window, @"library-ai"), "AI pane snapshots written");
-        [button_titled(ai_pane, @"✕") performClick:nil];
-        check(ai_pane.hidden, "✕ closes the pane");
-        g_free(app.ai_command);
-        app.ai_command = NULL;
-        app.ai_enabled = ai_was;
-        on_library_sidebar_select(lib, on_sb_all, 0);
-    }
 }
 
 /*
@@ -4178,7 +4051,6 @@ main(void)
         on_settings_install(lib);
         on_search_install(lib);
         on_media_install(lib);
-        on_library_ai_install(lib);
         check(app.open_note != NULL && app.live_document != NULL && app.live_edited != NULL &&
               app.live_held != NULL && app.live_save != NULL && app.check_editors != NULL && app.flush_editors != NULL &&
               app.notify_notes_changed != NULL && app.notify_note_saved != NULL &&
@@ -4190,7 +4062,7 @@ main(void)
         test_outside_changes();
         test_open_note_sync();
         test_editor_commands();
-        test_meeting_summary();
+        test_previous_meeting();
         test_inline_image();
         test_file_attachment();
         test_drop_last_line();

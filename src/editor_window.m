@@ -22,7 +22,7 @@
 #import "editor_window.h"
 #import "commands.h"
 #import "image_viewer.h"
-#import "meeting_summary.h"
+#import "previous_meeting.h"
 #import "library_state.h"
 #import "note_view.h"
 #import "ui_util.h"
@@ -280,6 +280,8 @@ separator(void)
 @property (nonatomic, strong) NSScrollView     *scroll;       /* holds note_view      */
 @property (nonatomic, strong) NSView           *format_bar;
 @property (nonatomic, strong) NSStackView      *format_groups;/* rebuilt on settings  */
+@property (nonatomic, copy)   NSArray<NSView *> *meeting_views;/* the clock and its rule, in the find stack */
+@property (nonatomic, assign) gint64 previous_meeting;         /* the earlier note of its series; 0 = none */
 @property (nonatomic, strong) NotesStatusBar   *status_bar;
 @property (nonatomic, strong) NotesImageViewer *image_viewer;
 
@@ -329,6 +331,7 @@ separator(void)
 - (BOOL)close_saved;
 - (BOOL)offer_tags;
 - (void)update_status;
+- (void)rebuild_format_groups;
 @end
 
 /* ── Commands ───────────────────────────────────────────────────────────── */
@@ -626,38 +629,39 @@ validate_keep_on_top(id target, id item, SharedCommandState *state)
 }
 
 /*
- * run_meeting_summary — "meeting-summary" (the format bar's clock): the
- * summary of the previous meeting of this note's series, in a tool panel
- * (meeting_summary.h).
+ * run_previous_meeting — "previous-meeting" (the clock beside the find
+ * field): open the earlier note of this note's series
+ * (previous_meeting.h).  The note is looked up again, since it may have
+ * gone to the Trash since the button was shown; if it has, the button goes.
  *
  * Inputs:
  *   target — the editor
  *   sender — the item (unused)
  */
 static void
-run_meeting_summary(id target, id sender)
+run_previous_meeting(id target, id sender)
 {
     NotesEditorWindow *ed = target;
-    on_meeting_summary_show(ed.app, ed.note_id, ed.window.title, ed.window);
+    gint64 last = on_previous_meeting_find(ed.app->db, ed.note_id, ed.window.title);
+    if (last == 0 || !on_editor_window_open(ed.app, last, NotesEditorRevealNone, 0, nil))
+        [ed rebuild_format_groups];
 }
 
 /*
- * validate_meeting_summary — usable while the feature is on and the note
- * has a title to find its series by (meeting_summary.h); the window title
- * is the note's live title.
+ * validate_previous_meeting — usable while the editor knows an earlier
+ * note of the series (the button is only shown then).
  *
  * Inputs:
  *   target — the editor
  *   item   — the item (unused)
  *   state  — the command's look, adjusted here
  *
- * Output: YES when the summary may run.
+ * Output: YES when there is a note to open.
  */
 static BOOL
-validate_meeting_summary(id target, id item, SharedCommandState *state)
+validate_previous_meeting(id target, id item, SharedCommandState *state)
 {
-    NotesEditorWindow *ed = target;
-    return on_meeting_summary_can_run(ed.app, ed.window.title);
+    return ((NotesEditorWindow *)target).previous_meeting != 0;
 }
 
 /* Every command an editor runs. */
@@ -682,7 +686,7 @@ static const shared_command_handler_t editor_commands[] = {
     { @"insert-emoji",     run_insert_emoji,   validate_editing        },
     { @"insert-date",      run_insert_date,    validate_editing        },
     { @"keep-on-top",      run_keep_on_top,    validate_keep_on_top    },
-    { @"meeting-summary",  run_meeting_summary, validate_meeting_summary },
+    { @"previous-meeting", run_previous_meeting, validate_previous_meeting },
 };
 #define EDITOR_COMMAND_COUNT (sizeof editor_commands / sizeof *editor_commands)
 
@@ -890,7 +894,8 @@ build_layout
 /*
  * build_format_bar — the formatting row: the style groups (rebuilt by
  * rebuild_format_groups) and, at the right edge, the find field with its
- * previous / next buttons and, last, the keep-on-top pin.  The window's minimum width keeps every group
+ * previous / next buttons and, last, the keep-on-top pin; the previous-
+ * meeting clock and a rule sit just left of the field when there is one.  The window's minimum width keeps every group
  * on show, as the GTK toolbar's natural width did.
  *
  * Output: the bar, for build_layout to place.
@@ -938,8 +943,9 @@ build_format_bar
  * rebuild_format_groups — (re)make the style groups for the current
  * compact_editor_toolbar setting: in compact mode the heading/body buttons
  * become one "Aa" menu and the three list buttons one "≡" menu.  The
- * clock that summarises the last meeting follows them while that feature
- * is on (meeting_summary.h).  The find field is not touched, so a search
+ * clock that opens the previous meeting is put in the find stack, left of
+ * the find field and set apart by a rule, only while the note has one
+ * (previous_meeting.h).  The find field is not touched, so a search
  * survives.
  */
 - (void)
@@ -974,10 +980,6 @@ rebuild_format_groups
     [views addObject:group_separator()];
     [views addObject:format_menu(@"+", on_look_format_icon, @"Insert an image, a table, an emoji, or today's date at the cursor",
                                  @[@"insert-image", @"insert-table", @"insert-emoji", @"insert-date"])];
-    if (on_meeting_summary_enabled(self.app)) {
-        [views addObject:group_separator()];
-        [views addObject:format_button(@"clock.arrow.circlepath", @"", @"meeting-summary", NO)];
-    }
 
     NSStackView *groups = [NSStackView stackViewWithViews:views];
     groups.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -987,7 +989,18 @@ rebuild_format_groups
     self.format_groups = groups;
     shared_ui_use_ui_font(groups);
 
-    NSView *find = self.search_field.superview;
+    NSStackView *find = (NSStackView *)self.search_field.superview;
+    for (NSView *v in self.meeting_views) [find removeArrangedSubview:v], [v removeFromSuperview];
+    self.meeting_views = @[];
+    self.previous_meeting = on_previous_meeting_find(self.app->db, self.note_id, self.window.title);
+    if (self.previous_meeting != 0) {
+        self.meeting_views = @[format_button(@"clock.arrow.circlepath", @"", @"previous-meeting", NO),
+                               group_separator()];
+        [find insertArrangedSubview:self.meeting_views[1] atIndex:0];
+        [find insertArrangedSubview:self.meeting_views[0] atIndex:0];
+        /* The field has no bezel of its own to space it, as a button has. */
+        [find setCustomSpacing:on_look_format_group_gap afterView:self.meeting_views[1]];
+    }
     [NSLayoutConstraint activateConstraints:@[
         [groups.leadingAnchor constraintEqualToAnchor:self.format_bar.leadingAnchor
                                              constant:shared_look_status_inset],
@@ -1084,9 +1097,7 @@ reload_from_row
     [self hold_release];
     on_note_view_reload_document(self.note_view, doc);
     [self record_stamp];
-    gchar *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
-    self.window.title = @(title);
-    g_free(title);
+    [self refresh_title:doc];
     [self update_status];
 }
 
@@ -1520,10 +1531,7 @@ save_ended:(BOOL)committed stamp:(OnNoteStamp)saved refresh:(BOOL)refresh
     self.autosave_timer = nil;
     self.dirty          = NO;
 
-    OnDocument *doc   = on_note_view_document(self.note_view);
-    gchar      *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
-    self.window.title = @(title);
-    g_free(title);
+    [self refresh_title:on_note_view_document(self.note_view)];
     [self update_status];
 
     if (refresh) {
@@ -1730,6 +1738,24 @@ windowWillClose:(NSNotification *)note
             on_note_files_sweep(app->db, self.note_id);
     }
     [editors removeObjectForKey:@(self.note_id)]; /* last: may release self */
+}
+
+/*
+ * refresh_title: — the window title follows the document's first line; a
+ * new title may have, or lose, an earlier meeting of its series, so the
+ * format bar is rebuilt then (previous_meeting.h).
+ *
+ * Inputs:
+ *   doc — the note's document
+ */
+- (void)
+refresh_title:(OnDocument *)doc
+{
+    gchar *title = on_document_title(doc, SHARED_DB_NOTE_DEFAULT_TITLE, ON_TITLE_MAX_CHARS);
+    BOOL changed = ![self.window.title isEqualToString:@(title)];
+    self.window.title = @(title);
+    g_free(title);
+    if (changed) [self rebuild_format_groups];
 }
 
 /*

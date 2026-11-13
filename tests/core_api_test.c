@@ -1504,6 +1504,10 @@ test_calendar(OnDatabase *db)
           "event note: no attendees, no Attendees: line, an empty body line");
     on_document_free(doc);
 
+    check(on_db_note_is_event_note(db, again) && on_db_note_is_event_note(db, alone) &&
+          !on_db_note_is_event_note(db, note) && !on_db_note_is_event_note(db, 0),
+          "event note: a note made for an event says so");
+
     gint64  ids[] = { note, next_week, again, urgent, alone };
     on_db_notes_delete(db, ids, 5);
     check(on_db_event_note(db, "ev1", at) == 0, "event note: deleting the note unbinds it");

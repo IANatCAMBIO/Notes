@@ -104,11 +104,9 @@ src/                 flat; one module = one .h + one .c or .m
   library_notes.[hm]                                             (G)
   library_planner.[hm]   the day planner's Notes side (the panel is
                          ../shared_ui's shared_day_planner.[hm])
-  settings_window.[hm] search_window.[hm] media_window.[hm] library_ai.[hm]  (H)
-  ai_run.[hm]            THE launcher of an AI command and the builder of
-                         its prompt (library_ai and meeting_summary share it)
-  meeting_summary.[hm]   the editor's clock: the previous note with this
-                         note's title, summarised in a tool panel
+  settings_window.[hm] search_window.[hm] media_window.[hm]  (H)
+  previous_meeting.[hm]  the editor's clock: finds the previous note with
+                         this note's title (a calendar note only)
 tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
 tools/               dev_seed.c, seed-dev.sh, bnbf-scan.c, …
 resources/           Info.plist
@@ -153,7 +151,6 @@ module that owns it and never cleared:
 | `notify_notes_changed(app)` | library_window.m | UI after structural changes; `on_app_switch_db` | full refresh: sidebar + notes pane |
 | `notify_note_saved(app, id)` | library_window.m | the editor after a plain save | update that one row |
 | `notify_status(app, msg)` | library_window.m | `on_app_status()` (printf-style) | status-bar event message |
-| `notify_ai_changed(app)` | library_ai.m (H) | Settings | `ai_enabled` changed |
 | `notify_db_state(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
 | `show_notice(app, title, msg)` | app_delegate.m | the integrity check, on damage | modal message |
 | `open_note(app, id)` | editor_window.m | library_notes.m | open/raise the editor |
@@ -208,7 +205,7 @@ one package.
 | `library_commands.h` | New Note, the two trash functions real; the rest to write | E | F, G |
 | `library_sidebar.h` | **stub** (shows counts) | F | E, G, H |
 | `library_notes.h` | **stub** (lists titles) | G | E, H |
-| `settings_window.h`, `search_window.h`, `media_window.h`, `library_ai.h` | **stubs** (register nothing) | H | E |
+| `settings_window.h`, `search_window.h`, `media_window.h` | **stubs** (register nothing) | H | E |
 
 Each header's file comment states its contract and its STATUS; each stub
 `.m` names the GTK file that specifies the behaviour.
@@ -224,8 +221,7 @@ Each header's file comment states its contract and its STATUS; each stub
 - **One install per module.**  The app delegate calls, once, in
   `open_database_and_start`: `on_editor_install`, `on_library_window_install`,
   `on_library_commands_install`, `on_library_notes_install`,
-  `on_settings_install`, `on_search_install`, `on_media_install`,
-  `on_library_ai_install`.  Your install function registers your commands
+  `on_settings_install`, `on_search_install`, `on_media_install`.  Your install function registers your commands
   (§6) and sets your hooks.  You never edit another package's file to get
   wired in.
 - **The library is one shared state object**, `NotesLibrary`
@@ -266,7 +262,7 @@ Each header's file comment states its contract and its STATUS; each stub
 | **E** App + library shell + commands | launch/quit, menus, library frame, toolbar, status bar, every command with no view of its own | `main.m`, `app_delegate.[hm]`, `commands.[hm]`, `library_state.[hm]`, `library_window.[hm]`, `library_commands.[hm]` (+ `ui_util` additions) | `main.c`, `library_window.c` 2111–3489, 3651–3749, 5047–5416, 6074–6197 | nothing |
 | **F** Sidebar | a flat table (views, tags, Trash), counts, selection restore, fit-to-content, context menu, drop target | `library_sidebar.[hm]` | `library_window.c` 403–820, 1339–1386, 1702–2109, 2994–3134, 5456–5663 | library_state.h |
 | **G** Notes + Action Items | list + grid with one selection, sorting, column layout, density, thumbnails, note menu, note drag source, one-row update; Action Items list, due-date sheet | `library_notes.[hm]` (+ your own new files, e.g. `library_actions.[hm]`, `library_columns.[hm]`) | `library_window.c` 822–1337, 1406–1700, 3491–3649, 4313–5045, 5665–5849; `list_rows.[ch]` | library_state.h, action_edit.h |
-| **H** Secondary windows | Settings, Search, Media, AI summary | `settings_window.[hm]`, `search_window.[hm]`, `media_window.[hm]`, `library_ai.[hm]` | `settings_window.c`, `search_window.c`, `media_window.c`, `library_window.c` 3751–4155 | library_state.h, search_job.h, image_viewer.h |
+| **H** Secondary windows | Settings, Search, Media | `settings_window.[hm]`, `search_window.[hm]`, `media_window.[hm]` | `settings_window.c`, `search_window.c`, `media_window.c`, `library_window.c` 3751–4155 | library_state.h, search_job.h, image_viewer.h |
 
 **Start order.**  Everyone can start at once: every dependency exists as a
 header with a stub behind it.  The critical path is **B → C**: the editor is

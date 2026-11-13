@@ -37,12 +37,6 @@
 #define ON_VERSION "dev"
 #endif
 
-/* The command the last-meeting summary runs when the meeting_command
- * preference is unset: Claude Code in print mode, reading the prompt from
- * its stdin.  ai_run.h extends the child's PATH with the directories such
- * a tool is installed in, so no full path is needed.                       */
-#define ON_MEETING_COMMAND_DEFAULT "claude -p"
-
 /* ---------------------------------------------------------------------------
  * OnApp — the application context.
  *
@@ -65,22 +59,12 @@
  * the Favorites bar reads itself: its buttons as last dragged into order)
  *   first_line_title       "first_line_title"         1  title line drawn as title
  *   compact_editor_toolbar "compact_editor_toolbar"   1  style/list menus
- *   comfortable_list       "list_density_comfortable" 1  title + preview rows
+ *   comfortable_list       "list_density_comfortable" 1  title + tag line rows
  *   statusbar_db_path      "statusbar_db_path"        0  db path in status bars
  *   statusbar_note_id      "statusbar_note_id"        0  "id:N" in editors
  *   show_done_actions      "show_done_actions"        1  list completed items
  *   bold_list_titles       "bold_list_titles"         1  bold comfortable titles
- *   ai_enabled             "ai_enabled"               0  AI summary available
- *   meeting_summary        "meeting_summary"          1  the editor's clock button
- *                                                        summarises the last meeting
- *                                                        (needs ai_enabled too)
  *   new_note_hotkey        "new_note_hotkey"          1  New Note works from any app
- *   ai_command             "ai_command"       command run for a summary
- *                                             (owned; NULL when unset)
- *   meeting_command        "meeting_command"  command run for the last-meeting
- *                                             summary (owned; never NULL —
- *                                             ON_MEETING_COMMAND_DEFAULT when
- *                                             the key is unset or empty)
  *   grid_group             "grid_group"       "none" (default), "day", "week",
  *                                             "month" or "year": the grid's cards in
  *                                             sections by the date the list
@@ -109,8 +93,6 @@
  *                    editor.
  *   notify_status  — show a one-line event message in the library's status
  *                    bar.  Post through on_app_status().
- *   notify_ai_changed — ai_enabled changed: show or hide the AI control.
- *                    Called by Settings.
  *   notify_outside_commit — another writer committed to the file (Tasks,
  *                    its calendar sync, an agent): what Notes shows of
  *                    Tasks' data that no pull covers — the day planner's
@@ -189,11 +171,7 @@ typedef struct OnApp {
     gboolean    show_done_actions;
     gboolean    bold_list_titles;
     gboolean    drop_files_last_line;
-    gboolean    ai_enabled;
-    gboolean    meeting_summary;
     gboolean    new_note_hotkey;
-    gchar      *ai_command;
-    gchar      *meeting_command;
     on_grid_group_t grid_group;
 
     gboolean    backup_running;
@@ -207,7 +185,6 @@ typedef struct OnApp {
     void        (*notify_notes_changed)(struct OnApp *app);
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);
     void        (*notify_status)(struct OnApp *app, const gchar *message);
-    void        (*notify_ai_changed)(struct OnApp *app);
     void        (*notify_outside_commit)(struct OnApp *app);
     void        (*notify_db_state)(struct OnApp *app);
     void        (*show_notice)(struct OnApp *app, const gchar *title,

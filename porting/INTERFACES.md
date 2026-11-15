@@ -105,6 +105,9 @@ src/                 flat; one module = one .h + one .c or .m
   library_planner.[hm]   the day planner's Notes side (the panel is
                          ../shared_ui's shared_day_planner.[hm])
   settings_window.[hm] search_window.[hm] media_window.[hm]  (H)
+  apple_notes.[hm]       the one-way copy into one Apple Notes folder
+                         (NotesShared through dlopen; a binding map of
+                         its own, apple_notes.db, in the data directory)
   previous_meeting.[hm]  the editor's clock: finds the previous note with
                          this note's title (a calendar note only)
 tests/               *_test.c (core), *_test.m (UI), check.h, ui/*.txt
@@ -414,6 +417,12 @@ No interface carries a UTF-16 index; no other code converts.  An offset is
 always on a character boundary — clamp positions that come from outside
 (`on_utf8_from_utf16` moves an index inside a surrogate pair back to the
 character's start).
+
+The Apple Notes copy (`apple_notes.m`) converts nothing: it builds Notes'
+attributed text by appending each run's bytes as an `NSString`, and the one
+position it needs, the action mark, splits a run at a byte offset the walk
+already stands on.  A pull from Apple Notes, when one is written, is the
+third conversion site, through `utf_index.h`.
 
 ---------------------------------------------------------------------------
 

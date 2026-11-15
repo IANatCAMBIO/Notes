@@ -3315,9 +3315,9 @@ test_secondary_windows(NotesLibrary *lib)
               "Settings is a standard window");
         NSView *root = settings_win.contentView;
         check(label_with_text(root, @"Appearance") && label_with_text(root, @"Editor") &&
-              label_with_text(root, @"Database") && label_with_text(root, @"Calendar") &&
-              !label_with_text(root, @"AI Features"),
-              "it has the sections Appearance, Editor, Database and Calendar, and no AI Features");
+              label_with_text(root, @"Database") && label_with_text(root, @"Apple Calendar") &&
+              label_with_text(root, @"Apple Notes") && !label_with_text(root, @"AI Features"),
+              "it has the sections Appearance, Editor, Database, Apple Calendar and Apple Notes, and no AI Features");
         check(save_snapshots(settings_win, @"settings"), "settings snapshots written");
         NSBox  *plate = (NSBox *)find_view(root, NSBox.class, Nil);
         NSView *path  = label_with_text(root, @(app.db->path));

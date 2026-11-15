@@ -12,6 +12,7 @@
 | shared_ui | its `main` | the repository beside this one (`../shared_ui`) | `src/*.m` are compiled into the app — see below |
 | Cocoa, CoreText, CoreGraphics, ImageIO, UniformTypeIdentifiers | system | macOS SDK | |
 | Carbon (`RegisterEventHotKey` only) | New Note's system-wide shortcut, ⌃⌥⌘N (`../shared_ui/src/shared_hotkey.m`); needs no Accessibility permission | macOS SDK | |
+| CoreData | the Apple Notes copy (`src/apple_notes.m`) reads and saves Apple Notes' store through Notes' own context; the store framework itself, NotesShared, is PRIVATE and is loaded with `dlopen` at run time, never linked — see below | macOS SDK | |
 | EventKit | the day planner's calendar: the macOS Calendar's events (`../shared_ui/src/shared_calendar.m`); asks for calendar access once, when the calendar is switched on, the reason in `Info.plist` (`NSCalendarsFullAccessUsageDescription`) | macOS SDK | |
 
 ```sh
@@ -72,6 +73,19 @@ so.
 it; objects also depend on the Makefile and on `VERSION`.
 
 ## Targets
+
+## The Apple Notes copy and NotesShared
+
+`src/apple_notes.m` writes into Apple Notes through NotesShared, the private
+framework Notes.app's own extensions (Share, Shortcuts, Spotlight) use, at
+`/System/Library/PrivateFrameworks/NotesShared.framework`. Nothing links
+it: the module opens it with `dlopen` when the setting is turned on, looks
+every class up by name and checks every selector it sends before the first
+call, so a macOS that changed the framework turns the feature off with a
+message in Settings instead of crashing. The attributed-text classes it
+needs are the ones `tests/apple_notes_test.m` loads too; that test opens no
+store. Writing to the store needs Full Disk Access for the app (for `make
+run`, the terminal's grant applies).
 
 | Target | Does |
 |---|---|

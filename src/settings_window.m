@@ -17,6 +17,9 @@
 
 #import "settings_window.h"
 
+#import "apple_notes.h"
+#include "identity.h"
+
 #import "editor_window.h"
 #import "shared_hotkey.h"
 #import "library_planner.h"
@@ -61,6 +64,7 @@ typedef enum {
     apply_editors,                   /* every open editor                   */
     apply_status_path,               /* the library and editor status bars  */
     apply_hotkey,                    /* the system-wide New Note shortcut   */
+    apply_apple_notes,               /* the copy into Apple Notes           */
     apply_none,                      /* read when it is used                */
 } apply_t;
 
@@ -89,6 +93,9 @@ static const bool_setting_t editor_settings[] = {
     { "New Note (\u2303\u2325\u2318N) works from any app",             "new_note_hotkey",        apply_hotkey  },
 };
 
+static const bool_setting_t apple_notes_setting =
+    { "Push Notes data into Apple Notes", ON_APPLE_NOTES_KEY, apply_apple_notes };
+
 /*
  * setting_on — a checkbox setting's current value, read from OnApp (its
  * one reader, which knows each key's default).
@@ -115,6 +122,7 @@ setting_on(const OnApp *app, const char *key)
         { "statusbar_note_id",      offsetof(OnApp, statusbar_note_id)      },
         { "drop_files_last_line",   offsetof(OnApp, drop_files_last_line)   },
         { "new_note_hotkey",        offsetof(OnApp, new_note_hotkey)        },
+        { ON_APPLE_NOTES_KEY,       offsetof(OnApp, apple_notes)            },
     };
     for (size_t i = 0; i < sizeof fields / sizeof *fields; i++)
         if (strcmp(fields[i].key, key) == 0) return *(const gboolean *)((const char *)app + fields[i].off);
@@ -292,6 +300,7 @@ policy_store(OnApp *app, const char *key, gint64 value)
 @property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
 @property (nonatomic, strong) NSStackView  *backup_buttons;
 @property (nonatomic, strong) SharedCalendarSection *calendar; /* shared with Tasks' Settings */
+@property (nonatomic, strong) NSTextField  *apple_status;  /* the Apple Notes line   */
 - (void)refresh_db;
 - (void)refresh_backup;
 - (void)show_sha:(NSString *)full;
@@ -349,6 +358,8 @@ init_with_lib:(NotesLibrary *)lib
     [headings addObject:[self add_database:rows]];
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_calendar:rows]];
+    [ends addObject:rows.lastObject];
+    [headings addObject:[self add_apple_notes:rows]];
 
     NSStackView *stack = [NSStackView stackViewWithViews:rows];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -637,7 +648,7 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
 }
 
 /*
- * add_calendar: — the Calendar section (shared_calendar.h), the one Tasks'
+ * add_calendar: — the Apple Calendar section (shared_calendar.h), the one Tasks'
  * Settings shows too, without the calendar for Tasks' sessions.  A change
  * redraws the library's day planner.
  *
@@ -650,12 +661,44 @@ number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(
 add_calendar:(NSMutableArray<NSView *> *)rows
 {
     NotesLibrary *lib  = self.lib;
-    NSTextField  *head = shared_ui_heading(@"Calendar");
+    NSTextField  *head = shared_ui_heading(@"Apple Calendar");
     [rows addObject:head];
     self.calendar = [[SharedCalendarSection alloc]
         init_with_settings:on_calendar_settings(lib) tasks:NO width:text_w - indent
                    changed:^{ on_library_window_planner_changed(lib); }];
     [rows addObject:indented(self.calendar.view, indent)];
+    return head;
+}
+
+/*
+ * add_apple_notes: — the Apple Notes section (apple_notes.h): the switch,
+ * the status line the module keeps, Push All Now, and the way to Full Disk
+ * Access, which the copy needs.
+ *
+ * Inputs:
+ *   rows — the column to append to
+ *
+ * Output: the section's heading.
+ */
+- (NSView *)
+add_apple_notes:(NSMutableArray<NSView *> *)rows
+{
+    NSTextField *head = shared_ui_heading(@"Apple Notes");
+    [rows addObject:head];
+    [rows addObject:indented([self check_for:&apple_notes_setting], indent)];
+    self.apple_status = shared_ui_note(on_apple_notes_status(), text_w - indent);
+    self.apple_status.identifier = @"apple_status";
+    [rows addObject:indented(self.apple_status, indent)];
+    NSButton *push = small_button(@"Push All Now", self, @selector(push_all_apple_notes:));
+    push.toolTip = @"Copy every note again, whether or not it changed.";
+    NSButton *access = small_button(@"Open Full Disk Access\u2026", self, @selector(open_full_disk_access:));
+    access.toolTip = @"Apple Notes keeps its notes in a protected folder: " @ON_APP_NAME
+                     @" must be allowed Full Disk Access to write there.";
+    [rows addObject:indented(row(@[push, access]), indent)];
+    [rows addObject:indented(shared_ui_note(@"One way: notes are copied into Apple Notes and kept up to date there; "
+                                            @"nothing is read back. Tags become Apple Notes tags.", text_w - indent), indent)];
+    __weak NotesSettingsWindow *ws = self;
+    on_apple_notes_observe(^{ ws.apple_status.stringValue = on_apple_notes_status(); });
     return head;
 }
 
@@ -830,6 +873,10 @@ bool_toggled:(NSButton *)sender
         [self write_setting:sender.identifier.UTF8String value:"0"];
         shared_ui_notice(self.window, @"The shortcut is in use",
                          @"Another app has already taken \u2303\u2325\u2318N.", nil);
+        break;
+    case apply_apple_notes:
+        on_apple_notes_apply(self.lib.app);
+        self.apple_status.stringValue = on_apple_notes_status();
         break;
     case apply_none:        break;
     }
@@ -1016,6 +1063,37 @@ backup_now:(id)sender
 }
 
 /*
+ * push_all_apple_notes: — Push All Now: copy every note again.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+push_all_apple_notes:(id)sender
+{
+    if (!self.lib.app->apple_notes) {
+        shared_ui_notice(self.window, @"Apple Notes is off", @"Turn the copy on first.", nil);
+        return;
+    }
+    on_apple_notes_push_all(self.lib.app);
+    self.apple_status.stringValue = on_apple_notes_status();
+}
+
+/*
+ * open_full_disk_access: — show the Full Disk Access pane of System
+ * Settings, where the app is allowed to reach Apple Notes' store.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+open_full_disk_access:(id)sender
+{
+    NSURL *pane = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"];
+    [NSWorkspace.sharedWorkspace openURL:pane];
+}
+
+/*
  * windowWillClose: — the plate's hook goes, and the window with it.
  *
  * Inputs:
@@ -1026,6 +1104,7 @@ windowWillClose:(NSNotification *)note
 {
     if (self.lib.app->notify_db_state == settings_notify_db_state) self.lib.app->notify_db_state = NULL;
     [self.calendar shut_down];
+    on_apple_notes_observe(nil);
     settings_window = nil;
 }
 

@@ -37,6 +37,7 @@ static const bool_pref_t bool_prefs[] = {
     { "bold_list_titles",         TRUE,  offsetof(OnApp, bold_list_titles)       },
     { "drop_files_last_line",     FALSE, offsetof(OnApp, drop_files_last_line)   },
     { "new_note_hotkey",          TRUE,  offsetof(OnApp, new_note_hotkey)        },
+    { "apple_notes",              FALSE, offsetof(OnApp, apple_notes)            },
 };
 
 /*

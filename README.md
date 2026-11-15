@@ -71,8 +71,15 @@ the file must be on a local disk and outside iCloud Drive, Dropbox or any
 other synced folder.
 
 **Calendar access** is asked for once, the first time you turn on
-Settings → Calendar. It is off until you do, and the day planner is the
+Settings → Apple Calendar. It is off until you do, and the day planner is the
 only thing that uses it.
+
+**Apple Notes** (Settings → Apple Notes, off until you turn it on) copies
+every note into one folder of your Apple Notes account, "Notes (camb.io)",
+and keeps the copies up to date; nothing is read back, and no other Apple
+note is touched. It needs **Full Disk Access** (System Settings → Privacy &
+Security), because Apple Notes keeps its notes in a protected folder; the
+Settings section says so until it is granted.
 
 **It replaces a GTK copy.** This is a separate application from the GTK
 Notes, with its own bundle identifier (`com.cambio.notes`), its own
@@ -122,6 +129,12 @@ Compared with Apple Notes:
 - **The previous meeting** — a note made from a calendar meeting gets a
   clock in the editor's toolbar when an earlier note with the same title
   exists; one click opens it
+- **A copy in Apple Notes**, optional and one way — every note, in one
+  folder of your Apple Notes account, with its headings, lists, check
+  items, code, images, files and tables, its tags as Apple Notes tags on
+  a 🏷️ line under the title, and its action items in their colour. Written
+  through the framework Notes.app's own extensions use, so the copies sync
+  to your other devices like any other note.
 - **Rich text that is a real document model** — images, tables, code
   blocks and check lists, with its own layout and rendering rather than a
   text view with attributes bolted on

@@ -3,6 +3,7 @@
 #import "library_notes.h"
 #import "library_planner.h"
 #import "library_sidebar.h"
+#import "apple_notes.h"
 #import "search_window.h"
 #import "ui_util.h"
 
@@ -54,7 +55,9 @@ static const char *const win_h_key = "win_h";
 @property (nonatomic, strong) NotesPlannerHost *planner_host; /* the planner and its delegate */
 @property (nonatomic, strong) NSView *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height;   /* 0 while hidden */
-@property (nonatomic, strong) NSTextField *status_path;       /* left: the selection */
+@property (nonatomic, strong) NSProgressIndicator *sync_spinner;  /* left, while notes go to Apple Notes */
+@property (nonatomic, strong) NSTextField *sync_label;        /* "Syncing 3 of 12 notes to Apple Notes" */
+@property (nonatomic, strong) NSTextField *status_path;       /* centre: the selection */
 @property (nonatomic, strong) NSTextField *status_event;      /* right: the last event */
 @property (nonatomic, assign) on_timer_id_t status_timer;     /* clears status_event; 0 = none */
 @end
@@ -142,6 +145,9 @@ init_with_library:(NotesLibrary *)lib
     win.contentMinSize = [self content_min_size];
     shared_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_location];
+    __weak NotesLibraryWindow *ws = self;
+    on_apple_notes_observe_progress(^{ [ws update_sync_progress]; });
+    [self update_sync_progress];                 /* a run may be under way already */
     return self;
 }
 
@@ -187,6 +193,14 @@ build_content
     /* The status band: from under the rule to the window's bottom edge. */
     NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
     [content addLayoutGuide:band];
+    self.sync_spinner = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
+    self.sync_spinner.style       = NSProgressIndicatorStyleSpinning;
+    self.sync_spinner.controlSize = NSControlSizeMini;
+    self.sync_spinner.hidden      = YES;
+    self.sync_spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:self.sync_spinner];
+    self.sync_label   = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
+    self.sync_label.hidden = YES;
     self.status_path  = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentCenter);
     self.status_event = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
     CGFloat inset = shared_look_status_inset;
@@ -204,10 +218,17 @@ build_content
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-shared_look_status_h],
         [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
         [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+        /* The sync's spinner and count at the left, while notes are going
+         * to Apple Notes (hidden otherwise). */
+        [self.sync_spinner.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],
+        [self.sync_spinner.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
+        [self.sync_label.leadingAnchor constraintEqualToAnchor:self.sync_spinner.trailingAnchor
+                                                      constant:inset / 2],
         /* The location is centred in the bar, as in Files and Tasks; it
-         * gives way (truncating) before it would run into the event. */
+         * gives way (truncating) before it would run into the event, and
+         * the sync's count before it would run into the location. */
         [self.status_path.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
-        [self.status_path.leadingAnchor constraintGreaterThanOrEqualToAnchor:content.leadingAnchor
+        [self.status_path.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.sync_label.trailingAnchor
                                                                    constant:inset],
         [self.status_event.trailingAnchor constraintEqualToAnchor:content.trailingAnchor
                                                          constant:-inset],
@@ -294,6 +315,28 @@ update_location
     self.window.title = name.length ? [@ON_APP_NAME stringByAppendingFormat:@" \xe2\x80\x94 %@", name]
                                     : @ON_APP_NAME;
     self.status_path.stringValue = on_library_location_text(lib);
+}
+
+/*
+ * update_sync_progress — the status bar's left side: while notes are being
+ * pushed to Apple Notes (apple_notes.h on_apple_notes_progress), a spinner
+ * and "Syncing 3 of 12 notes to Apple Notes"; nothing otherwise.
+ */
+- (void)
+update_sync_progress
+{
+    int current = 0, total = 0;
+    on_apple_notes_progress(&current, &total);
+    BOOL syncing = total > 0;
+    if (syncing) {
+        self.sync_label.stringValue = [NSString stringWithFormat:@"Syncing %d of %d note%s to Apple Notes",
+                                       current, total, total == 1 ? "" : "s"];
+        [self.sync_spinner startAnimation:nil];
+    } else {
+        [self.sync_spinner stopAnimation:nil];
+    }
+    self.sync_spinner.hidden = !syncing;
+    self.sync_label.hidden   = !syncing;
 }
 
 /*
@@ -500,6 +543,7 @@ windowWillClose:(NSNotification *)note
     }
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
+    on_apple_notes_observe_progress(nil);
     [self.planner_host shut_down];
     on_library_notes_closed();
     library_window    = nil;         /* may release self: last */

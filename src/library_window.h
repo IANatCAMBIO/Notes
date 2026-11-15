@@ -14,7 +14,8 @@
  *
  * OWNERSHIP.  This module holds the window's controller in a file-static
  * from show to close.  In windowWillClose: the controller removes its
- * status timer and lets go of itself; the panes' views go with the window.
+ * status timer and the Apple Notes progress observer and lets go of
+ * itself; the panes' views go with the window.
  *
  */
 

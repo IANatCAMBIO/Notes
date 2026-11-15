@@ -7,6 +7,7 @@ The full reference for Notes. See [README.md](README.md) to install it and
 - [Working with Tasks (and agents) at the same time](#working-with-tasks-and-agents-at-the-same-time)
 - [The day planner](#the-day-planner)
 - [The previous meeting](#the-previous-meeting)
+- [A copy in Apple Notes](#a-copy-in-apple-notes)
 - [Where your data is](#where-your-data-is)
 - [Backups](#backups)
 - [Development](#development)
@@ -119,7 +120,7 @@ own note.
 The meetings are the macOS Calendar's, so every account set up in the
 Calendar app — Google, iCloud, Exchange — shows, kept in sync by Calendar;
 Notes has no sign-in of its own and does not need Tasks. Turn it on in
-**Settings → Calendar** (macOS asks once for access to your calendars) and
+**Settings → Apple Calendar** (macOS asks once for access to your calendars) and
 choose the calendars to show. Tasks' Settings has the same section: the
 two apps share the setting. The planner redraws as soon as the calendar
 changes. Sessions are planned in Tasks; here the planner is read-only.
@@ -138,6 +139,40 @@ and only when there is a previous note to open, so no clock means there is
 nothing earlier. The series is found by title, not by the calendar: a note
 you titled by hand counts as an earlier occurrence, and a rescheduled
 meeting still finds its predecessor.
+
+## A copy in Apple Notes
+
+**Settings → Apple Notes → Push Notes data into Apple Notes** copies every
+note into your Apple Notes account and keeps the copies current. It is off
+until you turn it on.
+
+- **One folder.** The copies live in a folder called "Notes (camb.io)",
+  made the first time. No other folder or note of yours is read or
+  written; a copy is found again by an identifier this app keeps, never by
+  searching your notes.
+- **One way.** Changes you make here reach the copy within a few seconds
+  of a save; a change made to the copy in Apple Notes is not read back and
+  is overwritten by the next push of that note. Trashing a note moves its
+  copy to Recently Deleted, restoring it brings the copy back, and a note
+  deleted for good leaves its copy in Recently Deleted.
+- **While notes are going across**, the library's status bar shows a
+  spinner and "Syncing 3 of 12 notes to Apple Notes" at its left, one note
+  every quarter of a second; it goes when the last one is done.
+- **What the copy looks like.** The title is Apple Notes' Title; your H1
+  and H2 are its Heading and Subheading; bullets, numbers and check items
+  (with their ticks) are its lists; code lines are Monospaced; bold,
+  italic, underline and strike-through carry over; images and attached
+  files are attachments where they stood; a table is an Apple Notes table
+  of plain-text cells. An action item is coloured as it is here, from its
+  `!` to the end of the line. The line under the title starts with 🏷️ and
+  carries the note's tags as **real Apple Notes tags**, so they appear in
+  Apple Notes' tag browser alongside your own.
+- **Full Disk Access.** Apple Notes keeps its notes in a protected folder;
+  until this app is allowed Full Disk Access (System Settings → Privacy &
+  Security → Full Disk Access; the Settings section has a button that
+  opens it), the setting stays on but nothing is copied, and the status
+  line says so.
+- **Push All Now** copies every note again, whether or not it changed.
 
 ## Where your data is
 

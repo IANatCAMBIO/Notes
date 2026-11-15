@@ -75,6 +75,11 @@ make seed && make run   # the app on dev/data
 - `src/previous_meeting.[hm]` — the editor's clock: finds the previous
   note with this note's title — the last meeting of a series — for a note
   made from the calendar; the button opens it.  There is no AI anywhere.
+- `src/apple_notes.[hm]` — the one-way copy of every note into one Apple
+  Notes folder, through the private NotesShared framework (dlopen, every
+  selector checked; see the header).  Its binding map is `apple_notes.db`
+  in the data directory.  Tests never open Apple Notes' store:
+  `tests/apple_notes_test.m` converts a document and checks the text.
 - `src/action_sync.[ch]` — the pull of outside changes; `db.c`
   `on_db_note_save_actions` — the push.
 - The GTK build — the behavioural SPECIFICATION this port was written

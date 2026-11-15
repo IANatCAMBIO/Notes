@@ -172,6 +172,7 @@ typedef struct OnApp {
     gboolean    bold_list_titles;
     gboolean    drop_files_last_line;
     gboolean    new_note_hotkey;
+    gboolean    apple_notes;          /* copy every note into Apple Notes (apple_notes.h) */
     on_grid_group_t grid_group;
 
     gboolean    backup_running;

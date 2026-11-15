@@ -137,7 +137,8 @@ LDFLAGS   = -mmacosx-version-min=$(LINK_MACOS)
 CORE_LIBS = $(PKG_LIBS) \
             -framework CoreFoundation -framework CoreGraphics -framework ImageIO
 APP_LIBS  = $(CORE_LIBS) -framework Cocoa -framework CoreText \
-            -framework UniformTypeIdentifiers -framework Carbon -framework EventKit
+            -framework UniformTypeIdentifiers -framework Carbon -framework EventKit \
+            -framework CoreData
 
 # The core: no UI, shared by the app, the development seeder and the tests.
 CORE_SRCS = src/action_edit.c src/action_sync.c src/app_core.c src/app_lifecycle.c \

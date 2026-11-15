@@ -12,6 +12,7 @@
 #import "ui_util.h"
 
 #include "action_sync.h"
+#import "apple_notes.h"
 #include "app_lifecycle.h"
 #include "identity.h"
 
@@ -296,6 +297,7 @@ open_database_and_start
     on_library_window_show(self.lib);
 
     on_app_start_services(&_app);
+    on_apple_notes_start(&_app);
     [self start_hotkey];
     return YES;
 }
@@ -361,6 +363,7 @@ watch_signals
 - (NSApplicationTerminateReply)
 applicationShouldTerminate:(NSApplication *)sender
 {
+    on_apple_notes_stop();
     if (!on_app_shutdown(&_app)) {
         on_editor_report_unsaved(@"Could not quit", nil);
         return NSTerminateCancel;

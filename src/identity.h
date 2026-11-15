@@ -45,6 +45,8 @@
 
 /* File names inside the data directory.                                    */
 #define ON_CONFIG_FILENAME "notes.ini"
+#define ON_APPLE_NOTES_FOLDER ON_APP_NAME " (camb.io)"  /* the one Apple Notes folder
+                                           the copies live in (apple_notes.h) */
 #define ON_LOCK_FILENAME "notes.lock"   /* one app per data directory
                                            (app_lifecycle.h)                 */
 

@@ -94,6 +94,25 @@ void on_editor_report_unsaved(NSString *title, NSWindow *window);
 BOOL on_editor_close_all(void);
 
 /*
+ * on_editor_window_is_open — whether a note has an editor open.
+ *
+ * Inputs:
+ *   note_id — the note
+ *
+ * Output: YES when it has.
+ */
+BOOL on_editor_window_is_open(gint64 note_id);
+
+/*
+ * on_editor_window_is_key — whether an editor is the key window: a note is
+ * being edited, and work that would stall typing (the Apple Notes push)
+ * should wait.
+ *
+ * Output: YES when one is.
+ */
+BOOL on_editor_window_is_key(void);
+
+/*
  * on_editor_settings_changed — a preference that editors render from
  * changed (title line, code line numbers, the copy word, the compact
  * toolbar, the status bar's path and note id): every open editor re-reads

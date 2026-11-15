@@ -1832,6 +1832,33 @@ on_editor_window_open(OnApp *app, gint64 note_id, NotesEditorReveal reveal,
 }
 
 /*
+ * on_editor_window_is_open — see editor_window.h.
+ */
+BOOL
+on_editor_window_is_open(gint64 note_id)
+{
+    return editor_for(note_id) != nil;
+}
+
+/*
+ * on_editor_window_is_key — see editor_window.h.
+ */
+BOOL
+on_editor_window_is_key(void)
+{
+    NSWindow *key = NSApp.keyWindow;
+    if (key == nil) {
+        return NO;
+    }
+    for (NSWindowController *editor in editors.allValues) {
+        if (editor.window == key) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+/*
  * on_editor_close_notes — see editor_window.h.
  */
 BOOL

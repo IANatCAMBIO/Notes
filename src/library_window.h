@@ -22,7 +22,8 @@
 /*
  * on_library_window_install — set the OnApp hooks the library answers
  * (notify_notes_changed, notify_note_saved, notify_status,
- * notify_outside_commit) and register the window's own commands
+ * notify_outside_commit; the first, second and fourth are passed on to the
+ * Apple Notes copy, apple_notes.h) and register the window's own commands
  * (toggle-sidebar, toggle-favorites, toggle-day-planner).  Called once at
  * startup by the app delegate.
  *

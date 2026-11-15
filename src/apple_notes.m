@@ -23,7 +23,7 @@
 #include "look.h"
 #include "main_service.h"
 #include "serialize.h"
-#include "shared_db.h"
+#import "editor_window.h"
 
 /* ---------------------------------------------------------------------------
  * NotesShared, as the compiler needs to see it.  The framework ships no
@@ -586,14 +586,41 @@ on_apple_notes_text(const OnDocument *doc, id<apple_notes_objects> objects)
  * NotesAppleObjects — the object source bound to the ICNote being written
  * and the database the files come from.  Media goes through a temporary
  * file, the way Notes imports it (addAttachmentWithFileURL:filename: makes
- * the media row, the thumbnails and the file-based attributes).
+ * the media row, the thumbnails and the file-based attributes) — once: an
+ * image or file the last push imported is used again when the note still
+ * has it (`existing`, by Apple identifier) and the binding map remembers
+ * it under the same key (`reuse`, key → identifier).  `used` collects the
+ * keys this push referred to, for the map.
  */
 @interface NotesAppleObjects : NSObject <apple_notes_objects>
 @property (nonatomic, strong) id note;
 @property (nonatomic, assign) OnDatabase *db;
+@property (nonatomic, strong) NSDictionary<NSString *, id> *existing;
+@property (nonatomic, strong) NSDictionary<NSString *, NSString *> *reuse;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *used;
 @end
 
 @implementation NotesAppleObjects
+
+/*
+ * fnv64 — the FNV-1a hash of some bytes, the key an image is remembered by.
+ *
+ * Inputs:
+ *   bytes — the bytes
+ *   n     — how many
+ *
+ * Output: the hash.
+ */
+static uint64_t
+fnv64(const uint8_t *bytes, NSUInteger n)
+{
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (NSUInteger i = 0; i < n; i++) {
+        hash ^= bytes[i];
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
 
 /*
  * tt_for — the text-side attachment for an attachment object of Notes.
@@ -641,7 +668,7 @@ temp_path(NSString *extension)
  * Output: the ICTTAttachment, or nil when Notes refused.
  */
 - (id)
-attach_file:(NSString *)path name:(NSString *)name small:(BOOL)small
+attach_file:(NSString *)path name:(NSString *)name small:(BOOL)small key:(NSString *)key
 {
     id<ic_note> note = self.note;
     [note setShouldAddMediaAsynchronously:NO];
@@ -655,7 +682,41 @@ attach_file:(NSString *)path name:(NSString *)name small:(BOOL)small
     }
     NSString *identifier = [attachment valueForKey:@"identifier"];
     NSString *uti        = [attachment valueForKey:@"typeUTI"];
-    return identifier != nil && uti != nil ? tt_for(identifier, uti) : nil;
+    if (identifier == nil || uti == nil) {
+        return nil;
+    }
+    self.used[key] = identifier;
+    return tt_for(identifier, uti);
+}
+
+/*
+ * reused:small: — the attachment the last push made for this key, when the
+ * note still has it: its view size is set again (the image may have been
+ * resized here) and it is used as it is.
+ *
+ * Inputs:
+ *   key   — the image's or file's key
+ *   small — for an image: show it small
+ *
+ * Output: the ICTTAttachment, or nil when there is nothing to reuse.
+ */
+- (id)
+reused:(NSString *)key small:(BOOL)small
+{
+    NSString *identifier = self.reuse[key];
+    id attachment = identifier != nil ? self.existing[identifier] : nil;
+    if (attachment == nil) {
+        return nil;
+    }
+    NSString *uti = [attachment valueForKey:@"typeUTI"];
+    if (uti == nil) {
+        return nil;
+    }
+    if ([attachment respondsToSelector:@selector(setPreferredViewSize:)]) {
+        [(id<ic_attachment>)attachment setPreferredViewSize:small ? APPLE_VIEW_SMALL : APPLE_VIEW_LARGE];
+    }
+    self.used[key] = identifier;
+    return tt_for(identifier, uti);
 }
 
 - (id)
@@ -671,21 +732,31 @@ hashtag_attachment:(NSString *)name
 - (id)
 image_attachment:(NSData *)png small:(BOOL)small
 {
+    NSString *key = [NSString stringWithFormat:@"image:%016llx", (unsigned long long)fnv64(png.bytes, png.length)];
+    id reused = [self reused:key small:small];
+    if (reused != nil) {
+        return reused;
+    }
     NSString *path = temp_path(@"png");
     if (![png writeToFile:path atomically:YES]) {
         return nil;
     }
-    return [self attach_file:path name:@"image.png" small:small];
+    return [self attach_file:path name:@"image.png" small:small key:key];
 }
 
 - (id)
 file_attachment:(int64_t)file_id name:(NSString *)name
 {
+    NSString *key = [NSString stringWithFormat:@"file:%lld", (long long)file_id];
+    id reused = [self reused:key small:NO];
+    if (reused != nil) {
+        return reused;
+    }
     NSString *path = temp_path(name.pathExtension.length > 0 ? name.pathExtension : @"bin");
     if (!on_db_note_file_export(self.db, file_id, path.fileSystemRepresentation)) {
         return nil;
     }
-    return [self attach_file:path name:name small:NO];
+    return [self attach_file:path name:name small:NO key:key];
 }
 
 - (id)
@@ -716,7 +787,8 @@ typedef struct {
     NSString   *tags;                /* the tag names joined by ' '         */
 } pushed_state_t;
 
-static sqlite3 *map;
+static sqlite3      *map;
+static sqlite3_stmt *map_get_stmt;    /* note_map by note id, prepared once */
 
 /*
  * map_open — open (and create) the binding map in the data directory.
@@ -748,8 +820,17 @@ map_open(void)
         "  pinned     INTEGER NOT NULL,"
         "  trashed    INTEGER NOT NULL,"
         "  created_at INTEGER NOT NULL,"
-        "  tags       TEXT    NOT NULL);";
-    if (sqlite3_exec(map, schema, NULL, NULL, NULL) != SQLITE_OK) {
+        "  tags       TEXT    NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS attachment_map ("
+        "  note_id  INTEGER NOT NULL,"
+        "  key      TEXT    NOT NULL,"
+        "  apple_id TEXT    NOT NULL,"
+        "  PRIMARY KEY (note_id, key));";
+    if (sqlite3_exec(map, schema, NULL, NULL, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(map, "SELECT apple_id, updated_at, size, hash, pinned, trashed, created_at, tags"
+                                " FROM note_map WHERE note_id = ?", -1, &map_get_stmt, NULL) != SQLITE_OK) {
+        sqlite3_finalize(map_get_stmt);
+        map_get_stmt = NULL;
         sqlite3_close(map);
         map = NULL;
         return NO;
@@ -763,6 +844,8 @@ map_open(void)
 static void
 map_close(void)
 {
+    sqlite3_finalize(map_get_stmt);
+    map_get_stmt = NULL;
     sqlite3_close(map);
     map = NULL;
 }
@@ -822,28 +905,26 @@ map_state_set(const char *key, NSString *value)
 static BOOL
 map_get(gint64 note_id, NSString **apple_id, pushed_state_t *pushed)
 {
-    sqlite3_stmt *st = NULL;
+    sqlite3_stmt *st = map_get_stmt;
     BOOL found = NO;
-    if (sqlite3_prepare_v2(map, "SELECT apple_id, updated_at, size, hash, pinned, trashed, created_at, tags"
-                                " FROM note_map WHERE note_id = ?", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(st, 1, note_id);
-        if (sqlite3_step(st) == SQLITE_ROW) {
-            found = YES;
-            if (apple_id != NULL) {
-                *apple_id = @((const char *)sqlite3_column_text(st, 0));
-            }
-            if (pushed != NULL) {
-                pushed->stamp.updated_at = sqlite3_column_int64(st, 1);
-                pushed->stamp.size       = sqlite3_column_int64(st, 2);
-                pushed->stamp.hash       = (guint64)sqlite3_column_int64(st, 3);
-                pushed->pinned           = sqlite3_column_int(st, 4) != 0;
-                pushed->trashed          = sqlite3_column_int(st, 5) != 0;
-                pushed->created_at       = sqlite3_column_int64(st, 6);
-                pushed->tags             = @((const char *)sqlite3_column_text(st, 7));
-            }
+    sqlite3_bind_int64(st, 1, note_id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        found = YES;
+        if (apple_id != NULL) {
+            *apple_id = @((const char *)sqlite3_column_text(st, 0));
+        }
+        if (pushed != NULL) {
+            pushed->stamp.updated_at = sqlite3_column_int64(st, 1);
+            pushed->stamp.size       = sqlite3_column_int64(st, 2);
+            pushed->stamp.hash       = (guint64)sqlite3_column_int64(st, 3);
+            pushed->pinned           = sqlite3_column_int(st, 4) != 0;
+            pushed->trashed          = sqlite3_column_int(st, 5) != 0;
+            pushed->created_at       = sqlite3_column_int64(st, 6);
+            pushed->tags             = @((const char *)sqlite3_column_text(st, 7));
         }
     }
-    sqlite3_finalize(st);
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
     return found;
 }
 
@@ -885,10 +966,69 @@ map_put(gint64 note_id, NSString *apple_id, const pushed_state_t *pushed)
 static void
 map_delete(gint64 note_id)
 {
+    const char *sql[] = { "DELETE FROM note_map WHERE note_id = ?", "DELETE FROM attachment_map WHERE note_id = ?" };
+    for (size_t i = 0; i < sizeof sql / sizeof sql[0]; i++) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(map, sql[i], -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, note_id);
+            sqlite3_step(st);
+        }
+        sqlite3_finalize(st);
+    }
+}
+
+/*
+ * map_attachments_get — the attachments the last push of a note made, by
+ * key (NotesAppleObjects).
+ *
+ * Inputs:
+ *   note_id — the note
+ *
+ * Output: key → Apple identifier.
+ */
+static NSDictionary<NSString *, NSString *> *
+map_attachments_get(gint64 note_id)
+{
+    NSMutableDictionary *found = [NSMutableDictionary dictionary];
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(map, "DELETE FROM note_map WHERE note_id = ?", -1, &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(map, "SELECT key, apple_id FROM attachment_map WHERE note_id = ?", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, note_id);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            found[@((const char *)sqlite3_column_text(st, 0))] = @((const char *)sqlite3_column_text(st, 1));
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+/*
+ * map_attachments_put — record the attachments a push used, replacing the
+ * note's earlier rows.
+ *
+ * Inputs:
+ *   note_id — the note
+ *   used    — key → Apple identifier
+ */
+static void
+map_attachments_put(gint64 note_id, NSDictionary<NSString *, NSString *> *used)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(map, "DELETE FROM attachment_map WHERE note_id = ?", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, note_id);
         sqlite3_step(st);
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+    if (sqlite3_prepare_v2(map, "INSERT INTO attachment_map (note_id, key, apple_id) VALUES (?, ?, ?)",
+                           -1, &st, NULL) == SQLITE_OK) {
+        for (NSString *key in used) {
+            sqlite3_bind_int64(st, 1, note_id);
+            sqlite3_bind_text(st, 2, key.UTF8String, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 3, used[key].UTF8String, -1, SQLITE_TRANSIENT);
+            sqlite3_step(st);
+            sqlite3_reset(st);
+            sqlite3_clear_bindings(st);
+        }
     }
     sqlite3_finalize(st);
 }
@@ -936,7 +1076,8 @@ static void                  (^status_observer)(void);
 static void                  (^progress_observer)(void);
 static on_timer_id_t           sweep_timer;
 static on_timer_id_t           drain_timer;    /* the run's next push; 0 = none */
-static int64_t                 rev_seen = -1;
+static BOOL                    sweep_wanted;   /* something structural changed */
+static NSMutableSet<NSNumber *> *dirty;        /* notes saved since the last tick */
 static NSMutableArray<NSNumber *> *queue;      /* notes to push, in order    */
 static int                     pushed_count;   /* since the setting went on  */
 static int                     failed_count;
@@ -1219,6 +1360,7 @@ push_note(gint64 note_id)
     map_get(note_id, &apple_id, NULL);
     __block BOOL ok = NO;
     __block NSString *saved_id = apple_id;
+    __block NSDictionary<NSString *, NSString *> *used = @{};
     [moc performBlockAndWait:^{
         id<ic_note> note = nil;
         if (apple_id != nil) {
@@ -1232,11 +1374,14 @@ push_note(gint64 note_id)
         if (note == nil || text == nil || saved_id == nil) {
             return;
         }
-        NotesAppleObjects *objects = [NotesAppleObjects new];
-        objects.note = note;
-        objects.db   = db;
-        [note beginEditing];
         NSDictionary *before = attachment_objects([text attributedString]);
+        NotesAppleObjects *objects = [NotesAppleObjects new];
+        objects.note     = note;
+        objects.db       = db;
+        objects.existing = before;
+        objects.reuse    = map_attachments_get(note_id);
+        objects.used     = [NSMutableDictionary dictionary];
+        [note beginEditing];
         NSAttributedString *converted = on_apple_notes_text(doc, objects);
         [text replaceCharactersInRange:NSMakeRange(0, [text length]) withAttributedString:converted];
         NSDictionary *after = attachment_objects(converted);
@@ -1259,7 +1404,8 @@ push_note(gint64 note_id)
             [note setFolder:wanted];
         }
         [note updateChangeCountWithReason:@ON_APP_NAME @" push"];
-        ok = YES;
+        used = objects.used;
+        ok   = YES;
     }];
     on_document_free(doc);
     if (ok) {
@@ -1267,6 +1413,7 @@ push_note(gint64 note_id)
     }
     if (ok) {
         map_put(note_id, saved_id, &state);
+        map_attachments_put(note_id, used);
     }
     return ok;
 }
@@ -1300,33 +1447,96 @@ retire_note(gint64 note_id)
  * ------------------------------------------------------------------------- */
 
 /*
+ * enqueue — put a note (or a retirement, negative) on the queue once.
+ *
+ * Inputs:
+ *   id — the note id, negated for a retirement
+ */
+static void
+enqueue(gint64 id)
+{
+    if (![queue containsObject:@(id)]) {
+        [queue addObject:@(id)];
+    }
+}
+
+/*
  * sweep — compare every note with what was pushed and queue the stale
  * ones; queue the bindings whose note is gone as retirements (negative
- * ids).
+ * ids).  Two list queries give every note's modification time, pin, trash
+ * state and creation date; only a note one of those moved for has its
+ * content hashed and its tags read, so a sweep over a large library costs
+ * little when nothing changed.
  */
 static void
 sweep(void)
 {
     OnDatabase *db = the_app->db;
-    NSMutableSet *seen = [NSMutableSet set];
+    NSMutableSet *seen    = [NSMutableSet set];
+    NSMutableSet *visible = [NSMutableSet set];
+    GList *shown = on_db_note_list_all(db, FALSE);
+    for (GList *l = shown; l != NULL; l = l->next) {
+        [visible addObject:@(((OnNoteMeta *)l->data)->id)];
+    }
+    on_db_note_list_free(shown);
     GList *notes = on_db_note_list_all(db, TRUE);
     for (GList *l = notes; l != NULL; l = l->next) {
-        gint64 id = ((OnNoteMeta *)l->data)->id;
-        [seen addObject:@(id)];
-        pushed_state_t now, pushed;
-        if (!current_state(db, id, &now)) {
+        OnNoteMeta *meta = l->data;
+        [seen addObject:@(meta->id)];
+        pushed_state_t pushed;
+        if (!map_get(meta->id, NULL, &pushed)) {
+            enqueue(meta->id);
             continue;
         }
-        if (!map_get(id, NULL, &pushed) || !state_same(&now, &pushed)) {
-            [queue addObject:@(id)];
+        BOOL trashed = ![visible containsObject:@(meta->id)];
+        if (meta->updated_at == pushed.stamp.updated_at && meta->pinned == pushed.pinned &&
+            trashed == pushed.trashed && meta->created_at == pushed.created_at) {
+            continue;
+        }
+        pushed_state_t now;
+        if (current_state(db, meta->id, &now) && !state_same(&now, &pushed)) {
+            enqueue(meta->id);
         }
     }
     on_db_note_list_free(notes);
     for (NSNumber *bound in map_note_ids()) {
         if (![seen containsObject:bound]) {
-            [queue addObject:@(-bound.longLongValue)];
+            enqueue(-bound.longLongValue);
         }
     }
+}
+
+/*
+ * pushing_allowed — whether a push may run now: never while a note is
+ * being edited, that is while an editor is the key window of the active
+ * app.  The library in front, or the app in the background, lets the
+ * queue drain.
+ *
+ * Output: YES when it may.
+ */
+static BOOL
+pushing_allowed(void)
+{
+    return !NSApp.active || !on_editor_window_is_key();
+}
+
+/*
+ * next_pushable — the first queued id that may be pushed now: a
+ * retirement, or a note no editor has open (an open note waits for its
+ * editor to close, whose final save queues it again).
+ *
+ * Output: the index in the queue, or NSNotFound.
+ */
+static NSUInteger
+next_pushable(void)
+{
+    for (NSUInteger i = 0; i < queue.count; i++) {
+        gint64 id = queue[i].longLongValue;
+        if (id < 0 || !on_editor_window_is_open(id)) {
+            return i;
+        }
+    }
+    return NSNotFound;
 }
 
 /*
@@ -1343,7 +1553,8 @@ status_line(void)
         line = [line stringByAppendingFormat:@"; %d could not be copied (see the log)", failed_count];
     }
     if (queue.count > 0) {
-        line = [line stringByAppendingFormat:@"; %lu waiting", (unsigned long)queue.count];
+        line = [line stringByAppendingFormat:@"; %lu waiting%s", (unsigned long)queue.count,
+                pushing_allowed() && next_pushable() != NSNotFound ? "" : " until the note is no longer being edited"];
     }
     return [line stringByAppendingString:@"."];
 }
@@ -1365,9 +1576,11 @@ stop_drain(void)
 }
 
 /*
- * push_next — push the head of the queue, then arrange the next push after
- * drain_seconds, or end the run when the queue is empty.  The progress is
- * told before the push (the note in hand) and after the last.
+ * push_next — push the first queued note that may be pushed, then arrange
+ * the next push after drain_seconds; the run ends when the queue is empty,
+ * when what is left is being edited, or when editing began meanwhile (the
+ * next tick resumes it).  The progress is told before the push (the note
+ * in hand) and when the run ends.
  *
  * Inputs:
  *   data — unused (the drain timer's payload)
@@ -1376,9 +1589,15 @@ static void
 push_next(void *data)
 {
     drain_timer = 0;
+    NSUInteger at = pushing_allowed() ? next_pushable() : NSNotFound;
+    if (at == NSNotFound) {
+        set_progress(0, 0);
+        set_status(status_line());
+        return;
+    }
     set_progress(run_total, run_done);
-    gint64 id = queue.firstObject.longLongValue;
-    [queue removeObjectAtIndex:0];
+    gint64 id = queue[at].longLongValue;
+    [queue removeObjectAtIndex:at];
     if (id < 0) {
         retire_note(-id);
     } else if (push_note(id)) {
@@ -1397,9 +1616,10 @@ push_next(void *data)
 }
 
 /*
- * tick — the timer: open the store if it is not, sweep when the notes
- * revision moved, and start a run of pushes for what the sweep queued.
- * Nothing while a run is under way: push_next paces itself.
+ * tick — the timer: open the store if it is not, sweep when something
+ * structural changed, queue the notes saved since the last tick, and start
+ * a run of pushes when one may run.  Nothing while a run is under way:
+ * push_next paces itself.
  */
 static void
 tick(void *data)
@@ -1407,22 +1627,17 @@ tick(void *data)
     if (drain_timer != 0 || !open_store()) {
         return;
     }
-    if (queue.count == 0) {
-        int64_t rev = 0;
-        char *err = NULL;
-        if (shared_db_rev(the_app->db->shared, SHARED_DB_REV_NOTES, &rev, &err) != 0) {
-            free(err);
-            return;
-        }
-        if (rev == rev_seen) {
-            return;
-        }
-        rev_seen = rev;
+    if (sweep_wanted) {
+        sweep_wanted = NO;
         sweep();
-        if (queue.count == 0) {
-            set_status(status_line());
-            return;
-        }
+    }
+    for (NSNumber *id in dirty) {
+        enqueue(id.longLongValue);
+    }
+    [dirty removeAllObjects];
+    if (queue.count == 0 || !pushing_allowed() || next_pushable() == NSNotFound) {
+        set_status(status_line());
+        return;
     }
     run_total = (int)queue.count;
     run_done  = 0;
@@ -1444,7 +1659,8 @@ activate(void)
         return;
     }
     queue        = [NSMutableArray array];
-    rev_seen     = -1;
+    dirty        = [NSMutableSet set];
+    sweep_wanted = YES;
     pushed_count = 0;
     failed_count = 0;
     set_status(@"On. Looking for notes to copy…");
@@ -1465,6 +1681,7 @@ deactivate(void)
     }
     stop_drain();
     queue = nil;
+    dirty = nil;
     map_close();
     set_status(@"Off.");
 }
@@ -1508,7 +1725,7 @@ on_apple_notes_push_all(OnApp *app)
     }
     stop_drain();
     map_forget_pushes();
-    rev_seen = -1;
+    sweep_wanted = YES;
     [queue removeAllObjects];
     tick(NULL);
 }
@@ -1525,7 +1742,28 @@ on_apple_notes_stop(void)
     }
     stop_drain();
     queue = nil;
+    dirty = nil;
     map_close();
+}
+
+/*
+ * on_apple_notes_note_saved — see apple_notes.h.
+ */
+void
+on_apple_notes_note_saved(gint64 note_id)
+{
+    if (dirty != nil) {
+        [dirty addObject:@(note_id)];
+    }
+}
+
+/*
+ * on_apple_notes_notes_changed — see apple_notes.h.
+ */
+void
+on_apple_notes_notes_changed(void)
+{
+    sweep_wanted = YES;
 }
 
 /*

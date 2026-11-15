@@ -564,6 +564,7 @@ hook_notes_changed(OnApp *app)
 {
     on_library_refresh_all(on_library());
     [library_window reload_planner];
+    on_apple_notes_notes_changed();
 }
 
 /*
@@ -577,6 +578,7 @@ static void
 hook_outside_commit(OnApp *app)
 {
     [library_window reload_planner];
+    on_apple_notes_notes_changed();
 }
 
 /*
@@ -590,6 +592,7 @@ static void
 hook_note_saved(OnApp *app, gint64 note_id)
 {
     if (library_window) on_library_notes_note_saved(on_library(), note_id);
+    on_apple_notes_note_saved(note_id);
 }
 
 /*

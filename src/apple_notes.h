@@ -18,14 +18,25 @@
  * folder: a tag on our tag line becomes a real Apple tag, so it is listed
  * in Apple Notes' tag browser (the user's choice).
  *
- * ONE WAY.  The copy is pushed; nothing is read back.  A sweep runs a few
- * times a minute while the setting is on: when the shared database's notes
- * revision moved, every note's stamp (db.h OnNoteStamp), pin, trash state,
- * creation date and tags are compared with what was pushed last, and the
- * notes that differ are pushed again, one every quarter second so the app
- * stays responsive and the library's status bar can count them ("Syncing 3
- * of 12 notes to Apple Notes").  A note that left the database (deleted
- * for good) has its copy moved to Apple's Recently Deleted.
+ * ONE WAY.  The copy is pushed; nothing is read back.  The app's own saves
+ * reach this module through the library's hooks (on_apple_notes_note_saved
+ * marks one note; on_apple_notes_notes_changed, for anything structural or
+ * an outside writer, asks for a sweep): a tick every few seconds queues
+ * the marked notes, sweeps when asked — every note's modification time,
+ * pin, trash state and creation date against what was pushed last, the
+ * content hashed and the tags read only for a note one of those moved for
+ * — and pushes the queue one note every quarter second, so the library's
+ * status bar can count them ("Syncing 3 of 12 notes to Apple Notes").
+ *
+ * NEVER WHILE EDITING.  A push blocks the main thread for as long as Notes'
+ * store takes, so none runs while an editor is the key window of the
+ * active app, and a note that has an editor open waits for it to close
+ * (its final save queues it again).  The library in front, or the app in
+ * the background, drains the queue.  A note that left the database
+ * (deleted for good) has its copy moved to Apple's Recently Deleted.  An
+ * image or file is imported into Apple Notes once: the binding map
+ * remembers each attachment by its content (an image) or file id, and a
+ * later push of the note uses it again.
  *
  * THE MAPPING, our block model (document.h) to Notes' paragraph styles:
  * the title line is Title; H1 Heading, H2 Subheading; bullets, numbers and
@@ -154,6 +165,23 @@ void on_apple_notes_push_all(OnApp *app);
  * before the database closes.
  */
 void on_apple_notes_stop(void);
+
+/*
+ * on_apple_notes_note_saved — one note's content was saved by this app
+ * (OnApp.notify_note_saved): it is pushed at the next tick that may push.
+ * Nothing while the setting is off.
+ *
+ * Inputs:
+ *   note_id — the note
+ */
+void on_apple_notes_note_saved(gint64 note_id);
+
+/*
+ * on_apple_notes_notes_changed — something structural changed, or another
+ * writer committed (OnApp.notify_notes_changed, notify_outside_commit):
+ * the next tick sweeps.  Nothing while the setting is off.
+ */
+void on_apple_notes_notes_changed(void);
 
 /*
  * on_apple_notes_status — one line for Settings: off, what was pushed, or

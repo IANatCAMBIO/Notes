@@ -150,11 +150,17 @@ until you turn it on.
   made the first time. No other folder or note of yours is read or
   written; a copy is found again by an identifier this app keeps, never by
   searching your notes.
-- **One way.** Changes you make here reach the copy within a few seconds
-  of a save; a change made to the copy in Apple Notes is not read back and
-  is overwritten by the next push of that note. Trashing a note moves its
-  copy to Recently Deleted, restoring it brings the copy back, and a note
-  deleted for good leaves its copy in Recently Deleted.
+- **One way.** A change made to the copy in Apple Notes is not read back
+  and is overwritten by the next push of that note. Trashing a note moves
+  its copy to Recently Deleted, restoring it brings the copy back, and a
+  note deleted for good leaves its copy in Recently Deleted.
+- **Never while you type.** Writing into Apple Notes' store takes a
+  moment that would stall the editor, so nothing is pushed while an
+  editor is the front window, and a note you have open waits until you
+  close it. Closing the editor, bringing the library to the front or
+  switching to another app lets the waiting notes go across, within a few
+  seconds. An image or attached file is imported into Apple Notes once and
+  used again by later pushes of the note.
 - **While notes are going across**, the library's status bar shows a
   spinner and "Syncing 3 of 12 notes to Apple Notes" at its left, one note
   every quarter of a second; it goes when the last one is done.

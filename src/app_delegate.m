@@ -29,7 +29,7 @@ static NSString * const about_motto =
 /* A separator in the menu layouts below. */
 static NSString * const menu_rule = @"-";
 
-@interface NotesAppDelegate () <NSUserInterfaceValidations>
+@interface NotesAppDelegate () <NSUserInterfaceValidations, NSMenuDelegate>
 @property (nonatomic, strong) NotesLibrary *lib;
 @property (nonatomic, copy) NSArray<dispatch_source_t> *signal_sources;  /* live for the process */
 @end
@@ -424,6 +424,39 @@ applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)vi
 /* ── Commands ────────────────────────────────────────────────────────────── */
 
 /*
+ * menuNeedsUpdate: — the File menu's "Add Tag" submenu is about to open:
+ * list the tags the selected notes can be given.
+ *
+ * Inputs:
+ *   menu — the submenu tag_menu_item made
+ */
+- (void)
+menuNeedsUpdate:(NSMenu *)menu
+{
+    if ([menu.identifier isEqualToString:@"add-tag"]) on_library_fill_tag_menu(self.lib, menu);
+}
+
+/*
+ * menuHasKeyEquivalent:forEvent:target:action: — AppKit asks whether the
+ * "Add Tag" submenu claims a key press.  Its items have no shortcuts, and
+ * saying so here stops AppKit filling the submenu (a database query) on
+ * every key press just to look.
+ *
+ * Inputs:
+ *   menu   — the submenu (unused)
+ *   event  — the key press (unused)
+ *   target — would receive the claiming item's target (unused)
+ *   action — would receive the claiming item's action (unused)
+ *
+ * Output: NO.
+ */
+- (BOOL)
+menuHasKeyEquivalent:(NSMenu *)menu forEvent:(NSEvent *)event target:(id *)target action:(SEL *)action
+{
+    return NO;
+}
+
+/*
  * run_app_command: — an app-scope command (commands.h): it acts on the
  * library whichever window is in front.
  *
@@ -507,6 +540,29 @@ add_commands(NSMenu *menu, NSArray<NSString *> *idents)
 }
 
 /*
+ * tag_menu_item — the File menu's "Add Tag" item: its submenu is left
+ * empty here and filled each time it opens (menuNeedsUpdate:), so it
+ * always lists the tags there are now.  The submenu carries the command's
+ * identifier, which is how menuNeedsUpdate: knows it.
+ *
+ * Inputs:
+ *   delegate — the app delegate, the submenu's delegate
+ *
+ * Output: the item holding the submenu.
+ */
+static NSMenuItem *
+tag_menu_item(NotesAppDelegate *delegate)
+{
+    const shared_command_t *command = shared_command_find(@"add-tag");
+    NSMenuItem *holder = make_item(command->title, NULL, @"", 0);
+    NSMenu     *menu   = [[NSMenu alloc] initWithTitle:command->title];
+    menu.identifier = command->ident;
+    menu.delegate   = delegate;
+    holder.submenu  = menu;
+    return holder;
+}
+
+/*
  * add_menu — append a titled top-level menu to the menu bar.
  *
  * Inputs:
@@ -560,6 +616,10 @@ build_menu_bar
         @"open-db", menu_rule,
         @"export-html", @"export-md", @"note-export-html", @"note-export-md", menu_rule,
         @"edit-tag", @"add-favorite", @"remove-favorite", @"clear-tag", menu_rule,
+    ]);
+    [file_menu addItem:tag_menu_item(self)];
+    add_commands(file_menu, @[
+        menu_rule,
         @"delete-note", @"note-restore", @"empty-trash",
         menu_rule,
     ]);

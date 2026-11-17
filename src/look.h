@@ -109,6 +109,7 @@ static const double on_look_pane_min_w       = 400.0;  /* the notes pane        
 static const double on_look_row_h            = 20.0;   /* compact list row                       */
 static const double on_look_row_comfortable_h = 40.0;  /* title + tag line                       */
 static const double on_look_tag_line_alpha   = 0.65;   /* the dimmed tag line                    */
+static const double on_look_tag_line_font    = 9.0;    /* its text, under the 11 pt title        */
 static const double on_look_thumb_size       = 140.0;  /* grid card thumbnail, square            */
 static const double on_look_grid_header_h    = 24.0;   /* a grid section's header (Group grid by) */
 static const double on_look_thumb_image_w    = 128.0;  /* a note's first image inside the card   */

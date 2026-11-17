@@ -56,6 +56,21 @@ BOOL on_library_trash_notes(NotesLibrary *lib, const gint64 *ids, size_t n);
 BOOL on_library_tag_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids, NSString *name);
 
 /*
+ * on_library_fill_tag_menu — rebuild an "Add Tag" submenu for the selected
+ * notes: one "add-tag" item per tag (every tag, Tasks' too, by name), its
+ * parameter the tag's id, less the tags every selected note carries
+ * already.  Choosing an item gives every selected note that tag
+ * (on_library_tag_notes).  The note menu and the File menu's submenu fill
+ * themselves with it each time they open, so they list the tags there are
+ * now.
+ *
+ * Inputs:
+ *   lib  — the library; nothing is listed while it has no database
+ *   menu — the submenu (emptied first)
+ */
+void on_library_fill_tag_menu(NotesLibrary *lib, NSMenu *menu);
+
+/*
  * on_library_edit_tag — the Edit Tag panel for a tag: its name (fixed),
  * an emoji (shown by Notes and Tasks) and whether it is a favorite in
  * Notes (a button in the Favorites bar).  OK writes both and refreshes the

@@ -60,6 +60,7 @@ static const shared_command_t commands[] = {
     { @"clear-tag",        @"Clear Tag from All Notes",    @"",  0,         win, nil, nil },
     { @"search-here",      @"Search Here…",            @"",  0,         win, nil, nil },
     { @"note-pin",         @"Pin",                     @"",  0,         win, nil, nil },
+    { @"add-tag",          @"Add Tag",                 @"",  0,         win, nil, nil },
     { @"note-restore",     @"Restore",                 @"",  0,         win, nil, nil },
     { @"note-export-html", @"Export as HTML…",         @"",  0,         win, nil, nil },
     { @"note-export-md",   @"Export as Markdown…",     @"",  0,         win, nil, nil },

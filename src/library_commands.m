@@ -563,6 +563,62 @@ validate_notes_selected(id target, id item, SharedCommandState *state)
     return !on_library_in_trash_view(target) && on_library_notes_selected_ids(target).count > 0;
 }
 
+/*
+ * run_add_tag — "add-tag": give every selected note the tag the item
+ * carries (an "Add Tag" submenu's, on_library_fill_tag_menu), then refresh
+ * the library — the tag may be new to the sidebar.
+ *
+ * Inputs:
+ *   target — the NotesLibrary
+ *   sender — the menu item; its parameter is the tag's id
+ */
+static void
+run_add_tag(id target, id sender)
+{
+    NotesLibrary *lib = target;
+    NSNumber     *param = shared_command_param(sender);
+    OnTag        *tag   = param ? on_db_tag_get(lib.app->db, param.longLongValue) : NULL;
+    if (tag == NULL) return;
+    if (on_library_tag_notes(lib, on_library_notes_selected_ids(lib), @(tag->name)))
+        on_library_refresh_all(lib);
+    on_db_tag_free(tag);
+}
+
+/*
+ * on_library_fill_tag_menu — see library_commands.h.
+ */
+void
+on_library_fill_tag_menu(NotesLibrary *lib, NSMenu *menu)
+{
+    [menu removeAllItems];
+    if (lib == nil || lib.app->db == NULL) return;
+
+    /* The tags every selected note has already: the first note's, less
+     * each tag the others lack. */
+    NSArray<NSNumber *>      *ids     = on_library_notes_selected_ids(lib);
+    NSMutableSet<NSNumber *> *carried = nil;
+    for (NSNumber *nid in ids) {
+        NSMutableSet<NSNumber *> *own = [NSMutableSet set];
+        GList *tags = on_db_note_tags(lib.app->db, nid.longLongValue);
+        for (GList *l = tags; l != NULL; l = l->next) [own addObject:@(((OnTag *)l->data)->id)];
+        on_db_tag_list_free(tags);
+        if (carried == nil) carried = own;
+        else [carried intersectSet:own];
+    }
+
+    GList *tags = on_db_tag_list(lib.app->db, ON_TAGS_ALL);
+    for (GList *l = tags; l != NULL; l = l->next) {
+        const OnTag *tag = l->data;
+        if ([carried containsObject:@(tag->id)]) continue;
+        /* Its parameter (never nil) is also what makes validation keep
+         * the tag's name as its title. */
+        NSMenuItem *item = shared_command_menu_item(@"add-tag", @(tag->id));
+        item.title = shared_ui_tag_label(@(tag->emoji), @(tag->name));
+        [menu addItem:item];
+    }
+    on_db_tag_list_free(tags);
+}
+
 /* This module's commands.  Handlers receive the NotesLibrary. */
 static const shared_command_handler_t handlers[] = {
     { @"new-note",    run_new_note,    NULL },
@@ -575,6 +631,7 @@ static const shared_command_handler_t handlers[] = {
     { @"export-md",   run_export_md,   NULL },
     { @"note-export-html", run_note_export_html, validate_notes_selected },
     { @"note-export-md",   run_note_export_md,   validate_notes_selected },
+    { @"add-tag",          run_add_tag,          validate_notes_selected },
     { @"empty-trash", run_empty_trash, NULL },
 };
 

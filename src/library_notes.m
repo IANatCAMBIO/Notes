@@ -1561,7 +1561,9 @@ ask_due:(NotesActionRecord *)r
 /*
  * fill_note_menu: — the per-note menu (GTK show_note_context_menu): Open;
  * in the Trash Restore and Delete Permanently; elsewhere Pin/Unpin, the
- * two exports and Move to Trash.  Every item acts on the whole selection
+ * two exports, Add Tag in a section of its own (a submenu of the tags the
+ * selection does not have yet, as Tasks' task menu; left out when there
+ * is none) and Move to Trash.  Every item acts on the whole selection
  * (select_clicked: has put the clicked note in it).
  *
  * Inputs:
@@ -1586,6 +1588,16 @@ fill_note_menu:(NSMenu *)menu
     [menu addItem:shared_command_menu_item(@"note-export-html", nil)];
     [menu addItem:shared_command_menu_item(@"note-export-md", nil)];
     [menu addItem:NSMenuItem.separatorItem];
+    NSMenu *tags = [[NSMenu alloc] initWithTitle:@""];
+    on_library_fill_tag_menu(self.lib, tags);
+    if (tags.numberOfItems > 0) {
+        NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:shared_command_find(@"add-tag")->title
+                                                        action:NULL
+                                                 keyEquivalent:@""];
+        holder.submenu = tags;
+        [menu addItem:holder];
+        [menu addItem:NSMenuItem.separatorItem];
+    }
     [menu addItem:shared_command_menu_item(@"delete-note", nil)];
 }
 
@@ -1715,7 +1727,8 @@ numberOfRowsInTableView:(NSTableView *)table
 /*
  * title_cell: — the list's Title cell: the title and, in Comfortable
  * density, the title (bold when that setting is on, "Untitled" when
- * empty) over its tags, each with its emoji, small and dimmed.
+ * empty) over its tags, each with its emoji, smaller
+ * (on_look_tag_line_font) and dimmed.
  *
  * Inputs:
  *   r — the note
@@ -1732,7 +1745,7 @@ title_cell:(NotesNoteRecord *)r
         NSTextField *title   = [NSTextField labelWithString:@""];
         NSTextField *tags = [NSTextField labelWithString:@""];
         tags.identifier = @"tag-line";
-        tags.font       = [NSFont systemFontOfSize:shared_look_ui_font];
+        tags.font       = [NSFont systemFontOfSize:on_look_tag_line_font];
         tags.alphaValue = on_look_tag_line_alpha;
         for (NSTextField *l in @[title, tags]) {
             l.lineBreakMode = NSLineBreakByTruncatingTail;

@@ -117,7 +117,8 @@ Compared with Apple Notes:
   when it was dropped
 - **Tags instead of folders** — a note's tags are the `#tags` in its text,
   living on a tag line above the title. Type `#` anywhere to pick from the
-  known tags, and the tag moves itself up to that line. The same tag set
+  known tags, and the tag moves itself up to that line. Select notes and
+  right-click, **Add Tag**, to tag them all at once. The same tag set
   serves Tasks, emoji and all
 - **One database with Tasks**, open in both apps at once (SQLite WAL), so
   edits flow both ways within a second and neither app overwrites a field

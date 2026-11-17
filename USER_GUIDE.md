@@ -31,9 +31,13 @@ tags Tasks uses (one set in the shared file).
   or a new one ended with a space — it **moves to the tag line**, and the
   sentence closes up around where it was.
 - A tag given from outside the text goes on the end of the tag line: drop
-  notes on a tag in the sidebar. New Note never tags the note, even with
-  a tag selected: it starts with an empty tag line, where the caret is,
-  an empty title line and an empty body line, and is listed in All Notes.
+  notes on a tag in the sidebar, or select any number of notes and
+  right-click, **Add Tag ▸** the tag (also File ▸ Add Tag). The submenu
+  lists every tag, Tasks' too, less those every selected note already
+  carries, as the task menu in Tasks does. New Note never tags the note,
+  even with a tag selected: it starts with an empty tag line, where the
+  caret is, an empty title line and an empty body line, and is listed in
+  All Notes.
   A note closed with nothing in it but tags is deleted, as an empty one
   is. A name of several words is joined, each word capitalized, and
   punctuation dropped: Tasks' "Old Projects" becomes #OldProjects — a tag

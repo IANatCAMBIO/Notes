@@ -2685,7 +2685,8 @@ visible_columns(NSTableView *table)
 /*
  * validated_titles — a menu's item titles after each command item has
  * been validated (as AppKit does when the menu opens), with whether each
- * is enabled: "Title" or "(Title)" when disabled.
+ * is enabled: "Title" or "(Title)" when disabled.  An item holding a
+ * submenu is always on.
  *
  * Inputs:
  *   lib  — the library
@@ -2699,7 +2700,7 @@ validated_titles(NotesLibrary *lib, NSMenu *menu)
     NSMutableArray<NSString *> *titles = [NSMutableArray array];
     for (NSMenuItem *item in menu.itemArray) {
         if (item.separatorItem) continue;
-        BOOL on = item.target ? YES : on_library_validate_command(lib, item);
+        BOOL on = item.target || item.submenu ? YES : on_library_validate_command(lib, item);
         [titles addObject:on ? item.title : [NSString stringWithFormat:@"(%@)", item.title]];
     }
     return titles;
@@ -2954,9 +2955,9 @@ test_notes_pane(NotesLibrary *lib)
     check(follows, "grid cards are re-rendered when the appearance changes");
     NSMenu *card_menu = grid.menu_handler([NSIndexPath indexPathForItem:charlie_card inSection:0]);
     check([validated_titles(lib, card_menu) isEqualToArray:@[@"Open", @"Pin", @"Export as HTML…",
-                                                              @"Export as Markdown…", @"Move to Trash"]] &&
+                                                              @"Export as Markdown…", @"Add Tag", @"Move to Trash"]] &&
           on_library_notes_selected_ids(lib).firstObject.longLongValue == charlie,
-          "a right click on a card selects it and offers Open, Pin, the exports and Move to Trash");
+          "a right click on a card selects it and offers Open, Pin, the exports, Add Tag and Move to Trash");
     on_library_run_command(lib, command_item(@"note-pin"));
     OnNoteMeta *m = on_db_note_get(app.db, charlie);
     NSMenuItem *pin = command_item(@"note-pin");
@@ -2996,6 +2997,40 @@ test_notes_pane(NotesLibrary *lib)
           "a right click inside a selection keeps it, and Open opens every selected note");
     on_editor_close_all();
     pump(0.2);
+
+    /* Add Tag: the submenu lists the tags the selection lacks (as Tasks'
+     * task menu), and its item tags every selected note. */
+    new_note_tagged("MenuTag", "Menu tag note\nbody");
+    on_library_refresh_all(lib);
+    pump(0.1);
+    table = pane_table(lib);
+    NSMutableIndexSet *pair = [NSMutableIndexSet indexSetWithIndex:(NSUInteger)row_with_text(table, @"title", @"alpha")];
+    [pair addIndex:(NSUInteger)row_with_text(table, @"title", @"Charlie")];
+    [table selectRowIndexes:pair byExtendingSelection:NO];
+    row_menu = open_menu(right_click(table, row_with_text(table, @"title", @"alpha")));
+    NSMenu *tag_menu = [row_menu itemWithTitle:@"Add Tag"].submenu;
+    NSMutableArray<NSString *> *offered = [NSMutableArray array];
+    for (NSMenuItem *item in tag_menu.itemArray) [offered addObject:item.title];
+    check(tag_menu != nil && [offered containsObject:@"MenuTag"] && ![offered containsObject:@"Pane"] &&
+          on_library_validate_command(lib, [tag_menu itemWithTitle:@"MenuTag"]),
+          "Add Tag lists every tag the selected notes do not all carry (not Pane, which both have), enabled");
+    on_library_run_command(lib, [tag_menu itemWithTitle:@"MenuTag"]);
+    pump(0.1);
+    check(note_has_tag(alpha, "MenuTag") && note_has_tag(charlie, "MenuTag") && !note_has_tag(bravo, "MenuTag") &&
+          label_with_text(lib.window.contentView, @"Tagged 2 notes \u201cMenuTag\u201d") != nil,
+          "choosing a tag gives it to every selected note and says so in the status bar");
+    table = pane_table(lib);
+    row_menu = open_menu(right_click(table, row_with_text(table, @"title", @"alpha")));
+    [offered removeAllObjects];
+    for (NSMenuItem *item in [row_menu itemWithTitle:@"Add Tag"].submenu.itemArray) [offered addObject:item.title];
+    check(on_library_notes_selected_ids(lib).count == 2, "the selection survives the refresh");
+    check(![offered containsObject:@"MenuTag"], "and the tag both notes now carry is no longer offered");
+    const gchar *menu_tag = "MenuTag";
+    on_note_remove_tags(&app, alpha, &menu_tag, 1);
+    on_note_remove_tags(&app, charlie, &menu_tag, 1);
+    on_library_refresh_all(lib);
+    pump(0.1);
+    table = pane_table(lib);
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row_with_text(table, @"title", @"alpha")]
        byExtendingSelection:NO];
     NSPasteboard *pb = [NSPasteboard pasteboardWithUniqueName];
@@ -3042,10 +3077,12 @@ test_notes_pane(NotesLibrary *lib)
     table = pane_table(lib);
     NSInteger arow = row_with_text(table, @"title", @"alpha");
     NSView *title_cell = [table viewAtColumn:[table columnWithIdentifier:@"title"] row:arow makeIfNecessary:YES];
-    check(table.rowHeight == on_look_row_comfortable_h &&
-          label_with_text(title_cell, @"🧪  Pane") != nil &&
+    NSTextField *tag_label = label_with_text(title_cell, @"🧪  Pane");
+    check(table.rowHeight == on_look_row_comfortable_h && tag_label != nil &&
+          tag_label.font.pointSize == on_look_tag_line_font &&
+          label_with_text(title_cell, @"alpha").font.pointSize == shared_look_ui_font &&
           label_with_text(title_cell, @"the preview line") == nil,
-          "Comfortable rows show the note's tags with their emojis under the title, dimmed");
+          "Comfortable rows show the note's tags with their emojis under the 11 pt title, 9 pt and dimmed");
     on_db_tag_set_emoji(app.db, pane_id, "");
     app.comfortable_list = FALSE;
     on_library_refresh_all(lib);

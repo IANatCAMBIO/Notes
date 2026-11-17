@@ -80,7 +80,6 @@ src/                 flat; one module = one .h + one .c or .m
   -- core (C, no UI; linked into the app, the dev seeder and the tests) --
   document.[ch] bnbf.[ch]   the block model and its blob format   (carried)
   db.[ch] serialize.[ch] export.[ch] search_query.[ch]   (carried)
-  backup.[ch]               backups through the shared module, on main_service
   config.[ch]               the data-directory policy + notes.ini
   main_service.[ch]         main-thread posts, timers, workers (GCD)
   image_io.[ch]             the one decoded image type: CGImageRef
@@ -91,7 +90,8 @@ src/                 flat; one module = one .h + one .c or .m
   action_sync.[ch]          pull outside changes to action items into notes
   action_edit.[ch]          edit an action item from outside its note
   ../shared_data/src/shared_db.[ch]  the shared database: schema, location,
-                            connections, backups, checks (compiled in)
+                            connections (compiled in; its backups and
+                            checks are camb.io Database Manager's, ../cambio_db)
   search_job.[ch]           a search on a worker
   utf_index.[ch]            UTF-8 byte <-> UTF-16 unit offsets
   -- UI (C and Objective-C; the app only) --
@@ -128,18 +128,20 @@ built; a file you orphan is still built — delete it).  A `.c` file listed in
 ## 3. The core you program against
 
 Everything in map §2.3 is still there with the same signatures
-(`document.h`, `db.h`, `serialize.h`, `export.h`, `backup.h`,
-`search_query.h`).  What changed:
+(`document.h`, `db.h`, `serialize.h`, `export.h`, `search_query.h`).
+What changed (and what left for camb.io Database Manager, `../cambio_db`: the
+health check, the SHA-256, the backups, creating the file, Open Database
+File…):
 
 | Was (GTK) | Is now |
 |---|---|
-| `app.h` (GTK types in `OnApp`) | `app_core.h`: `OnApp` = db, preference fields, backup and sync timers, **hooks** |
+| `app.h` (GTK types in `OnApp`) | `app_core.h`: `OnApp` = db, preference fields, the sync timer, **hooks** |
 | `on_app_config_init(argv0)`, ini beside the binary, `notes.ini.defaults` | `config.h`: `on_app_config_init()`, one data directory; no defaults file — defaults are the table in `app_core.c` |
 | `g_idle_add` / `g_timeout_add` / `g_thread_new` | `main_service.h`: `on_main_post`, `on_timer_add` / `on_timer_remove`, `on_worker_run` |
 | `GdkPixbuf`, `on_png_decode_capped`, `on_image_png_bytes`, `on_png_probe_size`, `gdk_pixbuf_new_from_file` | `image_io.h`: `on_image_decode_capped` → `CGImageRef` (+1), `on_image_png_encode`, `on_image_probe_size`, `on_image_file_to_png`; `on_note_image_nth_png` gives one image's PNG bytes |
 | `on_editor_action_set_done/due/text` (editor_window.c) | `action_edit.h`: `on_action_edit_set_done/due` = the task field, then the pull of its note (`action_sync.h`) |
 | the search worker inside search_window.c, `OnSearchScope` | `search_job.h`: `on_search_job_start` / `_cancel`, `OnSearchScope` |
-| main.c's sequence, `on_app_switch_database`, quit by destroying windows | `app_lifecycle.h`: `on_app_db_path`, `on_app_open_db`, `on_app_start_services`, `on_app_switch_db`, `on_app_shutdown` |
+| main.c's sequence, quit by destroying windows | `app_lifecycle.h`: `on_app_db_path`, `on_app_open_db` (opens, never creates), `on_app_start_services`, `on_app_shutdown` |
 | `on_editor_window_open` called from the notes pane | hook `OnApp.open_note` |
 | `app->editors` hash table, `app->editors == NULL` = headless | the editor registry is private to `editor_window.m`; **headless = every hook NULL** |
 
@@ -151,17 +153,15 @@ module that owns it and never cleared:
 
 | Hook | Installed by | Called by | Meaning |
 |---|---|---|---|
-| `notify_notes_changed(app)` | library_window.m | UI after structural changes; `on_app_switch_db` | full refresh: sidebar + notes pane |
+| `notify_notes_changed(app)` | library_window.m | UI after structural changes | full refresh: sidebar + notes pane |
 | `notify_note_saved(app, id)` | library_window.m | the editor after a plain save | update that one row |
 | `notify_status(app, msg)` | library_window.m | `on_app_status()` (printf-style) | status-bar event message |
-| `notify_db_state(app)` | settings_window.m (H), while open | `on_app_db_health_start`, its completion | repaint the health plate |
-| `show_notice(app, title, msg)` | app_delegate.m | the integrity check, on damage | modal message |
 | `open_note(app, id)` | editor_window.m | library_notes.m | open/raise the editor |
 | `live_document(app, id)` / `live_edited(app, id)` | editor_window.m | action_sync.c | edit an OPEN note's document |
 | `live_save(app, id)` | editor_window.m | action_sync.c | that editor saves now, inside the pull's transaction |
 | `live_held(app, id)` | editor_window.m | action_sync.c | that editor waits for its "changed outside" answer: the pull skips the note |
 | `check_editors(app)` | editor_window.m | action_sync.c | after an outside change: reload an editor whose note another writer rewrote (or, with unsaved edits, offer Reload) |
-| `flush_editors(app)` | editor_window.m | `on_app_shutdown`, `on_app_switch_db` | close every editor, each saving first |
+| `flush_editors(app)` | editor_window.m | `on_app_shutdown` | close every editor, each saving first |
 
 A hook is handed only the `OnApp`; UI state is reached through
 `on_library()` (library_state.h) or a module's own file-static.
@@ -169,13 +169,13 @@ A hook is handed only the `OnApp`; UI state is reached through
 ### The flush-on-quit contract (`app_lifecycle.h`)
 
 An editor holds unsaved edits for up to its autosave delay.  Nothing may end
-the process, or close or switch the database, while one does.  So:
+the process, or close the database, while one does.  So:
 `on_app_shutdown()` is the one way out (`flush_editors` → remove the
-backup timer → close the database → release the app lock); the app delegate calls it
+sync timer → close the database → release the app lock); the app delegate calls it
 from `applicationShouldTerminate:`; SIGTERM is turned into `[NSApp
 terminate:]`; `flush_editors` closes every editor **synchronously**, each
 saving first.  A save that fails is never dropped: that editor stays open,
-`flush_editors` returns FALSE, and the quit (or database switch, or trash,
+`flush_editors` returns FALSE, and the quit (or trash,
 or delete) is cancelled with a tool panel; the close box offers "Close
 Without Saving" instead.  If you add a window that holds unsaved state, it
 must be flushed by this path too.  Never call `exit()` with windows open.
@@ -373,11 +373,11 @@ proposal for the owner; changing one is editing one row of the table.
 - **One SQLite connection per thread.**  `app->db` belongs to the main
   thread.  A worker opens its own (`on_db_open_existing(app->db->path,
   NULL)`, which goes through `shared_db_open_existing`), closes it,
-  and only then posts its result.  Only the main connection at launch or
-  "Create a New Database" may create the file (`on_db_open`); every other
-  connection — workers, the first-run "Open a Database File…" trial, File >
-  Open Database File… — refuses a missing file, so a database the user
-  moved aside (a restore, a rollback) is never replaced by an empty one.  Capture the path and everything else the
+  and only then posts its result.  Nothing in the app creates the file
+  (camb.io Database Manager does; `on_db_open` serves the seeder and the tests):
+  the main connection and every worker's refuse a missing file, so a
+  database the user moved aside (a restore, a rollback) is never replaced
+  by an empty one.  Capture the path and everything else the
   worker needs as locals on the main thread before starting it.
 - **Workers**: `on_worker_run(fn, data)` (concurrent, utility QoS, one
   autorelease pool per job).  From Objective-C you may equally use
@@ -391,8 +391,8 @@ proposal for the owner; changing one is editing one row of the table.
 - **Timers**: `on_timer_add` (C callback) or `NSTimer`.  A timer that must
   tick during menu tracking or a drag goes in `NSRunLoopCommonModes`.  A
   `dispatch_after` per event is not a debounce — re-arm one timer.
-- **No synchronous long work on the main thread**: the integrity check,
-  backups and search already run on workers; thumbnails and the media scan
+- **No synchronous long work on the main thread**: search already runs
+  on a worker; thumbnails and the media scan
   must too (decode with `on_ui_thumbnail` on a worker).
 - The development seeder (`tools/dev_seed.c`) runs no run loop: nothing it
   calls may rely on `on_main_post` or a timer.
@@ -535,14 +535,14 @@ its inputs as locals, and never reads `self.…` off the main thread.
 - **One shared database** (`../shared_data`, `shared_db.h`): Notes and
   Tasks share one SQLite file, located by `shared_db_path`
   (`$CAMBIO_SHARED_DB`, else the pointer file
-  `~/Library/Application Support/camb.io/location` that File ▸ Open
-  Database File… ▸ Set as Default writes through
-  `shared_db_set_default_path`, else `…/camb.io/shared_data.db`).  The
-  schema, the WAL/busy-timeout connection rules, the refusal of a
-  non-shared or synced file, backups (`shared_db_backup*`, policy in
-  `shared_settings`) and checks are the module's; Notes keeps none of its
-  own.  The module never deletes a database's `-wal`/`-shm`; nothing in
-  Notes may either.
+  `~/Library/Application Support/camb.io/location`, else
+  `…/camb.io/shared_data.db`).  The schema, the WAL/busy-timeout
+  connection rules and the refusal of a non-shared or synced file are the
+  module's; Notes keeps none of its own.  Creating the file, checking it
+  and backing it up are camb.io Database Manager's (`../cambio_db`): Notes only
+  opens an existing file, and quits with a notice when there is none.
+  The module never deletes a database's `-wal`/`-shm`; nothing in Notes
+  may either.
 - **Action items are shared tasks** (`db.h`, `serialize.h`,
   `action_sync.h`): a save PUSHES the fields of a `!` line that differ from
   `note_task.seen_*` (and only those) in the same transaction as the blob;
@@ -631,8 +631,8 @@ its inputs as locals, and never reads `self.…` off the main thread.
   Build a window, then call `shared_ui_use_ui_font` on its content; table cells
   use `on_ui_label_cell`.  The status bars are `shared_look_status_font`
   (11 pt, the Files and Tasks apps' status size, labels from
-  `shared_ui_status_label`, centred on their capitals; Settings' database
-  plate shares that size); only the sidebar (the system font) and a
+  `shared_ui_status_label`, centred on their capitals); only the sidebar
+  (the system font) and a
   note's own text in the editor keep other sizes.  The status bar's
   location text is centred and an event message fades after
   `on_look_status_hold`, as in Tasks.
@@ -695,7 +695,7 @@ make ui-check                         # the UI test alone; snapshots in dev/snap
 |---|---|---|
 | 2: hooks `close_editors(ids,n)`, `close_all_editors`, `editors_settings_changed(what)` | `flush_editors` is the only hook; `on_editor_close_notes`, `on_editor_close_all`, `on_editor_settings_changed()` are plain functions in editor_window.h | only the core needs a hook; UI modules may call the editor module directly.  One "settings changed" replaces five `*_all` refreshers |
 | 2: `open_note(app, id, reveal_kind, ord, search_term)` | hook is `open_note(app, id)`; the full form is `on_editor_window_open` | the hook's callers only ever open plainly |
-| 3: `on_timer_add(seconds, repeating, fn, data)` | plus a `destroy` callback | the backup timer owns its payload |
+| 3: `on_timer_add(seconds, repeating, fn, data)` | plus a `destroy` callback | a timer may own its payload |
 | 4: `on_note_view_insert_image` takes PNG bytes; `render` returns the neutral image | insert takes PNG bytes; the viewer's `image_handler` returns an `NSImage` | no CF ownership crosses a block; `on_note_view_image` (C function) still returns a borrowed `CGImageRef` |
 | 5: `on_doc_layout_new(doc, font spec)`, `image(L, block, inline_ord)` | `font_size` (double); all geometry in `double`; `on_doc_layout_invalidate_all` dropped; `set_hits` takes an array + count | CoreText is fractional; `set_style`/`set_width` already invalidate everything; no GLib container in a new header |
 | 6: `text_layout_ct.m` | `text_layout.c` | CoreText is a C API; plain C is the owner's preference where it fits |

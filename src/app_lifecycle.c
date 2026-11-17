@@ -5,7 +5,6 @@
 
 #include "app_lifecycle.h"
 #include "action_sync.h"
-#include "backup.h"
 #include "identity.h"
 #include "serialize.h"
 
@@ -103,7 +102,7 @@ gboolean
 on_app_open_db(OnApp *app, gchar **err)
 {
     gchar *why = NULL;               /* the reason it did not open          */
-    app->db = on_db_open(NULL, &why);
+    app->db = on_db_open_existing(NULL, &why);
     if (app->db == NULL) {
         fprintf(stderr, "notes: could not open the shared database: %s\n",
                 why != NULL ? why : "?");
@@ -125,49 +124,7 @@ on_app_start_services(OnApp *app)
     on_app_status(app, "DB at %s loaded", app->db->path);
     on_note_files_sweep(app->db, 0); /* no editor is open yet: free the files
                                         no note names (left by a crash)    */
-    on_app_db_health_start(app);
-    on_backup_auto_start(app);
-    on_action_sync_start(app, FALSE);
-}
-
-/*
- * on_app_switch_db — see app_lifecycle.h.
- */
-on_switch_result_t
-on_app_switch_db(OnApp *app, const gchar *path, gboolean set_default,
-                 gchar **err)
-{
-    if (app->flush_editors != NULL && !app->flush_editors(app)) {
-        return ON_SWITCH_UNSAVED;
-    }
-    gchar *old_path = g_strdup(app->db->path);
-    on_db_close(app->db);
-    app->db = on_db_open_existing(path, err);
-    char *module_err = NULL;         /* why the default could not be set    */
-    if (app->db != NULL && set_default &&
-        shared_db_set_default_path(app->db->path, &module_err) != 0) {
-        if (err != NULL) {
-            *err = g_strdup(module_err != NULL ? module_err : "unknown error");
-        }
-        free(module_err);
-        on_db_close(app->db);
-        app->db = NULL;
-    }
-    if (app->db == NULL) {
-        app->db = on_db_open_existing(old_path, NULL); /* back to where we were */
-        g_free(old_path);
-        return ON_SWITCH_FAILED;
-    }
-    g_free(old_path);
-
-    /* A pass in flight carries the old path; the timer reads app->db.    */
-    on_backup_auto_start(app);
-    on_action_sync_start(app, TRUE); /* its revisions, its pending changes,
-                                        and the refresh the new file needs */
-    on_app_status(app, "DB at %s loaded", app->db->path);
-    on_note_files_sweep(app->db, 0); /* no editor is open (flushed above)    */
-    on_app_db_health_start(app);     /* every opened database is checked     */
-    return ON_SWITCH_DONE;
+    on_action_sync_start(app);
 }
 
 /*
@@ -181,8 +138,6 @@ on_app_shutdown(OnApp *app)
     if (app->flush_editors != NULL && !app->flush_editors(app)) {
         return FALSE;
     }
-    on_timer_remove(app->backup_timer);
-    app->backup_timer = 0;
     on_timer_remove(app->sync_timer);
     app->sync_timer = 0;
     on_db_close(app->db);            /* NULL-safe                            */

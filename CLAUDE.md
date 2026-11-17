@@ -20,7 +20,10 @@ data, code style, verification.
   `notes` binary.
 - The notes live in the database Notes SHARES with Tasks
   (`../shared_data`, its own repository — read `../shared_data/PLAN.md`;
-  never edit it from here).  The owner's live copy,
+  never edit it from here).  Notes never creates, checks or backs up that
+  file: camb.io Database Manager (`../cambio_db`, a menu-bar app) does, and Notes
+  only opens the existing one (a missing one is a notice and a quit).
+  The owner's live copy,
   `~/Library/Application Support/{Notes,camb.io,Tasks}/`, is off limits
   too, not even to read.
 - Every run uses test data: `make run`, `make seed`, `make test` set

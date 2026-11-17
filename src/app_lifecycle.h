@@ -8,9 +8,8 @@
  *   2. on_app_lock_take()              this copy is THE one on the data
  *                                      directory, or it quits untouched
  *   3. on_app_prefs_load(app)
- *   4. on_app_open_db(app)             — or, when no database file exists
- *                                      at on_app_db_path(), ask the user
- *                                      first; never create one silently
+ *   4. on_app_open_db(app)             the existing database, or a notice
+ *                                      and a quit: Notes never creates one
  *   5. install the UI's hooks in app (each module's install function)
  *   6. build the library window
  *   7. on_app_start_services(app)
@@ -43,20 +42,16 @@
  *     and the hook returns FALSE.
  *   - on_app_shutdown() is the ONE way the app ends: it calls
  *     app->flush_editors — and stops there, changing nothing else, when an
- *     editor could not save — then removes the backup and sync timers,
- *     closes the database and lets go of the app lock.  It is idempotent.
+ *     editor could not save — then removes the sync timer, closes the
+ *     database and lets go of the app lock.  It is idempotent.
  *   - every route out goes through it: the app delegate calls it from
  *     applicationShouldTerminate: (Quit, the Dock, logout and restart all
  *     arrive there), cancelling the quit when it fails, and turns SIGTERM
  *     into [NSApp terminate:], which arrives there too.  Nothing calls
  *     exit() with windows open.
- *   - on_app_switch_db() flushes the same way before it closes the old
- *     database, and does not switch when an editor could not save.
  *
  * What is NOT covered: SIGKILL, a crash or power loss can lose the edits
- * typed since the last autosave (at most the autosave delay), and a
- * backup pass in flight is abandoned (it was writing a partial file, which
- * the rotation never counts and the next pass deletes).
+ * typed since the last autosave (at most the autosave delay).
  *
  * Main thread only.
  * =========================================================================== */
@@ -88,9 +83,9 @@ on_app_lock_result_t on_app_lock_take(void);
 
 /* ---------------------------------------------------------------------------
  * on_app_db_path() — where the shared database is expected
- * (shared_db_path: $CAMBIO_SHARED_DB, else the pointer file both apps'
- * "Set as Default" writes, else ~/Library/Application Support/camb.io/
- * shared_data.db).
+ * (shared_db_path: $CAMBIO_SHARED_DB, else the pointer file
+ * ~/Library/Application Support/camb.io/location, else
+ * ~/Library/Application Support/camb.io/shared_data.db).
  *
  * Inputs:
  *   err — optional; on failure receives the reason (g_free it)
@@ -101,12 +96,14 @@ on_app_lock_result_t on_app_lock_take(void);
 gchar *on_app_db_path(gchar **err);
 
 /* ---------------------------------------------------------------------------
- * on_app_open_db() — open the shared database at on_app_db_path(),
- * CREATING it if no file is there (the caller asks the user first when that
- * matters).  A file that is not a shared database is refused untouched.
- * There is deliberately NO fallback to another location: silently opening a
- * different database is how notes "disappear" and how writes are stranded
- * in the wrong file.  One configured database, or a clear failure.
+ * on_app_open_db() — open the shared database at on_app_db_path().  It is
+ * deliberately NEVER created here: camb.io Database Manager (camb.io_db_mgr.app)
+ * creates the file and looks after it, and a missing one is refused with
+ * a reason (on_db_open_existing), as is a file that is not a shared
+ * database.  There is no fallback to another location either: silently
+ * opening a different database is how notes "disappear" and how writes
+ * are stranded in the wrong file.  One configured database, or a clear
+ * failure.
  *
  * Inputs:
  *   app — the application context; app->db is set on success
@@ -120,9 +117,8 @@ gboolean on_app_open_db(OnApp *app, gchar **err);
 /* ---------------------------------------------------------------------------
  * on_app_start_services() — everything that starts once the database is
  * open, the hooks are installed and the library window exists: the
- * sweep of attached files no note names (a crash leaves them), the
- * integrity check, the backup poll and the pull of outside changes
- * (action_sync.h: once now, then its poll timer).
+ * sweep of attached files no note names (a crash leaves them) and the
+ * pull of outside changes (action_sync.h: once now, then its poll timer).
  *
  * Inputs:
  *   app — the application context
@@ -130,42 +126,6 @@ gboolean on_app_open_db(OnApp *app, gchar **err);
  * Output: none.
  * ------------------------------------------------------------------------- */
 void on_app_start_services(OnApp *app);
-
-/* What on_app_switch_db did. */
-typedef enum {
-    ON_SWITCH_DONE,                  /* the app is on the new database       */
-    ON_SWITCH_UNSAVED,               /* an editor could not save: no switch  */
-    ON_SWITCH_FAILED,                /* the new file would not open          */
-} on_switch_result_t;
-
-/* ---------------------------------------------------------------------------
- * on_app_switch_db() — File > Open Database File…: switch the running app
- * to another shared database file, for this session or as the new default
- * of both apps.  Every editor is flushed and closed first; if one cannot
- * save, nothing changes.  If the new file cannot be opened (it is not a
- * shared database, it is on a network or synced folder, …) the previous
- * database is re-opened and nothing else changes.
- *
- * Inputs:
- *   app         — the application context
- *   path        — the database file to open
- *   set_default — TRUE to make it the default both apps open
- *                 (shared_db_set_default_path, which refuses while
- *                 $CAMBIO_SHARED_DB fixes the file); FALSE for this
- *                 session only
- *   err         — optional; on ON_SWITCH_FAILED receives the reason, the
- *                 shared module's words (g_free it)
- *
- * Output: ON_SWITCH_DONE when the app is now on `path` (the library has
- *         been pulled into and refreshed, the backup poll re-armed, the integrity
- *         check started).  ON_SWITCH_UNSAVED when an editor could not save:
- *         it is still open and the old database still in use.
- *         ON_SWITCH_FAILED when `path` could not be opened, or could not
- *         be made the default: the previous database is open again, or —
- *         if even that failed — app->db is NULL and the caller must quit.
- * ------------------------------------------------------------------------- */
-on_switch_result_t on_app_switch_db(OnApp *app, const gchar *path,
-                                    gboolean set_default, gchar **err);
 
 /* ---------------------------------------------------------------------------
  * on_app_shutdown() — end the app's work in the one safe order (see the

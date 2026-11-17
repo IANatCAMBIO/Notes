@@ -7,7 +7,7 @@
 /*
  * library_commands — the library's commands that have no view of their own:
  * new note, the Edit Tag panel, tagging dropped notes, trash / delete /
- * empty, export, Open Database File.
+ * empty, export.
  *
  * The specification is the GTK build's src/library_window.c (its
  * "commands" sections).
@@ -93,22 +93,6 @@ void on_library_edit_tag(NotesLibrary *lib, gint64 tag_id);
  *   ids — the notes (NSNumber note ids); nothing happens for none
  */
 void on_library_delete_notes(NotesLibrary *lib, NSArray<NSNumber *> *ids);
-
-/*
- * on_library_open_db — switch to a shared database file already chosen: a
- * tool panel asks whether for this session only or as the new default of
- * both apps; a file the shared module refuses, or a default it will not
- * set (while $CAMBIO_SHARED_DB fixes the file for the run), or a file it
- * refuses (not a shared database, on a network or synced folder) is
- * reported in its words and the previous database stays open
- * (on_app_switch_db).  The file already open needs nothing.  The
- * Open Database command calls it once the file picker returns.
- *
- * Inputs:
- *   lib  — the library (its window is where the panels show)
- *   path — the database file
- */
-void on_library_open_db(NotesLibrary *lib, NSString *path);
 
 /*
  * on_library_export — export notes into a folder already chosen: the ones

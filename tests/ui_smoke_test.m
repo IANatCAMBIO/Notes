@@ -54,7 +54,6 @@
 #include "doc_layout.h"
 #include "look.h"
 #include "app_lifecycle.h"
-#include "backup.h"
 #include "serialize.h"
 #include "image_io.h"
 
@@ -984,40 +983,6 @@ test_trash(NotesLibrary *lib)
     check(!id_in(on_db_trash_note_ids(app.db), loose) && on_db_note_get(app.db, loose) == NULL &&
           editor_window_titled(@"Loose note") == nil,
           "and then deletes the Trash's notes, closing their editors");
-
-    /* While $CAMBIO_SHARED_DB names the file (every test run) the default
-     * cannot change: a database is offered for this session only.  A file
-     * that is not a shared database (an old notes.db) is refused untouched,
-     * in the shared module's words, and the app stays on its database.    */
-    {
-        gchar    *was  = g_strdup(app.db->path);
-        NSString *work = [@(check_data_dir()) stringByAppendingPathComponent:@"work.db"];
-        on_db_close(on_db_open(work.fileSystemRepresentation, NULL));   /* as Create New makes it */
-        on_library_open_db(lib, work);
-        pump(0.2);
-        check(answer_panel(@"Set as Default"), "Open Database offers Set as Default");
-        pump(0.3);
-        check(answer_panel(@"OK") && strcmp(app.db->path, was) == 0,
-              "which the shared module refuses under $CAMBIO_SHARED_DB: a notice, the old file stays");
-        g_free(was);
-    }
-    {
-        NSString *old = [@(check_data_dir()) stringByAppendingPathComponent:@"notes.db"];
-        sqlite3  *sq  = NULL;
-        sqlite3_open(old.fileSystemRepresentation, &sq);
-        sqlite3_exec(sq, "CREATE TABLE notes (id INTEGER PRIMARY KEY)", NULL, NULL, NULL);
-        sqlite3_close(sq);
-        NSData   *before = [NSData dataWithContentsOfFile:old];
-        gchar    *was    = g_strdup(app.db->path);
-        on_library_open_db(lib, old);
-        pump(0.2);
-        check(answer_panel(@"Session Only"), "an old notes.db is offered for this session");
-        pump(0.3);
-        check(answer_panel(@"OK") && strcmp(app.db->path, was) == 0 &&
-              [[NSData dataWithContentsOfFile:old] isEqualToData:before],
-              "and refused untouched, with the app still on its database");
-        g_free(was);
-    }
 
     /* The question is not modal: what was restored while it was up is not
      * deleted when it is answered.                                         */
@@ -2297,7 +2262,8 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 
 /*
  * planner_width — the day planner's width in the library window: 0 while
- * its split item is collapsed.
+ * its split item is collapsed (AppKit hides the item's wrapper view, not
+ * the panel itself, which keeps its width).
  *
  * Inputs:
  *   planner — the panel
@@ -2307,7 +2273,7 @@ press(NSTableView *table, NSInteger row, NSEventModifierFlags mods)
 static CGFloat
 planner_width(SharedDayPlanner *planner)
 {
-    return planner.hidden ? 0.0 : NSWidth(planner.frame);
+    return planner.isHiddenOrHasHiddenAncestor ? 0.0 : NSWidth(planner.frame);
 }
 
 /*
@@ -2340,6 +2306,12 @@ test_day_planner(NotesLibrary *lib)
     check(sqlite3_exec(app.db->handle, sql, NULL, NULL, NULL) == SQLITE_OK,
           "planner: a scheduled task for today");
 
+    BOOL button = NO;
+    for (NSToolbarItem *ti in lib.window.toolbar.items) {
+        if ([ti.itemIdentifier isEqualToString:@"toggle-day-planner"]) button = YES;
+    }
+    check(!button && !on_library_validate_command(lib, command_item(@"toggle-day-planner")),
+          "with the calendar off, the toolbar has no day planner button and View's command is disabled");
     on_library_run_command(lib, command_item(@"toggle-day-planner"));
     pump(0.4);
     check(on_app_config_get_int("day_planner_visible", 0) &&
@@ -2408,6 +2380,13 @@ test_day_planner(NotesLibrary *lib)
     pump(0.4);
     check(!on_app_config_get_int("day_planner_visible", 1) && planner_width(planner) < 1.0,
           "⌘⇧D slides it away again, remembered");
+
+    on_library_run_command(lib, command_item(@"toggle-day-planner"));
+    pump(0.4);
+    on_library_window_planner_changed(lib);          /* the calendar's switch is (still) off */
+    pump(0.4);
+    check(!on_app_config_get_int("day_planner_visible", 1) && planner_width(planner) < 1.0,
+          "the calendar switch off while the planner is open closes it, remembered hidden");
 
     on_db_notes_delete(app.db, &note, 1);
     sqlite3_exec(app.db->handle,
@@ -3248,75 +3227,6 @@ test_shell(NotesLibrary *lib)
     on_library_run_command(lib, command_item(@"toggle-done"));
 }
 
-static gchar *last_status;           /* the last status message captured */
-
-/*
- * status_recorder — OnApp.notify_status while a test captures it: keep
- * the message.
- *
- * Inputs:
- *   a       — the application context (unused)
- *   message — the status line
- */
-static void
-status_recorder(OnApp *a, const gchar *message)
-{
-    (void)a;
-    g_free(last_status);
-    last_status = g_strdup(message);
-}
-
-/*
- * test_backup_pruning_failed — Back Up Now whose copy is made but whose
- * pruning of old backups fails (an old "backup" that cannot be deleted):
- * the status line says the backup was made and what went wrong, and
- * Settings' backup line shows the new last-backup time and the error.
- *
- * Inputs:
- *   root — the open Settings window's content view
- */
-static void
-test_backup_pruning_failed(NSView *root)
-{
-    NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
-    check([backup_path.stringValue containsString:@"\nLast backup "] ||
-          [backup_path.stringValue containsString:@"\nNo backup made yet"],
-          "the backup line says when the last backup was made");
-    gchar  *dir   = on_backup_dir(&app, NULL);
-    gchar  *stuck = g_build_filename(dir, SHARED_DB_BACKUP_PREFIX "20000101-000000Z.db", "x", NULL);
-    gchar  *old   = g_path_get_dirname(stuck);
-    int64_t keep  = 0;
-    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_KEEP, &keep, NULL);
-    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "1", NULL);
-    g_mkdir_with_parents(old, 0700);
-    g_file_set_contents(stuck, "", 0, NULL);  /* a non-empty directory: unlink fails */
-
-    void (*status_was)(OnApp *, const gchar *) = app.notify_status;
-    app.notify_status = status_recorder;
-    [button_titled(root, @"Back Up Now") performClick:nil];
-    for (int i = 0; i < 200 && (app.backup_running || last_status == NULL); i++) pump(0.05);
-    app.notify_status = status_was;
-    int64_t last_at = 0;
-    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
-    check(last_status != NULL && g_str_has_prefix(last_status, "Backup made with a problem: ") &&
-          strstr(last_status, "removing old backups failed") != NULL && last_at > 0,
-          "Back Up Now, pruning failed: the status says the backup was made, and why it is not clean");
-    check([backup_path.stringValue containsString:@"\nLast backup "] &&
-          [backup_path.stringValue containsString:@"removing old backups failed"],
-          "and Settings shows the new last-backup time and the error at once");
-
-    g_remove(stuck);
-    g_rmdir(old);
-    gchar *keep_text = g_strdup_printf("%lld", (long long)keep);
-    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, keep_text, NULL);
-    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
-    g_free(keep_text);
-    g_free(old);
-    g_free(stuck);
-    g_free(dir);
-    g_clear_pointer(&last_status, g_free);
-}
-
 /*
  * test_secondary_windows — the four WPH windows open, display correctly,
  * and release their resources on close.
@@ -3335,7 +3245,6 @@ test_secondary_windows(NotesLibrary *lib)
                                                            action:NULL
                                                     keyEquivalent:@""];
         pref_item.identifier = @"preferences";
-        shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, "the disk is full", NULL);
         on_library_run_command(lib, pref_item);
         pump(0.3);
 
@@ -3352,20 +3261,11 @@ test_secondary_windows(NotesLibrary *lib)
               "Settings is a standard window");
         NSView *root = settings_win.contentView;
         check(label_with_text(root, @"Appearance") && label_with_text(root, @"Editor") &&
-              label_with_text(root, @"Database") && label_with_text(root, @"Apple Calendar") &&
-              label_with_text(root, @"Apple Notes") && !label_with_text(root, @"AI Features"),
-              "it has the sections Appearance, Editor, Database, Apple Calendar and Apple Notes, and no AI Features");
+              label_with_text(root, @"Apple Calendar") && label_with_text(root, @"Apple Notes") &&
+              !label_with_text(root, @"Database") && !label_with_text(root, @"AI Features"),
+              "it has the sections Appearance, Editor, Apple Calendar and Apple Notes; no Database (camb.io Database Manager's), no AI Features");
         check(save_snapshots(settings_win, @"settings"), "settings snapshots written");
-        NSBox  *plate = (NSBox *)find_view(root, NSBox.class, Nil);
-        NSView *path  = label_with_text(root, @(app.db->path));
-        NSRect  path_in_plate = [path convertRect:path.bounds toView:plate];
-        check(plate != nil && path != nil && NSContainsRect(plate.bounds, path_in_plate),
-              "the database plate holds its lines");
         NSStackView *column = (NSStackView *)find_view(root, NSStackView.class, Nil);
-        check(((NSTextField *)path).font.pointSize == shared_look_status_font &&
-              label_with_text(plate, @"Health:").font.pointSize == shared_look_status_font &&
-              button_titled(root, @"Update").font.pointSize == shared_look_ui_font,
-              "the database plate's text is 11 pt, like the status bars; its Update button is not");
         check(fabs(NSWidth(root.frame) - column.fittingSize.width - 20) < 1 ||
               NSWidth(root.frame) - column.fittingSize.width > 20,
               "Settings opens 20 pt wider than its content");
@@ -3395,38 +3295,11 @@ test_secondary_windows(NotesLibrary *lib)
         [density selectItemAtIndex:density_was ? 1 : 0];
         [density sendAction:density.action to:density.target];
 
-        check(app.notify_db_state != NULL, "while Settings is open the health plate follows checks");
-        NSTextField *health = (NSTextField *)view_with_identifier(root, @"health");
-        [button_titled(root, @"Update") performClick:nil];
-        check([health.stringValue isEqualToString:@"Checking…"],
-              "Update starts the health check on a worker, and the plate says so");
-        for (int i = 0; i < 200 && ![health.stringValue hasPrefix:@"Healthy"]; i++) pump(0.05);
-        check([health.stringValue hasPrefix:@"Healthy — checked"] &&
-              label_with_text(lib.window.contentView, @"Database check passed") != nil,
-              "Update runs the health check and says so");
-        gint n_notes = 0, n_tags = 0;
-        on_db_totals(app.db, &n_notes, &n_tags);
-        NSTextField *data = (NSTextField *)view_with_identifier(root, @"data");
-        check([data.stringValue isEqualToString:[NSString stringWithFormat:@"%d notes, %d tags",
-                                                 n_notes, n_tags]],
-              "the plate counts the notes and tags");
-        NSTextField *backup_path = (NSTextField *)view_with_identifier(root, @"backup-path");
-        int64_t backup_enabled = 0;
-        shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_ENABLED, &backup_enabled, NULL);
-        check([backup_path.stringValue hasPrefix:@"Backing up to "] &&
-              button_titled(root, @"Back Up Now").enabled == (backup_enabled != 0),
-              "the backup line names the folder, and its buttons follow the switch");
-        check([backup_path.stringValue containsString:@"The last backup pass reported: the disk is full"],
-              "and says why the last backup failed (backup_last_error)");
-        shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, NULL, NULL);
-        test_backup_pruning_failed(root);
-
         weak_settings = settings_win;
         [settings_win close];
     }
     pump(0.3);
-    check(weak_settings == nil && app.notify_db_state == NULL,
-          "closed settings window is deallocated and lets go of the health hook");
+    check(weak_settings == nil, "closed settings window is deallocated");
 
     /* Search window ───────────────────────────────────────────────────── */
     __weak NSWindow *weak_search = nil;
@@ -4075,7 +3948,7 @@ main(void)
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
-        check(on_app_open_db(&app, NULL), "the test database opens");
+        check(check_create_db() && on_app_open_db(&app, NULL), "the test database opens");
         on_app_prefs_load(&app);
         new_note("First note\n! Something to do due 2026-12-01");
 

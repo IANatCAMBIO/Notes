@@ -30,7 +30,6 @@ static const shared_command_t commands[] = {
       @"Open the settings window" },
     { @"new-note",         @"New Note",                @"n", cmd_ctrl_opt, app, @"plus",
       @"Create a note, with the selected tag" },
-    { @"open-db",          @"Open Database File…",     @"o", cmd,       app, nil, nil },
     { @"export-html",      @"Export All as HTML…",     @"",  0,         app, nil, nil },
     { @"export-md",        @"Export All as Markdown…", @"",  0,         app, nil, nil },
     { @"view-list",        @"as List",                 @"1", cmd,       app, nil, nil },

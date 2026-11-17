@@ -1181,7 +1181,7 @@ test_poll_revs(OnApp *app, OnDatabase *other)
 static void
 test_commit_look(OnApp *app, OnDatabase *other)
 {
-    on_action_sync_start(app, FALSE);
+    on_action_sync_start(app);
     on_timer_remove(app->sync_timer);    /* the test polls by hand          */
     app->sync_timer = 0;
     gint64 note = on_note_new_from_text(app->db, NULL, "Look\n! Looked at");
@@ -1304,7 +1304,7 @@ test_migrated_tombstone(OnDatabase *db, OnDatabase *other)
 
     OnApp launch = { 0 };            /* a fresh launch on its own connection */
     launch.db = on_db_open(NULL, NULL);
-    on_action_sync_start(&launch, FALSE);
+    on_action_sync_start(&launch);
     on_timer_remove(launch.sync_timer);
     check_pump(NULL, 0.1);           /* the look after the pull's commit    */
     OnActionLink row;

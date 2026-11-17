@@ -13,6 +13,10 @@
 /* The toolbar's own items, beside the commands'. */
 static NSToolbarItemIdentifier const search_item_ident = @"notes.search-field";
 
+/* The day planner's button: in the toolbar only while the calendar's
+ * switch is on (follow_calendar_switch), as is the planner itself. */
+static NSToolbarItemIdentifier const planner_item_ident = @"toggle-day-planner";
+
 /*
  * toolbar_idents — the toolbar, left to right: command identifiers
  * (commands.h), spaces and the search field.
@@ -25,7 +29,7 @@ toolbar_idents(void)
     return @[
         @"toggle-sidebar", NSToolbarSpaceItemIdentifier,
         @"new-note", @"delete-note", NSToolbarSpaceItemIdentifier,
-        @"toggle-view", @"toggle-done", @"search", @"media", @"toggle-day-planner",
+        @"toggle-view", @"toggle-done", @"search", @"media", planner_item_ident,
         NSToolbarFlexibleSpaceItemIdentifier, search_item_ident,
     ];
 }
@@ -142,6 +146,7 @@ init_with_library:(NotesLibrary *)lib
     win.toolbar         = toolbar;
 
     [self build_content];
+    [self follow_calendar_switch];
     win.contentMinSize = [self content_min_size];
     shared_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_location];
@@ -293,6 +298,33 @@ content_min_size
 reload_planner
 {
     if (!self.planner_item.collapsed) [self.planner_host.view reload];
+}
+
+/*
+ * follow_calendar_switch — the day planner is there while "Show Calendar
+ * events in the day planner" is on and gone while it is off (the setting
+ * is shared with Tasks, so either app may have changed it): its toolbar
+ * button goes back to its place in toolbar_idents or comes out, and a
+ * planner still open when the switch goes off slides away (remembered
+ * hidden, as a click would).  The View menu's command is disabled
+ * meanwhile (validate_toggle_day_planner).
+ */
+- (void)
+follow_calendar_switch
+{
+    NSToolbar *toolbar = self.window.toolbar;
+    NSInteger  at      = -1;
+    for (NSUInteger i = 0; i < toolbar.items.count; i++) {
+        if ([toolbar.items[i].itemIdentifier isEqualToString:planner_item_ident]) at = (NSInteger)i;
+    }
+    BOOL wanted = shared_calendar_enabled(on_calendar_settings(self.lib));
+    if (wanted && at < 0) {
+        [toolbar insertItemWithItemIdentifier:planner_item_ident
+                                      atIndex:(NSInteger)[toolbar_idents() indexOfObject:planner_item_ident]];
+    } else if (!wanted && at >= 0) {
+        [toolbar removeItemAtIndex:at];
+    }
+    if (!wanted && !self.planner_item.collapsed) [self toggle_day_planner];
 }
 
 /*
@@ -577,6 +609,7 @@ hook_notes_changed(OnApp *app)
 static void
 hook_outside_commit(OnApp *app)
 {
+    [library_window follow_calendar_switch];
     [library_window reload_planner];
     on_apple_notes_notes_changed();
 }
@@ -690,21 +723,22 @@ run_toggle_day_planner(id target, id sender)
 
 /*
  * validate_toggle_day_planner — the item names what a click will do, and
- * is disabled while the library window is closed.
+ * is disabled while the library window is closed or the calendar's switch
+ * is off (follow_calendar_switch: no planner without the calendar).
  *
  * Inputs:
- *   target — the NotesLibrary (unused)
+ *   target — the NotesLibrary
  *   item   — the item
  *   state  — the command's look, adjusted here
  *
- * Output: YES while the window is open.
+ * Output: YES while the window is open and the switch is on.
  */
 static BOOL
 validate_toggle_day_planner(id target, id item, SharedCommandState *state)
 {
     BOOL collapsed = library_window == nil || library_window.planner_item.collapsed;
     shared_command_state_set(state, collapsed ? @"Show Day Planner" : @"Hide Day Planner", nil, NO);
-    return library_window != nil;
+    return library_window != nil && shared_calendar_enabled(on_calendar_settings(target));
 }
 
 /* This module's commands.  Handlers receive the NotesLibrary. */
@@ -743,6 +777,7 @@ on_library_window_show(NotesLibrary *lib)
 void
 on_library_window_planner_changed(NotesLibrary *lib)
 {
+    [library_window follow_calendar_switch];
     [library_window reload_planner];
 }
 

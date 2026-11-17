@@ -13,7 +13,7 @@
  * ON_ACTION_DROPPED_MARK when it was given up on).  (The other direction — a line edited in
  * Notes — is the push of every save: serialize.h, on_db_note_save_actions.)
  *
- * WHEN: at launch and when a database is opened (on_action_sync_start),
+ * WHEN: at launch (on_action_sync_start),
  * then on every poll (on_action_sync_poll: every SHARED_DB_POLL_SECONDS
  * seconds and when the app becomes active), and right after each of
  * Notes' OWN commits (a commit hook on the connection posts one look to
@@ -88,7 +88,7 @@ gboolean on_action_sync_note(OnApp *app, gint64 note_id);
  * Inputs:
  *   app     — the application context, its database open
  *   refresh — refresh even when nothing was synced (the 'notes' rev
- *             moved, or another database was opened)
+ *             moved too)
  *
  * Output: how many notes were synced (failures are logged and skipped).
  * ------------------------------------------------------------------------- */
@@ -150,19 +150,16 @@ gboolean on_note_remove_tags(OnApp *app, gint64 note_id, const gchar *const *nam
                              gsize n);
 
 /* ---------------------------------------------------------------------------
- * on_action_sync_start() — a database was just opened (launch, or File >
- * Open Database): take its revisions as the baseline, hook its commits
- * (the look after each of Notes' own), run the pull once now, and arm
- * the poll timer (app->sync_timer), once.  on_app_shutdown
- * removes it.
+ * on_action_sync_start() — the database was just opened at launch: take
+ * its revisions as the baseline, hook its commits (the look after each of
+ * Notes' own), run the pull once now, and arm the poll timer
+ * (app->sync_timer), once.  on_app_shutdown removes it.
  *
  * Inputs:
- *   app     — the application context, its database open
- *   refresh — refresh the editors and the library even when nothing was
- *             synced (another database replaced the one they show)
+ *   app — the application context, its database open
  *
  * Output: none.
  * ------------------------------------------------------------------------- */
-void on_action_sync_start(OnApp *app, gboolean refresh);
+void on_action_sync_start(OnApp *app);
 
 #endif /* ON_ACTION_SYNC_H */

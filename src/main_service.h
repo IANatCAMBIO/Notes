@@ -5,8 +5,8 @@
  * handing a result from a worker thread back to the main thread
  * (g_idle_add), timers (g_timeout_add) and starting worker threads
  * (g_thread_new).  Under NSApplication nothing pumps a GLib main loop, so
- * a g_idle_add would simply never fire — no crash, just a health check
- * that says "Checking…" for ever and a backup that never finishes.  This
+ * a g_idle_add would simply never fire — no crash, just a hand-back
+ * that never arrives and a search that never finishes.  This
  * module is the replacement, on Grand Central Dispatch, and it is the ONLY
  * scheduling the core uses.
  *

@@ -103,6 +103,22 @@ check_data_dir(void)
 }
 
 /*
+ * check_create_db — create the test's shared database where
+ * $CAMBIO_SHARED_DB points, as camb.io Database Manager does for the user: the app
+ * itself only opens an existing file (on_app_open_db).  Harmless when it
+ * exists.
+ *
+ * Output: true when the file is there afterwards.
+ */
+static inline bool
+check_create_db(void)
+{
+    shared_db *db = shared_db_open(getenv(SHARED_DB_ENV_VAR), NULL);
+    shared_db_close(db);
+    return db != NULL;
+}
+
+/*
  * check_pump — run the main run loop, which drains the main dispatch
  * queue, until *done becomes true or the time runs out.  This is how a
  * test waits for anything that completes through on_main_post or a timer.

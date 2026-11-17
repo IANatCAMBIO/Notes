@@ -8,7 +8,11 @@ whole time, so no CLI command was executed either).
 
 This map describes the GTK app.  Its folders, folder AI modes and the
 action-item "context" are gone from the port: tags shared with Tasks
-replaced them (`porting/INTERFACES.md`, "Tags replace folders").
+replaced them (`porting/INTERFACES.md`, "Tags replace folders").  Its
+database management — the first-run creation, `backup.c`, the health
+check and SHA-256 in `db.c`, Settings' Database plate and backups, and
+File > Open Database File… — left the port for camb.io Database Manager
+(`../cambio_db`, a menu-bar app); the port only opens the existing file.
 
 How this was produced: I read in full `document.h`, `bnbf.h`, `db.h`,
 `serialize.[ch]`, `doc_layout.[ch]`, `note_view.[ch]`, `ipc.[ch]`, `main.c`,

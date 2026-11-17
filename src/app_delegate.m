@@ -35,21 +35,6 @@ static NSString * const menu_rule = @"-";
 @end
 
 /*
- * hook_show_notice — OnApp.show_notice: the core has something the user
- * must see (the integrity check found damage).
- *
- * Inputs:
- *   app     — the application context (unused)
- *   title   — the headline
- *   message — the detail
- */
-static void
-hook_show_notice(OnApp *app, const gchar *title, const gchar *message)
-{
-    shared_ui_notice(on_library().window, @(title), @(message), nil);
-}
-
-/*
  * run_about — "about": the standard About panel, as Files and Tasks show
  * it.  Its version line reads "built <date>" from Info.plist; the credits
  * are the app's motto, then "camb.io · BSD License", each a link.  What
@@ -146,8 +131,8 @@ applicationWillFinishLaunching:(NSNotification *)n
 
 /*
  * applicationDidFinishLaunching: — steps 3 to 7 of the launch sequence in
- * app_lifecycle.h: preferences, hooks, the database (asking first when
- * there is none), the library window, the services.
+ * app_lifecycle.h: preferences, hooks, the database, the library window,
+ * the services.
  *
  * Inputs:
  *   n — NSApplicationDidFinishLaunchingNotification (unused)
@@ -172,104 +157,26 @@ applicationDidFinishLaunching:(NSNotification *)n
     }
 
     on_app_prefs_load(&_app);
-    _app.show_notice = hook_show_notice;
 
-    gchar *why      = NULL;
     char  *data_dir = on_paths_data_dir();
-    gchar *db_path  = on_app_db_path(&why);
+    gchar *db_path  = on_app_db_path(NULL);
     NSLog(@"[launch] data directory %@, database %@", @(data_dir), db_path ? @(db_path) : @"(none)");
-    BOOL db_exists = db_path != NULL && [NSFileManager.defaultManager fileExistsAtPath:@(db_path)];
     free(data_dir);
     g_free(db_path);
 
     [NSApp activate];
-    if (why != NULL) {
-        shared_ui_notice(nil, @"Could not find the shared database", @(why), ^{ [NSApp terminate:nil]; });
-        g_free(why);
-    } else if (db_exists) {
-        [self open_database_and_start];
-    } else {
-        [self ask_first_run];
-    }
+    [self open_database_and_start];
     if (on_app_config_problem() != NULL) {
         shared_ui_notice(nil, @"Settings could not be read", @(on_app_config_problem()), nil);
     }
 }
 
 /*
- * ask_first_run — no database exists where one is expected: ask whether to
- * open an existing shared database or create a new one there, instead of
- * silently creating an empty one.  (Notes and Tasks share one file; a
- * user whose file lives elsewhere usually means to OPEN it — creating a
- * fresh one would look like every note had vanished.)  Cancelling the file
- * panel returns here.
- */
-- (void)
-ask_first_run
-{
-    gchar    *expected = on_app_db_path(NULL);
-    NSString *message  = [NSString stringWithFormat:
-        @"No database was found at\n%@\n\n" ON_APP_NAME @" keeps your notes in the database "
-        @"it shares with Tasks. Create a new one there, or open an existing shared database "
-        @"file, which then becomes the default for both apps.", expected ? @(expected) : @"?"];
-    g_free(expected);
-
-    [SharedToolPanel show_message:@"Welcome to " ON_APP_NAME message:message
-                          symbol:@"note.text"
-                         buttons:@[@"Create a New Database", @"Open a Database File…", @"Quit"]
-                     destructive:-1 over:nil
-                         handler:^(NSInteger index) {
-        if (index == 0) {
-            [self open_database_and_start];
-        } else if (index == 1) {
-            shared_ui_pick_path(SharedPickOpenFile, @"Choose the shared database file to open", @"Open",
-                            @[[UTType typeWithFilenameExtension:@"db"]], nil,
-                            ^(NSString *path) { [self first_run_picked:path]; });
-        } else {
-            [NSApp terminate:nil];   /* Quit, or the panel dismissed */
-        }
-    }];
-}
-
-/*
- * first_run_picked: — the first-run file panel closed.  The chosen file is
- * tried first (the shared module refuses anything that is not a shared
- * database, untouched) and made the default of both apps only if it opens:
- * a file that cannot be opened must not become the configured one.
- *
- * Inputs:
- *   path — the chosen file, or nil when the panel was cancelled
- */
-- (void)
-first_run_picked:(NSString *)path
-{
-    if (!path) {
-        [self ask_first_run];
-        return;
-    }
-    gchar      *why   = NULL;
-    OnDatabase *trial = on_db_open_existing(path.fileSystemRepresentation, &why);
-    char       *set_err = NULL;
-    if (trial != NULL) {
-        on_db_close(trial);
-        if (shared_db_set_default_path(path.fileSystemRepresentation, &set_err) == 0) {
-            [self open_database_and_start];
-            return;
-        }
-    }
-    NSString *reason = why ? @(why) : set_err ? @(set_err) : @"Unknown error.";
-    g_free(why);
-    free(set_err);
-    /* The welcome panel comes back once this one is answered. */
-    shared_ui_notice(nil, @"That file cannot be opened", reason, ^{ [self ask_first_run]; });
-}
-
-/*
- * open_database_and_start — open the database where it is expected
- * (creating it when the user chose to) and bring the app up: hooks,
- * library, window, services.  A database that cannot be opened ends the
- * launch with a message — there is deliberately no fallback to another
- * location.
+ * open_database_and_start — open the database where it is expected and
+ * bring the app up: hooks, library, window, services.  Notes never creates
+ * the database — camb.io Database Manager does — so one that cannot be opened,
+ * missing included, ends the launch with a notice saying what to do; there
+ * is deliberately no fallback to another location.
  *
  * Output: YES when the database opened; NO when the app is terminating.
  */
@@ -278,7 +185,11 @@ open_database_and_start
 {
     gchar *why = NULL;
     if (!on_app_open_db(&_app, &why)) {
-        shared_ui_notice(nil, @"Could not open the database", why ? @(why) : @"Unknown error.", ^{ [NSApp terminate:nil]; });
+        NSString *reason  = why ? @(why) : @"Unknown error.";
+        NSString *message = [NSString stringWithFormat:@"%@\n\nThe database Notes and Tasks share is created "
+                             @"and looked after by camb.io Database Manager (camb.io_db_mgr.app), which lives in the menu bar. "
+                             @"Start it once to create the database, then open Notes again.", reason];
+        shared_ui_notice(nil, @"Could not open the database", message, ^{ [NSApp terminate:nil]; });
         g_free(why);
         return NO;
     }
@@ -613,7 +524,6 @@ build_menu_bar
     NSMenu *file_menu = add_menu(bar, @"File");
     add_commands(file_menu, @[
         @"new-note", menu_rule,
-        @"open-db", menu_rule,
         @"export-html", @"export-md", @"note-export-html", @"note-export-md", menu_rule,
         @"edit-tag", @"add-favorite", @"remove-favorite", @"clear-tag", menu_rule,
     ]);

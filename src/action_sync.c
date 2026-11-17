@@ -345,7 +345,7 @@ sync_tick(void *data)
  * on_action_sync_start — see action_sync.h.
  */
 void
-on_action_sync_start(OnApp *app, gboolean refresh)
+on_action_sync_start(OnApp *app)
 {
     int      changed;                /* unused: everything is new here      */
     int64_t  rev_tasks = 0, rev_notes = 0;
@@ -353,7 +353,7 @@ on_action_sync_start(OnApp *app, gboolean refresh)
     app->rev_tasks = rev_tasks;
     app->rev_notes = rev_notes;
     sqlite3_commit_hook(app->db->handle, sync_commit_hook, app);
-    on_action_sync_run(app, refresh);
+    on_action_sync_run(app, FALSE);
     if (app->sync_timer == 0) {
         app->sync_timer = on_timer_add(SHARED_DB_POLL_SECONDS, true, sync_tick, app, NULL);
     }

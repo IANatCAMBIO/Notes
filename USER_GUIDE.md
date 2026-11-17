@@ -111,7 +111,10 @@ file open at once (SQLite WAL mode). Edits flow both ways:
 slides in the same day planner Tasks has, at the right of the library: the
 hours of a day, with the tasks you have scheduled and your meetings from
 the macOS Calendar. **Today**, the calendar button and the arrows step
-through the days; a red line marks the time.
+through the days; a red line marks the time. The planner is there only
+while Settings → Apple Calendar → "Show Calendar events in the day
+planner" is on: turning it off closes the planner and takes its toolbar
+button and menu command away until it is on again.
 
 Double-click a meeting to take notes on it: Notes makes a note titled
 after the meeting, with an "Attendees:" line and the attendees as a
@@ -200,30 +203,33 @@ tags or lines later does not change the task's.
 |---|---|
 | The shared database (default) | `~/Library/Application Support/camb.io/shared_data.db` |
 | Which file both apps open, when not the default | `~/Library/Application Support/camb.io/location` (one line: the path) |
-| Backups (default) | `~/Library/Application Support/camb.io/backups/` |
+| Backups (default; camb.io Database Manager's) | `~/Library/Application Support/camb.io/backups/` |
 | Notes' settings | `~/Library/Application Support/Notes/notes.ini` |
 | App lock (one running copy per data folder) | `~/Library/Application Support/Notes/notes.lock` |
 
 The database must be on a local disk, outside iCloud Drive, Dropbox and
-other synced folders (the app refuses such a file). File ▸ Open Database
-File… opens another shared database for this session, or with **Set as
-Default** for both apps from now on. A file that is not a shared database
-— an old `notes.db` or `tasks.db` — is refused untouched. A shared file
-from before tags (schema 100) is backed up and converted the first time
-either app opens it: every folder becomes a tag on the notes in it (all of
-a note's ancestors too), a trashed folder's notes become trashed notes,
-and each action item gets its folder's name before its title once.
+other synced folders (the app refuses such a file). Notes only **opens**
+the file: it is created, and its location is managed, by **camb.io
+Database** (`camb.io_db_mgr.app`), the menu-bar app in the `cambio_db`
+repository beside this one. With no database to open, Notes shows what to
+do and quits. A file that is not a shared database — an old `notes.db` or
+`tasks.db` — is refused untouched. A shared file from before tags (schema
+100) is backed up and converted the first time either app opens it: every
+folder becomes a tag on the notes in it (all of a note's ancestors too), a
+trashed folder's notes become trashed notes, and each action item gets its
+folder's name before its title once.
 
 `CAMBIO_SHARED_DB` names the database file for a run (development and
 tests always set it, under `dev/`), and `NOTES_DATA_DIR` moves Notes' own
-settings and lock. While `CAMBIO_SHARED_DB` is set the default cannot be
-changed.
+settings and lock.
 
 ## Backups
 
-Backups are the shared module's: a verified copy (`VACUUM INTO`) made by
-whichever app is running when one is due, policy in the database itself,
-so Settings ▸ Database in either app edits the same policy.
+Backups, and the integrity check, are camb.io Database Manager's: its window
+(click its coin in the menu bar) shows the database's health, path, size
+and SHA-256, and holds the backup switch, schedule and folder — one policy
+for Notes and Tasks, kept in the database itself. Notes has no backup or
+database settings of its own.
 
 ## Development
 

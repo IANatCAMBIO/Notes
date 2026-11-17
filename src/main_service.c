@@ -142,7 +142,7 @@ on_timer_remove(on_timer_id_t id)
 
 /*
  * worker_queue_create — dispatch_once initialiser for the worker queue:
- * concurrent (a slow backup must not hold up a search), utility priority
+ * concurrent (a slow job must not hold up a search), utility priority
  * (never competes with the UI), one autorelease pool per job.
  *
  * Inputs:

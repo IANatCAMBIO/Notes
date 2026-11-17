@@ -7,7 +7,6 @@
 
 #include "action_sync.h"
 #include "serialize.h"
-#include "app_lifecycle.h"
 #include "db.h"
 #include "export.h"
 #include "identity.h"
@@ -337,61 +336,6 @@ validate_tag_selected(id target, id item, SharedCommandState *state)
 }
 
 /*
- * on_library_open_db — see library_commands.h.
- */
-void
-on_library_open_db(NotesLibrary *lib, NSString *path)
-{
-    NSWindow *win = lib.window;
-    if ([path.stringByStandardizingPath isEqualToString:@(lib.app->db->path).stringByStandardizingPath])
-        return;
-    NSString *message = [NSString stringWithFormat:@"Open “%@” as the default database of Notes "
-                                                    @"and Tasks, or for this session only?",
-                                                    path.lastPathComponent];
-    NSArray<NSString *> *buttons = @[@"Set as Default", @"Session Only", @"Cancel"];
-    [SharedToolPanel show_message:@"Open Database" message:message symbol:@"cylinder"
-                         buttons:buttons destructive:-1
-                            over:win
-                         handler:^(NSInteger index) {
-        if (index < 0 || [buttons[(NSUInteger)index] isEqualToString:@"Cancel"]) return;
-        BOOL set_default = [buttons[(NSUInteger)index] isEqualToString:@"Set as Default"];
-        gchar *why = NULL;
-        on_switch_result_t result = on_app_switch_db(lib.app, path.UTF8String, set_default, &why);
-        NSString *reason = why ? @(why) : @"Unknown error.";
-        g_free(why);
-        if (result == ON_SWITCH_DONE) return;
-        if (result == ON_SWITCH_UNSAVED) {
-            on_editor_report_unsaved(@"Database not opened", win);
-            return;
-        }
-        if (lib.app->db == NULL) {              /* not even the old one reopened */
-            [NSApp terminate:nil];
-            return;
-        }
-        shared_ui_notice(win, @"Database Error", [NSString stringWithFormat:@"Could not open:\n%@\n\n%@", path, reason], nil);
-    }];
-}
-
-/*
- * run_open_db — "open-db": pick a .db file and hand it to
- * on_library_open_db (GTK on_open_db).
- *
- * Inputs:
- *   target — the NotesLibrary
- *   sender — the menu or toolbar item (unused)
- */
-static void
-run_open_db(id target, id sender)
-{
-    NotesLibrary *lib = target;
-    UTType       *db  = [UTType typeWithFilenameExtension:@"db"];
-    shared_ui_pick_path(SharedPickOpenFile, @"Open Database", @"Open", db ? @[db] : nil, nil,
-                    ^(NSString *path) {
-        if (path != nil) on_library_open_db(lib, path);
-    });
-}
-
-/*
  * on_library_export — see library_commands.h.
  */
 gint
@@ -484,9 +428,8 @@ close_editors_for_ids(NotesLibrary *lib, GArray *ids, NSString *stopped)
 
 /*
  * confirm_permanent — ask before a permanent deletion; the handler runs only
- * if the user confirms AND the database the question was about is still
- * the one open (the panel is not modal: File ▸ Open Database can switch it
- * underneath, and ids mean nothing in another file).  The handler must
+ * if the user confirms AND the database is still open (the panel is not
+ * modal: the app can be shutting down underneath it).  The handler must
  * itself re-check that what it deletes is still in the Trash.
  *
  * Inputs:
@@ -498,9 +441,8 @@ close_editors_for_ids(NotesLibrary *lib, GArray *ids, NSString *stopped)
 static void
 confirm_permanent(NotesLibrary *lib, NSString *question, NSString *action, void (^handler)(void))
 {
-    NSString *path = @(lib.app->db->path);
     shared_ui_confirm(lib.window, question, nil, action, YES, ^(BOOL confirmed) {
-        if (!confirmed || lib.app->db == NULL || ![@(lib.app->db->path) isEqualToString:path]) return;
+        if (!confirmed || lib.app->db == NULL) return;
         handler();
     });
 }
@@ -626,7 +568,6 @@ static const shared_command_handler_t handlers[] = {
     { @"add-favorite",    run_set_favorite,    validate_add_favorite    },
     { @"remove-favorite", run_set_favorite,    validate_remove_favorite },
     { @"clear-tag",       run_clear_tag,       validate_tag_selected },
-    { @"open-db",     run_open_db,     NULL },
     { @"export-html", run_export_html, NULL },
     { @"export-md",   run_export_md,   NULL },
     { @"note-export-html", run_note_export_html, validate_notes_selected },

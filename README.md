@@ -61,13 +61,14 @@ dependencies, test targets and the platform notes.
 
 Launch from `~/Applications`, or `make seed && make run` for the sandbox.
 
-**The database.** With no database where one is expected, Notes asks
-whether to create a new one there or open an existing shared database
-file (which then becomes the default for both apps). It never creates one
-silently, and it never falls back to another location if the database
-cannot be opened. The default is
-`~/Library/Application Support/camb.io/shared_data.db`, shared with Tasks;
-the file must be on a local disk and outside iCloud Drive, Dropbox or any
+**The database.** Notes opens the database it shares with Tasks,
+`~/Library/Application Support/camb.io/shared_data.db`, and never creates
+one: that file is made and looked after by **camb.io Database Manager**
+(`camb.io_db_mgr.app`, the `cambio_db` repository beside this one), a small
+menu-bar app that also checks the database's integrity and keeps its
+rotating backups. Install and start it first; with no database to open,
+Notes says so and quits — it never falls back to another location. The
+file must be on a local disk and outside iCloud Drive, Dropbox or any
 other synced folder.
 
 **Calendar access** is asked for once, the first time you turn on
@@ -98,8 +99,8 @@ writes the GTK app's database or settings. But both bundles are called
    rm -rf ~/Library/Application\ Support/camb.io      # the shared database and backups
    ```
 
-   Delete `camb.io` only if you are removing Tasks as well — the tasks are
-   in that same file.
+   Delete `camb.io` only if you are removing Tasks and camb.io Database Manager as
+   well — the tasks are in that same file, and that app manages it.
 
 ## Features
 
@@ -141,8 +142,9 @@ Compared with Apple Notes:
   text view with attributes bolted on
 - **A media browser** across every note's images and attachments, and
   search across all notes
-- **Hourly verified backups**, on by default: `VACUUM INTO` copies kept 48
-  deep, with the policy in the database so Tasks follows it too
+- **Backups and integrity checks are not Notes' job**: camb.io Database Manager,
+  the menu-bar app that owns the shared file (`../cambio_db`), makes the
+  hourly verified copies and runs the checks for both apps
 - **Export writes one file per note**, Markdown or HTML, each starting
   with its tags
 

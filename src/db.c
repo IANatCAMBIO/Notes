@@ -7,18 +7,12 @@
  * =========================================================================== */
 
 #include "db.h"
-#include "main_service.h"            /* the health pass's worker + hand-back */
 
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <glib/gstdio.h>
-
-/* The async health pass in flight on a connection (health section).    */
-typedef struct HealthJob HealthJob;
-static void on_db_health_abandon(OnDatabase *db);
 
 /* The action_items view (shared_db.c creates it): every LIVE action item
  * as a task row — note_id, ord, text (the task's title), done (status
@@ -339,154 +333,8 @@ on_db_close(OnDatabase *db)
         db->stmt_cache = NULL;
     }
     shared_db_close(db->shared);      /* NULL-safe; closes the handle        */
-    /* An async health pass still running must not report to a connection
-     * that is gone: the job outlives us and frees itself.                */
-    if (db->health_job != NULL)
-        on_db_health_abandon(db);
-    g_free(db->health.detail);
     g_free(db->path);
     g_free(db);
-}
-
-/* =========================================================================
- * health: is this database structurally sound, and what file is it?
- * ========================================================================= */
-
-/* health_record() — write one pass's verdict onto the connection.          */
-static void
-health_record(OnDatabase *db, gboolean ok, gboolean ran, gchar *detail)
-{
-    g_free(db->health.detail);
-    db->health.ok      = ok;
-    db->health.ran     = ran;
-    db->health.detail  = detail;     /* handed over                         */
-    db->health.when    = g_get_real_time() / G_USEC_PER_SEC;
-    db->health.pending = FALSE;
-}
-
-/* ---------------------------------------------------------------------------
- * HealthJob — one async pass: the file path (copied, since the worker may
- * outlive a closed connection), the verdict it brings back, and the
- * callback.  The worker owns nothing else; `cancelled` is set by
- * on_db_close and read on the main thread only.
- * ------------------------------------------------------------------------- */
-struct HealthJob {
-    OnDatabase     *db;
-    gchar          *path;
-    OnDbHealthFunc  done;
-    gpointer        data;
-    gboolean        ok, ran;
-    gchar          *detail;
-    gboolean        cancelled;
-};
-
-/* on_db_health_abandon() — the connection is closing: the running pass
- * must not report to it.  The job outlives the connection and frees
- * itself in its own main-thread hand-back.                               */
-static void
-on_db_health_abandon(OnDatabase *db)
-{
-    ((HealthJob *)db->health_job)->cancelled = TRUE;
-    db->health_job = NULL;
-}
-
-/* health_job_done() — on the main thread (on_main_post): record the
- * verdict (unless the connection was closed meanwhile) and tell the
- * caller; free the job.                                                   */
-static void
-health_job_done(void *user_data)
-{
-    HealthJob *job = user_data;
-    if (!job->cancelled) {
-        health_record(job->db, job->ok, job->ran, job->detail);
-        job->detail = NULL;          /* handed over                         */
-        job->db->health_job = NULL;
-        if (job->done != NULL)
-            job->done(job->db, job->data);
-    }
-    g_free(job->detail);
-    g_free(job->path);
-    g_free(job);
-}
-
-/* health_worker() — the worker (on_worker_run): the pass over a fresh
- * READ-ONLY connection of its own (shared_db_check_file: integrity_check,
- * foreign_key_check, the stamps, WAL, the cross-table invariants), then
- * the hand-back to the main thread.                                       */
-static void
-health_worker(void *user_data)
-{
-    HealthJob *job    = user_data;
-    int        ran    = 0;           /* the checks executed                 */
-    char      *detail = NULL;        /* the findings, one per line          */
-    char      *err    = NULL;        /* why the checks did not run          */
-    int        rc     = shared_db_check_file(job->path, 1, &ran, &detail, &err);
-    job->ok  = rc == 0;
-    job->ran = ran != 0;
-    if (rc == 1)
-        job->detail = g_strdup(detail);
-    else if (rc < 0)
-        job->detail = g_strdup_printf("cannot check %s: %s", job->path,
-                                      err != NULL ? err : "unknown error");
-    free(detail);
-    free(err);
-    on_main_post(health_job_done, job);
-}
-
-/*
- * on_db_health_check_async — see db.h.
- */
-void
-on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done, gpointer data)
-{
-    if (db->health_job != NULL)
-        return;                      /* one pass at a time                  */
-    HealthJob *job = g_new0(HealthJob, 1);
-    job->db   = db;
-    job->path = g_strdup(db->path);
-    job->done = done;
-    job->data = data;
-    db->health_job     = job;
-    db->health.pending = TRUE;
-    on_worker_run(health_worker, job);
-}
-
-/*
- * on_db_health — see db.h.
- */
-const OnDbHealth *
-on_db_health(OnDatabase *db)
-{
-    return (db->health.when != 0 || db->health.pending) ? &db->health : NULL;
-}
-
-/* Bytes per read when hashing.  The file is read in fixed-size chunks
- * rather than slurped: this runs against the live database, whose size is
- * the user's business and not ours to hold in memory twice.              */
-#define SHA_CHUNK 65536
-
-/*
- * on_db_file_sha256 — see db.h.
- */
-gchar *
-on_db_file_sha256(const gchar *path)
-{
-    FILE *f = g_fopen(path, "rb");
-    if (f == NULL)
-        return NULL;
-
-    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
-    guchar    *buf = g_malloc(SHA_CHUNK);
-    gsize      n;                    /* bytes in the current chunk          */
-    while ((n = fread(buf, 1, SHA_CHUNK, f)) > 0)
-        g_checksum_update(sum, buf, (gssize)n);
-    gboolean bad = ferror(f) != 0;   /* a short read that was an error      */
-    g_free(buf);
-    fclose(f);
-
-    gchar *hex = bad ? NULL : g_strdup(g_checksum_get_string(sum));
-    g_checksum_free(sum);
-    return hex;
 }
 
 /* =========================================================================

@@ -3,8 +3,9 @@
  *
  * Specification: the GTK build's src/settings_window.c.  One column,
  * as the GTK window and the Files app's Preferences have it: Appearance,
- * Editor, Database (the health plate and the rotating backups) and
- * Calendar, scrolling once it is taller than on_look_settings_max_h.
+ * Editor, Apple Calendar and Apple Notes, scrolling once it is taller
+ * than on_look_settings_max_h.  The database's health and its backups are
+ * camb.io Database Manager's (camb.io_db_mgr.app), not a section here.
  *
  * Every control writes through at once — on_app_config_set, then
  * on_app_prefs_load so OnApp (the one reader of a preference) follows,
@@ -29,16 +30,12 @@
 #import "ui_util.h"
 
 #include "app_core.h"
-#include "backup.h"
 #include "commands.h"
 #include "config.h"
-#include "db.h"
-
-#include <sys/stat.h>
 
 /* ── Layout ─────────────────────────────────────────────────────────────── */
 
-/* Width of wrapped text (descriptions, hints, the backup folder). */
+/* Width of wrapped text (descriptions, hints). */
 static const CGFloat text_w = 340.0;
 
 /* Indent of a section's controls under its heading, and of AI's sub-group. */
@@ -46,14 +43,6 @@ static const CGFloat indent    = 12.0;
 
 /* How much wider than its content the window opens, for breathing room. */
 static const CGFloat extra_w = 20.0;
-
-/* How much of the 64-character digest is shown (GTK SHA_HEAD / SHA_TAIL). */
-static const NSUInteger sha_head = 8;
-static const NSUInteger sha_tail = 4;
-
-/* The health light: a ● tinted green only for a check that ran and
- * passed, red for one that failed, grey otherwise (as Tasks' plate). */
-static NSString * const health_light = @"●";
 
 /* ── The on/off settings ────────────────────────────────────────────────── */
 
@@ -132,24 +121,8 @@ setting_on(const OnApp *app, const char *key)
 /* ── Small builders ─────────────────────────────────────────────────────── */
 
 /*
- * plate_type — the health plate's text at the status bars' size
- * (shared_look_status_font).  Applied after the window's
- * shared_ui_use_ui_font; the copy links keep their own attributed titles.
- *
- * Inputs:
- *   root — the plate's grid, or a view inside it
- */
-static void
-plate_type(NSView *root)
-{
-    if ([root isKindOfClass:NSTextField.class])
-        ((NSTextField *)root).font = [NSFont systemFontOfSize:shared_look_status_font];
-    for (NSView *v in root.subviews) plate_type(v);
-}
-
-/*
- * small_button — a small push button (the Database section's buttons sit
- * under the lines they act on, so they are quiet).
+ * small_button — a small push button (the Apple Notes section's buttons
+ * sit under the lines they act on, so they are quiet).
  *
  * Inputs:
  *   title  — its title
@@ -200,129 +173,17 @@ indented(NSView *view, CGFloat inset)
     return stack;
 }
 
-/*
- * when_stamp — when a check or a backup was made, in as few words as carry
- * it: "13:24 today", "Sep 8 at 09:02".
- *
- * Inputs:
- *   when — UNIX time
- *
- * Output: the text.
- */
-static NSString *
-when_stamp(gint64 when)
-{
-    NSDate *date = [NSDate dateWithTimeIntervalSince1970:(double)when];
-    return shared_ui_format_date(when, [NSCalendar.currentCalendar isDateInToday:date]
-                                   ? @"HH:mm 'today'" : @"MMM d 'at' HH:mm");
-}
-
-/*
- * shares_fate — is `dir` the folder `other`, or inside it?  The test
- * behind the backup folder's warning: the default backups folder is
- * INSIDE the database's folder (GTK dir_shares_fate).
- *
- * Inputs:
- *   dir, other — two folder paths
- *
- * Output: YES when losing `other` loses `dir`.
- */
-static BOOL
-shares_fate(NSString *dir, NSString *other)
-{
-    NSString *a = dir.stringByStandardizingPath, *b = other.stringByStandardizingPath;
-    return [a isEqualToString:b] || [a hasPrefix:[b stringByAppendingString:@"/"]];
-}
-
-/*
- * policy_value — one backup-policy integer as the shared module applies it
- * (shared_backup_policy_get: the stored value or its default, held to its
- * range).
- *
- * Inputs:
- *   app — the application context, its database open
- *   key — a SHARED_SETTING_BACKUP_* integer key
- *
- * Output: the value (the module's default when it cannot be read).
- */
-static gint64
-policy_value(OnApp *app, const char *key)
-{
-    int64_t value = 0;
-    shared_backup_policy_get(app->db->shared, key, &value, NULL);
-    return value;
-}
-
-/*
- * policy_store — write one backup-policy integer to shared_settings, where
- * both apps read it; a failure is posted as a status message.
- *
- * Inputs:
- *   app   — the application context, its database open
- *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
- *   value — the new value
- */
-static void
-policy_store(OnApp *app, const char *key, gint64 value)
-{
-    char  text[32];                  /* the value as shared_settings holds it */
-    char *why = NULL;                /* the module's message                */
-    snprintf(text, sizeof text, "%lld", (long long)value);
-    if (shared_settings_set(app->db->shared, key, text, &why) != 0) {
-        on_app_status(app, "Could not store %s: %s", key, why != NULL ? why : "unknown error");
-    }
-    free(why);
-}
-
 /* ── The window ─────────────────────────────────────────────────────────── */
 
 @interface NotesSettingsWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate>
 @property (nonatomic, weak)   NotesLibrary *lib;
-@property (nonatomic, strong) NSTextField  *led;
-@property (nonatomic, strong) NSTextField  *health;
-@property (nonatomic, strong) NSTextField  *db_path;
-@property (nonatomic, strong) NSTextField  *db_data;
-@property (nonatomic, strong) NSTextField  *db_size;
-@property (nonatomic, strong) NSTextField  *sha;
-@property (nonatomic, strong) NSButton     *sha_copy;      /* copies the whole digest */
-@property (nonatomic, copy)   NSString     *sha_full;
-@property (nonatomic, assign) NSUInteger    sha_gen;      /* the hash in flight */
-@property (nonatomic, strong) NSButton     *backup_on;
-@property (nonatomic, strong) NSTextField  *interval;
-@property (nonatomic, strong) NSStepper    *interval_step;
-@property (nonatomic, strong) NSTextField  *keep;
-@property (nonatomic, strong) NSStepper    *keep_step;
-@property (nonatomic, strong) NSTextField  *backup_path;
-@property (nonatomic, strong) NSButton     *backup_choose;
-@property (nonatomic, strong) NSButton     *backup_now;
 @property (nonatomic, strong) NSTextField  *viewer;
-@property (nonatomic, strong) NSStackView  *plate_box;     /* the plate and Update   */
-@property (nonatomic, strong) NSGridView   *plate_grid;    /* the plate's lines      */
-@property (nonatomic, strong) NSStackView  *backup_buttons;
 @property (nonatomic, strong) SharedCalendarSection *calendar; /* shared with Tasks' Settings */
 @property (nonatomic, strong) NSTextField  *apple_status;  /* the Apple Notes line   */
-- (void)refresh_db;
-- (void)refresh_backup;
-- (void)show_sha:(NSString *)full;
 @end
 
 /* The open Settings window, or nil. */
 static NotesSettingsWindow *settings_window;
-
-/*
- * settings_notify_db_state — OnApp.notify_db_state while the window is
- * open: a check started or landed, or a backup pass ended — repaint the
- * plate and the backup line.
- *
- * Inputs:
- *   app — the application context (unused)
- */
-static void
-settings_notify_db_state(OnApp *app)
-{
-    [settings_window refresh_db];
-    [settings_window refresh_backup];
-}
 
 @implementation NotesSettingsWindow
 
@@ -355,8 +216,6 @@ init_with_lib:(NotesLibrary *)lib
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_editor:rows]];
     [ends addObject:rows.lastObject];
-    [headings addObject:[self add_database:rows]];
-    [ends addObject:rows.lastObject];
     [headings addObject:[self add_calendar:rows]];
     [ends addObject:rows.lastObject];
     [headings addObject:[self add_apple_notes:rows]];
@@ -368,28 +227,9 @@ init_with_lib:(NotesLibrary *)lib
     stack.edgeInsets  = NSEdgeInsetsMake(16, 20, 20, 20);
     for (NSView *v in headings) [stack setCustomSpacing:8 afterView:v];
     for (NSView *v in ends)     [stack setCustomSpacing:18 afterView:v];
-    /* The plate, Update and the backup buttons share the column's right
-     * edge, as in GTK. */
-    for (NSView *v in @[self.plate_box, self.backup_buttons])
-        [v.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor constant:-stack.edgeInsets.right].active = YES;
 
     shared_ui_use_ui_font(stack);
-    plate_type(self.plate_grid);
-    self.sha.font = [NSFont monospacedSystemFontOfSize:shared_look_status_font weight:NSFontWeightRegular];
-    /* The digest arrives from a worker after the window is sized: the line
-     * is as wide as its head…tail form from the start, so it cannot widen
-     * the plate past the window. */
-    NSString *digest_form = [NSString stringWithFormat:@"%@…%@",
-                             [@"" stringByPaddingToLength:sha_head withString:@"0" startingAtIndex:0],
-                             [@"" stringByPaddingToLength:sha_tail withString:@"0" startingAtIndex:0]];
-    NSTextField *digest_probe = [NSTextField labelWithString:digest_form];
-    digest_probe.font = self.sha.font;
-    [self.sha.widthAnchor constraintGreaterThanOrEqualToConstant:ceil(digest_probe.fittingSize.width)].active = YES;
-    /* The lines are filled in before the window is sized to them: the
-     * database path decides the plate's width. */
-    [self refresh_db];
-    [self refresh_backup];
-    [stack layoutSubtreeIfNeeded];        /* the copy links measure nothing before a pass */
+    [stack layoutSubtreeIfNeeded];
     NSSize fit = stack.fittingSize;
     SharedFlippedView *doc = [[SharedFlippedView alloc] initWithFrame:NSZeroRect];
     doc.translatesAutoresizingMaskIntoConstraints   = NO;
@@ -411,8 +251,6 @@ init_with_lib:(NotesLibrary *)lib
                 ? [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:NSScrollerStyleLegacy] : 0;
     [win setContentSize:NSMakeSize(fit.width + extra_w + bar, MIN(fit.height, on_look_settings_max_h))];
     [win center];
-
-    lib.app->notify_db_state = settings_notify_db_state;
     return self;
 }
 
@@ -499,155 +337,6 @@ add_editor:(NSMutableArray<NSView *> *)rows
 }
 
 /*
- * add_database: — the health plate and its Update button, then the
- * rotating backups.
- *
- * Inputs:
- *   rows — the column to append to
- *
- * Output: the section's heading.
- */
-- (NSView *)
-add_database:(NSMutableArray<NSView *> *)rows
-{
-    NSTextField *head = shared_ui_heading(@"Database");
-    [rows addObject:head];
-
-    self.led    = [NSTextField labelWithString:health_light];
-    self.led.textColor = NSColor.tertiaryLabelColor;
-    self.health = [NSTextField labelWithString:@""];
-    self.health.identifier = @"health";
-    self.db_path = [NSTextField wrappingLabelWithString:@""];
-    self.db_path.selectable = YES;
-    self.db_path.preferredMaxLayoutWidth = text_w - 120;
-    self.db_data = [NSTextField labelWithString:@""];
-    self.db_data.identifier = @"data";
-    self.db_size = [NSTextField labelWithString:@""];
-    self.sha      = [NSTextField labelWithString:@"—"];
-    self.sha_copy = shared_ui_copy_link(self, @selector(copy_sha:));
-
-    NSArray<NSArray<NSView *> *> *cells = @[
-        @[[NSTextField labelWithString:@"Health:"],           row(@[self.led, self.health])],
-        @[[NSTextField labelWithString:@"Current database:"],
-          row(@[self.db_path, shared_ui_copy_link(self, @selector(copy_path:))])],
-        @[[NSTextField labelWithString:@"Data:"],             self.db_data],
-        @[[NSTextField labelWithString:@"Size on disk:"],     self.db_size],
-        @[[NSTextField labelWithString:@"SHA-256:"],          row(@[self.sha, self.sha_copy])],
-    ];
-    NSGridView *grid = self.plate_grid = [NSGridView gridViewWithViews:cells];
-    grid.rowSpacing    = 2;
-    grid.columnSpacing = 8;
-    grid.rowAlignment  = NSGridRowAlignmentFirstBaseline;
-    grid.translatesAutoresizingMaskIntoConstraints = NO;
-
-    NSBox *plate = [[NSBox alloc] initWithFrame:NSZeroRect];
-    plate.boxType         = NSBoxCustom;
-    plate.fillColor       = NSColor.controlBackgroundColor;
-    plate.borderColor     = NSColor.separatorColor;
-    plate.borderWidth     = 1;
-    plate.cornerRadius    = 6;
-    plate.contentViewMargins = NSMakeSize(10, 8);
-    plate.titlePosition   = NSNoTitle;
-    [plate.contentView addSubview:grid];
-    [NSLayoutConstraint activateConstraints:@[
-        [grid.topAnchor      constraintEqualToAnchor:plate.contentView.topAnchor],
-        [grid.bottomAnchor   constraintEqualToAnchor:plate.contentView.bottomAnchor],
-        [grid.leadingAnchor  constraintEqualToAnchor:plate.contentView.leadingAnchor],
-        [grid.trailingAnchor constraintLessThanOrEqualToAnchor:plate.contentView.trailingAnchor],
-    ]];
-
-    NSButton *update = small_button(@"Update", self, @selector(update_health:));
-    update.toolTip = @"Re-read every line above: run PRAGMA integrity_check and PRAGMA foreign_key_check "
-                      "against this database, then re-count its notes and tags and re-read its size "
-                      "and SHA-256.";
-    NSStackView *plate_box = self.plate_box = [NSStackView stackViewWithViews:@[plate, update]];
-    plate_box.orientation = NSUserInterfaceLayoutOrientationVertical;
-    plate_box.alignment   = NSLayoutAttributeTrailing;
-    plate_box.spacing     = 5;
-    plate_box.edgeInsets  = NSEdgeInsetsMake(0, indent, 0, 0);
-    [rows addObject:plate_box];
-
-    OnApp *app = self.lib.app;
-    self.backup_on = [NSButton checkboxWithTitle:@"Back up the database automatically" target:self
-                                          action:@selector(backup_toggled:)];
-    self.backup_on.state = policy_value(app, SHARED_SETTING_BACKUP_ENABLED) != 0
-                           ? NSControlStateValueOn : NSControlStateValueOff;
-    self.backup_on.toolTip = @"Writes a verified copy of the database Notes shares with Tasks into a "
-                              "folder of your choice on a timer, keeping only the most recent few.  The "
-                              "policy is stored in that database, so Tasks follows it too, and whichever "
-                              "app is running makes the backup.  Worth pointing at a disk INDEPENDENT of "
-                              "wherever the database itself lives, so one mishap cannot take both.";
-    [rows addObject:indented(self.backup_on, indent)];
-
-    self.interval = [self number_field:SHARED_SETTING_BACKUP_INTERVAL_MIN
-                                 value:(int)policy_value(app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
-                                   min:0 max:SHARED_BACKUP_INTERVAL_MIN_MAX
-                                  step:SHARED_BACKUP_INTERVAL_MIN_STEP stepper:&_interval_step];
-    self.interval.toolTip = @"Minutes between backups.  0 backs up only when you press Back Up Now.";
-    self.keep = [self number_field:SHARED_SETTING_BACKUP_KEEP
-                             value:(int)policy_value(app, SHARED_SETTING_BACKUP_KEEP)
-                               min:SHARED_BACKUP_KEEP_MIN max:SHARED_BACKUP_KEEP_MAX step:1
-                           stepper:&_keep_step];
-    self.keep.toolTip = @"How many backup files to retain.  The oldest are removed once a NEW backup has "
-                         "been verified, never before.";
-    [rows addObject:indented(row(@[[NSTextField labelWithString:@"Every"], self.interval, self.interval_step,
-                                   [NSTextField labelWithString:@"minutes, keeping"], self.keep, self.keep_step,
-                                   [NSTextField labelWithString:@"files"]]), indent)];
-
-    self.backup_path = shared_ui_note(@"", text_w);
-    self.backup_path.identifier = @"backup-path";
-    [rows addObject:indented(self.backup_path, indent)];
-    self.backup_choose = small_button(@"Change Folder…", self, @selector(choose_backup_folder:));
-    self.backup_now    = small_button(@"Back Up Now", self, @selector(backup_now:));
-    self.backup_buttons = row(@[]);
-    [self.backup_buttons addView:self.backup_choose inGravity:NSStackViewGravityTrailing];
-    [self.backup_buttons addView:self.backup_now inGravity:NSStackViewGravityTrailing];
-    [rows addObject:self.backup_buttons];
-    return head;
-}
-
-/*
- * number_field:value:min:max:step:stepper: — a small number field with
- * its stepper, for one integer backup setting; either writes the setting.
- *
- * Inputs:
- *   key      — the shared_settings key
- *   value    — its current value
- *   min, max — the range (the field clamps to it)
- *   step     — the stepper's increment
- *   stepper  — receives the stepper
- *
- * Output: the field (its identifier is the key).
- */
-- (NSTextField *)
-number_field:(const char *)key value:(int)value min:(int)min max:(int)max step:(int)step
-     stepper:(NSStepper * __strong *)stepper
-{
-    NSNumberFormatter *fmt = [[NSNumberFormatter alloc] init];
-    fmt.minimum = @(min);
-    fmt.maximum = @(max);
-    fmt.allowsFloats = NO;
-    NSTextField *field = [NSTextField textFieldWithString:@""];
-    field.formatter  = fmt;
-    field.integerValue = MAX(min, MIN(max, value));
-    field.identifier = @(key);
-    field.alignment  = NSTextAlignmentRight;
-    field.target     = self;
-    field.action     = @selector(number_changed:);
-    [field.widthAnchor constraintEqualToConstant:52].active = YES;
-    NSStepper *s = [[NSStepper alloc] initWithFrame:NSZeroRect];
-    s.minValue     = min;
-    s.maxValue     = max;
-    s.increment    = step;
-    s.integerValue = field.integerValue;
-    s.identifier   = @(key);
-    s.target       = self;
-    s.action       = @selector(number_changed:);
-    *stepper = s;
-    return field;
-}
-
-/*
  * add_calendar: — the Apple Calendar section (shared_calendar.h), the one Tasks'
  * Settings shows too, without the calendar for Tasks' sessions.  A change
  * redraws the library's day planner.
@@ -700,135 +389,6 @@ add_apple_notes:(NSMutableArray<NSView *> *)rows
     __weak NotesSettingsWindow *ws = self;
     on_apple_notes_observe(^{ ws.apple_status.stringValue = on_apple_notes_status(); });
     return head;
-}
-
-/* ── Refreshing ───────────────────────────────────────────────────────── */
-
-/*
- * refresh_db — every line of the health plate from the file and the last
- * recorded check (reading the stamp, never running a check).
- */
-- (void)
-refresh_db
-{
-    OnDatabase       *db = self.lib.app->db;
-    const OnDbHealth *h  = on_db_health(db);
-    NSColor  *led;
-    NSString *text, *tip;
-    if (h == NULL) {
-        led  = NSColor.tertiaryLabelColor;
-        text = @"Not checked";
-        tip  = @"Nothing has verified this database yet.  Press Update.";
-    } else if (h->pending) {
-        led  = NSColor.tertiaryLabelColor;
-        text = @"Checking…";
-        tip  = @"PRAGMA integrity_check is running on a worker thread; the verdict lands here.";
-    } else {
-        NSString *when = when_stamp(h->when);
-        led  = h->ok ? NSColor.systemGreenColor : NSColor.systemRedColor;
-        text = h->ok ? [NSString stringWithFormat:@"Healthy — checked %@", when]
-             : h->ran ? [NSString stringWithFormat:@"Problems found — %@", when]
-                      : [NSString stringWithFormat:@"Check did not complete — %@", when];
-        tip  = h->detail ? @(h->detail)
-             : @"PRAGMA integrity_check and PRAGMA foreign_key_check both passed against this file.";
-    }
-    self.led.textColor      = led;
-    self.health.stringValue = text;
-    self.health.toolTip     = tip;
-    self.db_path.stringValue = @(db->path);
-
-    gint notes = 0, tags = 0;
-    on_db_totals(db, &notes, &tags);
-    self.db_data.stringValue = [NSString stringWithFormat:@"%d note%s, %d tag%s",
-                                notes, notes == 1 ? "" : "s", tags, tags == 1 ? "" : "s"];
-    struct stat st;
-    self.db_size.stringValue = stat(db->path, &st) == 0 ? shared_ui_format_bytes((int64_t)st.st_size) : @"unknown";
-
-    /* The whole file is read for the digest: on a worker, so a large or
-     * iCloud-held database never stalls the window.  A newer refresh
-     * outdates the one in flight.                                          */
-    self.sha.stringValue  = @"…";
-    self.sha_copy.enabled = NO;
-    NSUInteger gen  = ++self.sha_gen;
-    NSString  *path = @(db->path);
-    __weak NotesSettingsWindow *ws = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        @autoreleasepool {
-            gchar    *sha  = on_db_file_sha256(path.fileSystemRepresentation);
-            NSString *full = sha ? @(sha) : nil;
-            g_free(sha);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NotesSettingsWindow *s = ws;
-                if (s && s.sha_gen == gen) [s show_sha:full];
-            });
-        }
-    });
-}
-
-/*
- * show_sha: — the digest line of the health plate: its head and tail,
- * the whole of it in the tooltip and on a click.
- *
- * Inputs:
- *   full — the hex digest; nil when the file could not be read
- */
-- (void)
-show_sha:(NSString *)full
-{
-    self.sha_full = full;
-    if (self.sha_full.length > sha_head + sha_tail) {
-        self.sha.stringValue  = [NSString stringWithFormat:@"%@…%@", [self.sha_full substringToIndex:sha_head],
-                                 [self.sha_full substringFromIndex:self.sha_full.length - sha_tail]];
-        self.sha.toolTip      = [NSString stringWithFormat:@"%@\n\nThe file as it stands.  A database in use changes "
-                                 "with the next edit, so this moves.", self.sha_full];
-        self.sha_copy.enabled = YES;
-    } else {
-        self.sha.stringValue  = @"—";
-        self.sha.toolTip      = @"The database file could not be read.";
-        self.sha_copy.enabled = NO;
-    }
-}
-
-/*
- * refresh_backup — the backup controls follow the master switch, and the
- * folder line names where backups land, with a warning when that folder
- * goes with the database's (GTK bk_section_refresh), when the last backup
- * was made (backup_last_at) and why the last pass failed
- * (backup_last_error) — both can be set at once: a copy made whose
- * pruning of old backups failed.
- */
-- (void)
-refresh_backup
-{
-    BOOL on = self.backup_on.state == NSControlStateValueOn;
-    for (NSControl *c in @[self.interval, self.interval_step, self.keep, self.keep_step,
-                           self.backup_choose, self.backup_now])
-        c.enabled = on;
-    gchar *why   = NULL;
-    gchar *dir_c = on_backup_dir(self.lib.app, &why);
-    if (dir_c == NULL) {
-        self.backup_path.stringValue = [NSString stringWithFormat:@"No backup folder: %@", @(why)];
-        g_free(why);
-        return;
-    }
-    NSString *dir = @(dir_c);
-    g_free(dir_c);
-    NSString *db_dir = @(self.lib.app->db->path).stringByDeletingLastPathComponent;
-    NSString *text   = shares_fate(dir, db_dir)
-        ? [NSString stringWithFormat:@"Backing up to %@\n⚠ alongside the database — change it to survive "
-                                      "losing that folder", dir]
-        : [NSString stringWithFormat:@"Backing up to %@", dir];
-    int64_t last_at = 0;             /* when the last backup was made, or 0 */
-    shared_backup_policy_get(self.lib.app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
-    text = last_at > 0 ? [text stringByAppendingFormat:@"\nLast backup %@", when_stamp(last_at)]
-                       : [text stringByAppendingString:@"\nNo backup made yet"];
-    char *last_error = NULL;         /* why the last backup failed, if it did */
-    if (shared_settings_get(self.lib.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
-                            &last_error, NULL) == 1 && last_error[0] != '\0') {
-        text = [text stringByAppendingFormat:@"\n⚠ The last backup pass reported: %@", @(last_error)];
-    }
-    free(last_error);
-    self.backup_path.stringValue = text;
 }
 
 /* ── Actions ──────────────────────────────────────────────────────────── */
@@ -944,125 +504,6 @@ browse_viewer:(id)sender
 }
 
 /*
- * update_health: — Update: a health pass on a worker (THE check, as at
- * launch: its verdict lands in the status bar, problems in a tool panel,
- * and the plate refreshes through notify_db_state); the plate shows
- * "Checking…" meanwhile.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-update_health:(id)sender
-{
-    on_app_db_health_start(self.lib.app);   /* the verdict reaches the plate and the status bar */
-    [self refresh_db];
-}
-
-/*
- * copy_sha: — the full digest onto the clipboard.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-copy_sha:(id)sender
-{
-    if (self.sha_full == nil) return;
-    [NSPasteboard.generalPasteboard clearContents];
-    [NSPasteboard.generalPasteboard setString:self.sha_full forType:NSPasteboardTypeString];
-    on_app_status(self.lib.app, "SHA-256 copied to the clipboard");
-}
-
-/*
- * copy_path: — the plate's "copy" beside the path: the database's path
- * to the clipboard.
- *
- * Inputs:
- *   sender — the link (unused)
- */
-- (void)
-copy_path:(id)sender
-{
-    [NSPasteboard.generalPasteboard clearContents];
-    [NSPasteboard.generalPasteboard setString:@(self.lib.app->db->path) forType:NSPasteboardTypeString];
-    on_app_status(self.lib.app, "Database path copied to the clipboard");
-}
-
-/*
- * backup_toggled: — the backup switch, written to shared_settings (the
- * periodic poll reads it there; Tasks too).
- *
- * Inputs:
- *   sender — the checkbox
- */
-- (void)
-backup_toggled:(NSButton *)sender
-{
-    policy_store(self.lib.app, SHARED_SETTING_BACKUP_ENABLED,
-                 sender.state == NSControlStateValueOn ? 1 : 0);
-    [self refresh_backup];
-}
-
-/*
- * number_changed: — the interval or retention field or stepper: the pair
- * agree and the value is written to shared_settings.
- *
- * Inputs:
- *   sender — the field or stepper (identifier = key)
- */
-- (void)
-number_changed:(NSControl *)sender
-{
-    BOOL         is_interval = [sender.identifier isEqualToString:@SHARED_SETTING_BACKUP_INTERVAL_MIN];
-    NSTextField *field       = is_interval ? self.interval : self.keep;
-    NSStepper   *stepper     = is_interval ? self.interval_step : self.keep_step;
-    NSInteger    value       = MAX((NSInteger)stepper.minValue, MIN((NSInteger)stepper.maxValue, sender.integerValue));
-    field.integerValue   = value;
-    stepper.integerValue = value;
-    policy_store(self.lib.app, sender.identifier.UTF8String, value);
-}
-
-/*
- * choose_backup_folder: — pick where backups go, starting where they go
- * now, and store it (a refused folder is reported in a tool panel).
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-choose_backup_folder:(id)sender
-{
-    gchar    *dir_c = on_backup_dir(self.lib.app, NULL);
-    NSString *dir   = dir_c ? @(dir_c) : nil;
-    g_free(dir_c);
-    __weak NotesSettingsWindow *ws = self;
-    shared_ui_pick_path(SharedPickFolder, @"Choose Backup Folder", @"Select", nil, dir,
-                    ^(NSString *path) {
-        NotesSettingsWindow *s = ws;
-        if (path == nil || s == nil) return;
-        char *why = NULL;            /* the module's reason for refusing it */
-        if (shared_db_set_backup_dir(s.lib.app->db->shared, path.fileSystemRepresentation, &why) != 0) {
-            shared_ui_notice(s.window, @"That folder cannot be used", why ? @(why) : @"Unknown error.", nil);
-            free(why);
-        }
-        [s refresh_backup];
-    });
-}
-
-/*
- * backup_now: — one backup pass; the outcome is reported in the status bar.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-backup_now:(id)sender
-{
-    on_backup_start(self.lib.app);
-}
-
-/*
  * push_all_apple_notes: — Push All Now: copy every note again.
  *
  * Inputs:
@@ -1094,7 +535,7 @@ open_full_disk_access:(id)sender
 }
 
 /*
- * windowWillClose: — the plate's hook goes, and the window with it.
+ * windowWillClose: — the window goes.
  *
  * Inputs:
  *   note — the notification (unused)
@@ -1102,7 +543,6 @@ open_full_disk_access:(id)sender
 - (void)
 windowWillClose:(NSNotification *)note
 {
-    if (self.lib.app->notify_db_state == settings_notify_db_state) self.lib.app->notify_db_state = NULL;
     [self.calendar shut_down];
     on_apple_notes_observe(nil);
     settings_window = nil;
@@ -1114,7 +554,7 @@ windowWillClose:(NSNotification *)note
 
 /*
  * run_preferences — "preferences": open the Settings window, or bring it
- * forward with its backup line re-read (the last backup's outcome).
+ * forward.
  *
  * Inputs:
  *   target — the NotesLibrary
@@ -1125,8 +565,6 @@ run_preferences(id target, id sender)
 {
     if (settings_window == nil) {
         settings_window = [[NotesSettingsWindow alloc] init_with_lib:target];
-    } else {
-        [settings_window refresh_backup];   /* a pass may have failed since */
     }
     [settings_window showWindow:nil];
     [settings_window.window makeKeyAndOrderFront:nil];

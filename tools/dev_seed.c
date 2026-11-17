@@ -469,8 +469,10 @@ main(int argc, char **argv)
     GBytes *image = file_png(argv[2]);
     GBytes *photo = file_png(argv[3]);
     OnApp   app   = { 0 };
-    gboolean ok   = image != NULL && photo != NULL && on_app_open_db(&app, NULL) &&
-                    seed(&app, image, photo);
+    /* The seeder is the one thing here that CREATES a database (on_db_open):
+     * the app only opens the one camb.io Database made.                   */
+    gboolean ok   = image != NULL && photo != NULL &&
+                    (app.db = on_db_open(NULL, NULL)) != NULL && seed(&app, image, photo);
     if (ok) {
         print_counts(app.db);
     } else {

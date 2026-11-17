@@ -11,8 +11,8 @@
  * strike, renames from the row keeping '!', done state and due), tags
  * (the Tags field and the #tags of the text, emoji, favorites, the two
  * scopes), pins, the Trash, search, the whole-database counts,
- * Markdown and HTML export, embedded images and backups.  Output
- * formatting was the tool's own and went with it.
+ * Markdown and HTML export and embedded images.  Output formatting was
+ * the tool's own and went with it.
  *
  * One database for the whole program, in this test's NOTES_DATA_DIR.
  * =========================================================================== */
@@ -1025,7 +1025,7 @@ test_search(OnDatabase *db)
     g_free(body);
 }
 
-/* ── Counts, images, export, backup ─────────────────────────────────────── */
+/* ── Counts, images, export ─────────────────────────────────────────────── */
 
 /*
  * test_stats — the whole-database counts move with what is added.
@@ -1195,45 +1195,6 @@ test_export(OnApp *app, const char *data_dir, gint64 pictures)
     g_free(md_dir);
 }
 
-/*
- * test_backup — a snapshot of the open database is a database with the
- * same notes.
- *
- * Inputs:
- *   db       — the database
- *   data_dir — the test data directory
- */
-static void
-test_backup(OnDatabase *db, const char *data_dir)
-{
-    gchar *dir = g_build_filename(data_dir, "snapshots", NULL);
-    g_mkdir_with_parents(dir, 0700);
-    shared_settings_set(db->shared, SHARED_SETTING_BACKUP_DIR, dir, NULL);
-    gint  notes = 0;
-    gint  copied = -1;
-    char *dest = NULL;
-    on_db_totals(db, &notes, NULL);
-    check(shared_db_backup(db->shared, &dest, NULL) == 0 && dest != NULL &&
-          g_str_has_prefix(dest, dir), "backup: written into the chosen folder");
-    shared_db *copy = dest != NULL ? shared_db_open_readonly(dest, NULL) : NULL;
-    sqlite3_stmt *stmt = NULL;
-    if (copy != NULL &&
-        sqlite3_prepare_v2(shared_db_handle(copy), "SELECT COUNT(*) FROM notes", -1,
-                           &stmt, NULL) == SQLITE_OK &&
-        sqlite3_step(stmt) == SQLITE_ROW)
-        copied = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    check(copy != NULL && copied == notes && notes > 0, "backup: it opens with the same notes");
-    shared_db_close(copy);
-    free(dest);
-    g_free(dir);
-}
-
-/*
- * main — run the test.
- *
- * Output: 0 when every check held.
- */
 /*
  * count_files — how many note_file rows a note owns.
  *
@@ -1521,7 +1482,7 @@ main(void)
     on_app_config_init();
 
     static OnApp app;
-    check(on_app_open_db(&app, NULL), "the test database opens");
+    check(check_create_db() && on_app_open_db(&app, NULL), "the test database opens");
     test_notes(app.db);
     test_action_lines(app.db);
     test_action_marks(&app);
@@ -1535,7 +1496,6 @@ main(void)
     gint64 pictures = test_images(app.db);
     test_export(&app, data_dir, pictures);
     test_files(app.db, data_dir);
-    test_backup(app.db, data_dir);
     test_calendar(app.db);
     on_app_shutdown(&app);
     return check_result();

@@ -487,7 +487,16 @@ test_lifecycle(OnApp *app, const char *data_dir)
     g_free(why);
     g_free(old);
 
-    check(on_app_open_db(app, NULL) && app->db != NULL, "the default database opens");
+    /* Notes never creates the database: with none there, the open fails
+     * with the module's reason and nothing appears at the path.           */
+    check(!on_app_open_db(app, &why) && app->db == NULL && why != NULL &&
+          strstr(why, "does not exist") != NULL &&
+          !g_file_test(getenv(SHARED_DB_ENV_VAR), G_FILE_TEST_EXISTS),
+          "a missing database is refused with a reason, and never created");
+    g_free(why);
+
+    check(check_create_db() && on_app_open_db(app, NULL) && app->db != NULL,
+          "the database camb.io Database Manager created opens");
     sqlite3_stmt *mode = NULL;
     sqlite3_prepare_v2(app->db->handle, "PRAGMA journal_mode", -1, &mode, NULL);
     gboolean wal = mode != NULL && sqlite3_step(mode) == SQLITE_ROW &&
@@ -495,27 +504,6 @@ test_lifecycle(OnApp *app, const char *data_dir)
     sqlite3_finalize(mode);
     check(wal && strcmp(app->db->path, getenv(SHARED_DB_ENV_VAR)) == 0,
           "it is the shared file, in WAL mode through the shared module");
-
-    /* Set as Default while $CAMBIO_SHARED_DB fixes the file: the module
-     * refuses, the reason comes back, and the app is on its old file.      */
-    gchar *other = g_build_filename(data_dir, "other.db", NULL);
-    gchar *was   = g_strdup(app->db->path);
-    why = NULL;
-    check(on_app_switch_db(app, other, TRUE, &why) == ON_SWITCH_FAILED && why != NULL &&
-          app->db != NULL && strcmp(app->db->path, was) == 0,
-          "Set as Default under $CAMBIO_SHARED_DB is refused with a reason; the old file stays open");
-    g_free(why);
-    check(on_app_switch_db(app, other, FALSE, &why) == ON_SWITCH_FAILED && why != NULL &&
-          strstr(why, "does not exist") != NULL && !g_file_test(other, G_FILE_TEST_EXISTS) &&
-          strcmp(app->db->path, was) == 0,
-          "Open Database File never creates a missing file; the old file stays open");
-    g_free(why);
-    on_db_close(on_db_open(other, NULL));    /* as Create New makes it      */
-    check(on_app_switch_db(app, other, FALSE, NULL) == ON_SWITCH_DONE &&
-          strcmp(app->db->path, other) == 0, "Session Only opens another shared file");
-    check(on_app_switch_db(app, was, FALSE, NULL) == ON_SWITCH_DONE, "and back");
-    g_free(other);
-    g_free(was);
 }
 
 /*

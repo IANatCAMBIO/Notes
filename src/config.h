@@ -14,9 +14,9 @@
  *
  * The notes themselves are in the database Notes shares with Tasks, which
  * the shared module places (shared_db.h, shared_db_path): $CAMBIO_SHARED_DB,
- * else the file both apps' "Set as Default" points at, else
- * ~/Library/Application Support/camb.io/shared_data.db.  Its backups and
- * their policy are the shared module's too (backup.h).
+ * else the file ~/Library/Application Support/camb.io/location names, else
+ * ~/Library/Application Support/camb.io/shared_data.db.  Creating it,
+ * checking it and backing it up are camb.io Database Manager's (camb.io_db_mgr.app).
  *
  * Nothing is ever resolved relative to argv[0], the bundle, or the XDG
  * directories the GTK build used (~/.config/notes, ~/.local/share/notes,

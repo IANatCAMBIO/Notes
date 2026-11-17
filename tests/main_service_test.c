@@ -1,7 +1,5 @@
 /* ===========================================================================
- * main_service_test.c — main-thread posts, timers and workers, and the two
- * core jobs that depend on them (the database health check and a backup
- * pass)
+ * main_service_test.c — main-thread posts, timers and workers
  *
  * Under the GTK build these hand-backs rode a GLib main loop; here nothing
  * runs one, so each case below would hang for ever on g_idle_add.  The test
@@ -10,9 +8,6 @@
 
 #include "check.h"
 
-#include "app_core.h"
-#include "backup.h"
-#include "db.h"
 #include "main_service.h"
 
 #include <pthread.h>
@@ -165,178 +160,6 @@ test_timers(void)
     check(true, "removing timer 0 is a no-op");
 }
 
-static bool health_done;             /* the verdict landed                   */
-static bool health_on_main;
-
-/*
- * health_landed — on_db_health_check_async's completion.
- *
- * Inputs:
- *   db   — the connection (unused)
- *   data — unused
- */
-static void
-health_landed(OnDatabase *db, gpointer data)
-{
-    (void)db;
-    (void)data;
-    health_on_main = pthread_main_np() != 0;
-    health_done = true;
-}
-
-static char last_status[256];        /* the last on_app_status message       */
-
-/*
- * status_hook — OnApp.notify_status for this test.
- *
- * Inputs:
- *   app     — the context (unused)
- *   message — the status line
- */
-static void
-status_hook(OnApp *app, const gchar *message)
-{
-    (void)app;
-    snprintf(last_status, sizeof last_status, "%s", message);
-}
-
-/*
- * backup_name_is_utc — is `name` a backup file name of the module's shape,
- * SHARED_DB_BACKUP_PREFIX "YYYYMMDD-HHMMSS" "Z" [ "_NN" ] ".db" (the time in
- * UTC)?
- *
- * Inputs:
- *   name — a file name
- *
- * Output: TRUE when it has that shape.
- */
-static gboolean
-backup_name_is_utc(const gchar *name)
-{
-    GRegex  *re = g_regex_new("^" SHARED_DB_BACKUP_PREFIX "[0-9]{8}-[0-9]{6}Z(_[0-9]{2})?\\.db$",
-                              0, 0, NULL);
-    gboolean ok = g_regex_match(re, name, 0, NULL);
-    g_regex_unref(re);
-    return ok;
-}
-
-/*
- * test_core_jobs — the two core jobs that hand back through this service:
- * the async integrity check and a rotating-backup pass.
- *
- * Inputs:
- *   data_dir — this test's NOTES_DATA_DIR
- */
-static void
-test_core_jobs(const char *data_dir)
-{
-    on_app_config_init();
-    OnApp app = { 0 };
-    app.notify_status = status_hook;
-    app.db = on_db_open(NULL, NULL);
-    check(app.db != NULL && g_str_has_prefix(app.db->path, data_dir),
-          "the default database opens inside the test data directory");
-    on_db_note_create(app.db);
-
-    on_db_health_check_async(app.db, health_landed, NULL);
-    const OnDbHealth *h = on_db_health(app.db);
-    check(h != NULL && h->pending, "the health check reports pending while it runs");
-    check(check_pump(&health_done, 10.0), "the health verdict lands (it never did on g_idle_add)");
-    h = on_db_health(app.db);
-    check(health_on_main && h != NULL && !h->pending && h->ok,
-          "the verdict is recorded on the main thread, and is clean");
-
-    /* A pass abandoned by closing the connection must not call back.       */
-    health_done = false;
-    OnDatabase *second = on_db_open(NULL, NULL);
-    on_db_health_check_async(second, health_landed, NULL);
-    on_db_close(second);
-    check_pump(NULL, 0.5);
-    check(!health_done, "a pass abandoned by on_db_close never reports");
-
-    /* Back Up Now: the shared module's backup on a worker, its own
-     * connection, the hand-back and a status line.  The policy is in
-     * shared_settings.                                                     */
-    gchar *backups = g_build_filename(data_dir, "backup-out", NULL);
-    g_mkdir_with_parents(backups, 0700);
-    gchar *dir     = on_backup_dir(&app, NULL);
-    gchar *db_dir  = g_path_get_dirname(app.db->path);
-    gchar *beside  = g_build_filename(db_dir, SHARED_DB_BACKUP_DIR_NAME, NULL);
-    check(g_strcmp0(dir, beside) == 0,
-          "with no folder chosen, backups go to \"backups\" beside the open database file");
-    g_free(dir);
-    g_free(db_dir);
-    g_free(beside);
-    char *why = NULL;
-    check(shared_db_set_backup_dir(app.db->shared, backups, &why) == 0 && why == NULL,
-          "a writable folder becomes the backup destination");
-    dir = on_backup_dir(&app, NULL);
-    check(g_strcmp0(dir, backups) == 0, "and is where backups go");
-    g_free(dir);
-    check(shared_db_set_backup_dir(app.db->shared, "relative/folder", &why) != 0 && why != NULL,
-          "a relative folder is refused, with a reason");
-    free(why);
-    int64_t keep = 0;
-    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "100000", NULL);
-    check(shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_KEEP, &keep, NULL) == 0 &&
-          keep == SHARED_BACKUP_KEEP_MAX, "backup_keep reads back held to the module's range");
-    shared_settings_set(app.db->shared, SHARED_SETTING_BACKUP_KEEP, "2", NULL);
-
-    gchar *wal = g_strconcat(app.db->path, "-wal", NULL);
-    for (int pass = 0; pass < 3; pass++) {
-        on_backup_start(&app);
-        check(app.backup_running, "a backup pass is in flight");
-        bool finished = false;
-        for (int i = 0; i < 500 && !finished; i++) {
-            check_pump(NULL, 0.02);
-            finished = !app.backup_running;
-        }
-        check(finished && strncmp(last_status, "Backed up to " SHARED_DB_BACKUP_PREFIX,
-                                  strlen("Backed up to " SHARED_DB_BACKUP_PREFIX)) == 0,
-              "the pass finishes, releases its guard and reports through on_app_status");
-    }
-    GDir *d = g_dir_open(backups, 0, NULL);
-    int   n = 0;
-    int   utc = 0;                   /* names of the UTC shape             */
-    for (const gchar *name; d != NULL && (name = g_dir_read_name(d)) != NULL; ) {
-        n   += g_str_has_prefix(name, SHARED_DB_BACKUP_PREFIX) && g_str_has_suffix(name, ".db");
-        utc += backup_name_is_utc(name);
-    }
-    if (d != NULL) g_dir_close(d);
-    check(n == 2, "three passes with backup_keep 2 leave two backups");
-    check(utc == 2, "backup names carry the time in UTC: " SHARED_DB_BACKUP_PREFIX
-                    "YYYYMMDD-HHMMSSZ[_NN].db");
-    check(g_file_test(app.db->path, G_FILE_TEST_EXISTS) && g_file_test(wal, G_FILE_TEST_EXISTS),
-          "the live database and its -wal are untouched");
-    g_free(wal);
-    int64_t last_at = 0;
-    shared_backup_policy_get(app.db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
-    check(last_at > 0, "the module recorded the time of the last backup");
-
-    /* The pass's own connection never creates the database: with the file
-     * moved aside (a restore, a rollback) the pass fails, saying so, and
-     * nothing appears at the path.                                         */
-    check(check_move_aside(app.db->shared, true), "(the database is moved aside)");
-    on_backup_start(&app);
-    for (int i = 0; i < 500 && app.backup_running; i++) {
-        check_pump(NULL, 0.02);
-    }
-    check(!app.backup_running && strstr(last_status, "does not exist") != NULL,
-          "a backup of a database moved aside fails, saying the file does not exist");
-    check(!g_file_test(app.db->path, G_FILE_TEST_EXISTS),
-          "and creates no database in its place");
-    check(check_move_aside(app.db->shared, false), "(the database is put back)");
-
-    /* The periodic poll arms through the same service.                     */
-    on_backup_auto_start(&app);
-    check(app.backup_timer != 0, "the backup poll timer is armed");
-    on_timer_remove(app.backup_timer);
-    app.backup_timer = 0;
-
-    g_free(backups);
-    on_db_close(app.db);
-}
-
 /*
  * main — run the test.
  *
@@ -345,9 +168,8 @@ test_core_jobs(const char *data_dir)
 int
 main(void)
 {
-    const char *data_dir = check_data_dir();
+    check_data_dir();
     test_posts_and_workers();
     test_timers();
-    test_core_jobs(data_dir);
     return check_result();
 }

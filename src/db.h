@@ -64,25 +64,6 @@
 #include "shared_db.h"
 
 /* ---------------------------------------------------------------------------
- * OnDbHealth — the outcome of one health pass over a database.
- *
- * `ok` is the only thing a caller normally acts on; `ran` is what tells
- * "the checks found problems" apart from "the checks could not be run",
- * which are a very different sentence to put in front of a user — and the
- * dividing line is whether the checks came back with ANYTHING, not
- * whether sqlite returned an error, because a corrupt file does both.
- * `detail` is NULL when there is nothing to say; `when` is unix time, and
- * 0 means no pass has been made.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gboolean  ok;                    /* both checks ran AND both passed     */
-    gboolean  ran;                   /* both checks actually executed       */
-    gint64    when;                  /* unix time of the pass, 0 = never    */
-    gchar    *detail;                /* what went wrong, or NULL (owned)    */
-    gboolean  pending;               /* an async pass is running now        */
-} OnDbHealth;
-
-/* ---------------------------------------------------------------------------
  * OnDatabase — one open connection to the shared database.
  *
  * Fields:
@@ -99,11 +80,6 @@ typedef struct {
     gchar      *path;
     GHashTable *stmt_cache;   /* sql literal → sqlite3_stmt*, reused via
                                   reset+clear_bindings between calls        */
-    /* The last health pass over this file, held IN MEMORY for the life
-     * of the connection and deliberately never written down — see
-     * on_db_health_check_async().                                          */
-    OnDbHealth  health;
-    gpointer    health_job;   /* the async pass in flight, or NULL (db.c) */
     GArray     *txn_hooks;    /* what runs when the open write transaction
                                   ends (on_db_txn_on_end), in order         */
 } OnDatabase;
@@ -206,8 +182,9 @@ typedef struct {
  * shared schema; an existing file that is empty (0 bytes) or not a shared
  * database (an old notes.db or tasks.db, anything unstamped) is REFUSED
  * untouched, as is one on a network or cloud-synced folder — so nothing
- * may create an empty file at the path first.  Only the main connection,
- * at launch or "Create a New Database", uses it; every other connection
+ * may create an empty file at the path first.  The app never creates the
+ * database (camb.io Database Manager does): only the development seeder and the
+ * tests, which build their own, use it; every connection the app opens
  * uses on_db_open_existing.
  *   path — the database file, or NULL for shared_db_path() ($CAMBIO_SHARED_DB,
  *          else the pointer file, else the per-user default).
@@ -218,63 +195,15 @@ OnDatabase *on_db_open(const gchar *path, gchar **err);
 
 /* ---------------------------------------------------------------------------
  * on_db_open_existing() — on_db_open that never creates the file
- * (shared_db_open_existing): for every connection but the main one at
- * launch — the workers (backup, search, grid cards, media scan), the
- * first-run "Open a Database File…" trial and File > Open Database File….
- * A file the user moved aside (a restore, a rollback) is refused as
- * missing rather than silently replaced by an empty database.
+ * (shared_db_open_existing): the app's main connection at launch and
+ * every worker's (search, grid cards, media scan).  A missing file, or
+ * one the user moved aside (a restore, a rollback), is refused rather
+ * than silently replaced by an empty database.
  * Inputs and output as on_db_open.                                         */
 OnDatabase *on_db_open_existing(const gchar *path, gchar **err);
 
 /* Close the database and free the handle.  Safe to call with NULL.         */
 void on_db_close(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_db_health_check_async() — shared_db_check (integrity, foreign keys,
- * stamps, WAL, the cross-table invariants) against the OPEN database, on
- * a worker thread with its own READ-ONLY connection to the file (a
- * connection must not cross threads), so nothing waits for it:
- * PRAGMA integrity_check walks every page and every index entry, ~2 s per
- * 600 MB on a warm local disk and longer from a cold iCloud Drive file.
- * on_db_health() reports `pending` until the verdict lands; it is then
- * remembered on the connection, so a later reader (the Settings window) can
- * say WHEN the answer was true, and `done` is called on the main thread.
- *
- * It writes NOTHING to the database, and that is the point rather than an
- * optimisation: a verdict stamped into the file would make a health check
- * MUTATE THE FILE IT WAS MEASURING, so the SHA-256 shown beside it would
- * move on every press of Update while the user's notes sat untouched.  The
- * cost, accepted: the verdict does not survive a restart.  Living on the
- * connection is also what makes File → Open Database safe — the old
- * connection's verdict cannot outlive the file it describes.  Closing the database while the pass runs abandons it —
- * `done` is never called for a connection that is gone.  One pass per
- * connection at a time: a second call while one is pending is ignored.
- *   db   — the open database.
- *   done — called on the main thread with the verdict recorded; may be
- *          NULL.
- *   data — its user data.
- * ------------------------------------------------------------------------- */
-typedef void (*OnDbHealthFunc)(OnDatabase *db, gpointer data);
-void on_db_health_check_async(OnDatabase *db, OnDbHealthFunc done,
-                              gpointer data);
-
-/* on_db_health() — the stored result, or NULL when no pass has been made or
- * started on this connection.  Borrowed, owned by the connection: do not
- * free it, and do not keep it across another pass.  While
- * `pending` is set the other fields are the PREVIOUS pass's (or zero).    */
-const OnDbHealth *on_db_health(OnDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * on_db_file_sha256() — hex SHA-256 of the file at `path`, or NULL when it
- * cannot be read (g_free the result).
- *
- * Answers about the file AS IT STANDS, and is never stored: a live database
- * changes with the next thing the user types, and writing the digest into
- * the database would change it again.  A caller showing one is showing a
- * fingerprint of this moment, which is exactly what makes it comparable
- * with `shasum -a 256` or with a backup.
- * ------------------------------------------------------------------------- */
-gchar *on_db_file_sha256(const gchar *path);
 
 /* ----------------------------- notes ------------------------------------ */
 

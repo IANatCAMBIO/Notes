@@ -5,8 +5,8 @@
  * hands it to every window; the development seeder and the tests build a
  * zeroed one holding only the database.
  *
- * LAYERING.  The core (db, document, serialize, export, backup,
- * action_edit, search_job) never includes a UI header and never names a UI
+ * LAYERING.  The core (db, document, serialize, export, action_edit,
+ * search_job) never includes a UI header and never names a UI
  * function.  Everything it needs from the UI it asks for through the HOOKS
  * below, which the UI installs at startup.  These replace the GTK build's
  * upward calls from the core into the UI.
@@ -70,10 +70,7 @@
  *                                             sections by the date the list
  *                                             is sorted by (on_grid_group_t)
  *
- * Backups (backup.h) and the pull (action_sync.h):
- *   backup_running — a backup pass is on its worker; keeps a timer tick
- *                    off a manual "Back Up Now".
- *   backup_timer   — the periodic backup poll, or 0 before it is armed.
+ * The pull (action_sync.h):
  *   sync_timer     — the poll for outside changes, or 0 before it is armed.
  *   rev_tasks      — the change_rev 'tasks' revision the pull last acted
  *                    on (or that only Notes' own commits moved since).
@@ -86,8 +83,7 @@
  * Hooks (see the invariant above; each says who calls it):
  *   notify_notes_changed — the set of notes, tags or action items
  *                    changed: rebuild the sidebar and the notes pane.
- *                    Called by the UI after structural changes and by
- *                    on_app_switch_db.
+ *                    Called by the UI after structural changes.
  *   notify_note_saved — ONE note's content was saved; nothing structural
  *                    changed: update that note's row only.  Called by the
  *                    editor.
@@ -99,12 +95,6 @@
  *                    scheduled tasks and calendar events — may have
  *                    changed.  Called by the poll (action_sync.c) after
  *                    its own work, on every outside commit it sees.
- *   notify_db_state — the health verdict changed (a check started or
- *                    landed) or a backup pass ended: repaint the Settings
- *                    database plate and backup line.  Called by
- *                    on_app_db_health_start and backup.c.
- *   show_notice    — show a modal message the user must see (the integrity
- *                    check found damage).  Called by on_app_db_health_start.
  *   open_note      — open the editor for a note, or raise it if it is
  *                    already open, and bring it to the front.  Returns
  *                    FALSE when the note does not exist.  Called by the
@@ -142,8 +132,8 @@
  *                    unsaved edits (or deleting its note if it was left
  *                    blank) before the call returns.  An editor whose save
  *                    fails stays open and the hook returns FALSE.  Called
- *                    by on_app_shutdown and on_app_switch_db.  See
- *                    app_lifecycle.h for the contract.
+ *                    by on_app_shutdown.  See app_lifecycle.h for the
+ *                    contract.
  * ------------------------------------------------------------------------- */
 /* How the grid groups its cards (the grid_group preference). */
 typedef enum {
@@ -175,8 +165,6 @@ typedef struct OnApp {
     gboolean    apple_notes;          /* copy every note into Apple Notes (apple_notes.h) */
     on_grid_group_t grid_group;
 
-    gboolean    backup_running;
-    on_timer_id_t   backup_timer;
     on_timer_id_t   sync_timer;
     gint64      rev_tasks;
     gint64      rev_notes;
@@ -187,9 +175,6 @@ typedef struct OnApp {
     void        (*notify_note_saved)(struct OnApp *app, gint64 note_id);
     void        (*notify_status)(struct OnApp *app, const gchar *message);
     void        (*notify_outside_commit)(struct OnApp *app);
-    void        (*notify_db_state)(struct OnApp *app);
-    void        (*show_notice)(struct OnApp *app, const gchar *title,
-                               const gchar *message);
     gboolean    (*open_note)(struct OnApp *app, gint64 note_id);
     OnDocument *(*live_document)(struct OnApp *app, gint64 note_id);
     void        (*live_edited)(struct OnApp *app, gint64 note_id);
@@ -238,21 +223,5 @@ void on_app_status(OnApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
  * Output: a new string; g_free it.
  * ------------------------------------------------------------------------- */
 gchar *on_app_location_text(OnApp *app, const gchar *location);
-
-/* ---------------------------------------------------------------------------
- * on_app_db_health_start() — THE integrity check of the open database:
- * launch and File > Open Database File… run it every time, with no switch
- * (a check that can be skipped can only report a silence that means "not
- * looked"), and Settings' Update on request.  It runs on a worker with its own read-only
- * connection; when the verdict lands on the main thread it posts a status
- * line, or calls app->show_notice if anything is wrong, and then
- * app->notify_db_state.
- *
- * Inputs:
- *   app — the application context, its database open
- *
- * Output: none.
- * ------------------------------------------------------------------------- */
-void on_app_db_health_start(OnApp *app);
 
 #endif /* ON_APP_CORE_H */

@@ -332,6 +332,7 @@ separator(void)
 - (BOOL)offer_tags;
 - (void)update_status;
 - (void)rebuild_format_groups;
+- (void)update_meeting_button;
 @end
 
 /* ── Commands ───────────────────────────────────────────────────────────── */
@@ -644,7 +645,7 @@ run_previous_meeting(id target, id sender)
     NotesEditorWindow *ed = target;
     gint64 last = on_previous_meeting_find(ed.app->db, ed.note_id, ed.window.title);
     if (last == 0 || !on_editor_window_open(ed.app, last, NotesEditorRevealNone, 0, nil))
-        [ed rebuild_format_groups];
+        [ed update_meeting_button];
 }
 
 /*
@@ -992,15 +993,7 @@ rebuild_format_groups
     NSStackView *find = (NSStackView *)self.search_field.superview;
     for (NSView *v in self.meeting_views) [find removeArrangedSubview:v], [v removeFromSuperview];
     self.meeting_views = @[];
-    self.previous_meeting = on_previous_meeting_find(self.app->db, self.note_id, self.window.title);
-    if (self.previous_meeting != 0) {
-        self.meeting_views = @[format_button(@"clock.arrow.circlepath", @"", @"previous-meeting", NO),
-                               group_separator()];
-        [find insertArrangedSubview:self.meeting_views[1] atIndex:0];
-        [find insertArrangedSubview:self.meeting_views[0] atIndex:0];
-        /* The field has no bezel of its own to space it, as a button has. */
-        [find setCustomSpacing:on_look_format_group_gap afterView:self.meeting_views[1]];
-    }
+    [self update_meeting_button];
     [NSLayoutConstraint activateConstraints:@[
         [groups.leadingAnchor constraintEqualToAnchor:self.format_bar.leadingAnchor
                                              constant:shared_look_status_inset],
@@ -1009,6 +1002,30 @@ rebuild_format_groups
                                                           constant:on_look_format_group_gap],
     ]];
     [self sync_format_buttons];
+}
+
+/*
+ * update_meeting_button — look the previous meeting up again for the
+ * title as it stands (previous_meeting.h) and show the clock, left of the
+ * find field and set apart by a rule, only while there is one.  The views
+ * are made or removed only when that changes, so a title being typed
+ * leaves the format bar alone.
+ */
+- (void)
+update_meeting_button
+{
+    self.previous_meeting = on_previous_meeting_find(self.app->db, self.note_id, self.window.title);
+    if ((self.previous_meeting != 0) == (self.meeting_views.count > 0)) return;
+    NSStackView *find = (NSStackView *)self.search_field.superview;
+    for (NSView *v in self.meeting_views) [find removeArrangedSubview:v], [v removeFromSuperview];
+    self.meeting_views = @[];
+    if (self.previous_meeting == 0) return;
+    self.meeting_views = @[format_button(@"clock.arrow.circlepath", @"", @"previous-meeting", NO),
+                           group_separator()];
+    [find insertArrangedSubview:self.meeting_views[1] atIndex:0];
+    [find insertArrangedSubview:self.meeting_views[0] atIndex:0];
+    /* The field has no bezel of its own to space it, as a button has. */
+    [find setCustomSpacing:on_look_format_group_gap afterView:self.meeting_views[1]];
 }
 
 /*
@@ -1298,8 +1315,15 @@ reveal:(NotesEditorReveal)reveal ordinal:(NSInteger)ordinal
 - (void)
 queue_autosave
 {
+    /* The status bar shows the note's tags and whether it is saved: it is
+     * set again only when one of those changed, not on every keystroke.
+     * The tag flag is the one save takes; taken here, it goes to
+     * sync_tags just as save would put it.                                */
+    BOOL tags = on_note_view_take_tags_modified(self.note_view);
+    if (tags) self.sync_tags = YES;
+    BOOL was_dirty = self.dirty;
     self.dirty = YES;
-    [self update_status];
+    if (tags || !was_dirty) [self update_status];
     [self hold_check];
     if (self.held_uid != 0) [self hold_arm];
     [self.autosave_timer invalidate];
@@ -1474,7 +1498,8 @@ save
     gboolean    ok = (!tags || on_note_document_save_tags(db, self.note_id, doc)) &&
                      on_note_document_save_holding(db, self.note_id, doc, self.sync_actions,
                                                    hold, &actions_changed) &&
-                     on_db_note_stamp(db, self.note_id, &saved);
+                     (on_db_note_saved_stamp(db, self.note_id, &saved) ||
+                      on_db_note_stamp(db, self.note_id, &saved));
     if (ok) {
         __weak NotesEditorWindow *ws = self;
         BOOL    refresh = tags || actions_changed;
@@ -1743,7 +1768,7 @@ windowWillClose:(NSNotification *)note
 /*
  * refresh_title: — the window title follows the document's first line; a
  * new title may have, or lose, an earlier meeting of its series, so the
- * format bar is rebuilt then (previous_meeting.h).
+ * clock is looked up again then (update_meeting_button).
  *
  * Inputs:
  *   doc — the note's document
@@ -1755,7 +1780,7 @@ refresh_title:(OnDocument *)doc
     BOOL changed = ![self.window.title isEqualToString:@(title)];
     self.window.title = @(title);
     g_free(title);
-    if (changed) [self rebuild_format_groups];
+    if (changed) [self update_meeting_button];
 }
 
 /*

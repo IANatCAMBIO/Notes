@@ -291,14 +291,19 @@ on_text_layout_new(const on_text_content_t *content,
         CFRelease(sf);
     }
 
+    /* Every offset below is converted by a cursor walking forward through
+     * the text, so the layout costs one pass, not one per run and line.    */
+    on_utf_cursor_t cur;
+    on_utf_cursor_init(&cur, content->text, content->len);
+
     /* Run-level inline format flags (not applied in code/plain mode). */
     if (!style->plain && cf_len > 0) {
         size_t at = 0;
         for (size_t k = 0; k < content->n_runs; k++) {
             const OnRun *r = &content->runs[k];
             if (r->len == 0) { at += r->len; continue; }
-            CFIndex cs = (CFIndex)on_utf16_from_utf8(content->text, at);
-            CFIndex ce = (CFIndex)on_utf16_from_utf8(content->text, at + r->len);
+            CFIndex cs = (CFIndex)on_utf_cursor_units(&cur, at);
+            CFIndex ce = (CFIndex)on_utf_cursor_units(&cur, at + r->len);
 
             /* Bold (additive to what's already there). */
             if (r->flags & ON_FMT_BOLD) {
@@ -345,7 +350,7 @@ on_text_layout_new(const on_text_content_t *content,
     L->box_cf_offsets = calloc(content->n_boxes + 1, sizeof *L->box_cf_offsets);
     for (size_t b = 0; b < content->n_boxes; b++) {
         const on_text_box_t *box = &content->boxes[b];
-        CFIndex cf_off = (CFIndex)on_utf16_from_utf8(content->text, box->offset);
+        CFIndex cf_off = (CFIndex)on_utf_cursor_units(&cur, box->offset);
         L->box_cf_offsets[b] = cf_off;
         CTRunDelegateRef d = make_box_delegate(box->width, box->height);
         CFAttributedStringSetAttribute(ms, CFRangeMake(cf_off, 1),
@@ -360,9 +365,8 @@ on_text_layout_new(const on_text_content_t *content,
         CGFloat comp[] = { hc.r, hc.g, hc.b, hc.a };
         CGColorRef cgc = CGColorCreate(sp, comp);
         for (size_t h = 0; h < content->n_hits; h++) {
-            CFIndex hs = (CFIndex)on_utf16_from_utf8(content->text,
-                                                      content->hits[h].start);
-            CFIndex he = (CFIndex)on_utf16_from_utf8(content->text,
+            CFIndex hs = (CFIndex)on_utf_cursor_units(&cur, content->hits[h].start);
+            CFIndex he = (CFIndex)on_utf_cursor_units(&cur,
                 content->hits[h].start + content->hits[h].len);
             /* Use background colour attribute for CoreText. */
             CFAttributedStringSetAttribute(ms, CFRangeMake(hs, he - hs),
@@ -374,9 +378,8 @@ on_text_layout_new(const on_text_content_t *content,
 
     /* Preedit (marked text): single underline over the marked range. */
     if (content->marked.len > 0) {
-        CFIndex ms_start = (CFIndex)on_utf16_from_utf8(content->text,
-                                                        content->marked.start);
-        CFIndex ms_end   = (CFIndex)on_utf16_from_utf8(content->text,
+        CFIndex ms_start = (CFIndex)on_utf_cursor_units(&cur, content->marked.start);
+        CFIndex ms_end   = (CFIndex)on_utf_cursor_units(&cur,
             content->marked.start + content->marked.len);
         CFIndex ul = kCTUnderlineStyleSingle;
         CFNumberRef n = CFNumberCreate(NULL, kCFNumberCFIndexType, &ul);
@@ -400,10 +403,9 @@ on_text_layout_new(const on_text_content_t *content,
         for (size_t k = 0; k < content->n_runs; k++) {
             const OnRun *r = &content->runs[k];
             if ((r->flags & ON_FMT_STRIKE) && r->len > 0) {
-                CFIndex cs = (CFIndex)on_utf16_from_utf8(content->text, at);
+                CFIndex cs = (CFIndex)on_utf_cursor_units(&cur, at);
                 L->strikes[cnt].cf_start = cs;
-                L->strikes[cnt].cf_end   = (CFIndex)on_utf16_from_utf8(
-                    content->text, at + r->len);
+                L->strikes[cnt].cf_end   = (CFIndex)on_utf_cursor_units(&cur, at + r->len);
                 shared_rgba_t sc = (r->flags & ON_FMT_TAG)
                     ? shared_look_pick(on_look_tag, style->dark)
                     : cs >= action_from ? ac : tc;
@@ -444,7 +446,7 @@ on_text_layout_new(const on_text_content_t *content,
         }
         size_t idx = L->n_lines;
         L->line_cf_start[idx]   = pos;
-        L->line_byte_start[idx] = on_utf8_from_utf16(L->utf8, L->len, (size_t)pos);
+        L->line_byte_start[idx] = on_utf_cursor_bytes(&cur, (size_t)pos);
 
         /* Suggest a line break. */
         CFIndex remaining = cf_len - pos;

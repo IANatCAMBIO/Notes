@@ -74,8 +74,22 @@ static const NSTimeInterval blink_interval = 0.56;
  * call should answer YES). */
 @property (nonatomic, assign) BOOL fresh;
 
-/* Find state. */
+/* Find state: the text, and its hits as the layout has them (OnDocHit
+ * records in document order; nil = to be found over the whole note). */
 @property (nonatomic, copy) NSString *find_text;
+@property (nonatomic, strong) NSData *hits;
+
+/* The blocks edited since the find hits were last brought up to date
+ * (refresh_hits): edit_lo..edit_hi when edit_any, and edit_structural when
+ * blocks came or went, which moves every hit after them. */
+@property (nonatomic, assign) BOOL  edit_any;
+@property (nonatomic, assign) BOOL  edit_structural;
+@property (nonatomic, assign) guint edit_lo;
+@property (nonatomic, assign) guint edit_hi;
+
+/* Where the caret or the selection was drawn when repaint last ran, so a
+ * move repaints there and where it went, not the whole view. */
+@property (nonatomic, assign) NSRect painted;
 
 /* Input method preedit. */
 @property (nonatomic, copy) NSString *preedit;     /* marked text, or nil      */
@@ -106,12 +120,45 @@ static void tag_choose(NotesNoteView *v, NSString *name);
 
 /* ── Document observer ───────────────────────────────────────────────────── */
 
+/*
+ * note_edited — remember which blocks an edit touched, for refresh_hits.
+ *
+ * Inputs:
+ *   v          — the view
+ *   i          — the block changed (or where blocks came or went)
+ *   structural — blocks were inserted or removed
+ */
+static void
+note_edited(NotesNoteView *v, guint i, BOOL structural)
+{
+    if (structural) v.edit_structural = YES;
+    if (!v.edit_any) {
+        v.edit_any = YES;
+        v.edit_lo  = v.edit_hi = i;
+        return;
+    }
+    v.edit_lo = MIN(v.edit_lo, i);
+    v.edit_hi = MAX(v.edit_hi, i);
+}
+
+/*
+ * obs_block_changed / obs_blocks_inserted / obs_blocks_removed — the
+ * document's observer: relayed to the layout, so exactly the changed
+ * blocks lay out again, and noted for the find hits.
+ *
+ * Inputs:
+ *   doc  — the document
+ *   i    — the first block concerned
+ *   n    — how many blocks came or went
+ *   data — the view
+ */
 static void
 obs_block_changed(OnDocument *doc, guint i, gpointer data)
 {
     (void)doc;
     NotesNoteView *v = (__bridge NotesNoteView *)data;
     on_doc_layout_block_changed(v.layout, i);
+    note_edited(v, i, NO);
 }
 
 static void
@@ -120,6 +167,7 @@ obs_blocks_inserted(OnDocument *doc, guint i, guint n, gpointer data)
     (void)doc;
     NotesNoteView *v = (__bridge NotesNoteView *)data;
     on_doc_layout_blocks_inserted(v.layout, i, n);
+    note_edited(v, i, YES);
 }
 
 static void
@@ -128,6 +176,7 @@ obs_blocks_removed(OnDocument *doc, guint i, guint n, gpointer data)
     (void)doc;
     NotesNoteView *v = (__bridge NotesNoteView *)data;
     on_doc_layout_blocks_removed(v.layout, i, n);
+    note_edited(v, i, YES);
 }
 
 static const OnDocumentObserver OBSERVER = {
@@ -284,19 +333,24 @@ caret_ensure_text(NotesNoteView *v)
 /* ── Layout width ────────────────────────────────────────────────────────── */
 
 /*
- * layout_width — the width the layout lays the page out in: the view's
- * whole width (the layout keeps the page margins itself, and its
- * coordinates are the view's).
+ * sync_width — give the layout the width it lays the page out in: the
+ * view's whole width (the layout keeps the page margins itself, and its
+ * coordinates are the view's).  A view not yet sized (a new editor, before
+ * its window is laid out) gives none: laid out at a sliver of a width,
+ * every line would wrap at each word only to be laid out again a moment
+ * later at the window's.
  *
  * Inputs:
  *   v — the view
  *
- * Output: points.
+ * Output: NO when the view has no width yet.
  */
-static double
-layout_width(NotesNoteView *v)
+static BOOL
+sync_width(NotesNoteView *v)
 {
-    return MAX(v.frame.size.width, 1.0);
+    if (v.frame.size.width <= 0) return NO;
+    on_doc_layout_set_width(v.layout, v.frame.size.width);
+    return YES;
 }
 
 /* ── Style helpers ───────────────────────────────────────────────────────── */
@@ -324,8 +378,72 @@ current_style(NotesNoteView *v)
 }
 
 /*
+ * band_rect — a band of the view, full width, from y0 down to y1, cut to
+ * the view.
+ *
+ * Inputs:
+ *   v      — the view
+ *   y0, y1 — the band, view coordinates; y1 may be HUGE_VAL
+ *
+ * Output: the rectangle (empty when the band is below the view).
+ */
+static NSRect
+band_rect(NotesNoteView *v, double y0, double y1)
+{
+    double bottom = MIN(y1, NSMaxY(v.bounds));
+    return NSMakeRect(0, y0, NSWidth(v.bounds), MAX(bottom - y0, 0.0));
+}
+
+/*
+ * shown_rect — where the caret or the selection is drawn now: the caret's
+ * box with a little slack, or the band of the selected blocks.
+ *
+ * Inputs:
+ *   v — the view
+ *
+ * Output: the rectangle, view coordinates.
+ */
+static NSRect
+shown_rect(NotesNoteView *v)
+{
+    OnPos a, b;
+    sel_bounds(v, &a, &b);
+    if (has_selection(v)) {
+        double y0, y1;
+        on_doc_layout_block_band(v.layout, a.block, b.block, &y0, &y1);
+        return band_rect(v, y0, y1);
+    }
+    on_rect_t r;
+    on_doc_layout_caret_rect(v.layout, v.caret, &r);
+    return NSInsetRect(NSMakeRect(r.x, r.y, r.w, r.h), -2, -2);
+}
+
+/*
+ * repaint — mark for drawing what looks different since the last call,
+ * and nothing else: the band the layout reports changed (an edit, find
+ * hits, a preedit; everything below when a height, a kind or the block
+ * count changed), the caret or selection where it was drawn, and where it
+ * is now.  A keystroke repaints its line, not every block on the screen.
+ *
+ * Inputs:
+ *   v — the view
+ */
+static void
+repaint(NotesNoteView *v)
+{
+    double y0, y1;
+    if (on_doc_layout_take_damage(v.layout, &y0, &y1))
+        [v setNeedsDisplayInRect:band_rect(v, y0, y1)];
+    NSRect now = shown_rect(v);
+    if (!NSEqualRects(now, v.painted)) [v setNeedsDisplayInRect:v.painted];
+    [v setNeedsDisplayInRect:now];
+    v.painted = now;
+}
+
+/*
  * fit_height — make the view as tall as the laid-out note (the width
- * stays: it follows the window).
+ * stays: it follows the window), and repaint what changed.  Nothing is
+ * laid out before the view has a width (sync_width).
  *
  * Inputs:
  *   v — the view
@@ -333,10 +451,11 @@ current_style(NotesNoteView *v)
 static void
 fit_height(NotesNoteView *v)
 {
+    if (v.frame.size.width <= 0) return;
     NSSize sz = v.frame.size;
     sz.height = MAX(on_doc_layout_height(v.layout), 1.0);
     [v setFrameSize:sz];
-    v.needsDisplay = YES;
+    repaint(v);
 }
 
 /*
@@ -351,7 +470,7 @@ apply_style(NotesNoteView *v)
 {
     OnDocLayoutStyle s = current_style(v);
     on_doc_layout_set_style(v.layout, &s);
-    on_doc_layout_set_width(v.layout, layout_width(v));
+    sync_width(v);
     fit_height(v);
 }
 
@@ -391,7 +510,7 @@ blink_restart(NotesNoteView *v)
     [v.blink_timer invalidate];
     v.blink_timer = nil;
     v.caret_on    = YES;
-    v.needsDisplay = YES;
+    if (v.frame.size.width > 0) repaint(v);
     if (v.window.firstResponder != v) return;      /* blinks only with the focus */
     __weak NotesNoteView *wv = v;
     v.blink_timer = [NSTimer scheduledTimerWithTimeInterval:blink_interval
@@ -404,7 +523,6 @@ blink_restart(NotesNoteView *v)
         on_doc_layout_caret_rect(sv.layout, sv.caret, &r);
         [sv setNeedsDisplayInRect:NSInsetRect(NSMakeRect(r.x, r.y, r.w, r.h), -2, -2)];
     }];
-    v.needsDisplay = YES;
 }
 
 /*
@@ -437,11 +555,14 @@ im_reset(NotesNoteView *v)
 }
 
 
-static OnDocHit *compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out);
+static void find_in_blocks(const OnDocument *doc, const char *needle, guint from, guint to,
+                           NSMutableData *hits);
 
 /*
- * refresh_hits — recompute the find highlights for the current find text
- * (after an edit or a load), without moving the selection.
+ * refresh_hits — bring the find highlights up to date for the current find
+ * text, without moving the selection.  After an edit within blocks only
+ * those blocks are searched again and their hits spliced in; blocks that
+ * came or went, a new find text or a new document search the whole note.
  *
  * Inputs:
  *   v — the view
@@ -449,10 +570,29 @@ static OnDocHit *compute_hits(const OnDocument *doc, NSString *needle, size_t *n
 static void
 refresh_hits(NotesNoteView *v)
 {
-    size_t n = 0;
-    OnDocHit *hits = compute_hits(v.doc, v.find_text, &n);
-    on_doc_layout_set_hits(v.layout, hits, n);
-    free(hits);
+    BOOL  edited = v.edit_any, whole = v.edit_structural || v.hits == nil;
+    guint lo = v.edit_lo, hi = v.edit_hi;
+    v.edit_any = v.edit_structural = NO;
+    const char *needle = v.find_text.UTF8String;
+    if (needle == NULL || *needle == '\0') {
+        on_doc_layout_set_hits(v.layout, NULL, 0);   /* none left: no work */
+        v.hits = nil;
+        return;
+    }
+    if (!whole && !edited) return;
+    NSMutableData *out = [NSMutableData data];
+    if (whole) {
+        find_in_blocks(v.doc, needle, 0, on_document_n_blocks(v.doc), out);
+    } else {
+        const OnDocHit *old = v.hits.bytes;
+        size_t          n   = v.hits.length / sizeof *old, k = 0;
+        for (; k < n && old[k].block < lo; k++) [out appendBytes:&old[k] length:sizeof *old];
+        find_in_blocks(v.doc, needle, lo, hi + 1, out);
+        for (; k < n; k++)
+            if (old[k].block > hi) [out appendBytes:&old[k] length:sizeof *old];
+    }
+    v.hits = out;
+    on_doc_layout_set_hits(v.layout, out.bytes, out.length / sizeof(OnDocHit));
 }
 
 /* ── Accessibility text ──────────────────────────────────────────────────── */
@@ -524,7 +664,7 @@ edit_settled(NotesNoteView *v, BOOL scroll)
      * reads text at the caret's byte offset with no other bound.          */
     v.caret  = clamp_pos(v.doc, v.caret);
     v.anchor = clamp_pos(v.doc, v.anchor);
-    on_doc_layout_set_width(v.layout, layout_width(v));
+    sync_width(v);
     refresh_hits(v);                    /* matches move with the edit */
     fit_height(v);
     if (scroll) scroll_to_caret(v);
@@ -1463,8 +1603,33 @@ find_in_text(const OnText *t, guint block, gint cell, const char *needle, NSMuta
 }
 
 /*
- * compute_hits — every match in the document, paragraphs and table cells
- * alike, in document order.
+ * find_in_blocks — every match in blocks [from, to), paragraphs and table
+ * cells alike, in document order.
+ *
+ * Inputs:
+ *   doc      — the document
+ *   needle   — what to find (UTF-8, not empty)
+ *   from, to — the blocks; `to` past the end is cut to it
+ *   hits     — the OnDocHit records to append to
+ */
+static void
+find_in_blocks(const OnDocument *doc, const char *needle, guint from, guint to,
+               NSMutableData *hits)
+{
+    to = MIN(to, on_document_n_blocks(doc));
+    for (guint i = from; i < to; i++) {
+        const OnBlock *b = on_document_block(doc, i);
+        if (b->text != NULL) {
+            find_in_text(b->text, i, -1, needle, hits);
+        } else if (b->kind == ON_BLOCK_TABLE) {
+            for (guint c = 0; c < b->cells->len; c++)
+                find_in_text(g_ptr_array_index(b->cells, c), i, (gint)c, needle, hits);
+        }
+    }
+}
+
+/*
+ * compute_hits — every match in the document, in document order.
  *
  * Inputs:
  *   doc    — the document
@@ -1480,15 +1645,7 @@ compute_hits(const OnDocument *doc, NSString *needle, size_t *n_out)
     const char *n8 = needle.UTF8String;
     if (n8 == NULL || *n8 == '\0') return NULL;
     NSMutableData *hits = [NSMutableData data];
-    for (guint i = 0; i < on_document_n_blocks(doc); i++) {
-        const OnBlock *b = on_document_block(doc, i);
-        if (b->text != NULL) {
-            find_in_text(b->text, i, -1, n8, hits);
-        } else if (b->kind == ON_BLOCK_TABLE) {
-            for (guint c = 0; c < b->cells->len; c++)
-                find_in_text(g_ptr_array_index(b->cells, c), i, (gint)c, n8, hits);
-        }
-    }
+    find_in_blocks(doc, n8, 0, on_document_n_blocks(doc), hits);
     *n_out = hits.length / sizeof(OnDocHit);
     if (*n_out == 0) return NULL;
     OnDocHit *out = malloc(hits.length);
@@ -2126,6 +2283,10 @@ init_with_app:(OnApp *)app
     _fresh  = YES;
     _pasteboard = NSPasteboard.generalPasteboard;
     on_document_set_observer(_doc, &OBSERVER, (__bridge void *)self);
+    /* Drawn only where repaint says: AppKit's default redraws all of a
+     * layer-backed view whenever its frame changes, which is every time a
+     * line is added or wraps. */
+    self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
     [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     apply_style(self);
     [self updateTrackingAreas];
@@ -2343,13 +2504,12 @@ setFrameSize:(NSSize)size
 {
     BOOL changed = size.width != self.frame.size.width;
     [super setFrameSize:size];
-    if (changed && _layout) {
-        on_doc_layout_set_width(_layout, layout_width(self));
+    if (changed && _layout && sync_width(self)) {
         double h = on_doc_layout_height(_layout);
         NSSize s = size;
         s.height = MAX(h, 1.0);
         [super setFrameSize:s];
-        self.needsDisplay = YES;
+        repaint(self);               /* every block re-wrapped: all of it */
     }
 }
 
@@ -2422,6 +2582,18 @@ mouseMoved:(NSEvent *)event
 }
 
 /* ── Drawing ─────────────────────────────────────────────────────────────── */
+
+/*
+ * isOpaque — the view paints its page over every rectangle it draws, so
+ * nothing behind it needs drawing first.
+ *
+ * Output: YES.
+ */
+- (BOOL)
+isOpaque
+{
+    return YES;
+}
 
 /*
  * drawRect: — fill the page, then delegate to doc_layout.
@@ -2719,8 +2891,7 @@ mouseDragged:(NSEvent *)event
     OnDocHitResult hit;
     [self hit_at_event:event out:&hit];
     _anchor = _drag_anchor;
-    set_caret(self, hit.pos, YES);
-    self.needsDisplay = YES;
+    set_caret(self, hit.pos, YES);   /* repaints where the selection was and is */
 }
 
 /*
@@ -3137,9 +3308,10 @@ load_document(NotesNoteView *view, OnDocument *doc, BOOL keep_place)
     view.anchor = clamp_pos(doc, keep_place ? anchor : start);
     on_document_take_tags_modified(doc);
     on_document_take_actions_modified(doc);
+    view.hits     = nil;                /* the new document's are still to find */
+    view.edit_any = view.edit_structural = NO;
     if (view.find_text != nil) on_note_view_find(view, view.find_text);
-    if (view.window != nil) {           /* a reload: lay the new document out now */
-        on_doc_layout_set_width(view.layout, layout_width(view));
+    if (view.window != nil && sync_width(view)) {  /* a reload: lay the new document out now */
         fit_height(view);
         view.needsDisplay = YES;
     }
@@ -3386,6 +3558,7 @@ void
 on_note_view_find(NotesNoteView *view, NSString *text)
 {
     view.find_text = (text.length > 0) ? text : nil;
+    view.hits      = nil;               /* a new text: search the whole note */
     refresh_hits(view);
     if (view.find_text != nil) {
         /* Select the first match at or after the caret, so the query

@@ -58,6 +58,7 @@
 #include "image_io.h"
 
 #include <glib/gstdio.h>
+#include <time.h>
 #include <mach/mach.h>
 #include <objc/message.h>
 #include <mach/mach_vm.h>
@@ -1179,6 +1180,208 @@ test_action_colour(void)
 
     on_doc_layout_free(L);
     on_document_free(doc);
+}
+
+/* ── Layout speed ───────────────────────────────────────────────────────── */
+
+/*
+ * The layout, relayed the document's changes as the note view relays them
+ * (note_view.m OBSERVER), so a keystroke here costs what one costs there.
+ */
+static void
+speed_block_changed(OnDocument *doc, guint i, gpointer data)
+{
+    (void)doc;
+    on_doc_layout_block_changed(data, i);
+}
+
+static void
+speed_blocks_inserted(OnDocument *doc, guint i, guint n, gpointer data)
+{
+    (void)doc;
+    on_doc_layout_blocks_inserted(data, i, n);
+}
+
+static void
+speed_blocks_removed(OnDocument *doc, guint i, guint n, gpointer data)
+{
+    (void)doc;
+    on_doc_layout_blocks_removed(data, i, n);
+}
+
+static const OnDocumentObserver SPEED_OBSERVER = {
+    .block_changed   = speed_block_changed,
+    .blocks_inserted = speed_blocks_inserted,
+    .blocks_removed  = speed_blocks_removed,
+};
+
+/*
+ * now_ms — a monotonic clock in milliseconds, for timing a stretch of work.
+ *
+ * Output: milliseconds since an arbitrary origin.
+ */
+static double
+now_ms(void)
+{
+    return (double)clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1e6;
+}
+
+/* The speed note's shape: a tag line and a title, then this many groups of
+ * a wrapping paragraph, two bullets and two numbered items, then a code
+ * run of this many lines, then a four-by-three table.                     */
+#define SPEED_GROUPS     100
+#define SPEED_CODE_LINES 200
+#define SPEED_WIDTH      600.0
+#define SPEED_SCREEN_H   800.0
+#define SPEED_KEYS       100
+
+/*
+ * speed_document — a long note of every text kind, the shape a note that
+ * has been typed into for a year takes: SPEED_GROUPS × (a paragraph that
+ * wraps twice at SPEED_WIDTH, two bullets, two numbered items), then a
+ * code run of SPEED_CODE_LINES lines.
+ *
+ * Output: the document (on_document_free it).
+ */
+static OnDocument *
+speed_document(void)
+{
+    GString *text = g_string_new("#speed\nA long note\n");
+    for (int g = 0; g < SPEED_GROUPS; g++) {
+        g_string_append_printf(text, "Paragraph %d: the quick brown fox jumps over the lazy dog, "
+                               "again and again, until the line has wrapped twice at six hundred "
+                               "points of width.\n", g);
+        g_string_append(text, "a bullet\nanother bullet\nfirst item\nsecond item\n");
+    }
+    for (int k = 0; k < SPEED_CODE_LINES; k++)
+        g_string_append_printf(text, "    code_line(%d);\n", k);
+    OnDocument *doc = on_document_from_text(text->str);
+    g_string_free(text, TRUE);
+    on_document_set_kind(doc, 0, ON_BLOCK_TAGS);
+    for (int g = 0; g < SPEED_GROUPS; g++) {
+        guint at = 2 + (guint)g * 5;
+        on_document_set_kind(doc, at + 1, ON_BLOCK_BULLET);
+        on_document_set_kind(doc, at + 2, ON_BLOCK_BULLET);
+        on_document_set_kind(doc, at + 3, ON_BLOCK_NUMBER);
+        on_document_set_kind(doc, at + 4, ON_BLOCK_NUMBER);
+    }
+    for (int k = 0; k < SPEED_CODE_LINES; k++)
+        on_document_set_kind(doc, 2 + SPEED_GROUPS * 5 + (guint)k, ON_BLOCK_CODE);
+    on_document_clear_undo(doc);
+    return doc;
+}
+
+/*
+ * speed_keystrokes — type SPEED_KEYS characters at the end of a block, the
+ * layout brought up to date after each as the note view does after an edit
+ * (its height is asked for), and time them.
+ *
+ * Inputs:
+ *   doc   — the document
+ *   L     — its layout
+ *   block — the block typed into
+ *
+ * Output: milliseconds per keystroke.
+ */
+static double
+speed_keystrokes(OnDocument *doc, OnDocLayout *L, guint block)
+{
+    on_doc_layout_height(L);
+    double t0 = now_ms();
+    for (int k = 0; k < SPEED_KEYS; k++) {
+        gsize end = on_document_block(doc, block)->text->text->len;
+        on_document_insert_text(doc, (OnPos){ block, -1, end }, "x", 1, 0);
+        on_doc_layout_height(L);
+    }
+    return (now_ms() - t0) / SPEED_KEYS;
+}
+
+/*
+ * speed_frames — draw one screen of the note, SPEED_SCREEN_H points from
+ * y, into a bitmap, ten times over, and time a frame.
+ *
+ * Inputs:
+ *   L — the layout
+ *   y — the top of the screen, content coordinates
+ *
+ * Output: milliseconds per frame.
+ */
+static double
+speed_frames(OnDocLayout *L, double y)
+{
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)SPEED_WIDTH
+                      pixelsHigh:(NSInteger)SPEED_SCREEN_H bitsPerSample:8 samplesPerPixel:4
+                        hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+                     bytesPerRow:0 bitsPerPixel:0];
+    CGContextRef ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep].CGContext;
+    CGContextTranslateCTM(ctx, 0, SPEED_SCREEN_H);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CGContextTranslateCTM(ctx, 0, -y);
+    OnDocPaint paint = { .clip = { 0, y, SPEED_WIDTH, SPEED_SCREEN_H },
+                         .caret_visible = true, .caret = { 2, -1, 0 } };
+    on_doc_layout_draw(L, ctx, &paint);          /* the first frame decodes and caches */
+    double t0 = now_ms();
+    for (int k = 0; k < 10; k++) on_doc_layout_draw(L, ctx, &paint);
+    return (now_ms() - t0) / 10.0;
+}
+
+/*
+ * test_layout_speed — what the editor's hot paths cost on a long note, in
+ * numbers rather than by feel: the first layout, a keystroke in a
+ * paragraph among lists, a keystroke in a long code run, and a frame of
+ * the list-heavy top and of the code run.  The numbers are printed for the
+ * record; the checks are ceilings an order of magnitude above what the
+ * paths cost, so that only a regression of kind — a keystroke laying the
+ * whole note out again, a frame typesetting what it could have kept —
+ * fails them, not a busy machine.
+ */
+static void
+test_layout_speed(void)
+{
+  @autoreleasepool {                   /* the frames' bitmaps go with the test */
+    OnDocument  *doc = speed_document();
+    OnDocLayout *L   = on_doc_layout_new(doc, on_look_font_size);
+    on_document_set_observer(doc, &SPEED_OBSERVER, L);
+    on_doc_layout_set_width(L, SPEED_WIDTH);
+    OnDocLayoutStyle style = { .title_line = true, .code_numbers = true, .code_copy = true };
+    on_doc_layout_set_style(L, &style);
+    guint n = on_document_n_blocks(doc);
+
+    double t0   = now_ms();
+    double h    = on_doc_layout_height(L);
+    double cold = now_ms() - t0;
+    double para = speed_keystrokes(doc, L, 2 + (SPEED_GROUPS / 2) * 5);
+    double code = speed_keystrokes(doc, L, 2 + SPEED_GROUPS * 5 + SPEED_CODE_LINES / 2);
+    on_rect_t code_top;
+    on_doc_layout_caret_rect(L, (OnPos){ 2 + SPEED_GROUPS * 5, -1, 0 }, &code_top);
+    double top_frame  = speed_frames(L, 0.0);
+    double code_frame = speed_frames(L, code_top.y - 10.0);
+    printf("     layout speed: %u blocks, %.0f pt tall; first layout %.1f ms; a keystroke "
+           "%.3f ms (paragraph) %.3f ms (code); a frame %.2f ms (lists) %.2f ms (code)\n",
+           n, h, cold, para, code, top_frame, code_frame);
+    check(cold < 500.0, "the first layout of a long note takes well under half a second");
+    check(para < 5.0 && code < 5.0, "a keystroke lays out the blocks it touched, not the note");
+    check(top_frame < 50.0 && code_frame < 50.0, "a frame draws a screen of lists or code without typesetting it anew");
+
+    /* What a keystroke repaints: its own block, unless the block's height
+     * or kind changed, when it is everything from there down.             */
+    double y0, y1, b0, b1;
+    guint  bullet = 3;               /* the first group's first bullet      */
+    on_doc_layout_take_damage(L, &y0, &y1);
+    on_document_insert_text(doc, (OnPos){ bullet, -1, 0 }, "x", 1, 0);
+    bool damaged = on_doc_layout_take_damage(L, &y0, &y1);
+    on_doc_layout_block_band(L, bullet, bullet, &b0, &b1);
+    check(damaged && y0 == b0 && y1 == b1, "a keystroke repaints its own line's band, not the screen");
+    check(!on_doc_layout_take_damage(L, &y0, &y1), "and nothing more once that is repainted");
+    on_document_set_kind(doc, bullet, ON_BLOCK_NUMBER);
+    damaged = on_doc_layout_take_damage(L, &y0, &y1);
+    check(damaged && y0 <= b0 && isinf(y1), "a new kind repaints from that line down: the numbers below follow it");
+
+    on_document_set_observer(doc, NULL, NULL);
+    on_doc_layout_free(L);
+    on_document_free(doc);
+  }
 }
 
 /*
@@ -3979,6 +4182,7 @@ main(void)
         test_accessibility();
         test_strike_snapshot();
         test_action_colour();
+        test_layout_speed();
         test_tag_suggestions();
         test_pointer();
         test_edit_tag(lib);

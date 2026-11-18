@@ -40,6 +40,8 @@
 
 typedef struct {
     bool                valid;
+    OnBlockKind         kind;       /* the block's kind when last laid out:
+                                       a change reaches its neighbours      */
     on_text_layout_t   *layout;     /* text blocks                           */
     double              y;          /* top, content coordinates              */
     double              h;          /* height INCLUDING BLOCK_GAP            */
@@ -74,8 +76,25 @@ struct OnDocLayout {
     /* find hits */
     OnDocHit         *hits;
     size_t            n_hits;
-    /* the code runs' "copy" word, made when first needed for the style */
+    /* What is drawn but is not text, made when first needed and kept
+     * until the look or the width changes (decor_free): the code runs'
+     * "copy" word, the bullet, the tag line's mark, the creation date, and
+     * the numbers of numbered lists and code lines, indexed by number.     */
     on_text_layout_t *copy_word;
+    on_text_layout_t *bullet;
+    on_text_layout_t *tag_mark;
+    on_text_layout_t *created;
+    bool              created_made; /* created is NULL with no creation time */
+    on_text_layout_t **list_numbers;
+    size_t            n_list_numbers;
+    on_text_layout_t **code_numbers;
+    size_t            n_code_numbers;
+    /* What looks different since on_doc_layout_take_damage last asked: the
+     * blocks dmg_first..dmg_last, or with dmg_tail everything from
+     * dmg_first down (a height, a kind or the block count changed).        */
+    bool              dmg_on;
+    bool              dmg_tail;
+    size_t            dmg_first, dmg_last;
 };
 
 /* ── BL helpers ─────────────────────────────────────────────────────────── */
@@ -161,6 +180,24 @@ code_run_starts(const OnDocLayout *L, size_t i)
     return on_document_block(L->doc, (guint)i)->kind == ON_BLOCK_CODE &&
            (i == 0 ||
             on_document_block(L->doc, (guint)(i - 1))->kind != ON_BLOCK_CODE);
+}
+
+/*
+ * code_run_ends — is block i the last block of its code run?  The test
+ * layout and drawing make for every code line; code_run_last walks the
+ * run, which made a long run quadratic.
+ *
+ * Inputs:
+ *   L — the layout
+ *   i — a CODE block
+ *
+ * Output: true when no CODE block follows it.
+ */
+static bool
+code_run_ends(const OnDocLayout *L, size_t i)
+{
+    return i + 1 >= (size_t)on_document_n_blocks(L->doc) ||
+           on_document_block(L->doc, (guint)(i + 1))->kind != ON_BLOCK_CODE;
 }
 
 /* ── content_width ──────────────────────────────────────────────────────── */
@@ -264,7 +301,30 @@ file_label_layout(const OnDocLayout *L, const gchar *name)
     return label;
 }
 
-/* ── tag_mark_layout ────────────────────────────────────────────────────── */
+/* ── Decorations ────────────────────────────────────────────────────────── */
+
+/*
+ * plain_layout — a short unwrapped text that is drawn but is not part of
+ * the note: a list's bullet or number, a code line's number, the tag
+ * line's mark.
+ *
+ * Inputs:
+ *   L     — the layout (appearance)
+ *   text  — the text, UTF-8
+ *   size  — its size in points
+ *   mono  — the monospaced font (code line numbers)
+ *   muted — the muted grey (code line numbers)
+ *
+ * Output: the layout (on_text_layout_free it).
+ */
+static on_text_layout_t *
+plain_layout(const OnDocLayout *L, const char *text, double size, bool mono, bool muted)
+{
+    on_text_content_t ct = { .text = text, .len = strlen(text) };
+    on_text_style_t   st = { .font_size = size, .scale = 1.0, .mono = mono,
+                             .muted = muted, .dark = L->style.dark };
+    return on_text_layout_new(&ct, &st);
+}
 
 /*
  * tag_mark_layout — the 🏷️ drawn before the tag line (on_look_tag_line_mark),
@@ -274,21 +334,68 @@ file_label_layout(const OnDocLayout *L, const gchar *name)
  * Inputs:
  *   L — the layout (appearance)
  *
- * Output: the layout (on_text_layout_free it).
+ * Output: the layout, BORROWED (kept until decor_free).
  */
 static on_text_layout_t *
-tag_mark_layout(const OnDocLayout *L)
+tag_mark_layout(OnDocLayout *L)
 {
-    OnRun run = { strlen(on_look_tag_line_mark), 0 };
-    on_text_content_t ct = { .text = on_look_tag_line_mark, .len = run.len, .runs = &run, .n_runs = 1 };
-    on_text_style_t st = { .font_size = on_look_tag_line_size, .scale = 1.0, .dark = L->style.dark };
-    return on_text_layout_new(&ct, &st);
+    if (L->tag_mark == NULL)
+        L->tag_mark = plain_layout(L, on_look_tag_line_mark, on_look_tag_line_size, false, false);
+    return L->tag_mark;
+}
+
+/*
+ * bullet_layout — a bulleted item's bullet.
+ *
+ * Inputs:
+ *   L — the layout (appearance)
+ *
+ * Output: the layout, BORROWED (kept until decor_free).
+ */
+static on_text_layout_t *
+bullet_layout(OnDocLayout *L)
+{
+    if (L->bullet == NULL)
+        L->bullet = plain_layout(L, "\xe2\x80\xa2", L->font_size, false, false);
+    return L->bullet;
+}
+
+/*
+ * number_layout — the number before a numbered item ("3."), or in a code
+ * line's gutter ("3"), made once per number and kept.
+ *
+ * Inputs:
+ *   L    — the layout (appearance, font size)
+ *   code — a code line's number rather than a list item's
+ *   n    — the number, 1 or more
+ *
+ * Output: the layout, BORROWED (kept until decor_free).
+ */
+static on_text_layout_t *
+number_layout(OnDocLayout *L, bool code, int n)
+{
+    on_text_layout_t ***cache = code ? &L->code_numbers : &L->list_numbers;
+    size_t            *count = code ? &L->n_code_numbers : &L->n_list_numbers;
+    size_t             k     = n > 0 ? (size_t)n : 0;
+    if (k >= *count) {
+        size_t grown = k + 16;
+        *cache = realloc(*cache, grown * sizeof **cache);
+        memset(*cache + *count, 0, (grown - *count) * sizeof **cache);
+        *count = grown;
+    }
+    if ((*cache)[k] == NULL) {
+        char text[16];
+        snprintf(text, sizeof text, code ? "%d" : "%d.", n);
+        (*cache)[k] = code ? plain_layout(L, text, L->font_size * 0.8, true, true)
+                           : plain_layout(L, text, L->font_size, false, false);
+    }
+    return (*cache)[k];
 }
 
 /* ── created_layout ─────────────────────────────────────────────────────── */
 
 /*
- * created_layout — the line under the tag line that shows the note's
+ * created_text_layout — the line under the tag line that shows the note's
  * creation date (YYYY-MM-DD, local time): the tag line's size, flush
  * right like it, bold, in the muted grey.  It is drawn, not text: the caret,
  * a selection and a delete never reach it.
@@ -300,7 +407,7 @@ tag_mark_layout(const OnDocLayout *L)
  *         no creation time.
  */
 static on_text_layout_t *
-created_layout(const OnDocLayout *L)
+created_text_layout(const OnDocLayout *L)
 {
     if (L->style.created_at <= 0) return NULL;
     time_t t = (time_t)L->style.created_at;
@@ -314,6 +421,49 @@ created_layout(const OnDocLayout *L)
                            .width = content_width(L), .flush = 1.0,
                            .bold = true, .muted = true, .dark = L->style.dark };
     return on_text_layout_new(&ct, &st);
+}
+
+/*
+ * created_layout — created_text_layout, made once and kept.
+ *
+ * Inputs:
+ *   L — the layout
+ *
+ * Output: the layout, BORROWED (kept until decor_free), or NULL when the
+ *         style has no creation time.
+ */
+static on_text_layout_t *
+created_layout(OnDocLayout *L)
+{
+    if (!L->created_made) {
+        L->created      = created_text_layout(L);
+        L->created_made = true;
+    }
+    return L->created;
+}
+
+/*
+ * decor_free — drop every kept decoration: the look or the width they
+ * were made for changed.
+ *
+ * Inputs:
+ *   L — the layout
+ */
+static void
+decor_free(OnDocLayout *L)
+{
+    on_text_layout_free(L->copy_word);
+    on_text_layout_free(L->bullet);
+    on_text_layout_free(L->tag_mark);
+    on_text_layout_free(L->created);
+    for (size_t k = 0; k < L->n_list_numbers; k++) on_text_layout_free(L->list_numbers[k]);
+    for (size_t k = 0; k < L->n_code_numbers; k++) on_text_layout_free(L->code_numbers[k]);
+    free(L->list_numbers);
+    free(L->code_numbers);
+    L->copy_word = L->bullet = L->tag_mark = L->created = NULL;
+    L->created_made   = false;
+    L->list_numbers   = L->code_numbers = NULL;
+    L->n_list_numbers = L->n_code_numbers = 0;
 }
 
 /* ── preedit helpers ────────────────────────────────────────────────────── */
@@ -533,6 +683,7 @@ layout_block(OnDocLayout *L, size_t i)
     BL *b         = &L->bl[i];
     const OnBlock *blk = on_document_block(L->doc, (guint)i);
     double cw     = content_width(L);
+    b->kind       = blk->kind;
 
     if (blk->kind == ON_BLOCK_IMAGE) {
         int iw = 24, ih = 24;
@@ -621,10 +772,8 @@ layout_block(OnDocLayout *L, size_t i)
         indent = L->style.code_numbers ? CODE_INSET_NUM : CODE_INSET;
     } else if (blk->kind == ON_BLOCK_TAGS) {
         /* Room for the mark before a full line of tags.                    */
-        on_text_layout_t *mark = tag_mark_layout(L);
         double mw, mh;
-        on_text_layout_size(mark, &mw, &mh);
-        on_text_layout_free(mark);
+        on_text_layout_size(tag_mark_layout(L), &mw, &mh);
         indent = mw + on_look_tag_line_mark_gap;
     }
     b->x = LEFT_MARGIN + indent;
@@ -649,17 +798,40 @@ layout_block(OnDocLayout *L, size_t i)
         if (created) {
             double cw2, ch;
             on_text_layout_size(created, &cw2, &ch);
-            on_text_layout_free(created);
             b->h += ch;
         }
     }
     if (blk->kind == ON_BLOCK_CODE) {
         if (code_run_starts(L, i))
             b->h += CODE_PAD;
-        if (code_run_last(L, i) == i)
+        if (code_run_ends(L, i))
             b->h += CODE_PAD;
     }
     b->valid = true;
+}
+
+/* ── damage ─────────────────────────────────────────────────────────────── */
+
+/*
+ * damage — record that block i looks different (on_doc_layout_take_damage).
+ *
+ * Inputs:
+ *   L    — the layout
+ *   i    — the block
+ *   tail — everything below it moved or changed too
+ */
+static void
+damage(OnDocLayout *L, size_t i, bool tail)
+{
+    if (!L->dmg_on) {
+        L->dmg_on    = true;
+        L->dmg_tail  = tail;
+        L->dmg_first = L->dmg_last = i;
+        return;
+    }
+    if (i < L->dmg_first) L->dmg_first = i;
+    if (i > L->dmg_last)  L->dmg_last  = i;
+    L->dmg_tail = L->dmg_tail || tail;
 }
 
 /* ── validate ───────────────────────────────────────────────────────────── */
@@ -686,9 +858,17 @@ validate(OnDocLayout *L)
     }
     double y = TOP_MARGIN;
     for (size_t i = 0; i < n; i++) {
-        if (!L->bl[i].valid) layout_block(L, i);
-        L->bl[i].y = y;
-        y += L->bl[i].h;
+        BL *b = &L->bl[i];
+        if (!b->valid) {
+            double      old_h    = b->h;     /* bl_clear keeps both          */
+            OnBlockKind old_kind = b->kind;
+            layout_block(L, i);
+            /* A new height moves every block below; a new kind renumbers
+             * the lists and code lines below.                               */
+            if (b->h != old_h || b->kind != old_kind) damage(L, i, true);
+        }
+        b->y = y;
+        y += b->h;
     }
     L->total_h = y - BLOCK_GAP + BOTTOM_MARGIN;
     L->geometry_valid = true;
@@ -696,10 +876,22 @@ validate(OnDocLayout *L)
 
 /* ── invalidate helpers ─────────────────────────────────────────────────── */
 
+/*
+ * invalidate — block i must be laid out again: it, at least, will look
+ * different.
+ *
+ * Inputs:
+ *   L — the layout
+ *   i — the block; past the end is ignored
+ */
 static void
 invalidate(OnDocLayout *L, size_t i)
 {
-    if (i < L->n_bl) { bl_clear_i(L, i); L->geometry_valid = false; }
+    if (i < L->n_bl) {
+        bl_clear_i(L, i);
+        L->geometry_valid = false;
+        damage(L, i, false);
+    }
 }
 
 static void
@@ -715,6 +907,7 @@ invalidate_all(OnDocLayout *L)
 {
     for (size_t k = 0; k < L->n_bl; k++) bl_clear_i(L, k);
     L->geometry_valid = false;
+    damage(L, 0, true);
 }
 
 /* ── text_top ───────────────────────────────────────────────────────────── */
@@ -917,7 +1110,7 @@ on_doc_layout_free(OnDocLayout *L)
     free(L->bl);
     free(L->pre_text);
     free(L->hits);
-    on_text_layout_free(L->copy_word);
+    decor_free(L);
     free(L);
 }
 
@@ -929,6 +1122,7 @@ on_doc_layout_set_width(OnDocLayout *L, double width)
 {
     if (width == L->width) return;
     L->width = width;
+    decor_free(L);                         /* the creation date is flush right */
     invalidate_all(L);
 }
 
@@ -939,8 +1133,7 @@ void
 on_doc_layout_set_style(OnDocLayout *L, const OnDocLayoutStyle *style)
 {
     L->style = *style;
-    on_text_layout_free(L->copy_word);     /* its colour follows the appearance */
-    L->copy_word = NULL;
+    decor_free(L);                         /* their colours follow the appearance */
     invalidate_all(L);
 }
 
@@ -950,7 +1143,13 @@ on_doc_layout_set_style(OnDocLayout *L, const OnDocLayoutStyle *style)
 void
 on_doc_layout_block_changed(OnDocLayout *L, guint i)
 {
-    invalidate_around(L, (size_t)i);
+    /* Only a new kind reaches the neighbours (a code run's padding); text,
+     * flags and cells are the block's own, so typing lays out one block. */
+    if ((size_t)i < L->n_bl &&
+        on_document_block(L->doc, i)->kind == L->bl[i].kind)
+        invalidate(L, (size_t)i);
+    else
+        invalidate_around(L, (size_t)i);
 }
 
 /*
@@ -968,6 +1167,7 @@ on_doc_layout_blocks_inserted(OnDocLayout *L, guint i, guint n)
     invalidate_around(L, (size_t)i);
     invalidate(L, (size_t)(i + n));
     L->geometry_valid = false;
+    damage(L, (size_t)i, true);
 }
 
 /*
@@ -984,6 +1184,7 @@ on_doc_layout_blocks_removed(OnDocLayout *L, guint i, guint n)
     L->n_bl -= actual;
     invalidate_around(L, (size_t)i);
     L->geometry_valid = false;
+    damage(L, (size_t)i, true);
 }
 
 /*
@@ -1114,6 +1315,49 @@ on_doc_layout_code_run(OnDocLayout *L, guint block, guint *first,
     size_t la = code_run_last(L, (size_t)block);
     *first = (guint)f;
     *count = (guint)(la - f + 1);
+}
+
+/*
+ * on_doc_layout_take_damage — see doc_layout.h.
+ */
+bool
+on_doc_layout_take_damage(OnDocLayout *L, double *y0, double *y1)
+{
+    validate(L);
+    if (!L->dmg_on) return false;
+    L->dmg_on = false;
+    if (L->n_bl == 0) {
+        *y0 = 0.0;
+        *y1 = HUGE_VAL;
+        return true;
+    }
+    /* Blocks removed from the end leave dmg_first past it: the last block
+     * down, then, which is where the removed ones were.                   */
+    size_t first = L->dmg_first < L->n_bl ? L->dmg_first : L->n_bl - 1;
+    size_t last  = L->dmg_last  < L->n_bl ? L->dmg_last  : L->n_bl - 1;
+    if (last < first) last = first;
+    *y0 = first == 0 ? 0.0 : L->bl[first].y;   /* the top margin with block 0 */
+    *y1 = L->dmg_tail ? HUGE_VAL : L->bl[last].y + L->bl[last].h;
+    return true;
+}
+
+/*
+ * on_doc_layout_block_band — see doc_layout.h.
+ */
+void
+on_doc_layout_block_band(OnDocLayout *L, guint first, guint last, double *y0, double *y1)
+{
+    validate(L);
+    if (L->n_bl == 0) {
+        *y0 = 0.0;
+        *y1 = L->total_h;
+        return;
+    }
+    size_t a = first < L->n_bl ? first : L->n_bl - 1;
+    size_t b = last  < L->n_bl ? last  : L->n_bl - 1;
+    if (b < a) { size_t t = a; a = b; b = t; }
+    *y0 = L->bl[a].y;
+    *y1 = L->bl[b].y + L->bl[b].h;
 }
 
 /*
@@ -1744,24 +1988,15 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
         /* Text block. */
         double ty = text_top(L, i);
         if (blk->kind == ON_BLOCK_CODE) {
-            double bg_h = b->h - (code_run_last(L, i) == i ? BLOCK_GAP : 0.0);
+            double bg_h = b->h - (code_run_ends(L, i) ? BLOCK_GAP : 0.0);
             on_paint_fill_rect(ctx,
                 (on_rect_t){ LEFT_MARGIN, b->y, content_width(L), bg_h },
                 shared_look_pick(on_look_code_fill, L->style.dark));
             if (L->style.code_numbers) {
-                char num[16];
-                snprintf(num, sizeof num, "%d", code_run);
-                on_text_content_t nc = { .text = num, .len = strlen(num) };
-                on_text_style_t ns = {
-                    .font_size = L->font_size * 0.8,
-                    .scale = 1.0, .mono = true, .muted = true,
-                    .dark = L->style.dark, .width = 0.0
-                };
-                on_text_layout_t *nl = on_text_layout_new(&nc, &ns);
+                on_text_layout_t *nl = number_layout(L, true, code_run);
                 double nw, nh;
                 on_text_layout_size(nl, &nw, &nh);
                 on_text_layout_draw(nl, ctx, b->x - 8.0 - nw, ty + 1.0);
-                on_text_layout_free(nl);
             }
         }
         if (!b->layout) continue;
@@ -1772,26 +2007,15 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
         }
         /* List prefix. */
         if (blk->kind == ON_BLOCK_BULLET) {
-            const char *bullet = "\xe2\x80\xa2";
-            on_text_content_t bc = { .text = bullet, .len = 3 };
-            on_text_style_t bs = { .font_size = L->font_size, .scale = 1.0,
-                                   .dark = L->style.dark };
-            on_text_layout_t *bl2 = on_text_layout_new(&bc, &bs);
+            on_text_layout_t *bl2 = bullet_layout(L);
             double bw, bh;
             on_text_layout_size(bl2, &bw, &bh);
             on_text_layout_draw(bl2, ctx, b->x - 12.0 - bw, ty);
-            on_text_layout_free(bl2);
         } else if (blk->kind == ON_BLOCK_NUMBER) {
-            char num[16];
-            snprintf(num, sizeof num, "%d.", number_run);
-            on_text_content_t nc = { .text = num, .len = strlen(num) };
-            on_text_style_t ns = { .font_size = L->font_size, .scale = 1.0,
-                                   .dark = L->style.dark };
-            on_text_layout_t *nl = on_text_layout_new(&nc, &ns);
+            on_text_layout_t *nl = number_layout(L, false, number_run);
             double nw, nh;
             on_text_layout_size(nl, &nw, &nh);
             on_text_layout_draw(nl, ctx, b->x - 8.0 - nw, ty);
-            on_text_layout_free(nl);
         } else if (blk->kind == ON_BLOCK_TAGS) {
             /* The mark, just before the first character (or the caret of
              * an empty line, at its right end).                            */
@@ -1802,13 +2026,11 @@ on_doc_layout_draw(OnDocLayout *L, CGContextRef ctx, const OnDocPaint *p)
             on_text_layout_size(mark, &mw, &mh);
             on_text_layout_draw(mark, ctx, b->x + first.x - on_look_tag_line_mark_gap - mw,
                                 ty + first.y + (first.h - mh) / 2.0);
-            on_text_layout_free(mark);
             on_text_layout_t *created = created_layout(L);
             if (created) {
                 double pw, ph;
                 on_text_layout_size(b->layout, &pw, &ph);
                 on_text_layout_draw(created, ctx, LEFT_MARGIN, ty + ph);
-                on_text_layout_free(created);
             }
         } else if (blk->kind == ON_BLOCK_CHECK) {
             /* Checkbox: centred on the first line. */

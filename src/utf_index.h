@@ -45,4 +45,54 @@ size_t on_utf16_from_utf8(const char *text, size_t bytes);
  * ------------------------------------------------------------------------- */
 size_t on_utf8_from_utf16(const char *text, size_t len, size_t units);
 
+/* ---------------------------------------------------------------------------
+ * on_utf_cursor_t — the same conversions for a run of offsets that mostly
+ * go FORWARD through one text (a layout's runs, lines, hits, boxes): each
+ * picks up where the last one stopped instead of counting from byte 0, so
+ * a block's conversions cost one pass over it, not one per offset.  An
+ * offset behind the cursor starts again from the beginning.  The two
+ * functions above are this cursor used once.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    const char *text;                /* valid UTF-8                          */
+    size_t      len;                 /* its length in bytes                  */
+    size_t      byte, unit;          /* where it stands: a character boundary
+                                        and its UTF-16 offset               */
+} on_utf_cursor_t;
+
+/* ---------------------------------------------------------------------------
+ * on_utf_cursor_init() — a cursor at the start of a text.
+ *
+ * Inputs:
+ *   cursor — the cursor to set
+ *   text   — valid UTF-8, kept by the caller while the cursor is used
+ *   len    — its length in bytes
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_utf_cursor_init(on_utf_cursor_t *cursor, const char *text, size_t len);
+
+/* ---------------------------------------------------------------------------
+ * on_utf_cursor_units() — on_utf16_from_utf8 through a cursor.
+ *
+ * Inputs:
+ *   cursor — the cursor; moved to `bytes`
+ *   bytes  — a byte offset on a character boundary, at most the length
+ *
+ * Output: the UTF-16 offset of that position.
+ * ------------------------------------------------------------------------- */
+size_t on_utf_cursor_units(on_utf_cursor_t *cursor, size_t bytes);
+
+/* ---------------------------------------------------------------------------
+ * on_utf_cursor_bytes() — on_utf8_from_utf16 through a cursor (the same
+ * rounding back out of a surrogate pair, the same clamping).
+ *
+ * Inputs:
+ *   cursor — the cursor; moved to the result
+ *   units  — a UTF-16 offset
+ *
+ * Output: the byte offset.
+ * ------------------------------------------------------------------------- */
+size_t on_utf_cursor_bytes(on_utf_cursor_t *cursor, size_t units);
+
 #endif /* ON_UTF_INDEX_H */

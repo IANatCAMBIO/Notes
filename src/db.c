@@ -552,6 +552,30 @@ on_db_note_files_keep(OnDatabase *db, gint64 note_id, const gint64 *keep,
     return ok;
 }
 
+/* FNV-1a 64-bit parameters (the note stamp's hash).                       */
+#define FNV64_OFFSET 0xcbf29ce484222325ULL
+#define FNV64_PRIME  0x100000001b3ULL
+
+/*
+ * note_blob_hash — the note stamp's hash: FNV-1a 64 over a blob's bytes.
+ *
+ * Inputs:
+ *   blob — the bytes; NULL with n 0 for an empty note
+ *   n    — how many
+ *
+ * Output: the hash (the FNV offset basis for no bytes).
+ */
+static guint64
+note_blob_hash(const guchar *blob, gint64 n)
+{
+    guint64 hash = FNV64_OFFSET;
+    for (gint64 i = 0; i < n; i++) {
+        hash ^= blob[i];
+        hash *= FNV64_PRIME;
+    }
+    return hash;
+}
+
 /*
  * on_db_note_save — see db.h.
  */
@@ -559,24 +583,44 @@ gboolean
 on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                 const guint8 *content, gsize len, const gchar *body_text)
 {
+    db->saved_id = 0;
     sqlite3_stmt *stmt = cached_prepare(db,
         "UPDATE notes SET title=?, content=?, body_text=?, "
-        "updated_at=strftime('%s','now') WHERE id=?");
-    if (stmt != NULL) {
-        sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
-        if (content != NULL && len > 0)
-            sqlite3_bind_blob(stmt, 2, content, (int)len, SQLITE_TRANSIENT);
-        else
-            sqlite3_bind_null(stmt, 2);
-        if (body_text != NULL)
-            sqlite3_bind_text(stmt, 3, body_text, -1, SQLITE_TRANSIENT);
-        else
-            sqlite3_bind_null(stmt, 3);
-        sqlite3_bind_int64(stmt, 4, id);
+        "updated_at=strftime('%s','now') WHERE id=? RETURNING updated_at");
+    if (stmt == NULL)
+        return FALSE;
+    gboolean has = content != NULL && len > 0;   /* an empty note stores NULL */
+    sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+    if (has)
+        sqlite3_bind_blob(stmt, 2, content, (int)len, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(stmt, 2);
+    if (body_text != NULL)
+        sqlite3_bind_text(stmt, 3, body_text, -1, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(stmt, 3);
+    sqlite3_bind_int64(stmt, 4, id);
+    /* One row back, then done.  No row means the note is gone (deleted
+     * behind an open editor): that is a failed save, never a silent
+     * success.                                                            */
+    gint64 updated_at = 0;
+    int    rc         = sqlite3_step(stmt);
+    gboolean ok       = rc == SQLITE_ROW;
+    if (ok) {
+        updated_at = sqlite3_column_int64(stmt, 0);
+        rc = sqlite3_step(stmt);
+        ok = rc == SQLITE_DONE;
     }
-    /* No row changed means the note is gone (deleted behind an open
-     * editor): that is a failed save, never a silent success.             */
-    return cached_stmt_done(db, stmt) && sqlite3_changes(db->handle) == 1;
+    if (rc != SQLITE_DONE)
+        g_warning("db: statement failed: %s", sqlite3_errmsg(db->handle));
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    if (ok) {
+        db->saved_id          = id;
+        db->saved_stamp       = (OnNoteStamp){ updated_at, has ? (gint64)len : 0,
+                                               note_blob_hash(has ? content : NULL, has ? len : 0) };
+    }
+    return ok;
 }
 
 /*
@@ -1682,9 +1726,6 @@ on_db_action_pending(OnDatabase *db, gint64 note_id)
     return ids;
 }
 
-/* FNV-1a 64-bit parameters (the note stamp's hash).                       */
-#define FNV64_OFFSET 0xcbf29ce484222325ULL
-#define FNV64_PRIME  0x100000001b3ULL
 
 /*
  * on_db_note_stamp — see db.h.  The hash is FNV-1a 64 over the blob bytes
@@ -1703,17 +1744,26 @@ on_db_note_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp)
     if (found) {
         const guchar *blob = sqlite3_column_blob(stmt, 1);
         gint64        n    = sqlite3_column_bytes(stmt, 1);
-        guint64       hash = FNV64_OFFSET;
-        for (gint64 i = 0; i < n; i++) {
-            hash ^= blob[i];
-            hash *= FNV64_PRIME;
-        }
         stamp->updated_at = sqlite3_column_int64(stmt, 0);
         stamp->size       = n;
-        stamp->hash       = hash;
+        stamp->hash       = note_blob_hash(blob, n);
     }
     sqlite3_reset(stmt);
     return found;
+}
+
+/*
+ * on_db_note_saved_stamp — see db.h.
+ */
+gboolean
+on_db_note_saved_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp)
+{
+    if (db->saved_id == 0 || db->saved_id != id) {
+        memset(stamp, 0, sizeof *stamp);
+        return FALSE;
+    }
+    *stamp = db->saved_stamp;
+    return TRUE;
 }
 
 /*
@@ -2278,6 +2328,29 @@ on_db_note_is_event_note(OnDatabase *db, int64_t note_id)
     bool bound = sqlite3_step(stmt) == SQLITE_ROW;
     sqlite3_finalize(stmt);
     return bound;
+}
+
+/*
+ * on_db_note_previous_titled — see db.h.
+ */
+int64_t
+on_db_note_previous_titled(OnDatabase *db, int64_t note_id, const char *title,
+                           int64_t created_at)
+{
+    sqlite3_stmt *stmt = prepare(db,
+        "SELECT id FROM notes WHERE " SHARED_DB_NOTE_VISIBLE_SQL " AND title = ? AND id <> ? "
+        "AND (created_at < ? OR (created_at = ? AND id < ?)) "
+        "ORDER BY created_at DESC, id DESC LIMIT 1");
+    if (stmt == NULL)
+        return 0;
+    sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, note_id);
+    sqlite3_bind_int64(stmt, 3, created_at);
+    sqlite3_bind_int64(stmt, 4, created_at);
+    sqlite3_bind_int64(stmt, 5, note_id);
+    int64_t found = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    return found;
 }
 
 /*

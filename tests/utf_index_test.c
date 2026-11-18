@@ -51,5 +51,18 @@ main(void)
         round = round && on_utf8_from_utf16(mixed, mixed_len, on_utf16_from_utf8(mixed, b)) == b;
     }
     check(round, "byte -> unit -> byte is the identity at every boundary");
+
+    /* The cursor gives the one-shot answers whatever order it is asked in:
+     * forward, then back to the start, then mixing the two directions.     */
+    on_utf_cursor_t cur;
+    on_utf_cursor_init(&cur, text, len);
+    bool cursor_ok = true;
+    for (size_t i = 0; i < sizeof boundaries / sizeof boundaries[0]; i++)
+        cursor_ok = cursor_ok && on_utf_cursor_units(&cur, boundaries[i].bytes) == boundaries[i].units;
+    for (size_t i = 0; i < sizeof boundaries / sizeof boundaries[0]; i++)
+        cursor_ok = cursor_ok && on_utf_cursor_bytes(&cur, boundaries[i].units) == boundaries[i].bytes;
+    cursor_ok = cursor_ok && on_utf_cursor_units(&cur, 3) == 2 && on_utf_cursor_bytes(&cur, 4) == 6 &&
+                on_utf_cursor_bytes(&cur, 99) == len && on_utf_cursor_units(&cur, 1) == 1;
+    check(cursor_ok, "a cursor answers as the one-shot conversions, forward, backward and mixed");
     return check_result();
 }

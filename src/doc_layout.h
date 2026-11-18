@@ -263,6 +263,40 @@ void on_doc_layout_line_at(OnDocLayout *layout, OnPos pos, OnPos *a, OnPos *b);
 void on_doc_layout_code_run(OnDocLayout *layout, guint block, guint *first,
                             guint *count);
 
+/* ---------------------------------------------------------------------------
+ * on_doc_layout_take_damage() — the band of the content that looks
+ * different since the last call: blocks laid out again for an edit, a
+ * preedit, find hits, a new width or style, and everything below a block
+ * whose height or kind changed or that was inserted or removed (the blocks
+ * below moved, or their list and code numbers did).  The view repaints
+ * only this band after an edit instead of the whole note.  Selection and
+ * caret are the view's own and are not counted here.
+ *
+ * Inputs:
+ *   layout — the layout (laid out first)
+ *   y0, y1 — receive the band, content coordinates; y1 is HUGE_VAL when
+ *            everything below y0 changed
+ *
+ * Output: false when nothing changed (y0, y1 untouched); each call clears
+ *         what it reported.
+ * ------------------------------------------------------------------------- */
+bool on_doc_layout_take_damage(OnDocLayout *layout, double *y0, double *y1);
+
+/* ---------------------------------------------------------------------------
+ * on_doc_layout_block_band() — the vertical band blocks first..last cover,
+ * the gap after the last included: what the view repaints when the
+ * selection over them changes.
+ *
+ * Inputs:
+ *   layout      — the layout (laid out first)
+ *   first, last — block indexes, either order; past the end is clamped
+ *   y0, y1      — receive the band, content coordinates
+ *
+ * Output: none.
+ * ------------------------------------------------------------------------- */
+void on_doc_layout_block_band(OnDocLayout *layout, guint first, guint last,
+                              double *y0, double *y1);
+
 /* ── Painting ───────────────────────────────────────────────────────────── */
 
 typedef struct {

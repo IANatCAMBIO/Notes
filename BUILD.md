@@ -151,7 +151,7 @@ change forces a re-sign.
 | `lifted_logic_test` | the app lock between real processes (busy while held, free once the holder dies, released by shutdown), `action_edit` (headless and live), `search_job`, the open policy (the file `$CAMBIO_SHARED_DB` names, WAL; an old `notes.db` refused byte for byte untouched; a missing database refused and never created), shutdown order (and its refusal while an editor cannot save), an unreadable note never treated as empty, export file names and the flat export's tags line, the tag-scoped search |
 | `utf_index_test` | UTF-8 byte ↔ UTF-16 unit offsets |
 | `ui_probe_test` (app objects, in-process) | the `tests/ui/*.txt` scripts replayed against the note view: typing, keys, clicks, the input method, tables, find, tags |
-| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, an unreadable note refused, Quick Note, a failed save never dropped, an outside rename reconciled into an open editor (undoable, caret/selection/scroll kept), an outside rewrite of an open note reloaded or (unsaved edits) offered for Reload, a same-second same-size rewrite caught by the blob hash before the autosave, refused titles pushed back from an open note, a rolled-back pull leaving the editor dirty, no library refresh inside a transaction, permanent delete only of what is still in the Trash, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); the day planner (hidden until ⇧⌘D, remembered, today's scheduled tasks, no calendar read while it is off, an event's note made — Attendees: line, bullets, a blank line, caret on the empty line below that — then reopened, read-only); writes light and dark snapshots to `dev/snapshots` |
+| `ui_smoke_test` (app objects, in-process; also `make ui-check`) | library and editor windows on a test database: hooks installed, save on close, flush, blank-note deletion, an unreadable note refused, Quick Note, a failed save never dropped, an outside rename reconciled into an open editor (undoable, caret/selection/scroll kept), an outside rewrite of an open note reloaded or (unsaved edits) offered for Reload, a same-second same-size rewrite caught by the blob hash before the autosave, refused titles pushed back from an open note, a rolled-back pull leaving the editor dirty, no library refresh inside a transaction, permanent delete only of what is still in the Trash, closed windows deallocated, no heap growth over 40 open/close cycles, no megabyte image regions (with a control); the editor's speed on a 700-block note (first layout, a keystroke, a frame, printed as `layout speed:`, with ceilings that catch a whole-note relayout or a frame that typesets anew) and that a keystroke repaints its own line's band, a new kind everything below; the day planner (hidden until ⇧⌘D, remembered, today's scheduled tasks, no calendar read while it is off, an event's note made — Attendees: line, bullets, a blank line, caret on the empty line below that — then reopened, read-only); writes light and dark snapshots to `dev/snapshots` |
 
 Each test runs with `NOTES_DATA_DIR` set to its own folder under
 `dev/test/` and `CAMBIO_SHARED_DB` to `shared_data.db` inside it;
@@ -180,7 +180,9 @@ checks an unattended run can make — closed windows released, heap growth
 over open/close cycles, no full-size image held for a small view — are done
 in-process by `ui_smoke_test` (`make ui-check`).  With developer mode on,
 the outside tools remain the stronger check; point them at a running
-`make run`.
+`make run`.  For the same reason `sample` is not used to profile the
+editor: the `layout speed:` line `make ui-check` prints is the measurement
+to compare before and after a change to the layout or drawing.
 
 ## Platform notes
 

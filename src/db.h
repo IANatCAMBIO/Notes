@@ -64,6 +64,18 @@
 #include "shared_db.h"
 
 /* ---------------------------------------------------------------------------
+ * OnNoteStamp — what an open editor compares to tell that a note was
+ * rewritten by another writer since it loaded or saved it: the row's
+ * updated_at, the length of its blob and a 64-bit FNV-1a hash of the blob
+ * bytes (so a rewrite in the same second to the same size is still seen).
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64  updated_at;
+    gint64  size;
+    guint64 hash;
+} OnNoteStamp;
+
+/* ---------------------------------------------------------------------------
  * OnDatabase — one open connection to the shared database.
  *
  * Fields:
@@ -82,6 +94,8 @@ typedef struct {
                                   reset+clear_bindings between calls        */
     GArray     *txn_hooks;    /* what runs when the open write transaction
                                   ends (on_db_txn_on_end), in order         */
+    gint64      saved_id;     /* the note the last on_db_note_save wrote, */
+    OnNoteStamp saved_stamp;  /* and its stamp (on_db_note_saved_stamp)   */
 } OnDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -226,22 +240,19 @@ gboolean on_db_note_save(OnDatabase *db, gint64 id, const gchar *title,
                          const guint8 *content, gsize len,
                          const gchar *body_text);
 
-/* ---------------------------------------------------------------------------
- * OnNoteStamp — what an open editor compares to tell that a note was
- * rewritten by another writer since it loaded or saved it: the row's
- * updated_at, the length of its blob and a 64-bit FNV-1a hash of the blob
- * bytes (so a rewrite in the same second to the same size is still seen).
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gint64  updated_at;
-    gint64  size;
-    guint64 hash;
-} OnNoteStamp;
 
 /* on_db_note_stamp() — note `id`'s stamp as stored now (read inside the
  * caller's transaction, if one is open).  Returns FALSE when the note does
  * not exist or cannot be read (*stamp is then zeroed).                    */
 gboolean on_db_note_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp);
+
+/* on_db_note_saved_stamp() — note `id`'s stamp as this connection's last
+ * on_db_note_save left it, taken from the bytes it wrote rather than read
+ * back: what on_db_note_stamp would answer right after that save, without
+ * reading and hashing the blob a second time.  Returns FALSE (and zeroes
+ * *stamp) when the last save on this connection was not of `id` or
+ * failed; call on_db_note_stamp then.                                     */
+gboolean on_db_note_saved_stamp(OnDatabase *db, gint64 id, OnNoteStamp *stamp);
 
 /* on_db_note_stamp_same() — whether two stamps describe the same stored
  * note (every field equal).                                               */
@@ -738,6 +749,20 @@ int64_t on_db_event_note(OnDatabase *db, const char *event_id, int64_t occurrenc
  * Returns true when it is bound to one.
  * ------------------------------------------------------------------------- */
 bool on_db_note_is_event_note(OnDatabase *db, int64_t note_id);
+
+/* ---------------------------------------------------------------------------
+ * on_db_note_previous_titled() — the latest note out of the Trash with
+ * exactly this title from before a point in (created_at, id) order: the
+ * earlier meeting of a series (previous_meeting.h).  One row from SQLite,
+ * not the whole note list.
+ *   db         — open database.
+ *   note_id    — the note asking; never its own answer.
+ *   title      — the title to match, byte for byte.
+ *   created_at — the asking note's creation time, unix seconds.
+ * Returns the note's id, or 0 when there is none.
+ * ------------------------------------------------------------------------- */
+int64_t on_db_note_previous_titled(OnDatabase *db, int64_t note_id, const char *title,
+                                   int64_t created_at);
 
 /* ---------------------------------------------------------------------------
  * on_db_event_note_bind() — record (or replace) the note taken for an

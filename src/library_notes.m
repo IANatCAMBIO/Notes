@@ -47,6 +47,7 @@
 #include "config.h"
 #include "db.h"
 #include "image_io.h"
+#include "paint.h"
 #include "serialize.h"
 
 #include <glib.h>
@@ -497,9 +498,10 @@ card_body(const OnDocument *doc)
 
 /*
  * render_card — a note's grid card: a square on_look_thumb_size card in
- * the card colour with a 1 pt border, its first image (decoded capped at
- * card_decode_px) fitted into the top, never enlarged, then its body text,
- * small and grey, clipped to the card (GTK render_note_thumb).  Rendered
+ * the card colour with a 1 pt border and on_look_thumb_radius corners, its
+ * first image (decoded capped at card_decode_px) fitted into the top, never
+ * enlarged, then its body text, small and grey, clipped to the card (GTK
+ * render_note_thumb).  Rendered
  * once into a bitmap at the screen's scale.  Runs on a worker.
  *
  * Inputs:
@@ -539,12 +541,11 @@ render_card(OnDatabase *db, gint64 note_id, BOOL dark, CGFloat scale)
     }
     CGContextScaleCTM(ctx, scale, scale);
 
-    shared_rgba_t bg = shared_look_pick(on_look_card, dark), bd = shared_look_pick(on_look_card_border, dark);
-    CGContextSetRGBFillColor(ctx, bg.r, bg.g, bg.b, bg.a);
-    CGContextFillRect(ctx, CGRectMake(0, 0, sz, sz));
-    CGContextSetRGBStrokeColor(ctx, bd.r, bd.g, bd.b, bd.a);
-    CGContextSetLineWidth(ctx, 1);
-    CGContextStrokeRect(ctx, CGRectMake(0.5, 0.5, sz - 1, sz - 1));
+    /* Rounded: the corners outside the curve stay transparent, so the
+     * grid's background (or the selection) shows there.                    */
+    on_paint_rounded_rect(ctx, (on_rect_t){ 0, 0, sz, sz }, on_look_thumb_radius,
+                          shared_look_pick(on_look_card, dark),
+                          shared_look_pick(on_look_card_border, dark), 1.0);
 
     CGFloat top = card_pad;          /* used from the card's top edge down */
     if (img) {

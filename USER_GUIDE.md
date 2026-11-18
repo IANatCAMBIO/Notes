@@ -22,6 +22,10 @@ tags Tasks uses (one set in the shared file).
   always led by a 🏷️ that is part of the line's look, not its text (the
   caret, a selection and a delete never reach it; search and export never
   see it). The editor's status bar lists them too (`#Salt #Stride`).
+- When a note's tags change, the library window rebuilds its sidebar and
+  note list once the note is saved, a moment after you stop typing. Its
+  status bar shows a spinner and "Refreshing Library…" at its left while
+  it does; typing in the editor waits until it is done.
 - Type a tag straight into the tag line: a word gets its # as you start
   it, and only tags can be typed there; Return goes to the title.
   Anywhere else, typing **#** opens the list of known tags at once; keep

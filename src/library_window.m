@@ -10,6 +10,8 @@
 #include "identity.h"
 #include "look.h"
 
+#import <QuartzCore/QuartzCore.h>
+
 /* The toolbar's own items, beside the commands'. */
 static NSToolbarItemIdentifier const search_item_ident = @"notes.search-field";
 
@@ -59,8 +61,11 @@ static const char *const win_h_key = "win_h";
 @property (nonatomic, strong) NotesPlannerHost *planner_host; /* the planner and its delegate */
 @property (nonatomic, strong) NSView *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height;   /* 0 while hidden */
-@property (nonatomic, strong) NSProgressIndicator *sync_spinner;  /* left, while notes go to Apple Notes */
-@property (nonatomic, strong) NSTextField *sync_label;        /* "Syncing 3 of 12 notes to Apple Notes" */
+@property (nonatomic, strong) NSProgressIndicator *sync_spinner;  /* left, while the library refreshes
+                                                                   or notes go to Apple Notes */
+@property (nonatomic, strong) NSTextField *sync_label;        /* "Refreshing Library…", or "Syncing 3
+                                                                 of 12 notes to Apple Notes" */
+@property (nonatomic, assign) on_timer_id_t refresh_timer;    /* ends "Refreshing Library…"; 0 = not shown */
 @property (nonatomic, strong) NSTextField *status_path;       /* centre: the selection */
 @property (nonatomic, strong) NSTextField *status_event;      /* right: the last event */
 @property (nonatomic, assign) on_timer_id_t status_timer;     /* clears status_event; 0 = none */
@@ -151,8 +156,8 @@ init_with_library:(NotesLibrary *)lib
     shared_ui_use_ui_font(win.contentView);      /* the sidebar keeps its own size */
     [self update_location];
     __weak NotesLibraryWindow *ws = self;
-    on_apple_notes_observe_progress(^{ [ws update_sync_progress]; });
-    [self update_sync_progress];                 /* a run may be under way already */
+    on_apple_notes_observe_progress(^{ [ws update_busy]; });
+    [self update_busy];                          /* a run may be under way already */
     return self;
 }
 
@@ -202,6 +207,7 @@ build_content
     self.sync_spinner.style       = NSProgressIndicatorStyleSpinning;
     self.sync_spinner.controlSize = NSControlSizeMini;
     self.sync_spinner.hidden      = YES;
+    self.sync_spinner.usesThreadedAnimation = YES;   /* spins while a refresh holds the main thread */
     self.sync_spinner.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:self.sync_spinner];
     self.sync_label   = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentLeft);
@@ -223,8 +229,8 @@ build_content
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-shared_look_status_h],
         [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
         [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-        /* The sync's spinner and count at the left, while notes are going
-         * to Apple Notes (hidden otherwise). */
+        /* The spinner and what is under way at the left, while the library
+         * refreshes or notes go to Apple Notes (hidden otherwise). */
         [self.sync_spinner.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:inset],
         [self.sync_spinner.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
         [self.sync_label.leadingAnchor constraintEqualToAnchor:self.sync_spinner.trailingAnchor
@@ -350,25 +356,62 @@ update_location
 }
 
 /*
- * update_sync_progress — the status bar's left side: while notes are being
- * pushed to Apple Notes (apple_notes.h on_apple_notes_progress), a spinner
- * and "Syncing 3 of 12 notes to Apple Notes"; nothing otherwise.
+ * update_busy — the status bar's left side: a spinner and what is under
+ * way — "Refreshing Library…" while a refresh is shown
+ * (on_library_window_refreshing), else, while notes are being pushed to
+ * Apple Notes (apple_notes.h on_apple_notes_progress), "Syncing 3 of 12
+ * notes to Apple Notes"; nothing otherwise.
  */
 - (void)
-update_sync_progress
+update_busy
 {
     int current = 0, total = 0;
     on_apple_notes_progress(&current, &total);
-    BOOL syncing = total > 0;
-    if (syncing) {
+    BOOL busy = self.refresh_timer != 0 || total > 0;
+    if (self.refresh_timer != 0) {
+        self.sync_label.stringValue = @"Refreshing Library\u2026";
+    } else if (total > 0) {
         self.sync_label.stringValue = [NSString stringWithFormat:@"Syncing %d of %d note%s to Apple Notes",
                                        current, total, total == 1 ? "" : "s"];
-        [self.sync_spinner startAnimation:nil];
-    } else {
-        [self.sync_spinner stopAnimation:nil];
     }
-    self.sync_spinner.hidden = !syncing;
-    self.sync_label.hidden   = !syncing;
+    if (busy) [self.sync_spinner startAnimation:nil];
+    else      [self.sync_spinner stopAnimation:nil];
+    self.sync_spinner.hidden = !busy;
+    self.sync_label.hidden   = !busy;
+}
+
+/*
+ * refresh_ended — the refresh timer's callback: "Refreshing Library…" has
+ * been up long enough, and the refresh it announced is over (the timer
+ * cannot fire while the refresh holds the main thread): the bar goes back.
+ *
+ * Inputs:
+ *   data — the NotesLibraryWindow, unretained: the controller removes the
+ *          timer when its window closes
+ */
+static void
+refresh_ended(void *data)
+{
+    NotesLibraryWindow *controller = (__bridge NotesLibraryWindow *)data;
+    controller.refresh_timer = 0;
+    [controller update_busy];
+}
+
+/*
+ * show_refreshing — put "Refreshing Library…" and the spinner up and on
+ * screen now, before the refresh blocks the main thread; (re)arm the timer
+ * that takes them down.
+ */
+- (void)
+show_refreshing
+{
+    on_timer_remove(self.refresh_timer);
+    self.refresh_timer = on_timer_add(on_look_refresh_hold, false, refresh_ended,
+                                      (__bridge void *)self, NULL);
+    [self update_busy];
+    if (!self.window.visible) return;
+    [self.window displayIfNeeded];   /* drawn now, not when the run loop next waits */
+    [CATransaction flush];           /* and handed to the window server */
 }
 
 /*
@@ -575,6 +618,8 @@ windowWillClose:(NSNotification *)note
     }
     on_timer_remove(self.status_timer);
     self.status_timer = 0;
+    on_timer_remove(self.refresh_timer);
+    self.refresh_timer = 0;
     on_apple_notes_observe_progress(nil);
     [self.planner_host shut_down];
     on_library_notes_closed();
@@ -779,6 +824,16 @@ on_library_window_planner_changed(NotesLibrary *lib)
 {
     [library_window follow_calendar_switch];
     [library_window reload_planner];
+}
+
+/*
+ * on_library_window_refreshing — see library_window.h.
+ */
+void
+on_library_window_refreshing(NotesLibrary *lib)
+{
+    (void)lib;
+    [library_window show_refreshing];
 }
 
 /*

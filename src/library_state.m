@@ -234,6 +234,7 @@ void
 on_library_refresh_all(NotesLibrary *lib)
 {
     if (!lib.window) return;
+    on_library_window_refreshing(lib);   /* said before the panes are rebuilt */
     /* The bar's buttons first: the notes refresh that follows (here, or
      * the sidebar's fallback to All Notes) lights the selected one. */
     on_library_favorites_refresh(lib);

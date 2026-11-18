@@ -14,6 +14,7 @@
 | Carbon (`RegisterEventHotKey` only) | New Note's system-wide shortcut, ⌃⌥⌘N (`../shared_ui/src/shared_hotkey.m`); needs no Accessibility permission | macOS SDK | |
 | CoreData | the Apple Notes copy (`src/apple_notes.m`) reads and saves Apple Notes' store through Notes' own context; the store framework itself, NotesShared, is PRIVATE and is loaded with `dlopen` at run time, never linked — see below | macOS SDK | |
 | EventKit | the day planner's calendar: the macOS Calendar's events (`../shared_ui/src/shared_calendar.m`); asks for calendar access once, when the calendar is switched on, the reason in `Info.plist` (`NSCalendarsFullAccessUsageDescription`) | macOS SDK | |
+| QuartzCore | the library status bar's "Refreshing Library…" is drawn and flushed to the screen before a refresh holds the main thread (`CATransaction flush`, `src/library_window.m`) | macOS SDK | |
 
 ```sh
 export PATH=/opt/local/bin:$PATH    # MacPorts pkg-config

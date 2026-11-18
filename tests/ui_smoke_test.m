@@ -3211,7 +3211,13 @@ test_notes_pane(NotesLibrary *lib)
     on_note_remove_tags(&app, alpha, &menu_tag, 1);
     on_note_remove_tags(&app, charlie, &menu_tag, 1);
     on_library_refresh_all(lib);
-    pump(0.1);
+    NSTextField *refreshing = label_with_text(lib.window.contentView, @"Refreshing Library\u2026");
+    NSProgressIndicator *spinner = (NSProgressIndicator *)find_view(lib.window.contentView,
+                                                                    NSProgressIndicator.class, Nil);
+    check(refreshing != nil && !refreshing.hidden && spinner != nil && !spinner.hidden,
+          "a library refresh says so in the status bar, with a spinner, before the panes are rebuilt");
+    pump(on_look_refresh_hold + 0.3);
+    check(refreshing.hidden && spinner.hidden, "and takes them down once the refresh is over");
     table = pane_table(lib);
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row_with_text(table, @"title", @"alpha")]
        byExtendingSelection:NO];

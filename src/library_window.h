@@ -63,3 +63,18 @@ void on_library_window_location_changed(NotesLibrary *lib);
  *   lib — the library (unused: there is one window)
  */
 void on_library_window_planner_changed(NotesLibrary *lib);
+
+/*
+ * on_library_window_refreshing — tell the user the library is being
+ * refreshed: a spinner and "Refreshing Library…" at the left of the
+ * status bar, painted at once (the refresh that follows holds the main
+ * thread, so nothing would be drawn until it ended), kept at least
+ * on_look_refresh_hold seconds after the last call, so a quick refresh
+ * reads rather than flickers.  Then the bar shows what it did before (the
+ * Apple Notes sync's count, or nothing).  Called by on_library_refresh_all
+ * before it rebuilds the panes.
+ *
+ * Inputs:
+ *   lib — the library (unused: there is one window)
+ */
+void on_library_window_refreshing(NotesLibrary *lib);
